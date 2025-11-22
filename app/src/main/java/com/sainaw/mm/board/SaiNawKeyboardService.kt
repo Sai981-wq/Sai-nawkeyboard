@@ -56,9 +56,6 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         keyboardView.keyboard = currentKeyboard
         keyboardView.setOnKeyboardActionListener(this)
         
-        keyboardView.isAccessibilityTraversalAfter = false
-        keyboardView.isAccessibilityTraversalBefore = false
-
         loadDictionary()
 
         return layout
@@ -251,3 +248,4 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
     override fun swipeDown() { }
     override fun swipeUp() { }
 }
+
