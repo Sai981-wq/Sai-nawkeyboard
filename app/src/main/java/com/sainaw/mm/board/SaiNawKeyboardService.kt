@@ -17,10 +17,12 @@ import java.util.concurrent.Executors
 class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActionListener {
 
     private lateinit var keyboardView: KeyboardView
+    
+    // Keyboards
     private lateinit var qwertyKeyboard: Keyboard
-    private lateinit var qwertyShiftKeyboard: Keyboard // English Shift
+    private lateinit var qwertyShiftKeyboard: Keyboard
     private lateinit var myanmarKeyboard: Keyboard
-    private lateinit var myanmarShiftKeyboard: Keyboard // Myanmar Shift
+    private lateinit var myanmarShiftKeyboard: Keyboard
     private lateinit var shanKeyboard: Keyboard
     private lateinit var shanShiftKeyboard: Keyboard
     
@@ -34,7 +36,7 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         keyboardView = layout.findViewById(R.id.keyboard_view)
         accessibilityManager = getSystemService(ACCESSIBILITY_SERVICE) as AccessibilityManager
 
-        // XML ဖိုင်များ အားလုံး ချိတ်ဆက်ခြင်း
+        // Load XMLs (ဖိုင်များအားလုံး ရှိနေရမည်)
         qwertyKeyboard = Keyboard(this, R.xml.qwerty)
         qwertyShiftKeyboard = Keyboard(this, R.xml.qwerty_shift)
         myanmarKeyboard = Keyboard(this, R.xml.myanmar)
@@ -46,6 +48,7 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         keyboardView.keyboard = currentKeyboard
         keyboardView.setOnKeyboardActionListener(this)
         
+        // TalkBack: Touch Listener
         keyboardView.setOnTouchListener { _, event ->
             handleTouch(event)
         }
@@ -53,6 +56,7 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
     }
 
     private fun handleTouch(event: MotionEvent): Boolean {
+        // TalkBack ပိတ်ထားရင် Touch ကို KeyboardView ဆီ လွှဲပေးလိုက်မယ်
         if (!accessibilityManager.isEnabled) return keyboardView.onTouchEvent(event)
         
         val action = event.action
@@ -61,12 +65,19 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         val keyIndex = getKeyIndex(touchX, touchY)
 
         when (action) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                if (keyIndex != -1 && keyIndex != lastAnnouncedIndex) {
-                    val key = currentKeyboard.keys[keyIndex]
-                    playHaptic()
-                    announceKeyText(key)
+            MotionEvent.ACTION_DOWN -> {
+                if (keyIndex != -1) {
                     lastAnnouncedIndex = keyIndex
+                    playHaptic()
+                    announceKeyText(currentKeyboard.keys[keyIndex])
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                // လက်ရွှေ့တဲ့အခါ ကီးပြောင်းသွားရင် အသံထွက်မယ်
+                if (keyIndex != -1 && keyIndex != lastAnnouncedIndex) {
+                    lastAnnouncedIndex = keyIndex
+                    playHaptic()
+                    announceKeyText(currentKeyboard.keys[keyIndex])
                 }
             }
             MotionEvent.ACTION_UP -> {
@@ -88,17 +99,6 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         return true
     }
 
-    override fun onText(text: CharSequence?) {
-        val inputConnection = currentInputConnection ?: return
-        inputConnection.commitText(text, 1)
-        
-        // Shift နှိပ်ပြီး တစ်လုံးရိုက်ရင် မူလပြန်ပြောင်း (Auto Unshift)
-        if (isCaps) {
-            isCaps = false
-            restoreNormalKeyboard()
-        }
-    }
-
     private fun getKeyIndex(x: Int, y: Int): Int {
         val keys = currentKeyboard.keys
         for (i in keys.indices) {
@@ -112,13 +112,14 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         var textToSpeak = key.label?.toString()
         if (textToSpeak == null && key.text != null) textToSpeak = key.text.toString()
         
+        // အထူးခလုတ်များ အသံထွက်
         when (key.codes[0]) {
             -5 -> textToSpeak = "Delete"
             -1 -> textToSpeak = "Shift"
             32 -> textToSpeak = "Space"
             -4 -> textToSpeak = "Enter"
             -2 -> textToSpeak = "Numbers"
-            -3 -> textToSpeak = "Language"
+            -3 -> textToSpeak = "Next Language" // ပြင်လိုက်ပြီ
             -10 -> textToSpeak = "Voice Typing"
         }
 
@@ -134,21 +135,20 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
 
         when (primaryCode) {
             -10 -> startVoiceInput()
-            -1 -> { // Shift Logic (ဖိုင်ချိန်းပေးခြင်း)
+            -1 -> { // Shift Logic (Fixed)
                 isCaps = !isCaps
                 if (isCaps) {
-                    // Shift On
+                    // Shift On -> Change to Shift Keyboard
                     if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard
                     else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard
                     else if (currentKeyboard == shanKeyboard) currentKeyboard = shanShiftKeyboard
                 } else {
-                    // Shift Off
+                    // Shift Off -> Restore Normal Keyboard
                     restoreNormalKeyboard()
                 }
                 keyboardView.keyboard = currentKeyboard
             }
-            -3 -> { 
-                // Language Switch
+            -3 -> { // Language Switch
                 currentKeyboard = when (currentKeyboard) {
                     qwertyKeyboard, qwertyShiftKeyboard -> myanmarKeyboard
                     myanmarKeyboard, myanmarShiftKeyboard -> shanKeyboard
@@ -179,13 +179,13 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
                 if ((currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
                      currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard) && 
                     handleSmartReordering(inputConnection, primaryCode)) {
-                    // Reordering success, do nothing else
-                } else {
-                    // Normal Typing
-                    inputConnection.commitText(primaryCode.toChar().toString(), 1)
+                    return 
                 }
 
-                // Auto Unshift after typing one char
+                var charCode = primaryCode.toChar()
+                inputConnection.commitText(charCode.toString(), 1)
+
+                // Auto Unshift
                 if (isCaps) {
                     isCaps = false
                     restoreNormalKeyboard()
@@ -201,9 +201,8 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard
     }
 
-    // Smart Reordering Function
     private fun handleSmartReordering(ic: InputConnection, primaryCode: Int): Boolean {
-        // (က) ု + ိ => ိ + ု
+        // ု + ိ -> ိ + ု
         if (primaryCode == 4141) { 
             val beforeText = ic.getTextBeforeCursor(1, 0)
             if (!beforeText.isNullOrEmpty()) {
@@ -216,8 +215,8 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
                 }
             }
         }
-        // (ခ) ် + ့ => ့ + ်
-        if (primaryCode == 4151) { // Aukmyit
+        // ့ + ် -> ် + ့
+        if (primaryCode == 4151) { 
             val beforeText = ic.getTextBeforeCursor(1, 0)
             if (!beforeText.isNullOrEmpty()) {
                 if (beforeText[0].toString() == "်") {
@@ -228,7 +227,7 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
                 }
             }
         }
-        // (ဂ) ေ / ႄ + ဗျည်း => ဗျည်း + ေ / ႄ
+        // ေ / ႄ + ဗျည်း -> ဗျည်း + ေ / ႄ
         val isConsonant = (primaryCode in 4096..4255)
         if (isConsonant) {
             val beforeText = ic.getTextBeforeCursor(1, 0)
@@ -269,6 +268,16 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
             val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
             if (vibrator.hasVibrator()) vibrator.vibrate(10)
         } catch (e: Exception) { }
+    }
+
+    override fun onText(text: CharSequence?) {
+        val inputConnection = currentInputConnection ?: return
+        inputConnection.commitText(text, 1)
+        if (isCaps) {
+            isCaps = false
+            restoreNormalKeyboard()
+            keyboardView.keyboard = currentKeyboard
+        }
     }
 
     override fun onPress(primaryCode: Int) {}
