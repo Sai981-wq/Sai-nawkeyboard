@@ -3,7 +3,9 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="#ECEFF1"> <LinearLayout
+    android:background="#ECEFF1">
+
+    <LinearLayout
         android:id="@+id/candidates_container"
         android:layout_width="match_parent"
         android:layout_height="45dp"
@@ -23,9 +25,9 @@
         android:keyBackground="@drawable/key_background"
         android:paddingTop="5dp"
         android:paddingBottom="5dp"
-        android:keyUsage="text"
         android:popupLayout="@null"
         android:shadowColor="#FFFFFF"
         android:shadowRadius="0.0" />
 
 </LinearLayout>
+
