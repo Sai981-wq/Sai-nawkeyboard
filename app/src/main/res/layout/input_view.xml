@@ -3,21 +3,29 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="#222222">
-
-    <LinearLayout
+    android:background="#ECEFF1"> <LinearLayout
         android:id="@+id/candidates_container"
         android:layout_width="match_parent"
-        android:layout_height="48dp"
+        android:layout_height="45dp"
         android:orientation="horizontal"
-        android:background="#333333" />
+        android:background="#ECEFF1"
+        android:paddingLeft="5dp"
+        android:paddingRight="5dp"
+        android:gravity="center_vertical" />
 
     <android.inputmethodservice.KeyboardView
         android:id="@+id/keyboard_view"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:keyPreviewLayout="@null"
-        android:keyTextColor="#FFFFFF"
-        android:keyBackground="@drawable/key_background" />
+        android:keyTextColor="#000000"
+        android:keyTextSize="18sp"
+        android:keyBackground="@drawable/key_background"
+        android:paddingTop="5dp"
+        android:paddingBottom="5dp"
+        android:keyUsage="text"
+        android:popupLayout="@null"
+        android:shadowColor="#FFFFFF"
+        android:shadowRadius="0.0" />
 
 </LinearLayout>

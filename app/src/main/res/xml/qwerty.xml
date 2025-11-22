@@ -3,7 +3,12 @@
     android:keyWidth="10%p"
     android:horizontalGap="0px"
     android:verticalGap="0px"
-    android:keyHeight="60dp">
+    android:keyHeight="50dp">
+
+    <Row>
+         <Key android:codes="-100" android:keyLabel="" android:keyWidth="90%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="-10" android:keyLabel="🎤" android:keyWidth="10%p" android:keyEdgeFlags="right"/>
+    </Row>
 
     <Row>
         <Key android:codes="113" android:keyLabel="q" android:keyEdgeFlags="left"/>
@@ -43,11 +48,12 @@
     </Row>
 
     <Row android:rowEdgeFlags="bottom">
-        <Key android:codes="-2"  android:keyLabel="123" android:keyWidth="20%p" android:keyEdgeFlags="left"/>
-        <Key android:codes="-3"  android:keyLabel="🌐" android:keyWidth="15%p"/>
-        <Key android:codes="32"  android:keyLabel="SPACE" android:keyWidth="30%p" android:isRepeatable="true"/>
-        <Key android:codes="46"  android:keyLabel="." android:keyWidth="15%p"/>
-        <Key android:codes="-4"  android:keyLabel="ENTER" android:keyWidth="20%p" android:keyEdgeFlags="right"/>
+        <Key android:codes="-2"  android:keyLabel="?123" android:keyWidth="15%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="44"  android:keyLabel="," android:keyWidth="10%p"/>
+        <Key android:codes="-3"  android:keyLabel="🌐" android:keyWidth="10%p"/>
+        <Key android:codes="32"  android:keyLabel="SPACE" android:keyWidth="40%p" android:isRepeatable="true"/>
+        <Key android:codes="46"  android:keyLabel="." android:keyWidth="10%p"/>
+        <Key android:codes="-4"  android:keyLabel="⏎" android:keyWidth="15%p" android:keyEdgeFlags="right"/>
     </Row>
 </Keyboard>
 

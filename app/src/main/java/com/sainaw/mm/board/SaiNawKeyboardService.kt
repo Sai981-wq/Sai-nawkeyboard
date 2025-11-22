@@ -1,121 +1,159 @@
 package com.sainaw.mm.board
 
-import android.content.Context
+import android.content.Intent
 import android.inputmethodservice.InputMethodService
 import android.inputmethodservice.Keyboard
 import android.inputmethodservice.KeyboardView
-import android.media.AudioManager
-import android.net.Uri
 import android.os.Vibrator
+import android.speech.RecognizerIntent
+import android.view.MotionEvent
 import android.view.View
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
-import android.widget.LinearLayout
-import android.widget.TextView
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.util.concurrent.Executors
 
 class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActionListener {
 
     private lateinit var keyboardView: KeyboardView
-    
     private lateinit var qwertyKeyboard: Keyboard
-    private lateinit var symbolsKeyboard: Keyboard
     private lateinit var myanmarKeyboard: Keyboard
     private lateinit var shanKeyboard: Keyboard
+    private lateinit var shanShiftKeyboard: Keyboard
     
     private lateinit var currentKeyboard: Keyboard
     private var isCaps = false 
-
     private lateinit var accessibilityManager: AccessibilityManager
-
-    private lateinit var candidatesContainer: LinearLayout
-    private var currentWord = StringBuilder()
-    
-    @Volatile
-    private var dictionary = listOf<String>()
-    
-    private val executor = Executors.newSingleThreadExecutor()
+    private var lastAnnouncedIndex = -1
 
     override fun onCreateInputView(): View {
         val layout = layoutInflater.inflate(R.layout.input_view, null)
         keyboardView = layout.findViewById(R.id.keyboard_view)
-        candidatesContainer = layout.findViewById(R.id.candidates_container)
-
         accessibilityManager = getSystemService(ACCESSIBILITY_SERVICE) as AccessibilityManager
 
         qwertyKeyboard = Keyboard(this, R.xml.qwerty)
-        symbolsKeyboard = Keyboard(this, R.xml.symbols)
         myanmarKeyboard = Keyboard(this, R.xml.myanmar)
         shanKeyboard = Keyboard(this, R.xml.shan)
+        shanShiftKeyboard = Keyboard(this, R.xml.shan_shift)
 
         currentKeyboard = qwertyKeyboard
         keyboardView.keyboard = currentKeyboard
         keyboardView.setOnKeyboardActionListener(this)
         
-        loadDictionary()
-
+        keyboardView.setOnTouchListener { _, event ->
+            handleTouch(event)
+        }
         return layout
     }
 
-    override fun onPress(primaryCode: Int) {
-        if (primaryCode == 0) return 
+    private fun handleTouch(event: MotionEvent): Boolean {
+        if (!accessibilityManager.isEnabled) return keyboardView.onTouchEvent(event)
+        
+        val action = event.action
+        val touchX = event.x.toInt()
+        val touchY = event.y.toInt()
+        val keyIndex = getKeyIndex(touchX, touchY)
 
-        playHaptic() 
-        playClick()  
+        when (action) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                if (keyIndex != -1 && keyIndex != lastAnnouncedIndex) {
+                    val key = currentKeyboard.keys[keyIndex]
+                    playHaptic()
+                    announceKeyText(key)
+                    lastAnnouncedIndex = keyIndex
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                if (keyIndex != -1) {
+                    val key = currentKeyboard.keys[keyIndex]
+                    if (key.text != null) {
+                        onText(key.text)
+                    } else {
+                        val code = key.codes[0]
+                        if (code == -10) startVoiceInput() else {
+                            onKey(code, null)
+                            onRelease(code)
+                        }
+                    }
+                }
+                lastAnnouncedIndex = -1
+            }
+        }
+        return true
+    }
 
-        val key = findKey(primaryCode)
-        if (key != null) {
-            announceKey(key)
+    override fun onText(text: CharSequence?) {
+        val inputConnection = currentInputConnection ?: return
+        inputConnection.commitText(text, 1)
+        
+        if (currentKeyboard == shanShiftKeyboard) {
+            isCaps = false
+            currentKeyboard = shanKeyboard
+            keyboardView.keyboard = currentKeyboard
         }
     }
 
-    override fun onRelease(primaryCode: Int) {
-        if (primaryCode > 0) {
-            val inputConnection = currentInputConnection ?: return
-            
-            var charToCommit = primaryCode.toChar()
-            
-            if (isCaps && charToCommit.isLetter()) {
-                charToCommit = charToCommit.toUpperCase()
-                isCaps = false 
-            }
-            
-            inputConnection.commitText(charToCommit.toString(), 1)
-            
-            if (primaryCode == 32) { // Space
-                currentWord.clear()
-            } else {
-                currentWord.append(charToCommit)
-            }
-            updateSuggestions()
+    private fun getKeyIndex(x: Int, y: Int): Int {
+        val keys = currentKeyboard.keys
+        for (i in keys.indices) {
+            if (keys[i].isInside(x, y)) return i
+        }
+        return -1
+    }
+
+    private fun announceKeyText(key: Keyboard.Key) {
+        if (!accessibilityManager.isEnabled) return
+        var textToSpeak = key.label?.toString()
+        if (textToSpeak == null && key.text != null) textToSpeak = key.text.toString()
+        
+        when (key.codes[0]) {
+            -5 -> textToSpeak = "Delete"
+            -1 -> textToSpeak = "Shift"
+            32 -> textToSpeak = "Space"
+            -4 -> textToSpeak = "Enter"
+            -2 -> textToSpeak = "Numbers"
+            -3 -> textToSpeak = "Language"
+            -10 -> textToSpeak = "Voice Typing"
+        }
+
+        if (textToSpeak != null) {
+            val event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT)
+            event.text.add(textToSpeak)
+            accessibilityManager.sendAccessibilityEvent(event)
         }
     }
 
     override fun onKey(primaryCode: Int, keyCodes: IntArray?) {
-        if (primaryCode >= 0) return
         val inputConnection = currentInputConnection ?: return
 
         when (primaryCode) {
-            -1 -> {
-                isCaps = true 
+            -10 -> startVoiceInput()
+            -1 -> { 
+                isCaps = !isCaps
+                if (currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard) {
+                    currentKeyboard = if (isCaps) shanShiftKeyboard else shanKeyboard
+                    keyboardView.keyboard = currentKeyboard
+                } else {
+                    currentKeyboard.isShifted = isCaps
+                    keyboardView.invalidateAllKeys()
+                }
             }
-            -2 -> {
-                currentKeyboard = symbolsKeyboard
-                keyboardView.keyboard = currentKeyboard
-            }
-            -3 -> {
+            -3 -> { 
                 currentKeyboard = when (currentKeyboard) {
                     qwertyKeyboard -> myanmarKeyboard
                     myanmarKeyboard -> shanKeyboard
-                    shanKeyboard -> qwertyKeyboard
+                    shanKeyboard, shanShiftKeyboard -> qwertyKeyboard
                     else -> qwertyKeyboard
                 }
-                keyboardView.keyboard = currentKeyboard
                 isCaps = false
+                keyboardView.keyboard = currentKeyboard
+                val langName = when(currentKeyboard) {
+                    myanmarKeyboard -> "Myanmar"
+                    shanKeyboard -> "Shan"
+                    else -> "English"
+                }
+                speakSystem(langName)
             }
             -4 -> {
                 val event = currentInputEditorInfo.imeOptions and EditorInfo.IME_MASK_ACTION
@@ -123,129 +161,109 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
                     EditorInfo.IME_ACTION_SEARCH, EditorInfo.IME_ACTION_GO -> sendDefaultEditorAction(true)
                     else -> inputConnection.commitText("\n", 1)
                 }
-                currentWord.clear()
-                updateSuggestions()
             }
-            -5 -> {
-                inputConnection.deleteSurroundingText(1, 0)
-                if (currentWord.isNotEmpty()) {
-                    currentWord.deleteCharAt(currentWord.length - 1)
+            -5 -> inputConnection.deleteSurroundingText(1, 0)
+            0 -> {} 
+            else -> {
+                // ၁။ Smart Reordering စနစ် (ရှမ်း နှင့် မြန်မာ အတွက်)
+                if ((currentKeyboard == myanmarKeyboard || currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard) && 
+                    handleSmartReordering(inputConnection, primaryCode)) {
+                    return 
                 }
-                updateSuggestions()
-            }
-            -6 -> {
-                currentKeyboard = qwertyKeyboard
-                keyboardView.keyboard = currentKeyboard
-            }
-            -7 -> { }
-        }
-    }
 
-    private fun findKey(primaryCode: Int): Keyboard.Key? {
-        for (key in currentKeyboard.keys) {
-            if (key.codes[0] == primaryCode) {
-                return key
-            }
-        }
-        return null
-    }
-
-    private fun announceKey(key: Keyboard.Key) {
-        if (!accessibilityManager.isEnabled) return
-        val label = key.label ?: return 
-
-        val event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_VIEW_HOVER_ENTER)
-        event.packageName = packageName
-        event.className = javaClass.name
-        event.text.add(label) 
-
-        accessibilityManager.sendAccessibilityEvent(event)
-    }
-
-    private fun loadDictionary() {
-        executor.execute {
-            val prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
-            val uriString = prefs.getString("dictionary_uri", null)
-            
-            if (uriString == null) {
-                dictionary = listOf()
-                return@execute
-            }
-
-            val words = mutableListOf<String>()
-            try {
-                val uri = Uri.parse(uriString)
-                contentResolver.openInputStream(uri)?.use { inputStream ->
-                    BufferedReader(InputStreamReader(inputStream)).use { reader ->
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
-                            val word = line?.trim()
-                            if (!word.isNullOrEmpty()) {
-                                words.add(word)
-                            }
-                        }
-                    }
+                // ၂။ ပုံမှန် စာရိုက်ခြင်း
+                var charCode = primaryCode.toChar()
+                if (Character.isLetter(charCode) && isCaps && currentKeyboard == qwertyKeyboard) {
+                    charCode = Character.toUpperCase(charCode)
                 }
-                dictionary = words
-            } catch (e: Exception) {
-                e.printStackTrace()
-                dictionary = listOf()
+                inputConnection.commitText(charCode.toString(), 1)
             }
         }
     }
 
-    private fun updateSuggestions() {
-        candidatesContainer.removeAllViews()
-
-        if (currentWord.isEmpty()) {
-            return
-        }
-
-        val suggestions = dictionary.filter { 
-            it.startsWith(currentWord.toString(), ignoreCase = true) 
-        }
-
-        for (word in suggestions) {
-            val textView = TextView(this)
-            textView.text = word
-            textView.setTextColor(0xFFFFFFFF.toInt())
-            textView.setPadding(16, 16, 16, 16)
-            textView.isClickable = true
-            
-            textView.setOnClickListener {
-                currentInputConnection?.commitText(word + " ", 1)
-                currentWord.clear()
-                updateSuggestions()
+    // Smart Reordering Function
+    private fun handleSmartReordering(ic: InputConnection, primaryCode: Int): Boolean {
+        
+        // (က) ု + ိ => ိ + ု
+        // 4141 = ိ (I)
+        if (primaryCode == 4141) { 
+            val beforeText = ic.getTextBeforeCursor(1, 0)
+            if (!beforeText.isNullOrEmpty()) {
+                val preChar = beforeText[0].toString()
+                if (preChar == "ု" || preChar == "ူ") {
+                    ic.deleteSurroundingText(1, 0)
+                    ic.commitText("ိ", 1) 
+                    ic.commitText(preChar, 1)
+                    return true 
+                }
             }
-            candidatesContainer.addView(textView)
+        }
+
+        // (ခ) ် + ့ => ့ + ် (အသတ် + အောက်မြစ် => အောက်မြစ် + အသတ်)
+        // 4151 = ့ (Aukmyit)
+        if (primaryCode == 4151) {
+            val beforeText = ic.getTextBeforeCursor(1, 0)
+            if (!beforeText.isNullOrEmpty()) {
+                val preChar = beforeText[0].toString()
+                // ရှေ့ကစာလုံးက '်' (4154) ဖြစ်နေရင် နေရာလဲမယ်
+                if (preChar == "်") {
+                    ic.deleteSurroundingText(1, 0) // အသတ်ကို ဖျက်မယ်
+                    ic.commitText("့", 1) // အောက်မြစ် အရင်ထည့်မယ်
+                    ic.commitText("်", 1) // အသတ် နောက်မှထည့်မယ်
+                    return true
+                }
+            }
+        }
+
+        // (ဂ) ေ / ႄ + ဗျည်း => ဗျည်း + ေ / ႄ
+        val isConsonant = (primaryCode in 4096..4255)
+        
+        if (isConsonant) {
+            val beforeText = ic.getTextBeforeCursor(1, 0)
+            if (!beforeText.isNullOrEmpty()) {
+                val preChar = beforeText[0].toString()
+                if (preChar == "ေ" || preChar == "ႄ") {
+                    ic.deleteSurroundingText(1, 0)
+                    ic.commitText(primaryCode.toChar().toString(), 1)
+                    ic.commitText(preChar, 1)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private fun startVoiceInput() {
+        try {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+        } catch (e: Exception) {
+            speakSystem("Voice typing not supported")
+        }
+    }
+    
+    private fun speakSystem(text: String) {
+        if (accessibilityManager.isEnabled) {
+            val event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT)
+            event.text.add(text)
+            accessibilityManager.sendAccessibilityEvent(event)
         }
     }
 
     private fun playHaptic() {
         try {
             val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
-            if (vibrator.hasVibrator()) {
-                vibrator.vibrate(5)
-            }
+            if (vibrator.hasVibrator()) vibrator.vibrate(10)
         } catch (e: Exception) { }
     }
 
-    private fun playClick() {
-        try {
-            val am = getSystemService(AUDIO_SERVICE) as AudioManager
-            am.playSoundEffect(AudioManager.FX_KEY_CLICK, 0.5f)
-        } catch (e: Exception) { }
-    }
-    
-    override fun onDestroy() {
-        super.onDestroy()
-        executor.shutdown()
-    }
-
-    override fun onText(text: CharSequence?) { }
-    override fun swipeLeft() { }
-    override fun swipeRight() { }
-    override fun swipeDown() { }
-    override fun swipeUp() { }
+    override fun onPress(primaryCode: Int) {}
+    override fun onRelease(primaryCode: Int) {}
+    override fun swipeLeft() {}
+    override fun swipeRight() {}
+    override fun swipeDown() {}
+    override fun swipeUp() {}
 }
 
