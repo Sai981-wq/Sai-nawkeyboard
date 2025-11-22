@@ -18,7 +18,9 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
 
     private lateinit var keyboardView: KeyboardView
     private lateinit var qwertyKeyboard: Keyboard
+    private lateinit var qwertyShiftKeyboard: Keyboard // English Shift
     private lateinit var myanmarKeyboard: Keyboard
+    private lateinit var myanmarShiftKeyboard: Keyboard // Myanmar Shift
     private lateinit var shanKeyboard: Keyboard
     private lateinit var shanShiftKeyboard: Keyboard
     
@@ -32,8 +34,11 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         keyboardView = layout.findViewById(R.id.keyboard_view)
         accessibilityManager = getSystemService(ACCESSIBILITY_SERVICE) as AccessibilityManager
 
+        // XML ဖိုင်များ အားလုံး ချိတ်ဆက်ခြင်း
         qwertyKeyboard = Keyboard(this, R.xml.qwerty)
+        qwertyShiftKeyboard = Keyboard(this, R.xml.qwerty_shift)
         myanmarKeyboard = Keyboard(this, R.xml.myanmar)
+        myanmarShiftKeyboard = Keyboard(this, R.xml.myanmar_shift)
         shanKeyboard = Keyboard(this, R.xml.shan)
         shanShiftKeyboard = Keyboard(this, R.xml.shan_shift)
 
@@ -87,10 +92,10 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         val inputConnection = currentInputConnection ?: return
         inputConnection.commitText(text, 1)
         
-        if (currentKeyboard == shanShiftKeyboard) {
+        // Shift နှိပ်ပြီး တစ်လုံးရိုက်ရင် မူလပြန်ပြောင်း (Auto Unshift)
+        if (isCaps) {
             isCaps = false
-            currentKeyboard = shanKeyboard
-            keyboardView.keyboard = currentKeyboard
+            restoreNormalKeyboard()
         }
     }
 
@@ -129,25 +134,30 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
 
         when (primaryCode) {
             -10 -> startVoiceInput()
-            -1 -> { 
+            -1 -> { // Shift Logic (ဖိုင်ချိန်းပေးခြင်း)
                 isCaps = !isCaps
-                if (currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard) {
-                    currentKeyboard = if (isCaps) shanShiftKeyboard else shanKeyboard
-                    keyboardView.keyboard = currentKeyboard
+                if (isCaps) {
+                    // Shift On
+                    if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard
+                    else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard
+                    else if (currentKeyboard == shanKeyboard) currentKeyboard = shanShiftKeyboard
                 } else {
-                    currentKeyboard.isShifted = isCaps
-                    keyboardView.invalidateAllKeys()
+                    // Shift Off
+                    restoreNormalKeyboard()
                 }
+                keyboardView.keyboard = currentKeyboard
             }
             -3 -> { 
+                // Language Switch
                 currentKeyboard = when (currentKeyboard) {
-                    qwertyKeyboard -> myanmarKeyboard
-                    myanmarKeyboard -> shanKeyboard
+                    qwertyKeyboard, qwertyShiftKeyboard -> myanmarKeyboard
+                    myanmarKeyboard, myanmarShiftKeyboard -> shanKeyboard
                     shanKeyboard, shanShiftKeyboard -> qwertyKeyboard
                     else -> qwertyKeyboard
                 }
                 isCaps = false
                 keyboardView.keyboard = currentKeyboard
+                
                 val langName = when(currentKeyboard) {
                     myanmarKeyboard -> "Myanmar"
                     shanKeyboard -> "Shan"
@@ -165,27 +175,35 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
             -5 -> inputConnection.deleteSurroundingText(1, 0)
             0 -> {} 
             else -> {
-                // ၁။ Smart Reordering စနစ် (ရှမ်း နှင့် မြန်မာ အတွက်)
-                if ((currentKeyboard == myanmarKeyboard || currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard) && 
+                // Smart Reordering
+                if ((currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
+                     currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard) && 
                     handleSmartReordering(inputConnection, primaryCode)) {
-                    return 
+                    // Reordering success, do nothing else
+                } else {
+                    // Normal Typing
+                    inputConnection.commitText(primaryCode.toChar().toString(), 1)
                 }
 
-                // ၂။ ပုံမှန် စာရိုက်ခြင်း
-                var charCode = primaryCode.toChar()
-                if (Character.isLetter(charCode) && isCaps && currentKeyboard == qwertyKeyboard) {
-                    charCode = Character.toUpperCase(charCode)
+                // Auto Unshift after typing one char
+                if (isCaps) {
+                    isCaps = false
+                    restoreNormalKeyboard()
+                    keyboardView.keyboard = currentKeyboard
                 }
-                inputConnection.commitText(charCode.toString(), 1)
             }
         }
     }
 
+    private fun restoreNormalKeyboard() {
+        if (currentKeyboard == qwertyShiftKeyboard) currentKeyboard = qwertyKeyboard
+        else if (currentKeyboard == myanmarShiftKeyboard) currentKeyboard = myanmarKeyboard
+        else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard
+    }
+
     // Smart Reordering Function
     private fun handleSmartReordering(ic: InputConnection, primaryCode: Int): Boolean {
-        
         // (က) ု + ိ => ိ + ု
-        // 4141 = ိ (I)
         if (primaryCode == 4141) { 
             val beforeText = ic.getTextBeforeCursor(1, 0)
             if (!beforeText.isNullOrEmpty()) {
@@ -198,26 +216,20 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
                 }
             }
         }
-
-        // (ခ) ် + ့ => ့ + ် (အသတ် + အောက်မြစ် => အောက်မြစ် + အသတ်)
-        // 4151 = ့ (Aukmyit)
-        if (primaryCode == 4151) {
+        // (ခ) ် + ့ => ့ + ်
+        if (primaryCode == 4151) { // Aukmyit
             val beforeText = ic.getTextBeforeCursor(1, 0)
             if (!beforeText.isNullOrEmpty()) {
-                val preChar = beforeText[0].toString()
-                // ရှေ့ကစာလုံးက '်' (4154) ဖြစ်နေရင် နေရာလဲမယ်
-                if (preChar == "်") {
-                    ic.deleteSurroundingText(1, 0) // အသတ်ကို ဖျက်မယ်
-                    ic.commitText("့", 1) // အောက်မြစ် အရင်ထည့်မယ်
-                    ic.commitText("်", 1) // အသတ် နောက်မှထည့်မယ်
+                if (beforeText[0].toString() == "်") {
+                    ic.deleteSurroundingText(1, 0)
+                    ic.commitText("့", 1)
+                    ic.commitText("်", 1)
                     return true
                 }
             }
         }
-
         // (ဂ) ေ / ႄ + ဗျည်း => ဗျည်း + ေ / ႄ
         val isConsonant = (primaryCode in 4096..4255)
-        
         if (isConsonant) {
             val beforeText = ic.getTextBeforeCursor(1, 0)
             if (!beforeText.isNullOrEmpty()) {
