@@ -12,7 +12,7 @@
         <Key android:codes="4216" android:keyLabel="ၸ" android:keyWidth="9%p"/>
         <Key android:codes="4112" android:keyLabel="တ" android:keyWidth="9%p"/>
         <Key android:codes="4220" android:keyLabel="ၼ" android:keyWidth="9%p"/>
-        <Key android:codes="4120" android:keyLabel="မ" android:keyWidth="9%p"/>
+        <Key android:codes="4121" android:keyLabel="မ" android:keyWidth="9%p"/>
         <Key android:codes="4130" android:keyLabel="ဢ" android:keyWidth="9%p"/>
         <Key android:codes="4117" android:keyLabel="ပ" android:keyWidth="9%p"/>
         <Key android:codes="4213" android:keyLabel="ၵ" android:keyWidth="9%p"/>
@@ -25,13 +25,13 @@
         <Key android:codes="4145" android:keyLabel="ေ" android:keyEdgeFlags="left"/>
         <Key android:codes="4228" android:keyLabel="ႄ"/>
         <Key android:codes="4141" android:keyLabel="ိ"/>
-        <Key android:codes="4148" android:keyLabel="်"/>
+        <Key android:codes="4154" android:keyLabel="်"/>
         <Key android:codes="4157" android:keyLabel="ွ"/>
+        <Key android:codes="4233" android:keyLabel="ႉ"/>
         <Key android:codes="4231" android:keyLabel="ႇ"/>
-        <Key android:codes="4232" android:keyLabel="ႈ"/>
         <Key android:codes="4143" android:keyLabel="ု"/>
         <Key android:codes="4144" android:keyLabel="ူ"/>
-        <Key android:codes="4152" android:keyLabel="း" android:keyEdgeFlags="right"/>
+        <Key android:codes="4232" android:keyLabel="ႈ" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row>
@@ -44,7 +44,7 @@
         <Key android:codes="4122" android:keyLabel="ယ" android:keyWidth="8.5%p"/>
         <Key android:codes="4218" android:keyLabel="ၺ" android:keyWidth="8.5%p"/>
         <Key android:codes="4227" android:keyLabel="ႃ" android:keyWidth="8.5%p"/>
-        <Key android:codes="4233" android:keyLabel="ႉ" android:keyWidth="8.5%p"/> 
+        <Key android:codes="4152" android:keyLabel="း" android:keyWidth="8.5%p"/>
         <Key android:codes="-5"  android:keyLabel="DEL" android:keyWidth="12%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
     </Row>
 
