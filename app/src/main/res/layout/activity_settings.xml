@@ -1,28 +1,111 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:padding="16dp">
 
-    <TextView
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="User Dictionary"
-        android:textSize="20sp" />
+        android:orientation="vertical">
 
-    <Button
-        android:id="@+id/btn_choose_dictionary"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="Choose .txt Dictionary File" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Step 1: Setup"
+            android:textStyle="bold"
+            android:textSize="18sp"
+            android:layout_marginBottom="10dp"/>
 
-    <TextView
-        android:id="@+id/tv_selected_file"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="No file selected." />
+        <Button
+            android:id="@+id/btn_enable_keyboard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="1. Enable Sai Naw Keyboard" />
 
-</LinearLayout>
+        <Button
+            android:id="@+id/btn_select_keyboard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="2. Select Sai Naw Keyboard" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#CCCCCC"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="20dp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Preferences"
+            android:textStyle="bold"
+            android:textSize="18sp"
+            android:layout_marginBottom="10dp"/>
+
+        <Switch
+            android:id="@+id/switch_vibrate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Vibrate on keypress"
+            android:textSize="16sp"
+            android:checked="true"
+            android:padding="10dp"/>
+
+        <Switch
+            android:id="@+id/switch_sound"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Sound on keypress"
+            android:textSize="16sp"
+            android:checked="false"
+            android:padding="10dp"/>
+
+        <Switch
+            android:id="@+id/switch_theme"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Dark Theme"
+            android:textSize="16sp"
+            android:padding="10dp"/>
+
+        <Switch
+            android:id="@+id/switch_number_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Show Number Row"
+            android:textSize="16sp"
+            android:padding="10dp"/>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#CCCCCC"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="20dp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="About"
+            android:textStyle="bold"
+            android:textSize="18sp"
+            android:layout_marginBottom="10dp"/>
+
+        <Button
+            android:id="@+id/btn_about"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="About Sai Naw Keyboard"
+            android:backgroundTint="#4CAF50"
+            android:textColor="#FFFFFF"/>
+            
+        <Space
+            android:layout_width="match_parent"
+            android:layout_height="50dp"/>
+
+    </LinearLayout>
+</ScrollView>
+
