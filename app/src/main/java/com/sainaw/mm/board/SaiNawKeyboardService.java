@@ -50,7 +50,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setOnKeyboardActionListener(this);
 
         // TalkBack အတွက် အဓိက ပြင်ဆင်ချက် (Hover Listener)
-        // မျက်မမြင်များ ပွတ်ဆွဲတဲ့အခါ ဒီကောင်က အလုပ်လုပ်ပါမယ်
         keyboardView.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent event) {
@@ -65,7 +64,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 if (accessibilityManager.isEnabled()) {
                     return false; // TalkBack ဖွင့်ထားရင် Touch ကို မသုံးဘဲ Hover ကိုသုံးမယ်
                 }
-                return false; 
+                return false; // TalkBack ပိတ်ထားရင် Standard KeyboardView touch ကို အလုပ်လုပ်ခိုင်းမယ်
             }
         });
 
@@ -85,7 +84,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         switch (action) {
             case MotionEvent.ACTION_HOVER_ENTER:
+                // စတင်ထိတွေ့ချိန်
+                if (keyIndex != -1) {
+                    lastHoverKeyIndex = keyIndex;
+                    playHaptic();
+                    announceKeyText(currentKeyboard.getKeys().get(keyIndex));
+                }
+                break;
+
             case MotionEvent.ACTION_HOVER_MOVE:
+                // ပွတ်ဆွဲနေချိန်
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     // Key အသစ်ပေါ် ရောက်တိုင်း အသံထွက်မယ်
@@ -93,11 +101,31 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     announceKeyText(currentKeyboard.getKeys().get(keyIndex));
                 }
                 break;
+
             case MotionEvent.ACTION_HOVER_EXIT:
-                lastHoverKeyIndex = -1;
+                // လက်ကြွလိုက်ချိန် -> စာရိုက်မယ် (Commit on Lift)
+                if (lastHoverKeyIndex != -1) {
+                    Keyboard.Key key = currentKeyboard.getKeys().get(lastHoverKeyIndex);
+                    
+                    // စာရိုက်မည့် Logic
+                    int code = key.codes[0];
+                    if (code < 0) {
+                        onKey(code, null); // Special Keys (Delete, Shift, etc.)
+                    } else {
+                        if (key.label != null) {
+                            onText(key.label);
+                        } else if (key.text != null) {
+                            onText(key.text);
+                        }
+                        if (key.codes.length > 0) {
+                            onKey(key.codes[0], null);
+                        }
+                    }
+                    lastHoverKeyIndex = -1; // Reset
+                }
                 break;
         }
-        return true; // Event ကို လက်ခံလိုက်ပြီ
+        return true; 
     }
 
     // Gap တွေကို ကျော်ပြီး အနီးဆုံး Key ရှာပေးမည့် Logic
@@ -150,14 +178,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (textToSpeak == null && key.text != null) textToSpeak = key.text.toString();
 
         if (textToSpeak != null) {
-            // TalkBack ကို အသံထွက်ခိုင်းသည့် အမိန့်
             AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
             event.getText().add(textToSpeak);
             accessibilityManager.sendAccessibilityEvent(event);
         }
     }
 
-    // Key နှိပ်လိုက်သောအခါ (Double Tap from TalkBack)
+    // Key နှိပ်လိုက်သောအခါ (Touch or TalkBack Lift)
     @Override
     public void onKey(int primaryCode, int[] keyCodes) {
         InputConnection ic = getCurrentInputConnection();
@@ -186,7 +213,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 break;
             case 0: break;
             default:
-                // Smart Reordering (Logic အဟောင်း)
+                // Smart Reordering
                 if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) return;
                 
                 char code = (char) primaryCode;
@@ -200,7 +227,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // ဘာသာစကား ပြောင်းခြင်း
     private void changeLanguage() {
         if (currentKeyboard == qwertyKeyboard || currentKeyboard == qwertyShiftKeyboard) {
             currentKeyboard = myanmarKeyboard;
@@ -216,7 +242,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
     }
 
-    // Keyboard အပြောင်းအလဲ (Shift)
     private void updateKeyboardLayout() {
         if (isCaps) {
             if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard;
