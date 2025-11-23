@@ -13,6 +13,7 @@ import android.view.accessibility.AccessibilityManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 
+// Version: Final Fix for Shift and TalkBack (Force Update)
 class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActionListener {
 
     private lateinit var keyboardView: KeyboardView
@@ -31,8 +32,6 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
     
     // TalkBack Variables
     private var lastAnnouncedIndex = -1
-    private var lastTouchX = 0
-    private var lastTouchY = 0
 
     override fun onCreateInputView(): View {
         val layout = layoutInflater.inflate(R.layout.input_view, null)
@@ -59,7 +58,7 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         return layout
     }
 
-    // TalkBack အတွက် Touch Logic (ပြင်ဆင်ထားသည်)
+    // TalkBack အတွက် Touch Logic (Gap ပြဿနာဖြေရှင်းပြီး)
     private fun handleTouch(event: MotionEvent): Boolean {
         // TalkBack ပိတ်ထားရင် မူလအတိုင်း အလုပ်လုပ်မယ်
         if (!accessibilityManager.isEnabled) return keyboardView.onTouchEvent(event)
@@ -91,13 +90,17 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
                 // လက်ကြွလိုက်မှ စာရိုက်မယ် (Lift-to-type)
                 if (keyIndex != -1) {
                     val key = currentKeyboard.keys[keyIndex]
-                    if (key.label != null || key.codes[0] < 0) {
-                        // Special Keys (Shift, Delete, Enter etc)
+                    // Special Keys (Shift, Delete, etc)
+                    if (key.codes[0] < 0) {
                         onKey(key.codes[0], null)
                     } else {
                         // Normal Text
-                        onText(key.text ?: key.label)
-                        // Normal Key ဆိုရင် Code အနေနဲ့ပါ ပို့မယ် (For cleanup)
+                        if (key.label != null) {
+                             onText(key.label)
+                        } else if (key.text != null) {
+                             onText(key.text)
+                        }
+                        // Code အနေနဲ့ပါ ပို့မယ် (For cleanup)
                         if (key.codes.isNotEmpty()) {
                             onKey(key.codes[0], null)
                         }
@@ -121,7 +124,7 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         // ၂။ တည့်တည့်မထိရင် အနီးဆုံးကို ရှာမယ် (Distance Check)
         var closestIndex = -1
         var minDistance = Double.MAX_VALUE
-        val threshold = 100 // Pixel အကွာအဝေး (လိုအပ်ရင် လျှော့နိုင်/တိုးနိုင်)
+        val threshold = 150 // Pixel အကွာအဝေး (နည်းနည်း ထပ်တိုးထားသည်)
 
         for (i in keys.indices) {
             val key = keys[i]
@@ -151,11 +154,10 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
             32 -> textToSpeak = "Space"
             -4 -> textToSpeak = "Enter"
             -2 -> textToSpeak = "Symbols"
-            -3 -> textToSpeak = "Next Language" // အစ်ကိုလိုချင်တဲ့အတိုင်း
+            -3 -> textToSpeak = "Next Language" 
             -10 -> textToSpeak = "Voice Typing"
         }
 
-        // Label မရှိရင် Output Text ကို ဖတ်မယ်
         if (textToSpeak == null && key.text != null) {
             textToSpeak = key.text.toString()
         }
@@ -187,9 +189,9 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
                 }
             }
             -5 -> inputConnection.deleteSurroundingText(1, 0)
-            0 -> {} // Ignore dummy codes
+            0 -> {} 
             else -> {
-                // Smart Reordering (Logic အဟောင်းအတိုင်း)
+                // Smart Reordering Logic
                  if (isShanOrMyanmar() && handleSmartReordering(inputConnection, primaryCode)) {
                     return 
                 }
@@ -213,10 +215,9 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
             shanKeyboard, shanShiftKeyboard -> qwertyKeyboard
             else -> qwertyKeyboard
         }
-        isCaps = false // ဘာသာပြောင်းရင် Shift ဖြုတ်မယ်
-        keyboardView.keyboard = currentKeyboard // View Update
+        isCaps = false 
+        keyboardView.keyboard = currentKeyboard 
         
-        // TalkBack သမားကို ဘာသာစကားပြောင်းကြောင်း အသိပေးမယ်
         val langName = when(currentKeyboard) {
             myanmarKeyboard -> "Myanmar"
             shanKeyboard -> "Shan"
@@ -226,7 +227,6 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
     }
 
     private fun updateKeyboardLayout() {
-        // Caps အဖွင့်/အပိတ် ပေါ်မူတည်ပြီး Keyboard ရွေးမယ်
         if (isCaps) {
             if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard
             else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard
@@ -236,7 +236,6 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
             else if (currentKeyboard == myanmarShiftKeyboard) currentKeyboard = myanmarKeyboard
             else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard
         }
-        // အရေးကြီးဆုံးလိုင်း (View ကို Refresh လုပ်ခြင်း)
         keyboardView.keyboard = currentKeyboard 
         keyboardView.invalidateAllKeys()
     }
@@ -246,7 +245,6 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
                currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard
     }
 
-    // Smart Reordering Logic (အစ်ကို့ Code အတိုင်း)
     private fun handleSmartReordering(ic: InputConnection, primaryCode: Int): Boolean {
         // ု + ိ -> ိ + ု
         if (primaryCode == 4141) { 
@@ -260,11 +258,6 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
                     return true 
                 }
             }
-        }
-        // ့ + ် -> ် + ့
-        if (primaryCode == 4154) { // Code 4154 is 'tap' (check XML)
-             // Logic here depends on exact codes used in XML
-             // Provided XML uses 4154 for 'tap' in some, check usage
         }
         // ေ / ႄ + ဗျည်း -> ဗျည်း + ေ / ႄ
         val isConsonant = (primaryCode in 4096..4255)
@@ -318,7 +311,6 @@ class SaiNawKeyboardService : InputMethodService(), KeyboardView.OnKeyboardActio
         }
     }
     
-    // Unused methods
     override fun onPress(primaryCode: Int) {}
     override fun onRelease(primaryCode: Int) {}
     override fun swipeLeft() {}
