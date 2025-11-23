@@ -6,6 +6,11 @@
     android:keyHeight="50dp">
 
     <Row>
+        <Key android:codes="-100" android:keyLabel="" android:keyWidth="90%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="-10" android:keyLabel="🎤" android:keyWidth="10%p" android:keyEdgeFlags="right"/>
+    </Row>
+
+    <Row>
         <Key android:codes="4109" android:keyLabel="ဈ" android:keyEdgeFlags="left"/>
         <Key android:codes="4123" android:keyLabel="ဝ"/>
         <Key android:codes="4103" android:keyLabel="ဃ"/>
@@ -17,7 +22,6 @@
         <Key android:codes="4114" android:keyLabel="ဒ"/>
         <Key android:codes="4111" android:keyLabel="ဍ" android:keyEdgeFlags="right"/>
     </Row>
-
     <Row>
         <Key android:codes="4145" android:keyLabel="ေ" android:keyEdgeFlags="left"/>
         <Key android:codes="4140" android:keyLabel="ျ"/>

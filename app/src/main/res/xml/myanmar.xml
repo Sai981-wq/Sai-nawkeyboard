@@ -6,6 +6,11 @@
     android:keyHeight="50dp">
 
     <Row>
+        <Key android:codes="-100" android:keyLabel="" android:keyWidth="90%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="-10" android:keyLabel="🎤" android:keyWidth="10%p" android:keyEdgeFlags="right"/>
+    </Row>
+
+    <Row>
         <Key android:codes="4106" android:keyLabel="ဆ" android:keyEdgeFlags="left"/>
         <Key android:codes="4112" android:keyLabel="တ"/>
         <Key android:codes="4120" android:keyLabel="န"/>
@@ -19,15 +24,15 @@
     </Row>
 
     <Row>
-        <Key android:codes="4141" android:keyLabel="ေ" android:keyEdgeFlags="left"/>
-        <Key android:codes="4140" android:keyLabel="ျ"/>
-        <Key android:codes="4143" android:keyLabel="ိ"/>
+        <Key android:codes="4145" android:keyLabel="ေ" android:keyEdgeFlags="left"/>
+        <Key android:codes="4155" android:keyLabel="ျ"/>
+        <Key android:codes="4141" android:keyLabel="ိ"/>
         <Key android:codes="4148" android:keyLabel="်"/>
         <Key android:codes="4142" android:keyLabel="ါ"/>
         <Key android:codes="4154" android:keyLabel="့"/>
-        <Key android:codes="4139" android:keyLabel="ြ"/>
-        <Key android:codes="4145" android:keyLabel="ု"/>
-        <Key android:codes="4146" android:keyLabel="ူ"/>
+        <Key android:codes="4156" android:keyLabel="ြ"/>
+        <Key android:codes="4143" android:keyLabel="ု"/>
+        <Key android:codes="4144" android:keyLabel="ူ"/>
         <Key android:codes="4150" android:keyLabel="း" android:keyEdgeFlags="right"/>
     </Row>
 
@@ -39,7 +44,7 @@
         <Key android:codes="4124" android:keyLabel="လ" android:keyWidth="8.5%p"/>
         <Key android:codes="4115" android:keyLabel="ဘ" android:keyWidth="8.5%p"/>
         <Key android:codes="4104" android:keyLabel="ည" android:keyWidth="8.5%p"/>
-        <Key android:codes="4142" android:keyLabel="ာ" android:keyWidth="8.5%p"/>
+        <Key android:codes="4140" android:keyLabel="ာ" android:keyWidth="8.5%p"/>
         <Key android:codes="4122" android:keyLabel="ယ" android:keyWidth="8.5%p"/>
         <Key android:codes="-5"  android:keyLabel="DEL" android:keyWidth="15%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
     </Row>
