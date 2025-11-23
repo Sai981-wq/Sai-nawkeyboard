@@ -27,7 +27,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     
     private boolean isCaps = false;
     private AccessibilityManager accessibilityManager;
-    private int lastAnnouncedIndex = -1;
+    
+    // TalkBack အတွက် Hover (ပွတ်ဆွဲ) ကို မှတ်သားမည့်ကောင်
+    private int lastHoverKeyIndex = -1;
 
     @Override
     public View onCreateInputView() {
@@ -35,6 +37,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView = layout.findViewById(R.id.keyboard_view);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
 
+        // XML များ Load လုပ်ခြင်း
         qwertyKeyboard = new Keyboard(this, R.xml.qwerty);
         qwertyShiftKeyboard = new Keyboard(this, R.xml.qwerty_shift);
         myanmarKeyboard = new Keyboard(this, R.xml.myanmar);
@@ -46,78 +49,70 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
-        // TalkBack Touch Handler
+        // TalkBack အတွက် အဓိက ပြင်ဆင်ချက် (Hover Listener)
+        // မျက်မမြင်များ ပွတ်ဆွဲတဲ့အခါ ဒီကောင်က အလုပ်လုပ်ပါမယ်
+        keyboardView.setOnHoverListener(new View.OnHoverListener() {
+            @Override
+            public boolean onHover(View v, MotionEvent event) {
+                return handleHover(event);
+            }
+        });
+
+        // ပုံမှန် Touch (TalkBack ပိတ်ထားချိန်အတွက်)
         keyboardView.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                return handleTouch(event);
+                if (accessibilityManager.isEnabled()) {
+                    return false; // TalkBack ဖွင့်ထားရင် Touch ကို မသုံးဘဲ Hover ကိုသုံးမယ်
+                }
+                return false; 
             }
         });
 
         return layout;
     }
 
-    private boolean handleTouch(MotionEvent event) {
-        if (!accessibilityManager.isEnabled()) {
-            return keyboardView.onTouchEvent(event);
-        }
+    // TalkBack Logic အစစ် (Hover Event)
+    private boolean handleHover(MotionEvent event) {
+        if (!accessibilityManager.isEnabled()) return false;
 
         int action = event.getAction();
         int touchX = (int) event.getX();
         int touchY = (int) event.getY();
+        
+        // လက်ရှိ လက်ရောက်နေတဲ့ Key ကို ရှာမယ်
         int keyIndex = getNearestKeyIndex(touchX, touchY);
 
         switch (action) {
-            case MotionEvent.ACTION_DOWN:
-                if (keyIndex != -1) {
-                    lastAnnouncedIndex = keyIndex;
+            case MotionEvent.ACTION_HOVER_ENTER:
+            case MotionEvent.ACTION_HOVER_MOVE:
+                if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
+                    lastHoverKeyIndex = keyIndex;
+                    // Key အသစ်ပေါ် ရောက်တိုင်း အသံထွက်မယ်
                     playHaptic();
                     announceKeyText(currentKeyboard.getKeys().get(keyIndex));
                 }
                 break;
-            case MotionEvent.ACTION_MOVE:
-                if (keyIndex != -1 && keyIndex != lastAnnouncedIndex) {
-                    lastAnnouncedIndex = keyIndex;
-                    playHaptic();
-                    announceKeyText(currentKeyboard.getKeys().get(keyIndex));
-                }
-                break;
-            case MotionEvent.ACTION_UP:
-                if (keyIndex != -1) {
-                    Keyboard.Key key = currentKeyboard.getKeys().get(keyIndex);
-                    int code = key.codes[0];
-                    
-                    if (code < 0) {
-                        onKey(code, null);
-                    } else {
-                        if (key.label != null) {
-                            onText(key.label);
-                        } else if (key.text != null) {
-                            onText(key.text);
-                        }
-                        if (key.codes.length > 0) {
-                            onKey(key.codes[0], null);
-                        }
-                    }
-                }
-                lastAnnouncedIndex = -1;
+            case MotionEvent.ACTION_HOVER_EXIT:
+                lastHoverKeyIndex = -1;
                 break;
         }
-        return true;
+        return true; // Event ကို လက်ခံလိုက်ပြီ
     }
 
+    // Gap တွေကို ကျော်ပြီး အနီးဆုံး Key ရှာပေးမည့် Logic
     private int getNearestKeyIndex(int x, int y) {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         
-        // Direct Check
+        // ၁. တည့်တည့်ထိမထိ စစ်မယ်
         for (int i = 0; i < keys.size(); i++) {
             if (keys.get(i).isInside(x, y)) return i;
         }
         
-        // Distance Check
+        // ၂. မထိရင် အနီးဆုံးကို ရှာမယ် (TalkBack သမားများအတွက် အရေးကြီးသည်)
         int closestIndex = -1;
         double minDistance = Double.MAX_VALUE;
-        int threshold = 150; 
+        int threshold = 150; // Pixel အကွာအဝေး
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
@@ -134,35 +129,127 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return closestIndex;
     }
 
+    // အသံထွက်မည့် စာသား ပြင်ဆင်ခြင်း
     private void announceKeyText(Keyboard.Key key) {
         if (!accessibilityManager.isEnabled()) return;
         
         String textToSpeak = null;
-        if (key.label != null) textToSpeak = key.label.toString();
-        
         int code = key.codes[0];
+
+        // Special Codes Translation
         if (code == -5) textToSpeak = "Delete";
         else if (code == -1) textToSpeak = isCaps ? "Shift On" : "Shift";
         else if (code == 32) textToSpeak = "Space";
         else if (code == -4) textToSpeak = "Enter";
         else if (code == -2) textToSpeak = "Symbols";
-        else if (code == -3) textToSpeak = "Next Language";
+        else if (code == -101) textToSpeak = "Next Language"; // Code အသစ် (-101)
         else if (code == -10) textToSpeak = "Voice Typing";
 
+        // Normal Labels
+        if (textToSpeak == null && key.label != null) textToSpeak = key.label.toString();
         if (textToSpeak == null && key.text != null) textToSpeak = key.text.toString();
 
         if (textToSpeak != null) {
+            // TalkBack ကို အသံထွက်ခိုင်းသည့် အမိန့်
             AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
             event.getText().add(textToSpeak);
             accessibilityManager.sendAccessibilityEvent(event);
         }
     }
 
-    private void playHaptic() {
-        try {
-            Vibrator v = (Vibrator) getSystemService(VIBRATOR_SERVICE);
-            if (v != null && v.hasVibrator()) v.vibrate(10);
-        } catch (Exception e) {}
+    // Key နှိပ်လိုက်သောအခါ (Double Tap from TalkBack)
+    @Override
+    public void onKey(int primaryCode, int[] keyCodes) {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+
+        switch (primaryCode) {
+            case -10: startVoiceInput(); break;
+            case -1: // Shift
+                isCaps = !isCaps;
+                updateKeyboardLayout();
+                break;
+            case -101: // Next Language (Code အသစ်)
+                changeLanguage();
+                break;
+            case -4: // Enter
+                int options = getCurrentInputEditorInfo().imeOptions;
+                int action = options & EditorInfo.IME_MASK_ACTION;
+                if (action == EditorInfo.IME_ACTION_SEARCH || action == EditorInfo.IME_ACTION_GO) {
+                    sendDefaultEditorAction(true);
+                } else {
+                    ic.commitText("\n", 1);
+                }
+                break;
+            case -5: // Delete
+                ic.deleteSurroundingText(1, 0);
+                break;
+            case 0: break;
+            default:
+                // Smart Reordering (Logic အဟောင်း)
+                if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) return;
+                
+                char code = (char) primaryCode;
+                ic.commitText(String.valueOf(code), 1);
+                
+                // Auto Unshift
+                if (isCaps) {
+                    isCaps = false;
+                    updateKeyboardLayout();
+                }
+        }
+    }
+
+    // ဘာသာစကား ပြောင်းခြင်း
+    private void changeLanguage() {
+        if (currentKeyboard == qwertyKeyboard || currentKeyboard == qwertyShiftKeyboard) {
+            currentKeyboard = myanmarKeyboard;
+            speakSystem("Myanmar");
+        } else if (currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard) {
+            currentKeyboard = shanKeyboard;
+            speakSystem("Shan");
+        } else {
+            currentKeyboard = qwertyKeyboard;
+            speakSystem("English");
+        }
+        isCaps = false;
+        keyboardView.setKeyboard(currentKeyboard);
+    }
+
+    // Keyboard အပြောင်းအလဲ (Shift)
+    private void updateKeyboardLayout() {
+        if (isCaps) {
+            if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard;
+            else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard;
+            else if (currentKeyboard == shanKeyboard) currentKeyboard = shanShiftKeyboard;
+        } else {
+            if (currentKeyboard == qwertyShiftKeyboard) currentKeyboard = qwertyKeyboard;
+            else if (currentKeyboard == myanmarShiftKeyboard) currentKeyboard = myanmarKeyboard;
+            else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard;
+        }
+        keyboardView.setKeyboard(currentKeyboard);
+        keyboardView.invalidateAllKeys();
+    }
+
+    private boolean isShanOrMyanmar() {
+        return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
+               currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
+    }
+
+    private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
+        if (primaryCode == 4141) { // ိ
+            CharSequence before = ic.getTextBeforeCursor(1, 0);
+            if (before != null && before.length() > 0) {
+                char c = before.charAt(0);
+                if (c == 'ု' || c == 'ူ') {
+                    ic.deleteSurroundingText(1, 0);
+                    ic.commitText("ိ", 1);
+                    ic.commitText(String.valueOf(c), 1);
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void startVoiceInput() {
@@ -184,96 +271,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    @Override
-    public void onKey(int primaryCode, int[] keyCodes) {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
-
-        switch (primaryCode) {
-            case -10: startVoiceInput(); break;
-            case -1:
-                isCaps = !isCaps;
-                updateKeyboardLayout();
-                break;
-            case -3:
-                changeLanguage();
-                break;
-            case -4:
-                int options = getCurrentInputEditorInfo().imeOptions;
-                int action = options & EditorInfo.IME_MASK_ACTION;
-                if (action == EditorInfo.IME_ACTION_SEARCH || action == EditorInfo.IME_ACTION_GO) {
-                    sendDefaultEditorAction(true);
-                } else {
-                    ic.commitText("\n", 1);
-                }
-                break;
-            case -5:
-                ic.deleteSurroundingText(1, 0);
-                break;
-            case 0: break;
-            default:
-                if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) return;
-                
-                char code = (char) primaryCode;
-                ic.commitText(String.valueOf(code), 1);
-                
-                if (isCaps) {
-                    isCaps = false;
-                    updateKeyboardLayout();
-                }
-        }
-    }
-
-    private void changeLanguage() {
-        if (currentKeyboard == qwertyKeyboard || currentKeyboard == qwertyShiftKeyboard) {
-            currentKeyboard = myanmarKeyboard;
-            speakSystem("Myanmar");
-        } else if (currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard) {
-            currentKeyboard = shanKeyboard;
-            speakSystem("Shan");
-        } else {
-            currentKeyboard = qwertyKeyboard;
-            speakSystem("English");
-        }
-        isCaps = false;
-        keyboardView.setKeyboard(currentKeyboard);
-    }
-
-    private void updateKeyboardLayout() {
-        if (isCaps) {
-            if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard;
-            else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard;
-            else if (currentKeyboard == shanKeyboard) currentKeyboard = shanShiftKeyboard;
-        } else {
-            if (currentKeyboard == qwertyShiftKeyboard) currentKeyboard = qwertyKeyboard;
-            else if (currentKeyboard == myanmarShiftKeyboard) currentKeyboard = myanmarKeyboard;
-            else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard;
-        }
-        keyboardView.setKeyboard(currentKeyboard);
-        keyboardView.invalidateAllKeys();
-    }
-
-    private boolean isShanOrMyanmar() {
-        return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
-               currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
-    }
-
-    private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
-        // Simple Reordering Logic
-        if (primaryCode == 4141) { // ိ
-            CharSequence before = ic.getTextBeforeCursor(1, 0);
-            if (before != null && before.length() > 0) {
-                char c = before.charAt(0);
-                if (c == 'ု' || c == 'ူ') {
-                    ic.deleteSurroundingText(1, 0);
-                    ic.commitText("ိ", 1);
-                    ic.commitText(String.valueOf(c), 1);
-                    return true;
-                }
-            }
-        }
-        // Add other reordering logic here as needed
-        return false;
+    private void playHaptic() {
+        try {
+            Vibrator v = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+            if (v != null && v.hasVibrator()) v.vibrate(10);
+        } catch (Exception e) {}
     }
 
     @Override public void onText(CharSequence text) {
@@ -294,3 +296,4 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void swipeDown() {}
     @Override public void swipeUp() {}
 }
+
