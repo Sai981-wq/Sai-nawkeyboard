@@ -49,7 +49,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isVibrateOn = true;
     private boolean isSoundOn = false;
 
-    // Space Long Press Variables
     private Handler handler = new Handler(Looper.getMainLooper());
     private boolean isSpaceLongPressed = false;
     private Runnable spaceLongPressRunnable = new Runnable() {
@@ -86,21 +85,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
-        // TalkBack Logic (Hover)
-        keyboardView.setOnHoverListener(new View.OnHoverListener() {
-            @Override
-            public boolean onHover(View v, MotionEvent event) {
-                return handleHover(event);
-            }
-        });
-
-        // System Touch Logic (Block if TalkBack is on)
-        keyboardView.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                return accessibilityManager.isEnabled(); 
-            }
-        });
+        keyboardView.setOnHoverListener((v, event) -> handleHover(event));
+        keyboardView.setOnTouchListener((v, event) -> accessibilityManager.isEnabled());
 
         return layout;
     }
@@ -135,7 +121,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", false);
     }
 
-    // --- Suggestion Logic ---
     private void updateCandidates() {
         if (candidateContainer == null) return;
         candidateContainer.removeAllViews();
@@ -151,12 +136,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 tv.setGravity(Gravity.CENTER);
                 tv.setBackgroundResource(android.R.drawable.btn_default);
                 tv.setFocusable(true);
-                tv.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        pickSuggestion(suggestion);
-                    }
-                });
+                tv.setOnClickListener(v -> pickSuggestion(suggestion));
                 candidateContainer.addView(tv);
             }
         }
@@ -173,7 +153,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         speakSystem("Selected " + suggestion);
     }
 
-    // --- TalkBack Hover Logic ---
     private boolean handleHover(MotionEvent event) {
         if (!accessibilityManager.isEnabled()) return false;
 
@@ -197,9 +176,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        if (key.codes.length > 0) {
-                            handleInput(key.codes[0], key);
-                        }
+                        // Logic အားလုံးကို handleInput ထဲ ပို့လိုက်သည်
+                        handleInput(key.codes[0], key);
                     }
                     lastHoverKeyIndex = -1;
                 }
@@ -208,7 +186,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return true; 
     }
 
-    // --- Key Events ---
     @Override
     public void onPress(int primaryCode) {
         if (accessibilityManager.isEnabled()) return;
@@ -232,13 +209,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         handleInput(primaryCode, null);
     }
 
-    // --- Main Input Handler ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound();
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
         String textToSpeak = null;
+
+        // 1. keyOutputText (Compound Characters) Check
+        if (key != null && key.text != null) {
+            ic.commitText(key.text, 1);
+            textToSpeak = key.text.toString();
+            speakSystem(textToSpeak);
+            return; // Done
+        }
 
         switch (primaryCode) {
             case -10: 
@@ -262,7 +246,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 break;
             case -101: 
                 changeLanguage();
-                // Language change already speaks inside changeLanguage
                 break;
             case -4: 
                 int options = getCurrentInputEditorInfo().imeOptions;
@@ -293,11 +276,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 break;
             case 0: break;
             default:
-                // Logic အသစ်: Unicode စံချိန်မီ နေရာချစနစ်
+                // Smart Reordering Logic
                 if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
                     char code = (char) primaryCode;
                     currentWord.append(String.valueOf(code));
-                    // Reordering logic already commits text
                 } else {
                     if (key != null && key.label != null && key.label.length() > 1) {
                          ic.commitText(key.label, 1);
@@ -311,6 +293,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         textToSpeak = charStr; 
                     }
                 }
+                
                 if (isCaps) {
                     isCaps = false;
                     updateKeyboardLayout();
@@ -321,47 +304,51 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (textToSpeak != null) speakSystem(textToSpeak);
     }
 
-    // --- Fixed Smart Reordering Logic ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
-        // 1. ဗျည်း ရိုက်ပြီးမှ (Consonant) -> 'ေ' (4145) သို့မဟုတ် 'ႄ' (4228) ရိုက်ရန်
-        // အကယ်၍ အသုံးပြုသူက 'ေ' ကို အရင်ရိုက်လိုက်လျှင် (Visual Typing) -> ဗျည်းနောက် ပို့ပေးမည်
-        if (isConsonant(primaryCode)) { 
+        // 1. Consonant + ေ (4145) or ႄ (4228) -> Swap
+        if (primaryCode == 4145 || primaryCode == 4228) { 
              CharSequence before = ic.getTextBeforeCursor(1, 0);
              if (before != null && before.length() > 0) {
-                 char preChar = before.charAt(0);
-                 // ရှေ့ကစာလုံးက 'ေ' (4145) သို့မဟုတ် 'ႄ' (4228) ဖြစ်နေရင်
-                 if (preChar == 4145 || preChar == 4228) { 
-                     ic.deleteSurroundingText(1, 0); // 'ေ' ကိုဖျက်
-                     ic.commitText(String.valueOf((char)primaryCode), 1); // ဗျည်း (က) ကိုအရင်ရိုက်
-                     ic.commitText(String.valueOf(preChar), 1); // 'ေ' ကို နောက်မှပြန်ထည့်
+                 char lastChar = before.charAt(0);
+                 if (lastChar >= 4096 && lastChar <= 4255) { 
+                     ic.deleteSurroundingText(1, 0);
+                     ic.commitText(String.valueOf((char)primaryCode), 1);
+                     ic.commitText(String.valueOf(lastChar), 1);
                      return true;
                  }
              }
         }
 
-        // 2. 'ု' (4143) ပြီးမှ 'ိ' (4141) ရိုက်မိလျှင် -> 'ိ' + 'ု' ဟု ပြင်မည်
-        if (primaryCode == 4141) { // အသုံးပြုသူက 'ိ' ရိုက်လိုက်ချိန်
+        // 2. 'ု' (4143) ပြီးမှ 'ိ' (4141) ရိုက်မိလျှင် -> 'ိ' + 'ု'
+        if (primaryCode == 4141) { // User types ိ
              CharSequence before = ic.getTextBeforeCursor(1, 0);
              if (before != null && before.length() > 0) {
                  if (before.charAt(0) == 4143) { // ရှေ့မှာ 'ု' ရှိနေရင်
                      ic.deleteSurroundingText(1, 0);
-                     ic.commitText(String.valueOf((char)4141), 1); // 'ိ' အရင်
-                     ic.commitText(String.valueOf((char)4143), 1); // 'ု' နောက်
+                     ic.commitText(String.valueOf((char)4141), 1); // 'ိ'
+                     ic.commitText(String.valueOf((char)4143), 1); // 'ု'
                      return true;
                  }
              }
         }
+        
+        // 3. 'ူ' (4144) ပြီးမှ 'ိ' (4141) ရိုက်မိလျှင် -> 'ိ' + 'ူ' (Logic အသစ်)
+        if (primaryCode == 4141) { // User types ိ
+             CharSequence before = ic.getTextBeforeCursor(1, 0);
+             if (before != null && before.length() > 0) {
+                 if (before.charAt(0) == 4144) { // ရှေ့မှာ 'ူ' ရှိနေရင်
+                     ic.deleteSurroundingText(1, 0);
+                     ic.commitText(String.valueOf((char)4141), 1); // 'ိ'
+                     ic.commitText(String.valueOf((char)4144), 1); // 'ူ'
+                     return true;
+                 }
+             }
+        }
+        
         return false;
     }
 
-    // ဗျည်း ဟုတ်/မဟုတ် စစ်ဆေးသည့် Function
-    private boolean isConsonant(int code) {
-        // Myanmar & Shan Consonants Range (က မှ ႁ အထိ ခန့်မှန်းခြေ)
-        return (code >= 4096 && code <= 4138) || // Myanmar Consonants
-               (code >= 4213 && code <= 4225) || // Shan Consonants
-               code == 4100 || code == 4101;     // Extra codes
-    }
-
+    // ... (ကျန်တဲ့ Helper Methods တွေက အရင်အတိုင်းပါပဲ) ...
     private void saveCurrentWordToDB() {
         if (currentWord.length() > 0) {
             suggestionDB.saveWord(currentWord.toString());
@@ -370,7 +357,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- Utilities ---
     private void updateKeyboardLayout() {
         lastHoverKeyIndex = -1; 
         if (currentKeyboard == symbolsKeyboard) { } 
@@ -446,6 +432,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isShanOrMyanmar() {
         return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
                currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
+    }
+    
+    private boolean isConsonant(int code) {
+        return (code >= 4096 && code <= 4138) || (code >= 4213 && code <= 4225) || code == 4100 || code == 4101;
     }
 
     private void startVoiceInput() {
