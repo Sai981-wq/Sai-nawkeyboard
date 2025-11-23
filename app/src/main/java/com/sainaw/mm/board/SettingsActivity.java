@@ -1,82 +1,85 @@
 package com.sainaw.mm.board;
 
-import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.net.Uri;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.View;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
-import android.widget.TextView;
-
-import androidx.activity.result.ActivityResult;
-import androidx.activity.result.ActivityResultCallback;
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
+import android.widget.CompoundButton;
+import android.widget.Switch;
+import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 public class SettingsActivity extends AppCompatActivity {
 
-    private TextView tvSelectedFile;
-
-    // File Picker Result ကို ဖမ်းယူမည့် Launcher
-    private final ActivityResultLauncher<Intent> filePickerLauncher = registerForActivityResult(
-            new ActivityResultContracts.StartActivityForResult(),
-            new ActivityResultCallback<ActivityResult>() {
-                @Override
-                public void onActivityResult(ActivityResult result) {
-                    if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
-                        Uri uri = result.getData().getData();
-                        if (uri != null) {
-                            saveDictionaryUri(uri);
-                            tvSelectedFile.setText("Selected: " + uri.getLastPathSegment());
-                        }
-                    }
-                }
-            }
-    );
+    private SharedPreferences prefs;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
 
-        tvSelectedFile = findViewById(R.id.tv_selected_file);
+        prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
 
-        updateSelectedFileText();
-
-        Button btnChoose = findViewById(R.id.btn_choose_dictionary);
-        btnChoose.setOnClickListener(new View.OnClickListener() {
+        Button btnEnable = findViewById(R.id.btn_enable_keyboard);
+        btnEnable.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                openFilePicker();
+                startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS));
+            }
+        });
+
+        Button btnSelect = findViewById(R.id.btn_select_keyboard);
+        btnSelect.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imeManager != null) {
+                    imeManager.showInputMethodPicker();
+                } else {
+                    Toast.makeText(SettingsActivity.this, "Error", Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
+
+        setupSwitch(R.id.switch_vibrate, "vibrate_on", true);
+        setupSwitch(R.id.switch_sound, "sound_on", false);
+        setupSwitch(R.id.switch_theme, "dark_theme", false);
+        setupSwitch(R.id.switch_number_row, "number_row", false);
+
+        Button btnAbout = findViewById(R.id.btn_about);
+        btnAbout.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showAboutDialog();
             }
         });
     }
 
-    private void openFilePicker() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("text/plain");
-        filePickerLauncher.launch(intent);
+    private void setupSwitch(int id, final String key, boolean def) {
+        Switch s = findViewById(id);
+        s.setChecked(prefs.getBoolean(key, def));
+        s.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.edit().putBoolean(key, isChecked).apply();
+            }
+        });
     }
 
-    private void saveDictionaryUri(Uri uri) {
-        SharedPreferences prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
-        prefs.edit().putString("dictionary_uri", uri.toString()).apply();
-    }
-
-    private void updateSelectedFileText() {
-        SharedPreferences prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
-        String uriString = prefs.getString("dictionary_uri", null);
-
-        if (uriString != null) {
-            Uri uri = Uri.parse(uriString);
-            String fileName = uri.getLastPathSegment();
-            tvSelectedFile.setText("Selected: " + (fileName != null ? fileName : uri.toString()));
-        } else {
-            tvSelectedFile.setText("No file selected.");
-        }
+    private void showAboutDialog() {
+        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+        builder.setTitle("About Sai Naw Keyboard");
+        builder.setMessage("Version: 1.0.0\n\n" +
+                "Developed by: Sai Naw\n\n" +
+                "This keyboard is dedicated to the Shan and Myanmar visually impaired communities.\n\n" +
+                "Designed for seamless typing with Screen reader support.\n\n" +
+                "Contact: sainaw1331@gmail.com");
+        builder.setPositiveButton("OK", null);
+        builder.show();
     }
 }
+
