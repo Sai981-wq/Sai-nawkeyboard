@@ -171,7 +171,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             symbolsKeyboard = symbolsEnKeyboard;
         } catch (Exception e) {
             e.printStackTrace();
-            // Error တက်ရင် Default ပြန်ထားမယ်
             qwertyKeyboard = new Keyboard(this, getResId("qwerty"));
         }
     }
@@ -237,7 +236,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         super.onStartInputView(info, restarting);
         loadSettings();
         try {
-            initKeyboards(); // Re-init to check num row setting
+            initKeyboards(); 
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -266,6 +265,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
+    // *** LIFT TO TYPE (With Safety & Echo Support) ***
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
@@ -280,13 +280,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        if (key.codes[0] != -100) handleInput(key.codes[0], key);
+                        if (key.codes[0] != -100) {
+                            handleInput(key.codes[0], key);
+                            // *** (၂) Echo Fix: Simulate Click for Accessibility ***
+                            // TalkBack will see this as a "Click" and announce based on user settings
+                            if (accessibilityHelper != null) {
+                                accessibilityHelper.simulateClick(lastHoverKeyIndex);
+                            }
+                        }
                     }
                     lastHoverKeyIndex = -1;
                 }
             }
         } catch (Exception e) {
-            lastHoverKeyIndex = -1; // Crash ကာကွယ်ရန်
+            lastHoverKeyIndex = -1; 
         }
     }
 
@@ -349,8 +356,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     updateKeyboardLayout();
                     break;
                 case -2:
-                    // *** Crash Fix for Symbols ***
-                    // Layout မပြောင်းခင် try-catch နဲ့ အုပ်ထားမယ်
                     if (currentLanguageId == 1) { 
                         currentKeyboard = symbolsMmKeyboard;
                     } else {
@@ -408,7 +413,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         } catch (Exception e) {
             e.printStackTrace();
-            // Crash ဖြစ်ရင် Default ပြန်ထားမယ်
             currentKeyboard = qwertyKeyboard;
             keyboardView.setKeyboard(currentKeyboard);
         }
@@ -525,21 +529,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private void updateKeyboardLayout() {
+        // *** (၁) Crash Fix: Reset Hover Index Before Changing ***
         lastHoverKeyIndex = -1;
-        if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
-        } else if (isCaps) {
-            if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard;
-            else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard;
-            else if (currentKeyboard == shanKeyboard) currentKeyboard = shanShiftKeyboard;
-        } else {
-            if (currentKeyboard == qwertyShiftKeyboard) currentKeyboard = qwertyKeyboard;
-            else if (currentKeyboard == myanmarShiftKeyboard) currentKeyboard = myanmarKeyboard;
-            else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard;
-        }
         
-        // *** CRASH PREVENTION ***
-        // Keyboard Layout ပြောင်းတဲ့အခါ View Update မလုပ်ခင် try-catch ခံထားသည်
         try {
+            if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
+            } else if (isCaps) {
+                if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard;
+                else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard;
+                else if (currentKeyboard == shanKeyboard) currentKeyboard = shanShiftKeyboard;
+            } else {
+                if (currentKeyboard == qwertyShiftKeyboard) currentKeyboard = qwertyKeyboard;
+                else if (currentKeyboard == myanmarShiftKeyboard) currentKeyboard = myanmarKeyboard;
+                else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard;
+            }
             keyboardView.setKeyboard(currentKeyboard);
             keyboardView.invalidateAllKeys();
             updateHelperState();
@@ -561,11 +564,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentKeyboard = qwertyKeyboard;
         }
         isCaps = false;
-        updateKeyboardLayout(); // Re-use safe update method
+        updateKeyboardLayout(); // Use safe update
     }
 
     private int getNearestKeyIndexFast(int x, int y) {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        
+        // *** (၁) Crash Fix: Check size to avoid IndexOutOfBounds ***
+        if (keys == null || keys.isEmpty()) return -1;
+
         for (int i = 0; i < keys.size(); i++) {
             if (keys.get(i).isInside(x, y)) {
                 if (keys.get(i).codes[0] == -100) return -1;

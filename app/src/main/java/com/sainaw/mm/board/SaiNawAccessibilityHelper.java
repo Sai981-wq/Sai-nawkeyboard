@@ -4,6 +4,7 @@ import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Bundle;
 import android.view.View;
+import android.view.accessibility.AccessibilityEvent; // New Import
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
@@ -32,6 +33,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
         invalidateRoot(); 
+    }
+
+    // *** (၂) Echo Fix: TalkBack ကို Click Event ပို့ပေးမယ့် Method ***
+    public void simulateClick(int virtualViewId) {
+        sendEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_CLICKED);
     }
 
     @Override
@@ -105,13 +111,10 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (key.label != null) label = key.label.toString();
         else if (key.text != null) label = key.text.toString();
 
-        // *** (၅) Capital Letter Logic ***
-        // English စာလုံးဖြစ်ပြီး Shift နှိပ်ထားရင် "Capital A" လို့ဖတ်မယ်
+        // Capital Logic
         if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
              return "Capital " + label;
         }
-
-        // *** (၁) Shift "Sub" Logic ဖြုတ်လိုက်ပါပြီ ***
 
         return label != null ? label : "Unlabeled Key";
     }
