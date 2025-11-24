@@ -59,8 +59,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
     
-    // *** အဓိက ပြင်ဆင်ချက် (၁) - Debounce Runnable ***
-    // စာရိုက်နေတုန်း Suggestion မရှာဘဲ ခဏစောင့်မည့် Runnable
+    // *** Delay Update Runnable ***
     private Runnable pendingCandidateUpdate = new Runnable() {
         @Override
         public void run() {
@@ -105,6 +104,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
+        // Hover Logic
         keyboardView.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent event) {
@@ -168,7 +168,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         super.onStartInputView(info, restarting);
         loadSettings();
         currentWord.setLength(0);
-        updateCandidates();
+        triggerCandidateUpdate(0); // Start fresh
     }
 
     @Override
@@ -184,11 +184,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
+    // *** HOVER LOGIC (Fixed for Fast Typing) ***
     private boolean handleHover(MotionEvent event) {
         int action = event.getAction();
         int touchX = (int) event.getX();
         int touchY = (int) event.getY();
-        int keyIndex = getNearestKeyIndex(touchX, touchY);
+        
+        // Math.sqrt မပါတဲ့ ပိုမြန်တဲ့ Logic ကို သုံးပါမယ်
+        int keyIndex = getNearestKeyIndexFast(touchX, touchY);
 
         switch (action) {
             case MotionEvent.ACTION_HOVER_ENTER:
@@ -197,18 +200,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     lastHoverKeyIndex = keyIndex;
                     Keyboard.Key key = currentKeyboard.getKeys().get(keyIndex);
                     
+                    // Explore လုပ်နေချိန် (လက်မကြွသေး)
                     playHaptic(0);
                     announceKeyText(key, true); 
                 }
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
+                // လက်ကြွလိုက်ချိန် (Lift)
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
                         handleInput(key.codes[0], key);
                     }
+                    // *** အရေးကြီးဆုံးအချက် ***
+                    // ချက်ချင်း Reset ချရမယ်၊ ဒါမှ နောက်တစ်ခါ ချက်ချင်းထိရင် အသစ်လို့မြင်မှာ
                     lastHoverKeyIndex = -1;
                 }
                 break;
@@ -293,21 +300,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 } else {
                     ic.commitText("\n", 1);
                 }
-                saveWordAndReset(); // Enter ခေါက်ရင် ချက်ချင်းသိမ်းမယ်
+                saveWordAndReset(); 
                 textToSpeak = "Enter";
                 break;
             case -5: 
                 ic.deleteSurroundingText(1, 0);
                 if (currentWord.length() > 0) {
                     currentWord.deleteCharAt(currentWord.length() - 1);
-                    triggerCandidateUpdate(); // Delete လုပ်ရင် Update ခေါ်မယ်
+                    // Delete ဆိုရင်တော့ မြန်မြန် Update လုပ်ပေးမှ အဆင်ပြေမယ်
+                    triggerCandidateUpdate(50); 
                 }
                 textToSpeak = "Delete";
                 break;
             case 32: 
                 if (!isSpaceLongPressed) {
                     ic.commitText(" ", 1);
-                    saveWordAndReset(); // Space ခေါက်ရင် ချက်ချင်းသိမ်းမယ်
+                    saveWordAndReset();
                     textToSpeak = "Space";
                 }
                 isSpaceLongPressed = false;
@@ -332,7 +340,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     isCaps = false;
                     updateKeyboardLayout();
                 }
-                triggerCandidateUpdate(); // ပုံမှန်စာရိုက်ရင် Update ခေါ်မယ်
+                
+                // *** အဓိက ပြင်ဆင်ချက် ***
+                // စာလုံးရိုက်ရင် 200ms နေမှ Suggestion ရှာမယ်
+                // ဒီကြားထဲမှာ လက်ပြန်ထိရင် Touch က အရင်ဝင်သွားလိမ့်မယ် (Layout မပြောင်းသေးလို့)
+                triggerCandidateUpdate(200); 
         }
 
         if (textToSpeak != null) speakSystem(textToSpeak, false);
@@ -375,7 +387,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
     }
 
-    // *** ပြင်ဆင်ချက် - ချက်ချင်းသိမ်းမည့် Function (Space/Enter အတွက်) ***
     private void saveWordAndReset() {
         if (currentWord.length() > 0) {
             final String wordToSave = currentWord.toString();
@@ -386,23 +397,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
             });
             currentWord.setLength(0);
-            // ချက်ချင်းရှင်းမယ် (Delay မလို)
-            updateCandidates(); 
+            triggerCandidateUpdate(0);
         }
     }
 
-    // *** အဓိက ပြင်ဆင်ချက် (၂) - Delay ခံပြီးမှ Update ခေါ်ခြင်း ***
-    private void triggerCandidateUpdate() {
-        // အရင် Run ဖို့လုပ်ထားတာရှိရင် ဖျက်လိုက်မယ် (User က ဆက်ရိုက်နေလို့)
+    // Delay ချိန်ကို Parameter အနေနဲ့ လက်ခံမယ်
+    private void triggerCandidateUpdate(long delayMillis) {
         handler.removeCallbacks(pendingCandidateUpdate);
-        // 100ms နေမှ Run မယ် (အမြန်ရိုက်ရင် ဒီကြားထဲမှာ အကြိမ်ကြိမ် Cancel ခံရမယ်)
-        handler.postDelayed(pendingCandidateUpdate, 100); 
-    }
-
-    // Delay ပြီးမှ တကယ်အလုပ်လုပ်မည့် Function
-    private void updateCandidates() {
-         handler.removeCallbacks(pendingCandidateUpdate);
-         performCandidateSearch();
+        if (delayMillis > 0) {
+            handler.postDelayed(pendingCandidateUpdate, delayMillis);
+        } else {
+            handler.post(pendingCandidateUpdate);
+        }
     }
 
     private void performCandidateSearch() {
@@ -459,7 +465,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         });
         
         currentWord.setLength(0);
-        updateCandidates();
+        triggerCandidateUpdate(0);
         speakSystem("Selected " + suggestion, true);
     }
 
@@ -495,24 +501,31 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
     }
 
-    private int getNearestKeyIndex(int x, int y) {
+    // *** Improved Fast Logic for finding key ***
+    private int getNearestKeyIndexFast(int x, int y) {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        
+        // 1. Check direct hit first (Fastest)
         for (int i = 0; i < keys.size(); i++) {
             if (keys.get(i).isInside(x, y)) return i;
         }
+
+        // 2. Check distance without Sqrt (Faster than previous)
         int closestIndex = -1;
-        long minDistanceSq = Long.MAX_VALUE;
-        long thresholdSq = 150 * 150; 
+        int minDistSq = Integer.MAX_VALUE;
+        int threshold = 150 * 150; 
+        
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
-            int keyCenterX = key.x + key.width / 2;
-            int keyCenterY = key.y + key.height / 2;
-            long dx = x - keyCenterX;
-            long dy = y - keyCenterY;
-            long distSq = dx * dx + dy * dy;
+            int kx = key.x + key.width / 2;
+            int ky = key.y + key.height / 2;
+            
+            int dx = x - kx;
+            int dy = y - ky;
+            int distSq = dx*dx + dy*dy;
 
-            if (distSq < minDistanceSq && distSq < thresholdSq) {
-                minDistanceSq = distSq;
+            if (distSq < minDistSq && distSq < threshold) {
+                minDistSq = distSq;
                 closestIndex = i;
             }
         }
