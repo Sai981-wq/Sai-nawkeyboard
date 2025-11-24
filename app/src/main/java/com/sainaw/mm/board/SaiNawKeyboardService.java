@@ -220,8 +220,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
-            textToSpeak = key.text.toString();
-            speakSystem(textToSpeak);
+            // Compound characters or text keys: let system handle it to avoid stutter
             return;
         }
 
@@ -247,6 +246,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 break;
             case -101: 
                 changeLanguage();
+                textToSpeak = null; // Handled inside changeLanguage
                 break;
             case -4: 
                 int options = getCurrentInputEditorInfo().imeOptions;
@@ -277,6 +277,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 break;
             case 0: break;
             default:
+                // Normal Characters
                 if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
                     char code = (char) primaryCode;
                     currentWord.append(String.valueOf(code));
@@ -290,8 +291,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     
                     ic.commitText(charStr, 1);
                     currentWord.append(charStr);
-                    textToSpeak = charStr;
                 }
+                
+                // Do NOT set textToSpeak for normal characters to avoid TalkBack double-speech stutter
                 
                 if (isCaps) {
                     isCaps = false;
@@ -506,7 +508,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void speakSystem(String text) {
         if (accessibilityManager.isEnabled()) {
-            accessibilityManager.interrupt();
             AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
             event.getText().add(text);
             event.setContentDescription(text);
