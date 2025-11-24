@@ -18,8 +18,8 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.os.Vibrator;
-import android.os.Build; // For new Vibration API
-import android.os.VibrationEffect; // For new Vibration API
+import android.os.Build;
+import android.os.VibrationEffect;
 import android.os.Handler;
 import android.os.Looper;
 import android.widget.LinearLayout;
@@ -49,9 +49,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
-    private boolean isSoundOn = false;
+    private boolean isSoundOn = true; // Default True
 
-    // Space Long Press Variables
     private Handler handler = new Handler(Looper.getMainLooper());
     private boolean isSpaceLongPressed = false;
     private Runnable spaceLongPressRunnable = new Runnable() {
@@ -88,7 +87,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
-        // TalkBack Logic (Hover)
         keyboardView.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent event) {
@@ -96,7 +94,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         });
 
-        // System Touch Logic (Block if TalkBack is on)
         keyboardView.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
@@ -134,48 +131,26 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void loadSettings() {
         isVibrateOn = prefs.getBoolean("vibrate_on", true);
-        isSoundOn = prefs.getBoolean("sound_on", false);
+        // Default Sound ON (အစ်ကို စမ်းရလွယ်အောင် True ပြောင်းထားသည်)
+        isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
-    // Suggestion Logic
-    private void updateCandidates() {
-        if (candidateContainer == null) return;
-        candidateContainer.removeAllViews();
+    @Override
+    public void onText(CharSequence text) {
+        if (accessibilityManager.isEnabled()) return;
 
-        if (currentWord.length() > 0) {
-            List<String> suggestions = suggestionDB.getSuggestions(currentWord.toString());
-            for (final String suggestion : suggestions) {
-                TextView tv = new TextView(this);
-                tv.setText(suggestion);
-                tv.setTextSize(18);
-                tv.setTextColor(prefs.getBoolean("dark_theme", false) ? Color.WHITE : Color.BLACK);
-                tv.setPadding(30, 10, 30, 10);
-                tv.setGravity(Gravity.CENTER);
-                tv.setBackgroundResource(android.R.drawable.btn_default);
-                tv.setFocusable(true);
-                tv.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        pickSuggestion(suggestion);
-                    }
-                });
-                candidateContainer.addView(tv);
-            }
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        
+        ic.commitText(text, 1);
+        playSound(); // Sound for compound chars
+        
+        if (isCaps) {
+            isCaps = false;
+            updateKeyboardLayout();
         }
     }
 
-    private void pickSuggestion(String suggestion) {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
-        ic.deleteSurroundingText(currentWord.length(), 0);
-        ic.commitText(suggestion + " ", 1);
-        suggestionDB.saveWord(suggestion);
-        currentWord.setLength(0);
-        updateCandidates();
-        speakSystem("Selected " + suggestion);
-    }
-
-    // TalkBack Hover Logic
     private boolean handleHover(MotionEvent event) {
         if (!accessibilityManager.isEnabled()) return false;
 
@@ -217,7 +192,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             isSpaceLongPressed = false;
             handler.postDelayed(spaceLongPressRunnable, 600);
         }
-        playHaptic(); // Play haptic on touch down
+        playHaptic(); 
     }
 
     @Override
@@ -235,13 +210,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private void handleInput(int primaryCode, Keyboard.Key key) {
-        playSound();
+        // FIXED: Play sound for EVERY input (TalkBack or Normal)
+        playSound(); 
+
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
         String textToSpeak = null;
 
-        // Check for Compound Characters
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
             textToSpeak = key.text.toString();
@@ -343,8 +319,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == 4141) { 
              CharSequence before = ic.getTextBeforeCursor(1, 0);
              if (before != null && before.length() > 0) {
-                 if (before.charAt(0) == 4143 || before.charAt(0) == 4144) { 
-                     char prev = before.charAt(0);
+                 char prev = before.charAt(0);
+                 if (prev == 4143 || prev == 4144) { 
                      ic.deleteSurroundingText(1, 0);
                      ic.commitText(String.valueOf((char)4141), 1);
                      ic.commitText(String.valueOf(prev), 1);
@@ -365,6 +341,37 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentWord.setLength(0);
             updateCandidates();
         }
+    }
+
+    private void updateCandidates() {
+        if (candidateContainer == null) return;
+        candidateContainer.removeAllViews();
+        if (currentWord.length() > 0) {
+            List<String> suggestions = suggestionDB.getSuggestions(currentWord.toString());
+            for (final String suggestion : suggestions) {
+                TextView tv = new TextView(this);
+                tv.setText(suggestion);
+                tv.setTextSize(18);
+                tv.setTextColor(prefs.getBoolean("dark_theme", false) ? Color.WHITE : Color.BLACK);
+                tv.setPadding(30, 10, 30, 10);
+                tv.setGravity(Gravity.CENTER);
+                tv.setBackgroundResource(android.R.drawable.btn_default);
+                tv.setFocusable(true);
+                tv.setOnClickListener(v -> pickSuggestion(suggestion));
+                candidateContainer.addView(tv);
+            }
+        }
+    }
+
+    private void pickSuggestion(String suggestion) {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        ic.deleteSurroundingText(currentWord.length(), 0);
+        ic.commitText(suggestion + " ", 1);
+        suggestionDB.saveWord(suggestion);
+        currentWord.setLength(0);
+        updateCandidates();
+        speakSystem("Selected " + suggestion);
     }
 
     private void updateKeyboardLayout() {
@@ -437,11 +444,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (text != null) speakSystem(text);
     }
 
-    private boolean isShanOrMyanmar() {
-        return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
-               currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
-    }
-
     private void startVoiceInput() {
         try {
             Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
@@ -461,17 +463,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // Improved Haptic Feedback
     private void playHaptic() {
         if (isVibrateOn) {
             try {
                 Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
                 if (v != null && v.hasVibrator()) {
-                    // Android 8.0+ (API 26+)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE));
                     } else {
-                        // Older Versions
                         v.vibrate(40);
                     }
                 }
@@ -479,7 +478,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
     
-    // Improved Sound Feedback
     private void playSound() {
         if (isSoundOn) {
             try {
@@ -488,7 +486,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
     
-    @Override public void onText(CharSequence text) { }
     @Override public void swipeLeft() {}
     @Override public void swipeRight() {}
     @Override public void swipeDown() {}
