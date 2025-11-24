@@ -12,8 +12,6 @@ import android.speech.RecognizerIntent;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
@@ -45,7 +43,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     
     private Keyboard currentKeyboard;
     private boolean isCaps = false;
-    private AccessibilityManager accessibilityManager;
     private AudioManager audioManager;
     private SharedPreferences prefs;
     
@@ -81,7 +78,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView = layout.findViewById(R.id.keyboard_view);
         candidateContainer = layout.findViewById(R.id.candidates_container);
         
-        accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         suggestionDB = new SuggestionDB(this);
 
@@ -157,9 +153,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             case MotionEvent.ACTION_HOVER_MOVE:
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
-                    Keyboard.Key key = currentKeyboard.getKeys().get(keyIndex);
+                    // Haptic only, No Voice
                     playHaptic(0);
-                    announceKeyText(key);
                 }
                 break;
 
@@ -216,37 +211,29 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
-        String textToSpeak = null;
-
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
-            // Compound characters or text keys: let system handle it to avoid stutter
             return;
         }
 
         switch (primaryCode) {
             case -10: 
                 startVoiceInput(); 
-                textToSpeak = "Voice Typing";
                 break;
             case -1: 
                 isCaps = !isCaps;
                 updateKeyboardLayout(); 
-                textToSpeak = isCaps ? "Shift On" : "Shift Off";
                 break;
             case -2: 
                 currentKeyboard = symbolsKeyboard;
                 updateKeyboardLayout();
-                textToSpeak = "Symbols";
                 break;
             case -6: 
                 currentKeyboard = qwertyKeyboard;
                 updateKeyboardLayout();
-                textToSpeak = "Alphabet";
                 break;
             case -101: 
                 changeLanguage();
-                textToSpeak = null; // Handled inside changeLanguage
                 break;
             case -4: 
                 int options = getCurrentInputEditorInfo().imeOptions;
@@ -257,7 +244,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     ic.commitText("\n", 1);
                 }
                 saveCurrentWordToDB();
-                textToSpeak = "Enter";
                 break;
             case -5: 
                 ic.deleteSurroundingText(1, 0);
@@ -265,19 +251,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     currentWord.deleteCharAt(currentWord.length() - 1);
                     updateCandidates();
                 }
-                textToSpeak = "Delete";
                 break;
             case 32: 
                 if (!isSpaceLongPressed) {
                     ic.commitText(" ", 1);
                     saveCurrentWordToDB();
-                    textToSpeak = "Space";
                 }
                 isSpaceLongPressed = false;
                 break;
             case 0: break;
             default:
-                // Normal Characters
                 if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
                     char code = (char) primaryCode;
                     currentWord.append(String.valueOf(code));
@@ -293,16 +276,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     currentWord.append(charStr);
                 }
                 
-                // Do NOT set textToSpeak for normal characters to avoid TalkBack double-speech stutter
-                
                 if (isCaps) {
                     isCaps = false;
                     updateKeyboardLayout();
                 }
                 updateCandidates();
         }
-
-        if (textToSpeak != null) speakSystem(textToSpeak);
     }
 
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
@@ -414,7 +393,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         
         currentWord.setLength(0);
         updateCandidates();
-        speakSystem("Selected " + suggestion);
     }
 
     private void updateKeyboardLayout() {
@@ -437,13 +415,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         lastHoverKeyIndex = -1;
         if (currentKeyboard == qwertyKeyboard || currentKeyboard == qwertyShiftKeyboard || currentKeyboard == symbolsKeyboard) {
             currentKeyboard = myanmarKeyboard;
-            speakSystem("Myanmar");
         } else if (currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard) {
             currentKeyboard = shanKeyboard;
-            speakSystem("Shan");
         } else {
             currentKeyboard = qwertyKeyboard;
-            speakSystem("English");
         }
         isCaps = false;
         keyboardView.setKeyboard(currentKeyboard);
@@ -473,46 +448,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return closestIndex;
     }
 
-    private void announceKeyText(Keyboard.Key key) {
-        if (!accessibilityManager.isEnabled()) return;
-        String text = null;
-        int code = key.codes[0];
-        if (code == -5) text = "Delete";
-        else if (code == -1) text = isCaps ? "Shift On" : "Shift";
-        else if (code == 32) text = "Space";
-        else if (code == -4) text = "Enter";
-        else if (code == -2) text = "Numbers";
-        else if (code == -6) text = "Alphabet";
-        else if (code == -101) text = "Next Language";
-        else if (code == -10) text = "Voice Typing";
-        if (text == null && key.label != null) text = key.label.toString();
-        if (text == null && key.text != null) text = key.text.toString();
-        
-        if (text != null && isShanOrMyanmar() && isCaps) {
-             text = "Sub " + text;
-        }
-        
-        if (text != null) speakSystem(text);
-    }
-
     private void startVoiceInput() {
         try {
             Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
-        } catch (Exception e) {
-            speakSystem("Voice typing not supported");
-        }
-    }
-
-    private void speakSystem(String text) {
-        if (accessibilityManager.isEnabled()) {
-            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
-            event.getText().add(text);
-            event.setContentDescription(text);
-            accessibilityManager.sendAccessibilityEvent(event);
-        }
+        } catch (Exception e) {}
     }
 
     private void playHaptic(int primaryCode) {
