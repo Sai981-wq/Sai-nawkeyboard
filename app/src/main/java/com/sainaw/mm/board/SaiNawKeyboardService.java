@@ -87,7 +87,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
-        // TalkBack Logic
+        // TalkBack Logic (Hover)
         keyboardView.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent event) {
@@ -99,7 +99,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                // TalkBack ဖွင့်ထားရင် System Touch ကို ပိတ်မယ်
+                // TalkBack ဖွင့်ထားရင် System Touch ကို ပိတ်မယ် (Double Typing မဖြစ်အောင်)
                 return accessibilityManager.isEnabled(); 
             }
         });
@@ -137,10 +137,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
-    // --- Text Input (Normal Typing for Compound Chars) ---
+    // --- Normal Typing: Text Input ---
     @Override
     public void onText(CharSequence text) {
-        if (accessibilityManager.isEnabled()) return; // TalkBack handles this via handleInput
+        if (accessibilityManager.isEnabled()) return;
 
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
@@ -179,7 +179,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
                         if (key.codes.length > 0) {
-                            // FIXED: Calls handleInput correctly
                             handleInput(key.codes[0], key);
                         }
                     }
@@ -212,20 +211,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public void onKey(int primaryCode, int[] keyCodes) {
         if (accessibilityManager.isEnabled()) return;
-        // FIXED: Calls handleInput correctly
         handleInput(primaryCode, null);
     }
 
-    // --- Main Input Logic (The Heart of the Keyboard) ---
+    // --- Main Input Logic ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
-        playSound();
+        playSound(); 
 
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
         String textToSpeak = null;
 
-        // Compound Characters check (TalkBack Mode)
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
             textToSpeak = key.text.toString();
@@ -294,7 +291,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                          currentWord.append(key.label);
                          textToSpeak = key.label.toString();
                     } else {
-                        // FIXED: Cast int code to char for correct typing
                         char code = (char) primaryCode;
                         String charStr = String.valueOf(code);
                         ic.commitText(charStr, 1);
@@ -312,7 +308,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (textToSpeak != null) speakSystem(textToSpeak);
     }
 
-    // --- Logic Helpers ---
+    // --- Helper Methods ---
+
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         if (isConsonant(primaryCode)) { 
              CharSequence before = ic.getTextBeforeCursor(1, 0);
@@ -341,6 +338,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return false;
     }
 
+    // Missing Function Fixed Here:
     private boolean isConsonant(int code) {
         return (code >= 4096 && code <= 4138) || (code >= 4213 && code <= 4225) || code == 4100 || code == 4101;
     }
