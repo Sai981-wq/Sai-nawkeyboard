@@ -82,7 +82,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             isSpaceLongPressed = true;
             InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             if (imeManager != null) {
-                imeManager.showInputMethodPicker();
+                imeManager.showInputMethodPicker(); // (၈) Space Long Press
                 playHaptic(-99);
             }
         }
@@ -102,9 +102,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         initCandidateViews(isDarkTheme);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-        suggestionDB = SuggestionDB.getInstance(this);
+        suggestionDB = SuggestionDB.getInstance(this); // (၂) Singleton DB
 
-        initKeyboards(); 
+        initKeyboards(); // (၃) Symbols Split Logic ပါဝင်သည်
 
         currentKeyboard = qwertyKeyboard;
         currentLanguageId = 0;
@@ -135,7 +135,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return layout;
     }
 
-    // *** ERROR FIX: ဒီ Method က အရေးကြီးဆုံးပါ ***
+    // *** Helper to fix "cannot find symbol" error ***
     public int getResId(String name) {
         return getResources().getIdentifier(name, "xml", getPackageName());
     }
@@ -143,8 +143,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void initKeyboards() {
         boolean showNumRow = prefs.getBoolean("number_row", false);
         
-        // အခု getResId ကို သုံးထားလို့ Error မတက်တော့ပါဘူး
-        if (showNumRow) {
+        if (showNumRow) { // (၆) Number Row Setting
             qwertyKeyboard = new Keyboard(this, getResId("qwerty_num"));
             myanmarKeyboard = new Keyboard(this, getResId("myanmar_num"));
             shanKeyboard = new Keyboard(this, getResId("shan_num"));
@@ -158,6 +157,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         myanmarShiftKeyboard = new Keyboard(this, getResId("myanmar_shift"));
         shanShiftKeyboard = new Keyboard(this, getResId("shan_shift"));
         
+        // (၃) Language Specific Symbols
         int symEnId = getResId("symbols");
         int symMmId = getResId("symbols_mm");
 
@@ -174,7 +174,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (SpeechRecognizer.isRecognitionAvailable(this)) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
             speechIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "my-MM");
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "my-MM"); // မြန်မာစာ
             speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "my-MM");
             speechIntent.putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, "my-MM");
             speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
@@ -278,6 +278,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void updateHelperState() {
         if (accessibilityHelper != null) {
+            // (၁) & (၅) Helper handles Shift 'Sub' removal and Capital logic
             accessibilityHelper.setKeyboard(currentKeyboard, isShanOrMyanmar(), isCaps);
         }
     }
@@ -297,6 +298,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             isCaps = false;
             updateKeyboardLayout();
         }
+        // (၄) Echo Typing: We do NOT call announce here anymore. System handles it.
     }
 
     @Override
@@ -334,7 +336,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 updateKeyboardLayout();
                 break;
             case -2:
-                if (currentLanguageId == 1) { // Myanmar
+                // (၃) Symbols Logic (MM vs Eng)
+                if (currentLanguageId == 1) { 
                     currentKeyboard = symbolsMmKeyboard;
                 } else {
                     currentKeyboard = symbolsEnKeyboard;
@@ -465,6 +468,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void performCandidateSearch() {
         final String searchWord = currentWord.toString();
+        // (၇) Suggestion Bar Logic Fix
         if (searchWord.isEmpty()) {
             handler.post(() -> {
                 for (TextView tv : candidateViews) tv.setVisibility(View.GONE);
