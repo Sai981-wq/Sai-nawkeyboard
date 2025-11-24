@@ -4,7 +4,6 @@ import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Bundle;
 import android.view.View;
-import android.view.accessibility.AccessibilityEvent;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
@@ -16,30 +15,35 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
+    
+    // *** ဒီ Listener Interface မရှိရင် Service မှာ Error တက်ပါမယ် ***
+    private OnAccessibilityKeyListener listener;
 
-    public SaiNawAccessibilityHelper(@NonNull View view) {
+    public interface OnAccessibilityKeyListener {
+        void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
+    }
+
+    // Constructor အသစ် (Listener လက်ခံမယ့်ပုံစံ)
+    public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener) {
         super(view);
         this.view = view;
+        this.listener = listener;
     }
 
     public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
-        // Keyboard ပြောင်းတိုင်း TalkBack ကို အသစ်ပြန်စစ်ခိုင်းမယ်
         invalidateRoot(); 
     }
 
     @Override
     protected int getVirtualViewAt(float x, float y) {
         if (currentKeyboard == null) return HOST_ID;
-        
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        // ညီကို့ရဲ့ Fast Search Logic ကို ဒီမှာသုံးထားပါတယ် (TalkBack ရှာရတာ မြန်အောင်)
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.isInside((int) x, (int) y)) {
-                // -100 ဆိုတာ နေရာလွတ် (Spacer) မို့လို့ TalkBack ကို မဖတ်ခိုင်းဘူး
                 if (key.codes[0] == -100) return HOST_ID; 
                 return i;
             }
@@ -52,7 +56,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (currentKeyboard == null) return;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         for (int i = 0; i < keys.size(); i++) {
-            // နေရာလွတ် (-100) မဟုတ်ရင် List ထဲထည့်မယ်
             if (keys.get(i).codes[0] != -100) {
                 virtualViewIds.add(i);
             }
@@ -62,7 +65,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     @Override
     protected void onPopulateNodeForVirtualView(int virtualViewId, @NonNull AccessibilityNodeInfoCompat node) {
         if (currentKeyboard == null) return;
-        
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (virtualViewId >= keys.size()) return;
         
@@ -71,24 +73,29 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
         node.setContentDescription(description);
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
+        node.setClickable(true);
         
-        // TalkBack အကွက်နေရာသတ်မှတ်ခြင်း
         Rect bounds = new Rect(key.x, key.y, key.x + key.width, key.y + key.height);
-        // Offset လိုအပ်ရင်ထည့်ရန် (များသောအားဖြင့် KeyboardView မှာမလိုပါ)
         node.setBoundsInParent(bounds); 
     }
 
     @Override
     protected boolean onPerformActionForVirtualView(int virtualViewId, int action, @Nullable Bundle arguments) {
-        // TalkBack က Double Tap နှိပ်ရင် ဘာလုပ်မလဲ (Service ဘက်က Handle လုပ်မှာမို့ false ပြန်ထားရင်ရပြီ)
+        if (action == AccessibilityNodeInfoCompat.ACTION_CLICK) {
+            // Double Tap လုပ်ရင် Listener ဆီပြန်ပို့မယ်
+            if (currentKeyboard != null && virtualViewId < currentKeyboard.getKeys().size()) {
+                Keyboard.Key key = currentKeyboard.getKeys().get(virtualViewId);
+                if (listener != null) {
+                    listener.onAccessibilityKeyClick(key.codes[0], key);
+                }
+                return true;
+            }
+        }
         return false; 
     }
 
-    // Key တစ်လုံးချင်းစီအတွက် အသံထွက်မယ့်စာသား သတ်မှတ်ခြင်း
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
-        
-        // Function Keys
         if (code == -5) return "Delete";
         if (code == -1) return isCaps ? "Shift On" : "Shift";
         if (code == 32) return "Space";
@@ -96,17 +103,16 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (code == -2) return "Symbol Keyboard";
         if (code == -101) return "Switch Language";
         if (code == -10) return "Voice Typing";
-        if (code == -100) return ""; // Spacer
+        if (code == -100) return ""; 
 
         String label = null;
         if (key.label != null) label = key.label.toString();
         else if (key.text != null) label = key.text.toString();
 
-        // ရှမ်း/မြန်မာ Shift မိထားရင် "Sub" (အောက်ဆင့်) ထည့်ဖတ်မယ်
         if (label != null && isShanOrMyanmar && isCaps) {
             return "Sub " + label;
         }
-
         return label != null ? label : "Unlabeled Key";
     }
 }
+
