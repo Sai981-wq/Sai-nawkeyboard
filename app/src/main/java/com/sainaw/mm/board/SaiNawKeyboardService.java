@@ -54,7 +54,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard qwertyKeyboard, qwertyShiftKeyboard;
     private Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     private Keyboard shanKeyboard, shanShiftKeyboard;
-    // Symbols ခွဲထုတ်ခြင်း (Language Aware)
     private Keyboard symbolsEnKeyboard, symbolsMmKeyboard; 
 
     private Keyboard currentKeyboard;
@@ -65,7 +64,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
-    // လက်ရှိ ဘာသာစကား (0=Eng, 1=MM, 2=Shan)
     private int currentLanguageId = 0; 
 
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -105,12 +103,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         initCandidateViews(isDarkTheme);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-        suggestionDB = SuggestionDB.getInstance(this); // Singleton
+        suggestionDB = SuggestionDB.getInstance(this);
 
-        initKeyboards();
+        initKeyboards(); // Keyboard များ စတင်တည်ဆောက်ခြင်း
 
         currentKeyboard = qwertyKeyboard;
-        currentLanguageId = 0; // Default English
+        currentLanguageId = 0;
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
@@ -136,6 +134,44 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         keyboardView.setOnTouchListener((v, event) -> false);
         return layout;
+    }
+
+    // *** ERROR FIX: Dynamic Resource Loading ***
+    // R.xml... လို့ မခေါ်ဘဲ ဖိုင်နာမည်နဲ့ ရှာခိုင်းခြင်း (Error မတက်တော့ပါ)
+    private int getResId(String name) {
+        return getResources().getIdentifier(name, "xml", getPackageName());
+    }
+
+    private void initKeyboards() {
+        boolean showNumRow = prefs.getBoolean("number_row", false);
+        
+        // ဖိုင်နာမည်တွေနဲ့ လှမ်းခေါ်ပါမယ်
+        if (showNumRow) {
+            qwertyKeyboard = new Keyboard(this, getResId("qwerty_num"));
+            myanmarKeyboard = new Keyboard(this, getResId("myanmar_num"));
+            shanKeyboard = new Keyboard(this, getResId("shan_num"));
+        } else {
+            qwertyKeyboard = new Keyboard(this, getResId("qwerty"));
+            myanmarKeyboard = new Keyboard(this, getResId("myanmar"));
+            shanKeyboard = new Keyboard(this, getResId("shan"));
+        }
+        
+        qwertyShiftKeyboard = new Keyboard(this, getResId("qwerty_shift"));
+        myanmarShiftKeyboard = new Keyboard(this, getResId("myanmar_shift"));
+        shanShiftKeyboard = new Keyboard(this, getResId("shan_shift"));
+        
+        // Symbols Logic (Fixed)
+        int symEnId = getResId("symbols");
+        int symMmId = getResId("symbols_mm");
+
+        // ဖိုင်မရှိရင် Crash မဖြစ်အောင် စစ်ပါမယ်
+        if (symEnId != 0) symbolsEnKeyboard = new Keyboard(this, symEnId);
+        else symbolsEnKeyboard = qwertyKeyboard; // Fallback
+
+        if (symMmId != 0) symbolsMmKeyboard = new Keyboard(this, symMmId);
+        else symbolsMmKeyboard = symbolsEnKeyboard;
+        
+        symbolsKeyboard = symbolsEnKeyboard; // Default
     }
 
     private void setupSpeechRecognizer() {
@@ -194,46 +230,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    private void initKeyboards() {
-        boolean showNumRow = prefs.getBoolean("number_row", false);
-        // *** (၆) Number Row Logic ***
-        if (showNumRow) {
-            qwertyKeyboard = new Keyboard(this, R.xml.qwerty_num);
-            myanmarKeyboard = new Keyboard(this, R.xml.myanmar_num);
-            shanKeyboard = new Keyboard(this, R.xml.shan_num);
-        } else {
-            qwertyKeyboard = new Keyboard(this, R.xml.qwerty);
-            myanmarKeyboard = new Keyboard(this, R.xml.myanmar);
-            shanKeyboard = new Keyboard(this, R.xml.shan);
-        }
-        qwertyShiftKeyboard = new Keyboard(this, R.xml.qwerty_shift);
-        myanmarShiftKeyboard = new Keyboard(this, R.xml.myanmar_shift);
-        shanShiftKeyboard = new Keyboard(this, R.xml.shan_shift);
-        
-        // *** (၃) Symbols Logic (မြန်မာဂဏန်း vs English ဂဏန်း) ***
-        // symbols_mm.xml မှာ မြန်မာဂဏန်း ၁၂၃ ထည့်ပါ
-        // symbols.xml (default) မှာ English 123 ထည့်ပါ
-        symbolsEnKeyboard = new Keyboard(this, R.xml.symbols); // English 123
-        try {
-            symbolsMmKeyboard = new Keyboard(this, R.xml.symbols_mm); // Myanmar ၁၂၃
-        } catch (Exception e) {
-            symbolsMmKeyboard = symbolsEnKeyboard; // ဖိုင်မရှိရင် English ပဲသုံးမယ်
-        }
-        symbolsKeyboard = symbolsEnKeyboard; // Default
-    }
-
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         loadSettings();
-        // *** (၆) Re-init keyboards if number row setting changed ***
         initKeyboards(); 
         
-        // Reset state
         currentWord.setLength(0);
         isCaps = false;
         
-        // Restore last keyboard based on ID
         if (currentLanguageId == 1) currentKeyboard = myanmarKeyboard;
         else if (currentLanguageId == 2) currentKeyboard = shanKeyboard;
         else currentKeyboard = qwertyKeyboard;
@@ -333,16 +338,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 updateKeyboardLayout();
                 break;
             case -2:
-                // *** (၃) Symbols Logic ***
                 if (currentLanguageId == 1) { // Myanmar
-                    currentKeyboard = symbolsMmKeyboard; // Myanmar Numerals
+                    currentKeyboard = symbolsMmKeyboard;
                 } else {
-                    currentKeyboard = symbolsEnKeyboard; // English Numerals (Shan also uses Eng)
+                    currentKeyboard = symbolsEnKeyboard;
                 }
                 updateKeyboardLayout();
                 break;
             case -6:
-                // Back to ABC
                 if (currentLanguageId == 1) currentKeyboard = myanmarKeyboard;
                 else if (currentLanguageId == 2) currentKeyboard = shanKeyboard;
                 else currentKeyboard = qwertyKeyboard;
@@ -413,7 +416,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
-        // (Existing Logic)
         if (isConsonant(primaryCode)) {
              CharSequence before = ic.getTextBeforeCursor(1, 0);
              if (before != null && before.length() > 0) {
@@ -467,7 +469,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void performCandidateSearch() {
         final String searchWord = currentWord.toString();
-        // *** (၇) Suggestion Bar Logic Fix ***
         if (searchWord.isEmpty()) {
             handler.post(() -> {
                 for (TextView tv : candidateViews) tv.setVisibility(View.GONE);
@@ -507,7 +508,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void updateKeyboardLayout() {
         lastHoverKeyIndex = -1;
         if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
-            // Do nothing if in symbols
         } else if (isCaps) {
             if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard;
             else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard;
