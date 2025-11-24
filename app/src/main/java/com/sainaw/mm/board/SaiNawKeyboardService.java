@@ -87,7 +87,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
-        // TalkBack Logic (Hover)
         keyboardView.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent event) {
@@ -95,11 +94,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         });
 
-        // System Touch Logic
         keyboardView.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                // TalkBack ဖွင့်ထားရင် System Touch ကို ပိတ်မယ် (Double Typing မဖြစ်အောင်)
                 return accessibilityManager.isEnabled(); 
             }
         });
@@ -137,7 +134,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
-    // --- Normal Typing: Text Input ---
+    // --- Helper Methods (Moved Up for Visibility) ---
+    
+    private boolean isConsonant(int code) {
+        // Myanmar & Shan Consonants Range
+        return (code >= 4096 && code <= 4138) || (code >= 4213 && code <= 4225) || code == 4100 || code == 4101;
+    }
+
+    private boolean isShanOrMyanmar() {
+        return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
+               currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
+    }
+
+    // --- Text Input ---
     @Override
     public void onText(CharSequence text) {
         if (accessibilityManager.isEnabled()) return;
@@ -189,7 +198,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return true; 
     }
 
-    // --- Normal Touch Logic ---
     @Override
     public void onPress(int primaryCode) {
         if (accessibilityManager.isEnabled()) return;
@@ -214,7 +222,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         handleInput(primaryCode, null);
     }
 
-    // --- Main Input Logic ---
+    // --- Main Logic ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(); 
 
@@ -308,8 +316,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (textToSpeak != null) speakSystem(textToSpeak);
     }
 
-    // --- Helper Methods ---
-
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         if (isConsonant(primaryCode)) { 
              CharSequence before = ic.getTextBeforeCursor(1, 0);
@@ -336,11 +342,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
              }
         }
         return false;
-    }
-
-    // Missing Function Fixed Here:
-    private boolean isConsonant(int code) {
-        return (code >= 4096 && code <= 4138) || (code >= 4213 && code <= 4225) || code == 4100 || code == 4101;
     }
 
     private void saveCurrentWordToDB() {
