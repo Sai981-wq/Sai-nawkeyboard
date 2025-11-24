@@ -33,7 +33,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private KeyboardView keyboardView;
     private LinearLayout candidateContainer;
-    // TextView များကို သိမ်းထားမည့် List (Reuse လုပ်ရန်)
     private List<TextView> candidateViews = new ArrayList<>();
     
     private SuggestionDB suggestionDB;
@@ -60,6 +59,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
     
+    // *** အဓိက ပြင်ဆင်ချက် (၁) - Debounce Runnable ***
+    // စာရိုက်နေတုန်း Suggestion မရှာဘဲ ခဏစောင့်မည့် Runnable
+    private Runnable pendingCandidateUpdate = new Runnable() {
+        @Override
+        public void run() {
+            performCandidateSearch();
+        }
+    };
+
     private boolean isSpaceLongPressed = false;
     private Runnable spaceLongPressRunnable = new Runnable() {
         @Override
@@ -85,8 +93,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView = layout.findViewById(R.id.keyboard_view);
         candidateContainer = layout.findViewById(R.id.candidates_container);
         
-        // *** အဓိက ပြင်ဆင်ချက် (၁) ***
-        // Candidate View ၃ ခုကို ကြိုဆောက်ထားမယ် (Layout မပြောင်းအောင်)
         initCandidateViews(isDarkTheme);
 
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
@@ -116,14 +122,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return layout;
     }
 
-    // Candidate TextView ၃ ခုကို ကြိုတင်နေရာချထားခြင်း
     private void initCandidateViews(boolean isDarkTheme) {
         candidateContainer.removeAllViews();
         candidateViews.clear();
-        
         int textColor = isDarkTheme ? Color.WHITE : Color.BLACK;
 
-        // အများဆုံး စာလုံး ၃ လုံးပြမယ်လို့ သတ်မှတ်ထားခြင်း (လိုအပ်ရင် တိုးပါ)
         for (int i = 0; i < 3; i++) {
             TextView tv = new TextView(this);
             tv.setTextSize(18);
@@ -132,9 +135,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             tv.setGravity(Gravity.CENTER);
             tv.setBackgroundResource(android.R.drawable.btn_default);
             tv.setFocusable(true);
-            tv.setVisibility(View.GONE); // မသုံးခင် ဖွက်ထားမယ်
+            tv.setVisibility(View.GONE); 
             
-            // Layout params (အညီအမျှ ခွဲပေးဖို့)
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                     0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
             params.setMargins(5, 0, 5, 0);
@@ -196,7 +198,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     Keyboard.Key key = currentKeyboard.getKeys().get(keyIndex);
                     
                     playHaptic(0);
-                    // Explore လုပ်ချိန်မှာ interrupt လုပ်ပြီး ချက်ချင်းအသံထွက်မယ်
                     announceKeyText(key, true); 
                 }
                 break;
@@ -292,21 +293,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 } else {
                     ic.commitText("\n", 1);
                 }
-                saveCurrentWordToDB();
+                saveWordAndReset(); // Enter ခေါက်ရင် ချက်ချင်းသိမ်းမယ်
                 textToSpeak = "Enter";
                 break;
             case -5: 
                 ic.deleteSurroundingText(1, 0);
                 if (currentWord.length() > 0) {
                     currentWord.deleteCharAt(currentWord.length() - 1);
-                    updateCandidates();
+                    triggerCandidateUpdate(); // Delete လုပ်ရင် Update ခေါ်မယ်
                 }
                 textToSpeak = "Delete";
                 break;
             case 32: 
                 if (!isSpaceLongPressed) {
                     ic.commitText(" ", 1);
-                    saveCurrentWordToDB();
+                    saveWordAndReset(); // Space ခေါက်ရင် ချက်ချင်းသိမ်းမယ်
                     textToSpeak = "Space";
                 }
                 isSpaceLongPressed = false;
@@ -331,7 +332,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     isCaps = false;
                     updateKeyboardLayout();
                 }
-                updateCandidates();
+                triggerCandidateUpdate(); // ပုံမှန်စာရိုက်ရင် Update ခေါ်မယ်
         }
 
         if (textToSpeak != null) speakSystem(textToSpeak, false);
@@ -374,7 +375,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
     }
 
-    private void saveCurrentWordToDB() {
+    // *** ပြင်ဆင်ချက် - ချက်ချင်းသိမ်းမည့် Function (Space/Enter အတွက်) ***
+    private void saveWordAndReset() {
         if (currentWord.length() > 0) {
             final String wordToSave = currentWord.toString();
             dbExecutor.execute(new Runnable() {
@@ -384,16 +386,28 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
             });
             currentWord.setLength(0);
-            updateCandidates();
+            // ချက်ချင်းရှင်းမယ် (Delay မလို)
+            updateCandidates(); 
         }
     }
 
-    // *** အဓိက ပြင်ဆင်ချက် (၂) ***
-    // removeAllViews() ကို လုံးဝ မသုံးတော့ဘဲ ရှိပြီးသား View တွေကို ပြန်သုံးခြင်း
+    // *** အဓိက ပြင်ဆင်ချက် (၂) - Delay ခံပြီးမှ Update ခေါ်ခြင်း ***
+    private void triggerCandidateUpdate() {
+        // အရင် Run ဖို့လုပ်ထားတာရှိရင် ဖျက်လိုက်မယ် (User က ဆက်ရိုက်နေလို့)
+        handler.removeCallbacks(pendingCandidateUpdate);
+        // 100ms နေမှ Run မယ် (အမြန်ရိုက်ရင် ဒီကြားထဲမှာ အကြိမ်ကြိမ် Cancel ခံရမယ်)
+        handler.postDelayed(pendingCandidateUpdate, 100); 
+    }
+
+    // Delay ပြီးမှ တကယ်အလုပ်လုပ်မည့် Function
     private void updateCandidates() {
+         handler.removeCallbacks(pendingCandidateUpdate);
+         performCandidateSearch();
+    }
+
+    private void performCandidateSearch() {
         final String searchWord = currentWord.toString();
         
-        // ဘာစာမှ မရိုက်ရသေးရင် အကုန်ဖျောက်မယ်
         if (searchWord.isEmpty()) {
             handler.post(new Runnable() {
                 @Override
@@ -413,7 +427,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
-                        // ရှိသလောက် Suggestions တွေကို ထည့်မယ်
                         for (int i = 0; i < candidateViews.size(); i++) {
                             TextView tv = candidateViews.get(i);
                             if (i < suggestions.size()) {
@@ -422,7 +435,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                 tv.setVisibility(View.VISIBLE);
                                 tv.setOnClickListener(v -> pickSuggestion(suggestion));
                             } else {
-                                // ပိုနေတဲ့ View တွေကို ဖျောက်မယ် (မဖျက်ဘူး)
                                 tv.setVisibility(View.GONE);
                             }
                         }
