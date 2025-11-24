@@ -24,6 +24,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -32,6 +33,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private KeyboardView keyboardView;
     private LinearLayout candidateContainer;
+    // TextView များကို သိမ်းထားမည့် List (Reuse လုပ်ရန်)
+    private List<TextView> candidateViews = new ArrayList<>();
+    
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
 
@@ -81,6 +85,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView = layout.findViewById(R.id.keyboard_view);
         candidateContainer = layout.findViewById(R.id.candidates_container);
         
+        // *** အဓိက ပြင်ဆင်ချက် (၁) ***
+        // Candidate View ၃ ခုကို ကြိုဆောက်ထားမယ် (Layout မပြောင်းအောင်)
+        initCandidateViews(isDarkTheme);
+
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         suggestionDB = new SuggestionDB(this);
@@ -91,7 +99,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
-        // *** LIFT-TO-TYPE Logic ***
         keyboardView.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent event) {
@@ -107,6 +114,34 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         });
 
         return layout;
+    }
+
+    // Candidate TextView ၃ ခုကို ကြိုတင်နေရာချထားခြင်း
+    private void initCandidateViews(boolean isDarkTheme) {
+        candidateContainer.removeAllViews();
+        candidateViews.clear();
+        
+        int textColor = isDarkTheme ? Color.WHITE : Color.BLACK;
+
+        // အများဆုံး စာလုံး ၃ လုံးပြမယ်လို့ သတ်မှတ်ထားခြင်း (လိုအပ်ရင် တိုးပါ)
+        for (int i = 0; i < 3; i++) {
+            TextView tv = new TextView(this);
+            tv.setTextSize(18);
+            tv.setTextColor(textColor);
+            tv.setPadding(30, 10, 30, 10);
+            tv.setGravity(Gravity.CENTER);
+            tv.setBackgroundResource(android.R.drawable.btn_default);
+            tv.setFocusable(true);
+            tv.setVisibility(View.GONE); // မသုံးခင် ဖွက်ထားမယ်
+            
+            // Layout params (အညီအမျှ ခွဲပေးဖို့)
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+            params.setMargins(5, 0, 5, 0);
+            
+            candidateContainer.addView(tv, params);
+            candidateViews.add(tv);
+        }
     }
 
     private void initKeyboards() {
@@ -147,7 +182,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
-    // *** ပြင်ဆင်ထားသော Hover Logic (Lift-to-Type) ***
     private boolean handleHover(MotionEvent event) {
         int action = event.getAction();
         int touchX = (int) event.getX();
@@ -161,21 +195,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     lastHoverKeyIndex = keyIndex;
                     Keyboard.Key key = currentKeyboard.getKeys().get(keyIndex);
                     
-                    // လက်တင်ထားချိန် (Exploring):
-                    // ၁. တုန်ခါမယ်
                     playHaptic(0);
-                    // ၂. အသံထွက်မယ် (Interrupt လုပ်ပြီး ချက်ချင်းထွက်မယ်)
+                    // Explore လုပ်ချိန်မှာ interrupt လုပ်ပြီး ချက်ချင်းအသံထွက်မယ်
                     announceKeyText(key, true); 
                 }
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
-                // လက်ကြွလိုက်ချိန် (Lift/Type):
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        // ၃. စာရိုက်ထည့်မယ် (အသံထပ်မထွက်တော့ဘူး)
                         handleInput(key.codes[0], key);
                     }
                     lastHoverKeyIndex = -1;
@@ -187,7 +217,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     
     @Override
     public void onKey(int primaryCode, int[] keyCodes) {
-        // Double Tap လုပ်ရင် ဝင်လာမယ့်နေရာ
         handleInput(primaryCode, null);
     }
 
@@ -229,7 +258,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
-            return; // Normal Text Lift: No extra speech
+            return;
         }
 
         switch (primaryCode) {
@@ -254,7 +283,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 break;
             case -101: 
                 changeLanguage();
-                // changeLanguage handles its own speech
                 break;
             case -4: 
                 int options = getCurrentInputEditorInfo().imeOptions;
@@ -285,7 +313,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 break;
             case 0: break;
             default:
-                // Normal Character Typing
                 if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
                     char code = (char) primaryCode;
                     currentWord.append(String.valueOf(code));
@@ -296,15 +323,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     } else {
                         charStr = String.valueOf((char) primaryCode);
                     }
-                    
                     ic.commitText(charStr, 1);
                     currentWord.append(charStr);
                 }
-                
-                // *** အရေးကြီးဆုံး အချက် ***
-                // Normal Character ရိုက်ရင် ဒီနေရာမှာ textToSpeak ကို NULL ထားရမယ်။
-                // System (TalkBack) က "Text Changed" event နဲ့ သူ့ဟာသူ ဖတ်လိမ့်မယ်။
-                // ကျွန်တော်တို့ကပါ ဝင်ပြောလိုက်ရင် ထစ်သွားမယ်။
                 
                 if (isCaps) {
                     isCaps = false;
@@ -313,7 +334,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 updateCandidates();
         }
 
-        // Function Key တွေအတွက်ပဲ interrupt မလုပ်ဘဲ ပြောမယ်
         if (textToSpeak != null) speakSystem(textToSpeak, false);
     }
 
@@ -368,15 +388,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // *** အဓိက ပြင်ဆင်ချက် (၂) ***
+    // removeAllViews() ကို လုံးဝ မသုံးတော့ဘဲ ရှိပြီးသား View တွေကို ပြန်သုံးခြင်း
     private void updateCandidates() {
-        if (candidateContainer == null) return;
-        
         final String searchWord = currentWord.toString();
+        
+        // ဘာစာမှ မရိုက်ရသေးရင် အကုန်ဖျောက်မယ်
         if (searchWord.isEmpty()) {
             handler.post(new Runnable() {
                 @Override
                 public void run() {
-                    candidateContainer.removeAllViews();
+                    for (TextView tv : candidateViews) {
+                        tv.setVisibility(View.GONE);
+                    }
                 }
             });
             return;
@@ -389,19 +413,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
-                        if (candidateContainer != null) {
-                            candidateContainer.removeAllViews();
-                            for (final String suggestion : suggestions) {
-                                TextView tv = new TextView(SaiNawKeyboardService.this);
+                        // ရှိသလောက် Suggestions တွေကို ထည့်မယ်
+                        for (int i = 0; i < candidateViews.size(); i++) {
+                            TextView tv = candidateViews.get(i);
+                            if (i < suggestions.size()) {
+                                final String suggestion = suggestions.get(i);
                                 tv.setText(suggestion);
-                                tv.setTextSize(18);
-                                tv.setTextColor(prefs.getBoolean("dark_theme", false) ? Color.WHITE : Color.BLACK);
-                                tv.setPadding(30, 10, 30, 10);
-                                tv.setGravity(Gravity.CENTER);
-                                tv.setBackgroundResource(android.R.drawable.btn_default);
-                                tv.setFocusable(true);
+                                tv.setVisibility(View.VISIBLE);
                                 tv.setOnClickListener(v -> pickSuggestion(suggestion));
-                                candidateContainer.addView(tv);
+                            } else {
+                                // ပိုနေတဲ့ View တွေကို ဖျောက်မယ် (မဖျက်ဘူး)
+                                tv.setVisibility(View.GONE);
                             }
                         }
                     }
@@ -520,15 +542,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** အဓိက ပြင်ဆင်ချက် ***
     private void speakSystem(String text, boolean shouldInterrupt) {
         if (accessibilityManager.isEnabled()) {
-            // လက်နဲ့ပွတ်ဆွဲနေတုန်း (Hover Move) ဆိုရင်တော့ ရှေ့အသံတွေကို ဖြတ်ချလိုက်မှ
-            // နောက်စာလုံးအသံကို ချက်ချင်းကြားရမှာမို့ interrupt လုပ်မယ်။
             if (shouldInterrupt) {
                 accessibilityManager.interrupt();
             }
-            
             AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
             event.getText().add(text);
             event.setContentDescription(text);
