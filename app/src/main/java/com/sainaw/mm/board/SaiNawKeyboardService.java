@@ -12,6 +12,8 @@ import android.speech.RecognizerIntent;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
@@ -43,6 +45,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     
     private Keyboard currentKeyboard;
     private boolean isCaps = false;
+    private AccessibilityManager accessibilityManager; // ပြန်ထည့်ထားပါတယ်
     private AudioManager audioManager;
     private SharedPreferences prefs;
     
@@ -78,6 +81,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView = layout.findViewById(R.id.keyboard_view);
         candidateContainer = layout.findViewById(R.id.candidates_container);
         
+        accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE); // Service ပြန်ခေါ်ထားပါတယ်
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         suggestionDB = new SuggestionDB(this);
 
@@ -142,6 +146,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
+    // *** အရေးကြီးဆုံး ပြင်ဆင်ချက် (Hover Logic) ***
     private boolean handleHover(MotionEvent event) {
         int action = event.getAction();
         int touchX = (int) event.getX();
@@ -153,8 +158,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             case MotionEvent.ACTION_HOVER_MOVE:
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
-                    // Haptic only, No Voice
+                    Keyboard.Key key = currentKeyboard.getKeys().get(keyIndex);
+                    
+                    // လက်တင်ထားချိန် (Explore) - အသံရော၊ Haptic ပါ လာရပါမယ်
                     playHaptic(0);
+                    announceKeyText(key); // ဒါကို ပြန်ဖွင့်ပေးလိုက်ပါပြီ
                 }
                 break;
 
@@ -211,29 +219,37 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
+        String textToSpeak = null; // Function key တွေအတွက်ပဲ သုံးမယ်
+
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
+            // စာရိုက်တဲ့အချိန် (Lift) မှာ အသံထပ်မထွက်ခိုင်းတော့ဘူး (System ကပြောလိမ့်မယ်)
             return;
         }
 
         switch (primaryCode) {
             case -10: 
                 startVoiceInput(); 
+                textToSpeak = "Voice Typing";
                 break;
             case -1: 
                 isCaps = !isCaps;
                 updateKeyboardLayout(); 
+                textToSpeak = isCaps ? "Shift On" : "Shift Off";
                 break;
             case -2: 
                 currentKeyboard = symbolsKeyboard;
                 updateKeyboardLayout();
+                textToSpeak = "Symbols";
                 break;
             case -6: 
                 currentKeyboard = qwertyKeyboard;
                 updateKeyboardLayout();
+                textToSpeak = "Alphabet";
                 break;
             case -101: 
                 changeLanguage();
+                textToSpeak = null; 
                 break;
             case -4: 
                 int options = getCurrentInputEditorInfo().imeOptions;
@@ -244,6 +260,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     ic.commitText("\n", 1);
                 }
                 saveCurrentWordToDB();
+                textToSpeak = "Enter";
                 break;
             case -5: 
                 ic.deleteSurroundingText(1, 0);
@@ -251,11 +268,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     currentWord.deleteCharAt(currentWord.length() - 1);
                     updateCandidates();
                 }
+                textToSpeak = "Delete";
                 break;
             case 32: 
                 if (!isSpaceLongPressed) {
                     ic.commitText(" ", 1);
                     saveCurrentWordToDB();
+                    textToSpeak = "Space";
                 }
                 isSpaceLongPressed = false;
                 break;
@@ -276,12 +295,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     currentWord.append(charStr);
                 }
                 
+                // Normal Character ရိုက်ရင် textToSpeak ကို null ထားခဲ့မယ်
+                // ဒါမှ အသံထပ်မထွက်ဘဲ မထစ်တော့မှာ
+                
                 if (isCaps) {
                     isCaps = false;
                     updateKeyboardLayout();
                 }
                 updateCandidates();
         }
+
+        // Function Key (Shift, Enter, etc.) ဆိုမှသာ အသံထွက်မယ်
+        if (textToSpeak != null) speakSystem(textToSpeak);
     }
 
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
@@ -393,6 +418,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         
         currentWord.setLength(0);
         updateCandidates();
+        speakSystem("Selected " + suggestion);
     }
 
     private void updateKeyboardLayout() {
@@ -415,10 +441,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         lastHoverKeyIndex = -1;
         if (currentKeyboard == qwertyKeyboard || currentKeyboard == qwertyShiftKeyboard || currentKeyboard == symbolsKeyboard) {
             currentKeyboard = myanmarKeyboard;
+            speakSystem("Myanmar");
         } else if (currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard) {
             currentKeyboard = shanKeyboard;
+            speakSystem("Shan");
         } else {
             currentKeyboard = qwertyKeyboard;
+            speakSystem("English");
         }
         isCaps = false;
         keyboardView.setKeyboard(currentKeyboard);
@@ -448,13 +477,56 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return closestIndex;
     }
 
+    // *** အရေးကြီးဆုံး ပြင်ဆင်ချက် (TalkBack Announcement) ***
+    private void announceKeyText(Keyboard.Key key) {
+        if (!accessibilityManager.isEnabled()) return;
+        String text = null;
+        int code = key.codes[0];
+        
+        // Function keys
+        if (code == -5) text = "Delete";
+        else if (code == -1) text = isCaps ? "Shift On" : "Shift";
+        else if (code == 32) text = "Space";
+        else if (code == -4) text = "Enter";
+        else if (code == -2) text = "Numbers";
+        else if (code == -6) text = "Alphabet";
+        else if (code == -101) text = "Next Language";
+        else if (code == -10) text = "Voice Typing";
+        
+        // Normal characters
+        if (text == null && key.label != null) text = key.label.toString();
+        if (text == null && key.text != null) text = key.text.toString();
+        
+        // Shan/Myanmar specific fixes
+        if (text != null && isShanOrMyanmar() && isCaps) {
+             text = "Sub " + text;
+        }
+        
+        if (text != null) speakSystem(text);
+    }
+
     private void startVoiceInput() {
         try {
             Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            speakSystem("Voice typing not supported");
+        }
+    }
+
+    private void speakSystem(String text) {
+        if (accessibilityManager.isEnabled()) {
+            // interrupt() ကို Hover မှာ အသံမြန်မြန်ပြောင်းဖို့ သုံးရပါမယ်
+            // ဒါပေမဲ့ handleInput (ရိုက်ချိန်) မှာ မခေါ်တဲ့အတွက် မထစ်တော့ပါဘူး
+            accessibilityManager.interrupt(); 
+            
+            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+            event.getText().add(text);
+            event.setContentDescription(text);
+            accessibilityManager.sendAccessibilityEvent(event);
+        }
     }
 
     private void playHaptic(int primaryCode) {
