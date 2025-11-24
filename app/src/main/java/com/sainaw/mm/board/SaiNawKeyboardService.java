@@ -22,7 +22,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import androidx.core.view.ViewCompat; // ဒါလေး Import လုပ်ဖို့ မမေ့ပါနဲ့
+import android.widget.Toast;
+import androidx.core.view.ViewCompat; 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -34,7 +35,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private LinearLayout candidateContainer;
     private List<TextView> candidateViews = new ArrayList<>();
     
-    // *** NEW: Accessibility Helper ***
+    // Accessibility Helper (TalkBack အတွက်)
     private SaiNawAccessibilityHelper accessibilityHelper;
     
     private SuggestionDB suggestionDB;
@@ -60,6 +61,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
     
+    // Performance: စာရိုက်နေတုန်း Suggestion ခဏစောင့်မည့် Runnable
     private Runnable pendingCandidateUpdate = new Runnable() {
         @Override
         public void run() {
@@ -94,6 +96,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         
         initCandidateViews(isDarkTheme);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        
+        // Database ကို Singleton ပြောင်းထားရင် .getInstance(this) သုံးပါ
+        // မပြောင်းရသေးရင် new SuggestionDB(this) သုံးပါ
         suggestionDB = new SuggestionDB(this);
 
         initKeyboards();
@@ -103,9 +108,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setOnKeyboardActionListener(this);
 
         // *** GBOARD STYLE ACCESSIBILITY SETUP ***
+        // Helper Class ကို အရင်ဆောက်ပြီးမှ ဒါကိုသုံးလို့ရမယ်
         accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView);
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
-        // Helper ကို လက်ရှိ Keyboard အခြေအနေ လှမ်းပြောမယ်
         updateHelperState();
 
         // Hover Listener (TalkBack + Lift to Type)
@@ -113,13 +118,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             @Override
             public boolean onHover(View v, MotionEvent event) {
                 // ၁။ TalkBack ကို အရင်အသိပေးမယ် (ExploreByTouch)
-                // ဒါက return true ပြန်ရင် TalkBack က Focus လုပ်နေပြီလို့ အဓိပ္ပါယ်ရတယ်
                 boolean handledByAccessibility = accessibilityHelper.dispatchHoverEvent(event);
                 
                 // ၂။ Lift-to-type Logic (စာရိုက်ဖို့အတွက်)
                 handleLiftToType(event);
 
-                // Accessibility က Handle လုပ်သွားရင်တောင် Touch event ကို ဆက်လုပ်ခိုင်းမယ်
                 return handledByAccessibility; 
             }
         });
@@ -180,13 +183,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
         updateHelperState();
     }
+    
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (dbExecutor != null && !dbExecutor.isShutdown()) {
+            dbExecutor.shutdown();
+        }
+    }
 
     private void loadSettings() {
         isVibrateOn = prefs.getBoolean("vibrate_on", true);
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
-    // *** LIFT TO TYPE LOGIC (Simplified for Speed) ***
+    // *** LIFT TO TYPE LOGIC (Fast & No Dead Zone) ***
     private void handleLiftToType(MotionEvent event) {
         int action = event.getAction();
         int touchX = (int) event.getX();
@@ -194,7 +205,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
             // လက်တင်ထားချိန် (Explore) - Haptic ပဲပေးမယ်
-            // အသံကို accessibilityHelper က တာဝန်ယူသွားပြီ
             int keyIndex = getNearestKeyIndexFast(touchX, touchY);
             if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                 lastHoverKeyIndex = keyIndex;
@@ -206,11 +216,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 List<Keyboard.Key> keys = currentKeyboard.getKeys();
                 if (lastHoverKeyIndex < keys.size()) {
                     Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                    // Spacer (-100) ဆိုရင် မရိုက်ဘူး
                     if (key.codes[0] != -100) {
                         handleInput(key.codes[0], key);
                     }
                 }
+                // Dead Zone မဖြစ်အောင် ချက်ချင်း Reset ချ
                 lastHoverKeyIndex = -1;
             }
         }
@@ -268,7 +278,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         switch (primaryCode) {
             case -10: 
-                startVoiceInput(); 
+                startVoiceInput(); // Voice Typing Fix ပါတဲ့ Method ကို ခေါ်မယ်
                 break;
             case -1: 
                 isCaps = !isCaps;
@@ -329,10 +339,28 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     isCaps = false;
                     updateKeyboardLayout();
                 }
+                // စာရိုက်ရင် Delay ခံပြီးမှ Suggestion ရှာမယ် (မထစ်အောင်)
                 triggerCandidateUpdate(200); 
         }
-        // Note: No need to call speakSystem() here anymore! 
-        // System handles the "Type" feedback via EditText changes.
+    }
+    
+    // *** VOICE TYPING FIX (CRASH မဖြစ်အောင် ပြင်ထားသည်) ***
+    private void startVoiceInput() {
+        try {
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "စကားပြောပါ...");
+            
+            // *** ဒီ LINE က အရေးအကြီးဆုံးပါ ***
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            
+            startActivity(intent);
+        } catch (android.content.ActivityNotFoundException a) {
+            Toast.makeText(this, "Google Voice Typing မရှိပါ", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            e.printStackTrace();
+            Toast.makeText(this, "Error starting voice input", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
@@ -479,7 +507,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
         isCaps = false;
         keyboardView.setKeyboard(currentKeyboard);
-        // Helper ကို Language ပြောင်းပြီလို့ လှမ်းပြောမယ်
         updateHelperState();
     }
 
@@ -487,21 +514,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         for (int i = 0; i < keys.size(); i++) {
             if (keys.get(i).isInside(x, y)) {
-                // -100 (Spacer) ကို Touch မှာလည်း လစ်လျူရှုမယ်
                 if (keys.get(i).codes[0] == -100) return -1;
                 return i;
             }
         }
         return -1;
-    }
-
-    private void startVoiceInput() {
-        try {
-            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-        } catch (Exception e) {}
     }
 
     private void playHaptic(int primaryCode) {
