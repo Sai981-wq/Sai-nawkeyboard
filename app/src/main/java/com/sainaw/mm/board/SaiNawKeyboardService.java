@@ -47,7 +47,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
 
-    // *** Pro Voice Typing Variables ***
+    // *** Voice Typing Variables ***
     private SpeechRecognizer speechRecognizer;
     private Intent speechIntent;
     private boolean isListening = false;
@@ -114,10 +114,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
-        // *** Speech Recognizer Setup ***
+        // *** Speech Setup ***
         setupSpeechRecognizer();
 
-        // Accessibility Helper Setup
+        // Accessibility Helper
         accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, new SaiNawAccessibilityHelper.OnAccessibilityKeyListener() {
             @Override
             public void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key) {
@@ -146,28 +146,34 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return layout;
     }
 
-    // *** Step 1: Speech Recognizer Setup ***
+    // *** ၁။ Voice Typing Setup (မြန်မာစာထည့်ခြင်း + အသံပိတ်ခြင်း) ***
     private void setupSpeechRecognizer() {
         if (SpeechRecognizer.isRecognitionAvailable(this)) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
             speechIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            
+            // မြန်မာဘာသာစကား သတ်မှတ်ခြင်း
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "my-MM");
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "my-MM"); 
+            speechIntent.putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, "my-MM");
+
             speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
             speechIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
             
-            // Listener
+            // အသံမထွက်အောင် Prompt ဖြုတ်ထားသည်
+            // speechIntent.putExtra(RecognizerIntent.EXTRA_PROMPT, "..."); 
+            
             speechRecognizer.setRecognitionListener(new RecognitionListener() {
                 @Override
                 public void onReadyForSpeech(Bundle params) {
-                    playHaptic(-10); // Ready ဖြစ်ရင် တုန်ခါမယ်
-                    Toast.makeText(SaiNawKeyboardService.this, "စကားပြောပါ...", Toast.LENGTH_SHORT).show();
+                    // Ready ဖြစ်တာနဲ့ တုန်ခါမှုပဲ ပေးမယ် (အသံမထွက်)
+                    playHaptic(-10); 
                 }
 
                 @Override
                 public void onBeginningOfSpeech() {}
-
                 @Override
                 public void onRmsChanged(float rmsdB) {}
-
                 @Override
                 public void onBufferReceived(byte[] buffer) {}
 
@@ -179,10 +185,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 @Override
                 public void onError(int error) {
                     isListening = false;
-                    String msg = "Error: " + error;
-                    if (error == SpeechRecognizer.ERROR_NO_MATCH) msg = "နားမလည်ပါ";
-                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) msg = "Permission လိုအပ်သည်";
-                    Toast.makeText(SaiNawKeyboardService.this, msg, Toast.LENGTH_SHORT).show();
+                    // Error တက်ရင်လည်း တုန်ခါမှုပဲ ပေးမယ် (User စိတ်မရှုပ်အောင်)
+                    playHaptic(-5);
                 }
 
                 @Override
@@ -198,7 +202,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 @Override
                 public void onPartialResults(Bundle partialResults) {}
-
                 @Override
                 public void onEvent(int eventType, Bundle params) {}
             });
@@ -255,7 +258,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public void onDestroy() {
         super.onDestroy();
-        // *** Memory Leak မဖြစ်အောင် ဖျက်မယ် ***
         if (speechRecognizer != null) {
             speechRecognizer.destroy();
         }
@@ -346,7 +348,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         switch (primaryCode) {
             case -10:
-                startVoiceInput(); // *** Gboard Style Voice Input ***
+                startVoiceInput();
                 break;
             case -1:
                 isCaps = !isCaps;
@@ -411,10 +413,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** Step 2: Advanced Voice Input Logic ***
+    // *** ၂။ Start Listening (No Toast) ***
     private void startVoiceInput() {
         if (speechRecognizer == null) {
-            Toast.makeText(this, "Voice Typing မရနိုင်ပါ", Toast.LENGTH_SHORT).show();
+            // Toast.makeText(this, "Voice Typing မရနိုင်ပါ", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -422,10 +424,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             speechRecognizer.stopListening();
             isListening = false;
         } else {
-            // Permission စစ်ဆေးခြင်း (Android 6.0+)
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Microphone Permission လိုအပ်ပါသည်", Toast.LENGTH_LONG).show();
-                // Setting သို့ ပို့ဆောင်ခြင်း
                 Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
                 intent.setData(Uri.parse("package:" + getPackageName()));
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -436,9 +435,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             try {
                 speechRecognizer.startListening(speechIntent);
                 isListening = true;
+                // Toast မပြတော့ဘူး၊ တုန်ခါမှုပဲ ပေးမယ်
             } catch (Exception e) {
                 e.printStackTrace();
-                Toast.makeText(this, "Error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
             }
         }
     }
