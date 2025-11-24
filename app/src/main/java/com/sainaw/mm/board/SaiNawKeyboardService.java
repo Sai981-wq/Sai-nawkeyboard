@@ -87,7 +87,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
-        // TalkBack Logic (Hover)
+        // TalkBack Logic
         keyboardView.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent event) {
@@ -99,7 +99,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                // TalkBack ဖွင့်ထားရင် System Touch ကို ပိတ်မယ် (Double Typing မဖြစ်အောင်)
+                // TalkBack ဖွင့်ထားရင် System Touch ကို ပိတ်မယ်
                 return accessibilityManager.isEnabled(); 
             }
         });
@@ -137,15 +137,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
-    // -----------------------------------------------------------
-    // SECTION 1: NORMAL TYPING (TalkBack OFF)
-    // -----------------------------------------------------------
-
-    // ၁. Normal Typing (Compound Characters - e.g., ေႃ)
+    // --- Text Input (Normal Typing for Compound Chars) ---
     @Override
     public void onText(CharSequence text) {
-        // TalkBack ဖွင့်ထားရင် Hover ကနေ ရိုက်ပြီးသားမို့ ဒီကောင်ကို ကျော်မယ်
-        if (accessibilityManager.isEnabled()) return;
+        if (accessibilityManager.isEnabled()) return; // TalkBack handles this via handleInput
 
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
@@ -159,7 +154,43 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // ၂. Normal Typing (Key Press)
+    // --- TalkBack Logic ---
+    private boolean handleHover(MotionEvent event) {
+        if (!accessibilityManager.isEnabled()) return false;
+
+        int action = event.getAction();
+        int touchX = (int) event.getX();
+        int touchY = (int) event.getY();
+        int keyIndex = getNearestKeyIndex(touchX, touchY);
+
+        switch (action) {
+            case MotionEvent.ACTION_HOVER_ENTER:
+            case MotionEvent.ACTION_HOVER_MOVE:
+                if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
+                    lastHoverKeyIndex = keyIndex;
+                    playHaptic();
+                    announceKeyText(currentKeyboard.getKeys().get(keyIndex));
+                }
+                break;
+
+            case MotionEvent.ACTION_HOVER_EXIT:
+                if (lastHoverKeyIndex != -1) {
+                    List<Keyboard.Key> keys = currentKeyboard.getKeys();
+                    if (lastHoverKeyIndex < keys.size()) {
+                        Keyboard.Key key = keys.get(lastHoverKeyIndex);
+                        if (key.codes.length > 0) {
+                            // FIXED: Calls handleInput correctly
+                            handleInput(key.codes[0], key);
+                        }
+                    }
+                    lastHoverKeyIndex = -1;
+                }
+                break;
+        }
+        return true; 
+    }
+
+    // --- Normal Touch Logic ---
     @Override
     public void onPress(int primaryCode) {
         if (accessibilityManager.isEnabled()) return;
@@ -178,71 +209,23 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // ၃. Normal Typing (Single Characters - e.g., က, ခ)
     @Override
     public void onKey(int primaryCode, int[] keyCodes) {
         if (accessibilityManager.isEnabled()) return;
-        // Normal typing: Key object is usually null here, but that's fine for simple codes
-        processInput(primaryCode, null); 
+        // FIXED: Calls handleInput correctly
+        handleInput(primaryCode, null);
     }
 
-
-    // -----------------------------------------------------------
-    // SECTION 2: TALKBACK TYPING (TalkBack ON)
-    // -----------------------------------------------------------
-
-    private boolean handleHover(MotionEvent event) {
-        if (!accessibilityManager.isEnabled()) return false;
-
-        int action = event.getAction();
-        int touchX = (int) event.getX();
-        int touchY = (int) event.getY();
-        
-        // Optimization: Only calculate nearest key if touch moved significantly or is new
-        int keyIndex = getNearestKeyIndex(touchX, touchY);
-
-        switch (action) {
-            case MotionEvent.ACTION_HOVER_ENTER:
-            case MotionEvent.ACTION_HOVER_MOVE:
-                // Key အသစ်ရောက်မှသာ အလုပ်လုပ်မယ် (Lag သက်သာစေရန်)
-                if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
-                    lastHoverKeyIndex = keyIndex;
-                    playHaptic();
-                    announceKeyText(currentKeyboard.getKeys().get(keyIndex));
-                }
-                break;
-
-            case MotionEvent.ACTION_HOVER_EXIT:
-                if (lastHoverKeyIndex != -1) {
-                    List<Keyboard.Key> keys = currentKeyboard.getKeys();
-                    if (lastHoverKeyIndex < keys.size()) {
-                        Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        // TalkBack မှာတော့ Key Object အပြည့်အစုံပါလို့ Compound chars လည်းရမယ်
-                        int code = key.codes[0];
-                        processInput(code, key);
-                    }
-                    lastHoverKeyIndex = -1;
-                }
-                break;
-        }
-        return true; 
-    }
-
-
-    // -----------------------------------------------------------
-    // SECTION 3: CENTRAL PROCESSING (CORE LOGIC)
-    // -----------------------------------------------------------
-
-    private void processInput(int primaryCode, Keyboard.Key key) {
-        playSound(); // အမြဲတမ်း အသံထွက်မယ်
+    // --- Main Input Logic (The Heart of the Keyboard) ---
+    private void handleInput(int primaryCode, Keyboard.Key key) {
+        playSound();
 
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
         String textToSpeak = null;
 
-        // Priority 1: Check for Compound Output Text (e.g., ေႃ from XML)
-        // ဒါက TalkBack သမားတွေအတွက် အဓိက၊ Normal သမားတွေက onText ကနေသွားတယ်
+        // Compound Characters check (TalkBack Mode)
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
             textToSpeak = key.text.toString();
@@ -250,7 +233,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             return;
         }
 
-        // Priority 2: Special Codes
         switch (primaryCode) {
             case -10: 
                 startVoiceInput(); 
@@ -302,25 +284,24 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 isSpaceLongPressed = false;
                 break;
             case 0: break;
-            
             default:
-                // Priority 3: Normal Characters & Smart Reordering
                 if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
-                    // Logic handles the commit
                     char code = (char) primaryCode;
                     currentWord.append(String.valueOf(code));
                 } else {
-                    // *** CRITICAL FIX FOR NORMAL TYPING ***
-                    // အရင်က String.valueOf(int) သုံးမိလို့ ကုဒ်နံပါတ်တွေ ထွက်နေတာ
-                    // အခု (char) နဲ့ cast လုပ်လိုက်လို့ စာလုံးအမှန် ထွက်လာပါလိမ့်မယ်
-                    char code = (char) primaryCode;
-                    String charStr = String.valueOf(code);
-                    ic.commitText(charStr, 1);
-                    
-                    currentWord.append(charStr);
-                    textToSpeak = charStr; 
+                    if (key != null && key.label != null && key.label.length() > 1) {
+                         ic.commitText(key.label, 1);
+                         currentWord.append(key.label);
+                         textToSpeak = key.label.toString();
+                    } else {
+                        // FIXED: Cast int code to char for correct typing
+                        char code = (char) primaryCode;
+                        String charStr = String.valueOf(code);
+                        ic.commitText(charStr, 1);
+                        currentWord.append(charStr);
+                        textToSpeak = charStr; 
+                    }
                 }
-                
                 if (isCaps) {
                     isCaps = false;
                     updateKeyboardLayout();
@@ -331,8 +312,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (textToSpeak != null) speakSystem(textToSpeak);
     }
 
-    // --- Helper Methods ---
-
+    // --- Logic Helpers ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         if (isConsonant(primaryCode)) { 
              CharSequence before = ic.getTextBeforeCursor(1, 0);
