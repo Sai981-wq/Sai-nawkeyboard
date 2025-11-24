@@ -41,7 +41,7 @@
     </Row>
     
     <Row android:rowEdgeFlags="bottom">
-        <Key android:codes="-6" android:keyLabel="ABC" android:keyWidth="15%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="-6" android:keyLabel="Letters" android:keyWidth="15%p" android:keyEdgeFlags="left"/>
         <Key android:codes="44" android:keyLabel="," android:keyWidth="10%p"/>
         <Key android:codes="-101" android:keyLabel="🌐" android:keyWidth="10%p"/>
         <Key android:codes="32" android:keyLabel="SPACE" android:keyWidth="40%p"/>
