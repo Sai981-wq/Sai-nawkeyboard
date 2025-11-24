@@ -5,7 +5,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
 import android.inputmethodservice.InputMethodService;
 import android.inputmethodservice.Keyboard;
 import android.inputmethodservice.KeyboardView;
@@ -105,7 +104,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         suggestionDB = SuggestionDB.getInstance(this);
 
-        initKeyboards(); // Keyboard များ စတင်တည်ဆောက်ခြင်း
+        initKeyboards(); 
 
         currentKeyboard = qwertyKeyboard;
         currentLanguageId = 0;
@@ -136,16 +135,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return layout;
     }
 
-    // *** ERROR FIX: ဒီ Method မရှိလို့ Error တက်နေတာပါ ***
-    // ဒါက Resource ID ကို နာမည်နဲ့ လှမ်းရှာပေးမယ့် Helper Method ပါ
-    private int getResId(String name) {
+    // *** ERROR FIX: ဒီ Method က အရေးကြီးဆုံးပါ ***
+    public int getResId(String name) {
         return getResources().getIdentifier(name, "xml", getPackageName());
     }
 
     private void initKeyboards() {
         boolean showNumRow = prefs.getBoolean("number_row", false);
         
-        // ဖိုင်နာမည်တွေနဲ့ လှမ်းခေါ်ပါမယ် (getResId ကိုသုံးပြီး)
+        // အခု getResId ကို သုံးထားလို့ Error မတက်တော့ပါဘူး
         if (showNumRow) {
             qwertyKeyboard = new Keyboard(this, getResId("qwerty_num"));
             myanmarKeyboard = new Keyboard(this, getResId("myanmar_num"));
@@ -160,7 +158,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         myanmarShiftKeyboard = new Keyboard(this, getResId("myanmar_shift"));
         shanShiftKeyboard = new Keyboard(this, getResId("shan_shift"));
         
-        // Symbols Logic
         int symEnId = getResId("symbols");
         int symMmId = getResId("symbols_mm");
 
