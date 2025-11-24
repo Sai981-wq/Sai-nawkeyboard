@@ -136,8 +136,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return layout;
     }
 
-    // *** ERROR FIX: Dynamic Resource Loading ***
-    // R.xml... လို့ မခေါ်ဘဲ ဖိုင်နာမည်နဲ့ ရှာခိုင်းခြင်း (Error မတက်တော့ပါ)
+    // *** ERROR FIX: ဒီ Method မရှိလို့ Error တက်နေတာပါ ***
+    // ဒါက Resource ID ကို နာမည်နဲ့ လှမ်းရှာပေးမယ့် Helper Method ပါ
     private int getResId(String name) {
         return getResources().getIdentifier(name, "xml", getPackageName());
     }
@@ -145,7 +145,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void initKeyboards() {
         boolean showNumRow = prefs.getBoolean("number_row", false);
         
-        // ဖိုင်နာမည်တွေနဲ့ လှမ်းခေါ်ပါမယ်
+        // ဖိုင်နာမည်တွေနဲ့ လှမ်းခေါ်ပါမယ် (getResId ကိုသုံးပြီး)
         if (showNumRow) {
             qwertyKeyboard = new Keyboard(this, getResId("qwerty_num"));
             myanmarKeyboard = new Keyboard(this, getResId("myanmar_num"));
@@ -160,18 +160,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         myanmarShiftKeyboard = new Keyboard(this, getResId("myanmar_shift"));
         shanShiftKeyboard = new Keyboard(this, getResId("shan_shift"));
         
-        // Symbols Logic (Fixed)
+        // Symbols Logic
         int symEnId = getResId("symbols");
         int symMmId = getResId("symbols_mm");
 
-        // ဖိုင်မရှိရင် Crash မဖြစ်အောင် စစ်ပါမယ်
         if (symEnId != 0) symbolsEnKeyboard = new Keyboard(this, symEnId);
-        else symbolsEnKeyboard = qwertyKeyboard; // Fallback
+        else symbolsEnKeyboard = qwertyKeyboard; 
 
         if (symMmId != 0) symbolsMmKeyboard = new Keyboard(this, symMmId);
         else symbolsMmKeyboard = symbolsEnKeyboard;
         
-        symbolsKeyboard = symbolsEnKeyboard; // Default
+        symbolsKeyboard = symbolsEnKeyboard;
     }
 
     private void setupSpeechRecognizer() {
