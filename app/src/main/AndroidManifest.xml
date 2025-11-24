@@ -4,7 +4,6 @@
 
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.INTERNET" />
-    
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <queries>
@@ -38,8 +37,7 @@
         <activity
             android:name=".SettingsActivity"
             android:exported="true"
-            android:label="Sai Naw Settings">
-            <intent-filter>
+            android:label="Sai Naw Keyboard"> <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>

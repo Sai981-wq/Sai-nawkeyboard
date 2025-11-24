@@ -15,15 +15,12 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
-    
-    // *** ဒီ Listener Interface မရှိရင် Service မှာ Error တက်ပါမယ် ***
     private OnAccessibilityKeyListener listener;
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
     }
 
-    // Constructor အသစ် (Listener လက်ခံမယ့်ပုံစံ)
     public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener) {
         super(view);
         this.view = view;
@@ -82,7 +79,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     @Override
     protected boolean onPerformActionForVirtualView(int virtualViewId, int action, @Nullable Bundle arguments) {
         if (action == AccessibilityNodeInfoCompat.ACTION_CLICK) {
-            // Double Tap လုပ်ရင် Listener ဆီပြန်ပို့မယ်
             if (currentKeyboard != null && virtualViewId < currentKeyboard.getKeys().size()) {
                 Keyboard.Key key = currentKeyboard.getKeys().get(virtualViewId);
                 if (listener != null) {
@@ -109,9 +105,14 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (key.label != null) label = key.label.toString();
         else if (key.text != null) label = key.text.toString();
 
-        if (label != null && isShanOrMyanmar && isCaps) {
-            return "Sub " + label;
+        // *** (၅) Capital Letter Logic ***
+        // English စာလုံးဖြစ်ပြီး Shift နှိပ်ထားရင် "Capital A" လို့ဖတ်မယ်
+        if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
+             return "Capital " + label;
         }
+
+        // *** (၁) Shift "Sub" Logic ဖြုတ်လိုက်ပါပြီ ***
+
         return label != null ? label : "Unlabeled Key";
     }
 }

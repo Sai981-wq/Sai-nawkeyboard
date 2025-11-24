@@ -5,6 +5,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import android.database.sqlite.SQLiteStatement;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -15,7 +16,17 @@ public class SuggestionDB extends SQLiteOpenHelper {
     private static final String COLUMN_WORD = "word";
     private static final String COLUMN_FREQ = "frequency";
 
-    public SuggestionDB(Context context) {
+    // *** Singleton Instance ***
+    private static SuggestionDB instance;
+
+    public static synchronized SuggestionDB getInstance(Context context) {
+        if (instance == null) {
+            instance = new SuggestionDB(context.getApplicationContext());
+        }
+        return instance;
+    }
+
+    private SuggestionDB(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
     }
 
@@ -36,19 +47,23 @@ public class SuggestionDB extends SQLiteOpenHelper {
     public void saveWord(String word) {
         if (word == null || word.trim().isEmpty()) return;
         SQLiteDatabase db = this.getWritableDatabase();
-        Cursor cursor = db.query(TABLE_WORDS, null, COLUMN_WORD + "=?", new String[]{word}, null, null, null);
-        if (cursor != null && cursor.moveToFirst()) {
-            int currentFreq = cursor.getInt(cursor.getColumnIndex(COLUMN_FREQ));
-            ContentValues values = new ContentValues();
-            values.put(COLUMN_FREQ, currentFreq + 1);
-            db.update(TABLE_WORDS, values, COLUMN_WORD + "=?", new String[]{word});
-            cursor.close();
-        } else {
-            ContentValues values = new ContentValues();
-            values.put(COLUMN_WORD, word);
-            values.put(COLUMN_FREQ, 1);
-            db.insert(TABLE_WORDS, null, values);
-            if(cursor != null) cursor.close();
+        db.beginTransaction();
+        try {
+            String updateSql = "UPDATE " + TABLE_WORDS + " SET " + COLUMN_FREQ + " = " + COLUMN_FREQ + " + 1 WHERE " + COLUMN_WORD + " = ?";
+            SQLiteStatement stmt = db.compileStatement(updateSql);
+            stmt.bindString(1, word);
+            int rowsAffected = stmt.executeUpdateDelete();
+            if (rowsAffected == 0) {
+                ContentValues values = new ContentValues();
+                values.put(COLUMN_WORD, word);
+                values.put(COLUMN_FREQ, 1);
+                db.insert(TABLE_WORDS, null, values);
+            }
+            db.setTransactionSuccessful();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            db.endTransaction();
         }
     }
 
@@ -56,15 +71,22 @@ public class SuggestionDB extends SQLiteOpenHelper {
         List<String> suggestions = new ArrayList<>();
         if (prefix == null || prefix.isEmpty()) return suggestions;
         SQLiteDatabase db = this.getReadableDatabase();
-        Cursor cursor = db.query(TABLE_WORDS, new String[]{COLUMN_WORD}, 
-                COLUMN_WORD + " LIKE ?", new String[]{prefix + "%"}, 
-                null, null, COLUMN_FREQ + " DESC", "5");
-        if (cursor != null) {
-            while (cursor.moveToNext()) {
-                suggestions.add(cursor.getString(0));
+        Cursor cursor = null;
+        try {
+            cursor = db.query(TABLE_WORDS, new String[]{COLUMN_WORD}, 
+                    COLUMN_WORD + " LIKE ?", new String[]{prefix + "%"}, 
+                    null, null, COLUMN_FREQ + " DESC", "5");
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    suggestions.add(cursor.getString(0));
+                }
             }
-            cursor.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            if (cursor != null) cursor.close();
         }
         return suggestions;
     }
 }
+
