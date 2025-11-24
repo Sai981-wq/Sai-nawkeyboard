@@ -43,6 +43,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     
     private Keyboard currentKeyboard;
     private boolean isCaps = false;
+    // AccessibilityManager ကို Event ပို့ဖို့လောက်ပဲ သုံးတော့မယ် (Check လုပ်ဖို့ မသုံးတော့ဘူး)
     private AccessibilityManager accessibilityManager;
     private AudioManager audioManager;
     private SharedPreferences prefs;
@@ -87,7 +88,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
-        // TalkBack Logic
+        // 1. Hover Listener (TalkBack သမားများအတွက် အလုပ်လုပ်မည်)
+        // TalkBack ပိတ်ထားရင် ဒီ Event က လုံးဝ ဝင်လာမှာ မဟုတ်ဘူး။
         keyboardView.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent event) {
@@ -95,13 +97,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         });
 
-        // *** အရေးကြီးဆုံး ပြင်ဆင်ချက် ***
-        // TalkBack ဖွင့်ထားမှသာ System Touch ကို ပိတ်မယ် (Block)
-        // TalkBack ပိတ်ထားရင် System ကို လွှတ်ပေးမယ် (return false) -> ဒါမှ Normal typing ပေါ့ပါးမယ်
+        // 2. Touch Listener (Long Press Check အတွက်သာ)
+        // System ရဲ့ Touch ကို လုံးဝ မပိတ်တော့ဘူး (return false)
         keyboardView.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                return accessibilityManager.isEnabled(); 
+                // TalkBack ဖွင့်ထားရင် System က Touch ကို Hover အဖြစ်ပြောင်းပေးတတ်တယ်
+                // ဒါပေမဲ့ Double Tap လုပ်ရင် Touch အဖြစ် ဝင်လာမယ်
+                // ဒါကြောင့် ဒီမှာ ဘာမှမပိတ်ဘဲ System ကို လွှတ်ပေးလိုက်တာ အကောင်းဆုံး
+                return false; 
             }
         });
 
@@ -139,11 +143,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     // -----------------------------------------------------------
-    // 1. TALKBACK INPUT (HOVER)
+    // Event 1: HOVER (TalkBack Only)
     // -----------------------------------------------------------
     private boolean handleHover(MotionEvent event) {
-        if (!accessibilityManager.isEnabled()) return false;
-
+        // Hover event ဝင်လာပြီဆိုတာနဲ့ TalkBack (သို့) Mouse သုံးနေတာ သေချာပြီ
+        
         int action = event.getAction();
         int touchX = (int) event.getX();
         int touchY = (int) event.getY();
@@ -154,62 +158,56 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             case MotionEvent.ACTION_HOVER_MOVE:
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
+                    // လက်တင်ထားချိန် အသံထွက် (Explore)
                     playHaptic();
                     announceKeyText(currentKeyboard.getKeys().get(keyIndex));
                 }
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
+                // လက်ကြွလိုက်ချိန် (Lift to Type)
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        // TalkBack input goes to common processor
-                        if (key.codes.length > 0) {
-                            processInput(key.codes[0], key);
-                        }
+                        // Hover ကနေ ရိုက်တာမို့ တိုက်ရိုက်ခေါ်မယ်
+                        handleInput(key.codes[0], key);
                     }
                     lastHoverKeyIndex = -1;
                 }
                 break;
         }
-        return true; 
+        return true; // Hover ကို ငါတို့တာဝန်ယူတယ်၊ System မပါနဲ့တော့
     }
 
     // -----------------------------------------------------------
-    // 2. NORMAL INPUT (TOUCH)
+    // Event 2: STANDARD KEYBOARD EVENTS (Normal Typing + TalkBack Double Tap)
     // -----------------------------------------------------------
-    // System calls these automatically when onTouch returns false
     
     @Override
     public void onKey(int primaryCode, int[] keyCodes) {
-        if (accessibilityManager.isEnabled()) return; // Ignore if TalkBack is on (Avoid double typing)
+        // TalkBack သမားက Hover နဲ့ရိုက်ပြီးသွားရင် ဒီကောင် ထပ်မဝင်အောင် စစ်ဖို့လိုနိုင်တယ်
+        // ဒါပေမဲ့ Hover Exit မှာ handleInput ခေါ်ထားပြီးပြီ။
+        // Android System က Hover ပြီးရင် onKey ကို ထပ်မပို့တတ်ဘူး (Lift-to-type ဆိုရင်)
+        // Double Tap ဆိုရင်တော့ ပို့မယ်။
         
-        // Normal input goes to common processor
-        processInput(primaryCode, null);
+        handleInput(primaryCode, null);
     }
 
     @Override
     public void onText(CharSequence text) {
-        if (accessibilityManager.isEnabled()) return;
-        
-        // Normal input for compound chars (from XML)
-        processInput(0, null); // We don't pass key here, logic handles text commit differently if needed, 
-                               // but usually onText just commits directly.
         InputConnection ic = getCurrentInputConnection();
-        if (ic != null) {
-            ic.commitText(text, 1);
-            playSound();
-            if (isCaps) {
-                isCaps = false;
-                updateKeyboardLayout();
-            }
+        if (ic == null) return;
+        ic.commitText(text, 1);
+        playSound();
+        if (isCaps) {
+            isCaps = false;
+            updateKeyboardLayout();
         }
     }
 
     @Override
     public void onPress(int primaryCode) {
-        if (accessibilityManager.isEnabled()) return;
         if (primaryCode == 32) {
             isSpaceLongPressed = false;
             handler.postDelayed(spaceLongPressRunnable, 600);
@@ -219,16 +217,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override
     public void onRelease(int primaryCode) {
-        if (accessibilityManager.isEnabled()) return;
         if (primaryCode == 32) {
             handler.removeCallbacks(spaceLongPressRunnable);
         }
     }
 
     // -----------------------------------------------------------
-    // 3. CENTRAL PROCESSOR (COMMON LOGIC)
+    // CENTRAL LOGIC (Used by both)
     // -----------------------------------------------------------
-    private void processInput(int primaryCode, Keyboard.Key key) {
+    private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(); 
 
         InputConnection ic = getCurrentInputConnection();
@@ -236,7 +233,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         String textToSpeak = null;
 
-        // Check for Compound Characters (Mainly for TalkBack, Normal uses onText)
+        // 1. Compound Character Check (TalkBack Hover ကနေလာရင် Key object ပါတယ်)
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
             textToSpeak = key.text.toString();
@@ -244,6 +241,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             return;
         }
 
+        // 2. Key Code Handling
         switch (primaryCode) {
             case -10: 
                 startVoiceInput(); 
@@ -295,25 +293,24 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 isSpaceLongPressed = false;
                 break;
             case 0: break;
-            
             default:
-                // Smart Reordering
                 if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
                     char code = (char) primaryCode;
                     currentWord.append(String.valueOf(code));
                 } else {
+                    // Normal Character
+                    // Key object မပါလာရင် (Normal onKey) ဆိုရင် primaryCode ကို သုံးမယ်
+                    // Key object ပါလာရင် (Hover) ဆိုရင် label/text ကို ဦးစားပေးမယ်
+                    String charStr;
                     if (key != null && key.label != null && key.label.length() > 1) {
-                         ic.commitText(key.label, 1);
-                         currentWord.append(key.label);
-                         textToSpeak = key.label.toString();
+                        charStr = key.label.toString();
                     } else {
-                        // Normal Character
-                        char code = (char) primaryCode;
-                        String charStr = String.valueOf(code);
-                        ic.commitText(charStr, 1);
-                        currentWord.append(charStr);
-                        textToSpeak = charStr; 
+                        charStr = String.valueOf((char) primaryCode);
                     }
+                    
+                    ic.commitText(charStr, 1);
+                    currentWord.append(charStr);
+                    textToSpeak = charStr;
                 }
                 
                 if (isCaps) {
@@ -326,16 +323,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (textToSpeak != null) speakSystem(textToSpeak);
     }
 
-    // -----------------------------------------------------------
-    // 4. HELPERS
-    // -----------------------------------------------------------
-
+    // ... Helper Methods (Same as before) ...
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         if (isConsonant(primaryCode)) { 
              CharSequence before = ic.getTextBeforeCursor(1, 0);
              if (before != null && before.length() > 0) {
                  char preChar = before.charAt(0);
-                 // ေ (4145), ႄ (4228)
                  if (preChar == 4145 || preChar == 4228) { 
                      ic.deleteSurroundingText(1, 0);
                      ic.commitText(String.valueOf((char)primaryCode), 1);
@@ -348,7 +341,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
              CharSequence before = ic.getTextBeforeCursor(1, 0);
              if (before != null && before.length() > 0) {
                  char prev = before.charAt(0);
-                 // ု (4143), ူ (4144)
                  if (prev == 4143 || prev == 4144) { 
                      ic.deleteSurroundingText(1, 0);
                      ic.commitText(String.valueOf((char)4141), 1);
@@ -362,6 +354,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private boolean isConsonant(int code) {
         return (code >= 4096 && code <= 4138) || (code >= 4213 && code <= 4225) || code == 4100 || code == 4101;
+    }
+
+    private boolean isShanOrMyanmar() {
+        return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
+               currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
     }
 
     private void saveCurrentWordToDB() {
@@ -468,16 +465,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         else if (code == -6) text = "Alphabet";
         else if (code == -101) text = "Next Language";
         else if (code == -10) text = "Voice Typing";
-        
         if (text == null && key.label != null) text = key.label.toString();
         if (text == null && key.text != null) text = key.text.toString();
-        
         if (text != null) speakSystem(text);
-    }
-
-    private boolean isShanOrMyanmar() {
-        return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
-               currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
     }
 
     private void startVoiceInput() {
