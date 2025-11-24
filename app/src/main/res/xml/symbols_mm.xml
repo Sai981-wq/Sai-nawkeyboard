@@ -3,16 +3,16 @@
     android:keyWidth="10%p" android:horizontalGap="0px" android:verticalGap="0px" android:keyHeight="50dp">
     
     <Row>
-        <Key android:codes="49" android:keyLabel="1"/>
-        <Key android:codes="50" android:keyLabel="2"/>
-        <Key android:codes="51" android:keyLabel="3"/>
-        <Key android:codes="52" android:keyLabel="4"/>
-        <Key android:codes="53" android:keyLabel="5"/>
-        <Key android:codes="54" android:keyLabel="6"/>
-        <Key android:codes="55" android:keyLabel="7"/>
-        <Key android:codes="56" android:keyLabel="8"/>
-        <Key android:codes="57" android:keyLabel="9"/>
-        <Key android:codes="48" android:keyLabel="0"/>
+        <Key android:codes="4161" android:keyLabel="၁"/>
+        <Key android:codes="4162" android:keyLabel="၂"/>
+        <Key android:codes="4163" android:keyLabel="၃"/>
+        <Key android:codes="4164" android:keyLabel="၄"/>
+        <Key android:codes="4165" android:keyLabel="၅"/>
+        <Key android:codes="4166" android:keyLabel="၆"/>
+        <Key android:codes="4167" android:keyLabel="၇"/>
+        <Key android:codes="4168" android:keyLabel="၈"/>
+        <Key android:codes="4169" android:keyLabel="၉"/>
+        <Key android:codes="4160" android:keyLabel="၀"/>
     </Row>
     
     <Row>
@@ -49,4 +49,3 @@
         <Key android:codes="-4" android:keyLabel="⏎" android:keyWidth="15%p" android:keyEdgeFlags="right"/>
     </Row>
 </Keyboard>
-
