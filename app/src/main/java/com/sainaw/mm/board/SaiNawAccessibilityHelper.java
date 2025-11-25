@@ -4,7 +4,7 @@ import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Bundle;
 import android.view.View;
-import android.view.accessibility.AccessibilityEvent; // New Import
+import android.view.accessibility.AccessibilityEvent;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
@@ -35,15 +35,16 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         invalidateRoot(); 
     }
 
-    // *** (၂) Echo Fix: TalkBack ကို Click Event ပို့ပေးမယ့် Method ***
     public void simulateClick(int virtualViewId) {
         sendEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_CLICKED);
     }
 
     @Override
     protected int getVirtualViewAt(float x, float y) {
-        if (currentKeyboard == null) return HOST_ID;
+        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys.isEmpty()) return HOST_ID;
+
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.isInside((int) x, (int) y)) {
@@ -56,7 +57,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     @Override
     protected void getVisibleVirtualViews(List<Integer> virtualViewIds) {
-        if (currentKeyboard == null) return;
+        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         for (int i = 0; i < keys.size(); i++) {
             if (keys.get(i).codes[0] != -100) {
@@ -67,7 +68,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     @Override
     protected void onPopulateNodeForVirtualView(int virtualViewId, @NonNull AccessibilityNodeInfoCompat node) {
-        if (currentKeyboard == null) return;
+        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (virtualViewId >= keys.size()) return;
         
@@ -111,7 +112,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (key.label != null) label = key.label.toString();
         else if (key.text != null) label = key.text.toString();
 
-        // Capital Logic
         if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
              return "Capital " + label;
         }

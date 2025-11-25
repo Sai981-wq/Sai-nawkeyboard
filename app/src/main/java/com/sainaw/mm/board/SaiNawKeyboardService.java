@@ -29,7 +29,6 @@ import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.widget.Toast;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import java.util.ArrayList;
@@ -265,7 +264,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
-    // *** LIFT TO TYPE (With Safety & Echo Support) ***
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
@@ -282,8 +280,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
                         if (key.codes[0] != -100) {
                             handleInput(key.codes[0], key);
-                            // *** (၂) Echo Fix: Simulate Click for Accessibility ***
-                            // TalkBack will see this as a "Click" and announce based on user settings
                             if (accessibilityHelper != null) {
                                 accessibilityHelper.simulateClick(lastHoverKeyIndex);
                             }
@@ -529,49 +525,59 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private void updateKeyboardLayout() {
-        // *** (၁) Crash Fix: Reset Hover Index Before Changing ***
         lastHoverKeyIndex = -1;
         
         try {
-            if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
-            } else if (isCaps) {
-                if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard;
-                else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard;
-                else if (currentKeyboard == shanKeyboard) currentKeyboard = shanShiftKeyboard;
-            } else {
-                if (currentKeyboard == qwertyShiftKeyboard) currentKeyboard = qwertyKeyboard;
-                else if (currentKeyboard == myanmarShiftKeyboard) currentKeyboard = myanmarKeyboard;
-                else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard;
+            if (keyboardView != null) {
+                if (accessibilityHelper != null) {
+                    accessibilityHelper.setKeyboard(null, false, false);
+                }
+                keyboardView.setKeyboard(null); 
+                
+                if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
+                } else if (isCaps) {
+                    if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard;
+                    else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard;
+                    else if (currentKeyboard == shanKeyboard) currentKeyboard = shanShiftKeyboard;
+                } else {
+                    if (currentKeyboard == qwertyShiftKeyboard) currentKeyboard = qwertyKeyboard;
+                    else if (currentKeyboard == myanmarShiftKeyboard) currentKeyboard = myanmarKeyboard;
+                    else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard;
+                }
+
+                keyboardView.setKeyboard(currentKeyboard);
+                keyboardView.invalidateAllKeys();
+                updateHelperState();
             }
-            keyboardView.setKeyboard(currentKeyboard);
-            keyboardView.invalidateAllKeys();
-            updateHelperState();
         } catch (Exception e) {
             e.printStackTrace();
+            currentKeyboard = qwertyKeyboard;
+            if (keyboardView != null) {
+                keyboardView.setKeyboard(currentKeyboard);
+            }
         }
     }
 
     private void changeLanguage() {
         lastHoverKeyIndex = -1;
-        if (currentLanguageId == 0) { // Eng -> MM
+        if (currentLanguageId == 0) { 
             currentLanguageId = 1;
             currentKeyboard = myanmarKeyboard;
-        } else if (currentLanguageId == 1) { // MM -> Shan
+        } else if (currentLanguageId == 1) { 
             currentLanguageId = 2;
             currentKeyboard = shanKeyboard;
-        } else { // Shan -> Eng
+        } else { 
             currentLanguageId = 0;
             currentKeyboard = qwertyKeyboard;
         }
         isCaps = false;
-        updateKeyboardLayout(); // Use safe update
+        updateKeyboardLayout();
     }
 
     private int getNearestKeyIndexFast(int x, int y) {
+        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return -1;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        
-        // *** (၁) Crash Fix: Check size to avoid IndexOutOfBounds ***
-        if (keys == null || keys.isEmpty()) return -1;
+        if (keys.isEmpty()) return -1;
 
         for (int i = 0; i < keys.size(); i++) {
             if (keys.get(i).isInside(x, y)) {
