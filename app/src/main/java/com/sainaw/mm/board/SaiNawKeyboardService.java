@@ -400,9 +400,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                 case 0: break;
                 default:
-                    // *** SMART REORDERING LOGIC ***
                     if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
-                       // Reordering handled inside the method
+                        char code = (char) primaryCode;
+                        currentWord.append(String.valueOf(code));
                     } else {
                         String charStr;
                         if (key != null && key.label != null && key.label.length() > 1) {
@@ -455,27 +455,38 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** IMPROVED MYANMAR REORDERING ***
+    // *** FIXED: SMART REORDERING (No more "ဖြစ်နပေါတယ်") ***
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
+        // 2 လုံးနောက်ပြန်ကြည့်မယ်
         CharSequence before = ic.getTextBeforeCursor(2, 0);
         if (before == null) return false;
         String prevStr = before.toString();
-        if (prevStr.isEmpty()) return false;
-        char lastChar = prevStr.charAt(prevStr.length() - 1);
-
-        // ၁။ ဗျည်း + သဝေထိုး (ေ) လဲခြင်း (Pre-base Vowel Swap)
-        // User types: ေ (4145) -> Consonant
-        // Result: Consonant -> ေ
-        if (isConsonant(primaryCode) && lastChar == 4145) {
-            ic.deleteSurroundingText(1, 0);
-            ic.commitText(String.valueOf((char) primaryCode), 1);
-            ic.commitText(String.valueOf(lastChar), 1);
-            return true;
+        int len = prevStr.length();
+        if (len == 0) return false;
+        
+        char lastChar = prevStr.charAt(len - 1); // နောက်ဆုံးစာလုံး (ဥပမာ - ေ)
+        
+        // ရှေ့ကစာလုံး (ဥပမာ - န) ရှိမရှိ စစ်ရန်
+        char beforeLastChar = 0;
+        if (len >= 2) {
+            beforeLastChar = prevStr.charAt(len - 2);
         }
 
-        // ၂။ ေ + ဗျည်းတွဲ (Medials) လဲခြင်း
-        // Context: [Consonant] [ေ] -> User types [Medial]
-        // Result: [Consonant] [Medial] [ေ]
+        // ၁။ ဗျည်း + သဝေထိုး (ေ) လဲခြင်း (Consonant + E swap)
+        // Rule: Swap ONLY if 'ေ' is NOT already attached to a consonant
+        // (ဆိုလိုတာက "နေ" လို့ ရှိပြီးသားဆိုရင် နောက်က "ပ" လာရိုက်လည်း နေရာမလဲရဘူး)
+        if (isConsonant(primaryCode) && lastChar == 4145) {
+            // 'ေ' ရဲ့ရှေ့က စာလုံးသည် ဗျည်းမဟုတ်မှသာ (Space တို့၊ ဘာမှမရှိတာတို့မှသာ) လဲမယ်
+            if (!isConsonant(beforeLastChar)) {
+                ic.deleteSurroundingText(1, 0);
+                ic.commitText(String.valueOf((char) primaryCode), 1);
+                ic.commitText(String.valueOf(lastChar), 1);
+                return true;
+            }
+        }
+
+        // ၂။ ေ + ဗျည်းတွဲ (Medials) လဲခြင်း (E + Medial -> Medial + E)
+        // Medial (ြ) ကတော့ အမြဲတမ်း ကြားထဲဝင်ရမှာမို့ Condition မလိုဘူး
         if (isMedial(primaryCode) && lastChar == 4145) {
              ic.deleteSurroundingText(1, 0);
              ic.commitText(String.valueOf((char) primaryCode), 1);
@@ -483,9 +494,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
              return true;
         }
 
-        // ၃။ ံ + ု -> ုံ (Swap Anusvara & U-vowel)
-        // User types: ံ (4150) -> ု (4143)
-        // Result: ု -> ံ (Standard Rendering Order)
+        // ၃။ ံ + ု -> ုံ (Anusvara + U -> U + Anusvara)
         if (primaryCode == 4143 && lastChar == 4150) {
             ic.deleteSurroundingText(1, 0);
             ic.commitText(String.valueOf((char) primaryCode), 1);
@@ -496,14 +505,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return false;
     }
 
-    // ဗျည်းများ (Myanmar + Shan)
     private boolean isConsonant(int code) {
-        return (code >= 4096 && code <= 4129) || // Myanmar Consonants
-               (code >= 4213 && code <= 4225) || // Shan Consonants
+        return (code >= 4096 && code <= 4129) || 
+               (code >= 4213 && code <= 4225) || 
                code == 4100 || code == 4101;
     }
 
-    // ဗျည်းတွဲများ (Medials: ြ, ျ, ွ, ှ)
     private boolean isMedial(int code) {
         return code == 4155 || code == 4156 || code == 4157 || code == 4158;
     }
@@ -586,6 +593,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentKeyboard = nextKeyboard;
 
             if (keyboardView != null) {
+                if (accessibilityHelper != null) {
+                    accessibilityHelper.setKeyboard(null, false, false);
+                }
+                keyboardView.setKeyboard(null); 
                 keyboardView.setKeyboard(currentKeyboard);
                 keyboardView.invalidateAllKeys();
                 updateHelperState();
