@@ -16,7 +16,6 @@ public class SuggestionDB extends SQLiteOpenHelper {
     private static final String COLUMN_WORD = "word";
     private static final String COLUMN_FREQ = "frequency";
 
-    // *** Singleton Instance ***
     private static SuggestionDB instance;
 
     public static synchronized SuggestionDB getInstance(Context context) {
@@ -75,7 +74,7 @@ public class SuggestionDB extends SQLiteOpenHelper {
         try {
             cursor = db.query(TABLE_WORDS, new String[]{COLUMN_WORD}, 
                     COLUMN_WORD + " LIKE ?", new String[]{prefix + "%"}, 
-                    null, null, COLUMN_FREQ + " DESC", "5");
+                    null, null, COLUMN_FREQ + " DESC", "3"); // Top 3 suggestions
             if (cursor != null) {
                 while (cursor.moveToNext()) {
                     suggestions.add(cursor.getString(0));
