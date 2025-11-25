@@ -4,7 +4,6 @@ import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Bundle;
 import android.view.View;
-import android.view.accessibility.AccessibilityEvent;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
@@ -32,18 +31,15 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
+        // Layout ပြောင်းရင် TalkBack ကို အသစ်ပြန်မြင်အောင် Refresh လုပ်မယ်
         invalidateRoot(); 
-    }
-
-    public void simulateClick(int virtualViewId) {
-        sendEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_CLICKED);
     }
 
     @Override
     protected int getVirtualViewAt(float x, float y) {
-        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return HOST_ID;
+        if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys.isEmpty()) return HOST_ID;
+        if (keys == null || keys.isEmpty()) return HOST_ID;
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
@@ -57,8 +53,10 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     @Override
     protected void getVisibleVirtualViews(List<Integer> virtualViewIds) {
-        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return;
+        if (currentKeyboard == null) return;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys == null) return;
+
         for (int i = 0; i < keys.size(); i++) {
             if (keys.get(i).codes[0] != -100) {
                 virtualViewIds.add(i);
@@ -68,9 +66,16 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     @Override
     protected void onPopulateNodeForVirtualView(int virtualViewId, @NonNull AccessibilityNodeInfoCompat node) {
-        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return;
+        if (currentKeyboard == null) return;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (virtualViewId >= keys.size()) return;
+        
+        // *** CRASH FIX: Safety Lock ***
+        // တောင်းဆိုတဲ့ ID က Key အရေအတွက်ထက် များနေရင် ဘာမှမလုပ်ဘူး
+        if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) {
+            node.setContentDescription("");
+            node.setBoundsInParent(new Rect(0, 0, 1, 1)); // Dummy bounds
+            return;
+        }
         
         Keyboard.Key key = keys.get(virtualViewId);
         String description = getKeyDescription(key);
