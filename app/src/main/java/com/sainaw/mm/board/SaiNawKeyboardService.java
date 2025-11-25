@@ -40,7 +40,7 @@ import java.util.concurrent.Executors;
 
 public class SaiNawKeyboardService extends InputMethodService implements KeyboardView.OnKeyboardActionListener {
 
-    // --- Constants for Readability ---
+    // --- Constants ---
     private static final int CODE_DELETE = -5;
     private static final int CODE_ENTER = -4;
     private static final int CODE_SPACE = 32;
@@ -50,45 +50,50 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int CODE_LANG_CHANGE = -101;
     private static final int CODE_VOICE = -10;
 
-    // Myanmar Unicode Constants
+    // Myanmar Unicode
     private static final int MM_A = 4129;        // 'အ'
     private static final int MM_THWAY_HTOE = 4145; // 'ေ'
 
+    // Components
     private KeyboardView keyboardView;
     private LinearLayout candidateContainer;
     private List<TextView> candidateViews = new ArrayList<>();
-
     private SaiNawAccessibilityHelper accessibilityHelper;
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
 
+    // Voice
     private SpeechRecognizer speechRecognizer;
     private Intent speechIntent;
     private boolean isListening = false;
 
+    // Keyboards
     private Keyboard qwertyKeyboard, qwertyShiftKeyboard;
     private Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     private Keyboard shanKeyboard, shanShiftKeyboard;
     private Keyboard symbolsEnKeyboard, symbolsMmKeyboard; 
     private Keyboard currentKeyboard;
 
-    // State Variables
+    // State
     private boolean isCaps = false;
     private boolean isSymbols = false; 
     private int currentLanguageId = 0; // 0=Eng, 1=MM, 2=Shan
 
+    // System Services
     private AudioManager audioManager;
     private AccessibilityManager accessibilityManager;
     private SharedPreferences prefs;
 
+    // Settings
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
 
+    // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
-    // --- Optimized Candidate Listener (Memory Fix) ---
+    // Listener reuse for Memory Optimization
     private final View.OnClickListener candidateListener = v -> {
         String suggestion = (String) v.getTag();
         if (suggestion != null) {
@@ -103,6 +108,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     };
 
+    // Space Long Press
     private boolean isSpaceLongPressed = false;
     private Runnable spaceLongPressRunnable = new Runnable() {
         @Override
@@ -148,6 +154,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         updateHelperState();
 
+        // --- TalkBack Touch Handler ---
         keyboardView.setOnHoverListener((v, event) -> {
             boolean handled = accessibilityHelper.dispatchHoverEvent(event);
             handleLiftToType(event);
@@ -271,12 +278,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
+    // --- TalkBack Safety: Handle Lift-to-Type with Bounds Check ---
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
             float x = event.getX();
             float y = event.getY();
-            
+            int height = keyboardView.getHeight();
+            int width = keyboardView.getWidth();
+
+            // Safety: If finger slides OFF the keyboard area (esp. Top), CANCEL typing
+            if (y <= 0 || y >= height || x <= 0 || x >= width) {
+                lastHoverKeyIndex = -1;
+                return; 
+            }
+
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
                 int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
@@ -284,7 +300,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     playHaptic(0);
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                if (lastHoverKeyIndex != -1) {
+                // Confirm finger is still inside bounds before committing
+                if (lastHoverKeyIndex != -1 && y > 0 && y < height && x > 0 && x < width) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
@@ -292,8 +309,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             handleInput(key.codes[0], key);
                         }
                     }
-                    lastHoverKeyIndex = -1;
                 }
+                lastHoverKeyIndex = -1;
             }
         } catch (Exception e) {
             lastHoverKeyIndex = -1; 
@@ -339,7 +356,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- Main Logic ---
+    // --- Main Input Logic ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -365,16 +382,23 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     updateKeyboardLayout();
                     announceText("Symbols Keyboard");
                     break;
+                    
                 case CODE_SYMBOL_OFF:
                     isSymbols = false;
                     updateKeyboardLayout();
-                    announceText("English Keyboard");
+                    // Announce correct language when returning
+                    String restoreLang = "English Keyboard";
+                    if (currentLanguageId == 1) restoreLang = "Myanmar Keyboard";
+                    else if (currentLanguageId == 2) restoreLang = "Shan Keyboard";
+                    announceText(restoreLang);
                     break;
+                    
                 case CODE_LANG_CHANGE:
                     changeLanguage();
                     break;
                     
-                case CODE_ENTER: // Gboard Style Enter Logic
+                case CODE_ENTER: 
+                    // Gboard Style Enter
                     EditorInfo editorInfo = getCurrentInputEditorInfo();
                     boolean isMultiLine = (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
                     int action = editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
@@ -391,7 +415,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     saveWordAndReset();
                     break;
 
-                case CODE_DELETE: // TalkBack Supported Delete
+                case CODE_DELETE: 
+                    // TalkBack feedback for deletion
                     CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
                     ic.deleteSurroundingText(1, 0);
                     
@@ -418,6 +443,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 case 0: break;
                 
                 default:
+                    // Smart Reordering with Performance & Gboard Logic
                     if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
                         currentWord.append(String.valueOf((char) primaryCode));
                     } else {
@@ -472,7 +498,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- Gboard Style Smart Reordering with Performance Fix ---
+    // --- Smart Reordering (Optimized) ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         CharSequence before = ic.getTextBeforeCursor(2, 0);
         if (before == null) return false;
@@ -503,9 +529,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return false;
     }
 
-    // Helper for batch edit (Performance)
     private void performBatchReplace(InputConnection ic, int newCode, char oldChar) {
-        ic.beginBatchEdit();
+        ic.beginBatchEdit(); // Optimize Performance
         ic.deleteSurroundingText(1, 0);
         ic.commitText(String.valueOf((char) newCode), 1);
         ic.commitText(String.valueOf(oldChar), 1);
