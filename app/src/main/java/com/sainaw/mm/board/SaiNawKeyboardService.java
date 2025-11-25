@@ -24,8 +24,8 @@ import android.speech.SpeechRecognizer;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.accessibility.AccessibilityEvent; // Import Added
-import android.view.accessibility.AccessibilityManager; // Import Added
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
@@ -62,7 +62,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard currentKeyboard;
     private boolean isCaps = false;
     private AudioManager audioManager;
-    private AccessibilityManager accessibilityManager; // Manager Added
+    private AccessibilityManager accessibilityManager;
     private SharedPreferences prefs;
 
     private int lastHoverKeyIndex = -1;
@@ -107,7 +107,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         initCandidateViews(isDarkTheme);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-        accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE); // Init Manager
+        accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         suggestionDB = SuggestionDB.getInstance(this);
 
         initKeyboards(); 
@@ -269,16 +269,31 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
+    // *** FIX: Slide-to-Cancel Logic Added Here ***
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
+            float x = event.getX();
+            float y = event.getY();
+            
+            // Get keyboard dimensions
+            int height = keyboardView.getHeight();
+            int width = keyboardView.getWidth();
+
+            // ၁။ ကီးဘုတ်ဘောင်ကျော်သွားရင် (အပေါ်ပွတ်ဆွဲရင်) Cancel မယ်
+            if (y < 0 || y > height || x < 0 || x > width) {
+                lastHoverKeyIndex = -1;
+                return;
+            }
+
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
-                int keyIndex = getNearestKeyIndexFast((int)event.getX(), (int)event.getY());
+                int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0);
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                // လက်ကြွတဲ့အချိန်မှာလည်း ဘောင်ထဲမှာ ရှိနေမှသာ ရိုက်မယ်
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
@@ -418,7 +433,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** FIX 2: Direct Announcement (Not Toast) ***
+    // *** FIX: Direct Announcement (No "Notification") ***
     private void announceText(String text) {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
@@ -537,12 +552,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // *** FIX 1: Remove "null" setting to fix TalkBack Silence ***
     private void updateKeyboardLayout() {
         lastHoverKeyIndex = -1;
         try {
             Keyboard nextKeyboard;
-            // ... Selection Logic ...
             if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
                 nextKeyboard = currentKeyboard; 
             } else if (isCaps) {
@@ -559,8 +572,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentKeyboard = nextKeyboard;
 
             if (keyboardView != null) {
-                // DO NOT SET NULL HERE! It breaks TalkBack focus.
-                // Helper Safety (added in previous step) protects against crash.
                 keyboardView.setKeyboard(currentKeyboard);
                 keyboardView.invalidateAllKeys();
                 updateHelperState();
@@ -590,12 +601,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             langName = "English";
         }
         
-        // *** FIX 2: Use Direct Announcement ***
+        // Using Announce instead of Toast
         announceText(langName);
         
         isCaps = false;
-        
-        // Same here, no null setting
         if (keyboardView != null) {
             keyboardView.setKeyboard(currentKeyboard);
             keyboardView.invalidateAllKeys();
