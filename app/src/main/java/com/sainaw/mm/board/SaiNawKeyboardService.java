@@ -60,10 +60,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard symbolsKeyboard;
 
     private Keyboard currentKeyboard;
-    // State Variables (အခြေအနေထိန်းချုပ်မှုများ)
     private boolean isCaps = false;
     private boolean isSymbols = false; 
-    private int currentLanguageId = 0; // 0=Eng, 1=MM, 2=Shan
+    private int currentLanguageId = 0; 
 
     private AudioManager audioManager;
     private AccessibilityManager accessibilityManager;
@@ -115,12 +114,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         initKeyboards(); 
 
-        // Default Settings
         currentLanguageId = 0;
         isCaps = false;
         isSymbols = false;
         
-        updateKeyboardLayout(); // Initial Layout Set
+        currentKeyboard = qwertyKeyboard;
+        keyboardView.setKeyboard(currentKeyboard);
         keyboardView.setOnKeyboardActionListener(this);
 
         setupSpeechRecognizer();
@@ -255,7 +254,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isCaps = false;
         isSymbols = false;
         
-        updateKeyboardLayout(); // Set correct keyboard on start
+        if (currentLanguageId == 1) currentKeyboard = myanmarKeyboard;
+        else if (currentLanguageId == 2) currentKeyboard = shanKeyboard;
+        else currentKeyboard = qwertyKeyboard;
+        
+        keyboardView.setKeyboard(currentKeyboard);
+        updateHelperState();
         triggerCandidateUpdate(0);
     }
 
@@ -366,18 +370,34 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     updateKeyboardLayout();
                     break;
                 case -2:
-                    isSymbols = true; // Switch ON symbols
+                    isSymbols = true;
                     updateKeyboardLayout();
                     break;
                 case -6:
-                    isSymbols = false; // Switch OFF symbols
+                    isSymbols = false;
                     updateKeyboardLayout();
                     break;
                 case -101:
                     changeLanguage();
                     break;
                 case -4:
-                    sendDefaultEditorAction(true);
+                    // *** FIX 1: Robust Enter Key Logic ***
+                    // Check if we should perform an Editor Action (Search, Go, etc.)
+                    // Or just insert a Newline
+                    int options = getCurrentInputEditorInfo().imeOptions;
+                    int action = options & EditorInfo.IME_MASK_ACTION;
+                    
+                    // If specific action is requested, do it.
+                    if (action == EditorInfo.IME_ACTION_SEARCH || 
+                        action == EditorInfo.IME_ACTION_GO ||
+                        action == EditorInfo.IME_ACTION_SEND ||
+                        action == EditorInfo.IME_ACTION_NEXT ||
+                        action == EditorInfo.IME_ACTION_DONE) {
+                        sendDefaultEditorAction(true);
+                    } else {
+                        // Default to Newline for text boxes
+                        ic.commitText("\n", 1);
+                    }
                     saveWordAndReset();
                     break;
                 case -5:
@@ -410,7 +430,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         currentWord.append(charStr);
                     }
                     
-                    // Auto Unshift Logic
                     if (isCaps) {
                         isCaps = false;
                         updateKeyboardLayout();
@@ -452,29 +471,35 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // *** FIX 2: Smart Reordering (Gboard Style) ***
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         CharSequence before = ic.getTextBeforeCursor(2, 0);
         if (before == null) return false;
         String prevStr = before.toString();
         int len = prevStr.length();
         if (len == 0) return false;
+        
         char lastChar = prevStr.charAt(len - 1);
-        char beforeLastChar = (len >= 2) ? prevStr.charAt(len - 2) : 0;
 
+        // ၁။ ဗျည်း + သဝေထိုး (ေ) လဲခြင်း (Consonant + E swap)
+        // Remove previous restrictions. If user types 'ေ' then 'Consonant', swap them.
+        // This fixes "အ" + "ေ" + "ရ" -> "အရေ"
         if (isConsonant(primaryCode) && lastChar == 4145) {
-            if (!isConsonant(beforeLastChar)) {
-                ic.deleteSurroundingText(1, 0);
-                ic.commitText(String.valueOf((char) primaryCode), 1);
-                ic.commitText(String.valueOf(lastChar), 1);
-                return true;
-            }
+            ic.deleteSurroundingText(1, 0);
+            ic.commitText(String.valueOf((char) primaryCode), 1);
+            ic.commitText(String.valueOf(lastChar), 1);
+            return true;
         }
+
+        // ၂။ ေ + ဗျည်းတွဲ (Medials) လဲခြင်း
         if (isMedial(primaryCode) && lastChar == 4145) {
              ic.deleteSurroundingText(1, 0);
              ic.commitText(String.valueOf((char) primaryCode), 1);
              ic.commitText(String.valueOf(lastChar), 1);
              return true;
         }
+
+        // ၃။ ံ + ု -> ုံ
         if (primaryCode == 4143 && lastChar == 4150) {
             ic.deleteSurroundingText(1, 0);
             ic.commitText(String.valueOf((char) primaryCode), 1);
@@ -550,34 +575,29 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // *** FIXED: State-Driven Keyboard Layout Update ***
     private void updateKeyboardLayout() {
         lastHoverKeyIndex = -1;
-        
         try {
             Keyboard nextKeyboard;
-
-            // Logic: Symbols > Language > Shift
             if (isSymbols) {
                 if (currentLanguageId == 1) { 
-                    nextKeyboard = symbolsMmKeyboard; // Myanmar numbers
+                    nextKeyboard = symbolsMmKeyboard; 
                 } else {
-                    nextKeyboard = symbolsEnKeyboard; // English/Shan numbers
+                    nextKeyboard = symbolsEnKeyboard; 
                 }
+            } else if (isCaps) {
+                if (currentKeyboard == qwertyKeyboard) nextKeyboard = qwertyShiftKeyboard;
+                else if (currentKeyboard == myanmarKeyboard) nextKeyboard = myanmarShiftKeyboard;
+                else if (currentKeyboard == shanKeyboard) nextKeyboard = shanShiftKeyboard;
+                else nextKeyboard = currentKeyboard;
             } else {
-                // Not symbols, check language and shift
-                if (currentLanguageId == 1) { // Myanmar
-                    nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
-                } else if (currentLanguageId == 2) { // Shan
-                    nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
-                } else { // English
-                    nextKeyboard = isCaps ? qwertyShiftKeyboard : qwertyKeyboard;
-                }
+                if (currentKeyboard == qwertyShiftKeyboard) nextKeyboard = qwertyKeyboard;
+                else if (currentKeyboard == myanmarShiftKeyboard) nextKeyboard = myanmarKeyboard;
+                else if (currentKeyboard == shanShiftKeyboard) nextKeyboard = shanKeyboard;
+                else nextKeyboard = currentKeyboard;
             }
-            
-            // Set and Update View
             currentKeyboard = nextKeyboard;
-            
+
             if (keyboardView != null) {
                 keyboardView.setKeyboard(currentKeyboard);
                 keyboardView.invalidateAllKeys();
@@ -585,8 +605,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         } catch (Exception e) {
             e.printStackTrace();
-            // Fallback if crash
             isSymbols = false;
+            isCaps = false;
             currentKeyboard = qwertyKeyboard;
             if(keyboardView != null) keyboardView.setKeyboard(currentKeyboard);
         }
@@ -608,12 +628,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
         
         announceText(langName);
-        
-        // Reset flags on language change
         isCaps = false;
-        isSymbols = false; 
-        
-        updateKeyboardLayout(); // Let the new logic handle the switch
+        isSymbols = false;
+        updateKeyboardLayout();
     }
 
     private int getNearestKeyIndexFast(int x, int y) {
