@@ -30,13 +30,14 @@
     
     <Row>
         <Key android:codes="-1" android:keyLabel="=\&lt;" android:keyWidth="15%p" android:keyEdgeFlags="left"/>
-        <Key android:codes="42" android:keyLabel="*"/>
-        <Key android:codes="34" android:keyLabel="&quot;"/>
-        <Key android:codes="39" android:keyLabel="'"/>
-        <Key android:codes="58" android:keyLabel=":"/>
-        <Key android:codes="59" android:keyLabel=";"/>
-        <Key android:codes="33" android:keyLabel="!"/>
-        <Key android:codes="63" android:keyLabel="?"/>
+        <Key android:codes="42" android:keyLabel="*" android:keyWidth="8.75%p"/>
+        <Key android:codes="34" android:keyLabel="&quot;" android:keyWidth="8.75%p"/>
+        <Key android:codes="39" android:keyLabel="'" android:keyWidth="8.75%p"/>
+        <Key android:codes="58" android:keyLabel=":" android:keyWidth="8.75%p"/>
+        <Key android:codes="59" android:keyLabel=";" android:keyWidth="8.75%p"/>
+        <Key android:codes="33" android:keyLabel="!" android:keyWidth="8.75%p"/>
+        <Key android:codes="63" android:keyLabel="?" android:keyWidth="8.75%p"/>
+        <Key android:codes="95" android:keyLabel="_" android:keyWidth="8.75%p"/> 
         <Key android:codes="-5" android:keyLabel="DEL" android:keyWidth="15%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
     </Row>
     
