@@ -269,18 +269,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
-    // *** FIX: Slide-to-Cancel Logic Added Here ***
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
             float x = event.getX();
             float y = event.getY();
-            
-            // Get keyboard dimensions
             int height = keyboardView.getHeight();
             int width = keyboardView.getWidth();
 
-            // ၁။ ကီးဘုတ်ဘောင်ကျော်သွားရင် (အပေါ်ပွတ်ဆွဲရင်) Cancel မယ်
             if (y < 0 || y > height || x < 0 || x > width) {
                 lastHoverKeyIndex = -1;
                 return;
@@ -293,7 +289,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     playHaptic(0);
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // လက်ကြွတဲ့အချိန်မှာလည်း ဘောင်ထဲမှာ ရှိနေမှသာ ရိုက်မယ်
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
@@ -405,9 +400,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                 case 0: break;
                 default:
+                    // *** SMART REORDERING LOGIC ***
                     if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
-                        char code = (char) primaryCode;
-                        currentWord.append(String.valueOf(code));
+                       // Reordering handled inside the method
                     } else {
                         String charStr;
                         if (key != null && key.label != null && key.label.length() > 1) {
@@ -419,7 +414,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         currentWord.append(charStr);
                     }
                     
-                    // Auto Unshift Logic
                     if (isCaps) {
                         isCaps = false;
                         updateKeyboardLayout();
@@ -433,7 +427,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** FIX: Direct Announcement (No "Notification") ***
     private void announceText(String text) {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
@@ -462,36 +455,57 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // *** IMPROVED MYANMAR REORDERING ***
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
-        if (isConsonant(primaryCode)) {
-             CharSequence before = ic.getTextBeforeCursor(1, 0);
-             if (before != null && before.length() > 0) {
-                 char preChar = before.charAt(0);
-                 if (preChar == 4145 || preChar == 4228) {
-                     ic.deleteSurroundingText(1, 0);
-                     ic.commitText(String.valueOf((char)primaryCode), 1);
-                     ic.commitText(String.valueOf(preChar), 1);
-                     return true;
-                 }
-             }
+        CharSequence before = ic.getTextBeforeCursor(2, 0);
+        if (before == null) return false;
+        String prevStr = before.toString();
+        if (prevStr.isEmpty()) return false;
+        char lastChar = prevStr.charAt(prevStr.length() - 1);
+
+        // ၁။ ဗျည်း + သဝေထိုး (ေ) လဲခြင်း (Pre-base Vowel Swap)
+        // User types: ေ (4145) -> Consonant
+        // Result: Consonant -> ေ
+        if (isConsonant(primaryCode) && lastChar == 4145) {
+            ic.deleteSurroundingText(1, 0);
+            ic.commitText(String.valueOf((char) primaryCode), 1);
+            ic.commitText(String.valueOf(lastChar), 1);
+            return true;
         }
-        if (primaryCode == 4141) {
-             CharSequence before = ic.getTextBeforeCursor(1, 0);
-             if (before != null && before.length() > 0) {
-                 char prev = before.charAt(0);
-                 if (prev == 4143 || prev == 4144) {
-                     ic.deleteSurroundingText(1, 0);
-                     ic.commitText(String.valueOf((char)4141), 1);
-                     ic.commitText(String.valueOf(prev), 1);
-                     return true;
-                 }
-             }
+
+        // ၂။ ေ + ဗျည်းတွဲ (Medials) လဲခြင်း
+        // Context: [Consonant] [ေ] -> User types [Medial]
+        // Result: [Consonant] [Medial] [ေ]
+        if (isMedial(primaryCode) && lastChar == 4145) {
+             ic.deleteSurroundingText(1, 0);
+             ic.commitText(String.valueOf((char) primaryCode), 1);
+             ic.commitText(String.valueOf(lastChar), 1);
+             return true;
         }
+
+        // ၃။ ံ + ု -> ုံ (Swap Anusvara & U-vowel)
+        // User types: ံ (4150) -> ု (4143)
+        // Result: ု -> ံ (Standard Rendering Order)
+        if (primaryCode == 4143 && lastChar == 4150) {
+            ic.deleteSurroundingText(1, 0);
+            ic.commitText(String.valueOf((char) primaryCode), 1);
+            ic.commitText(String.valueOf(lastChar), 1);
+            return true;
+        }
+
         return false;
     }
 
+    // ဗျည်းများ (Myanmar + Shan)
     private boolean isConsonant(int code) {
-        return (code >= 4096 && code <= 4138) || (code >= 4213 && code <= 4225) || code == 4100 || code == 4101;
+        return (code >= 4096 && code <= 4129) || // Myanmar Consonants
+               (code >= 4213 && code <= 4225) || // Shan Consonants
+               code == 4100 || code == 4101;
+    }
+
+    // ဗျည်းတွဲများ (Medials: ြ, ျ, ွ, ှ)
+    private boolean isMedial(int code) {
+        return code == 4155 || code == 4156 || code == 4157 || code == 4158;
     }
 
     private boolean isShanOrMyanmar() {
@@ -601,10 +615,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             langName = "English";
         }
         
-        // Using Announce instead of Toast
         announceText(langName);
-        
         isCaps = false;
+        
         if (keyboardView != null) {
             keyboardView.setKeyboard(currentKeyboard);
             keyboardView.invalidateAllKeys();
