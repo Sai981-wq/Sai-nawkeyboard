@@ -5,7 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Color; // *** (FIXED) ဒီလိုင်းပါမှ Color.WHITE ကိုသိမှာပါ ***
+import android.graphics.Color;
 import android.inputmethodservice.InputMethodService;
 import android.inputmethodservice.Keyboard;
 import android.inputmethodservice.KeyboardView;
@@ -60,7 +60,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard symbolsKeyboard;
 
     private Keyboard currentKeyboard;
+    // State Variables (အခြေအနေထိန်းချုပ်မှုများ)
     private boolean isCaps = false;
+    private boolean isSymbols = false; 
+    private int currentLanguageId = 0; // 0=Eng, 1=MM, 2=Shan
+
     private AudioManager audioManager;
     private AccessibilityManager accessibilityManager;
     private SharedPreferences prefs;
@@ -68,7 +72,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
-    private int currentLanguageId = 0; 
 
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
@@ -112,9 +115,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         initKeyboards(); 
 
-        currentKeyboard = qwertyKeyboard;
+        // Default Settings
         currentLanguageId = 0;
-        keyboardView.setKeyboard(currentKeyboard);
+        isCaps = false;
+        isSymbols = false;
+        
+        updateKeyboardLayout(); // Initial Layout Set
         keyboardView.setOnKeyboardActionListener(this);
 
         setupSpeechRecognizer();
@@ -217,8 +223,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void initCandidateViews(boolean isDarkTheme) {
         candidateContainer.removeAllViews();
         candidateViews.clear();
-        
-        // *** Color.WHITE/BLACK ကို အပေါ်က import android.graphics.Color; ပါမှ သိမှာပါ ***
         int textColor = isDarkTheme ? Color.WHITE : Color.BLACK;
 
         for (int i = 0; i < 3; i++) {
@@ -249,13 +253,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         
         currentWord.setLength(0);
         isCaps = false;
+        isSymbols = false;
         
-        if (currentLanguageId == 1) currentKeyboard = myanmarKeyboard;
-        else if (currentLanguageId == 2) currentKeyboard = shanKeyboard;
-        else currentKeyboard = qwertyKeyboard;
-        
-        keyboardView.setKeyboard(currentKeyboard);
-        updateHelperState();
+        updateKeyboardLayout(); // Set correct keyboard on start
         triggerCandidateUpdate(0);
     }
 
@@ -366,17 +366,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     updateKeyboardLayout();
                     break;
                 case -2:
-                    if (currentLanguageId == 1) { 
-                        currentKeyboard = symbolsMmKeyboard;
-                    } else {
-                        currentKeyboard = symbolsEnKeyboard;
-                    }
+                    isSymbols = true; // Switch ON symbols
                     updateKeyboardLayout();
                     break;
                 case -6:
-                    if (currentLanguageId == 1) currentKeyboard = myanmarKeyboard;
-                    else if (currentLanguageId == 2) currentKeyboard = shanKeyboard;
-                    else currentKeyboard = qwertyKeyboard;
+                    isSymbols = false; // Switch OFF symbols
                     updateKeyboardLayout();
                     break;
                 case -101:
@@ -416,6 +410,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         currentWord.append(charStr);
                     }
                     
+                    // Auto Unshift Logic
                     if (isCaps) {
                         isCaps = false;
                         updateKeyboardLayout();
@@ -424,8 +419,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         } catch (Exception e) {
             e.printStackTrace();
-            currentKeyboard = qwertyKeyboard;
-            keyboardView.setKeyboard(currentKeyboard);
+            isSymbols = false;
+            updateKeyboardLayout();
         }
     }
 
@@ -490,7 +485,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private boolean isConsonant(int code) {
-        return (code >= 4096 && code <= 4129) || (code >= 4213 && code <= 4225) || code == 4100 || code == 4101;
+        return (code >= 4096 && code <= 4138) || (code >= 4213 && code <= 4225) || code == 4100 || code == 4101;
     }
 
     private boolean isMedial(int code) {
@@ -555,35 +550,45 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
+    // *** FIXED: State-Driven Keyboard Layout Update ***
     private void updateKeyboardLayout() {
         lastHoverKeyIndex = -1;
+        
         try {
             Keyboard nextKeyboard;
-            if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
-                nextKeyboard = currentKeyboard; 
-            } else if (isCaps) {
-                if (currentKeyboard == qwertyKeyboard) nextKeyboard = qwertyShiftKeyboard;
-                else if (currentKeyboard == myanmarKeyboard) nextKeyboard = myanmarShiftKeyboard;
-                else if (currentKeyboard == shanKeyboard) nextKeyboard = shanShiftKeyboard;
-                else nextKeyboard = currentKeyboard;
-            } else {
-                if (currentKeyboard == qwertyShiftKeyboard) nextKeyboard = qwertyKeyboard;
-                else if (currentKeyboard == myanmarShiftKeyboard) nextKeyboard = myanmarKeyboard;
-                else if (currentKeyboard == shanShiftKeyboard) nextKeyboard = shanKeyboard;
-                else nextKeyboard = currentKeyboard;
-            }
-            currentKeyboard = nextKeyboard;
 
+            // Logic: Symbols > Language > Shift
+            if (isSymbols) {
+                if (currentLanguageId == 1) { 
+                    nextKeyboard = symbolsMmKeyboard; // Myanmar numbers
+                } else {
+                    nextKeyboard = symbolsEnKeyboard; // English/Shan numbers
+                }
+            } else {
+                // Not symbols, check language and shift
+                if (currentLanguageId == 1) { // Myanmar
+                    nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
+                } else if (currentLanguageId == 2) { // Shan
+                    nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
+                } else { // English
+                    nextKeyboard = isCaps ? qwertyShiftKeyboard : qwertyKeyboard;
+                }
+            }
+            
+            // Set and Update View
+            currentKeyboard = nextKeyboard;
+            
             if (keyboardView != null) {
-                keyboardView.setKeyboard(null); // Safety Clear
                 keyboardView.setKeyboard(currentKeyboard);
                 keyboardView.invalidateAllKeys();
                 updateHelperState();
             }
         } catch (Exception e) {
             e.printStackTrace();
+            // Fallback if crash
+            isSymbols = false;
             currentKeyboard = qwertyKeyboard;
-            if (keyboardView != null) keyboardView.setKeyboard(currentKeyboard);
+            if(keyboardView != null) keyboardView.setKeyboard(currentKeyboard);
         }
     }
 
@@ -593,27 +598,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         
         if (currentLanguageId == 0) { 
             currentLanguageId = 1;
-            currentKeyboard = myanmarKeyboard;
             langName = "Myanmar";
         } else if (currentLanguageId == 1) { 
             currentLanguageId = 2;
-            currentKeyboard = shanKeyboard;
             langName = "Shan";
         } else { 
             currentLanguageId = 0;
-            currentKeyboard = qwertyKeyboard;
             langName = "English";
         }
         
         announceText(langName);
-        isCaps = false;
         
-        if (keyboardView != null) {
-            keyboardView.setKeyboard(null);
-            keyboardView.setKeyboard(currentKeyboard);
-            keyboardView.invalidateAllKeys();
-            updateHelperState();
-        }
+        // Reset flags on language change
+        isCaps = false;
+        isSymbols = false; 
+        
+        updateKeyboardLayout(); // Let the new logic handle the switch
     }
 
     private int getNearestKeyIndexFast(int x, int y) {
