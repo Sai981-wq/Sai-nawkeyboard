@@ -24,6 +24,8 @@ import android.speech.SpeechRecognizer;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.accessibility.AccessibilityEvent; // Import Added
+import android.view.accessibility.AccessibilityManager; // Import Added
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
@@ -60,6 +62,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard currentKeyboard;
     private boolean isCaps = false;
     private AudioManager audioManager;
+    private AccessibilityManager accessibilityManager; // Manager Added
     private SharedPreferences prefs;
 
     private int lastHoverKeyIndex = -1;
@@ -84,7 +87,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             isSpaceLongPressed = true;
             InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             if (imeManager != null) {
-                imeManager.showInputMethodPicker(); // (၄) Space Long Press
+                imeManager.showInputMethodPicker();
                 playHaptic(-99);
             }
         }
@@ -104,7 +107,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         initCandidateViews(isDarkTheme);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-        suggestionDB = SuggestionDB.getInstance(this); // (၅) Prediction Fix (Singleton)
+        accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE); // Init Manager
+        suggestionDB = SuggestionDB.getInstance(this);
 
         initKeyboards(); 
 
@@ -268,16 +272,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
-            float y = event.getY();
-            
-            // *** (၁) Fix: Check Touch Bounds (Y < 0 means swiped up out of keyboard) ***
-            if (y < 0) {
-                lastHoverKeyIndex = -1;
-                return;
-            }
-
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
-                int keyIndex = getNearestKeyIndexFast((int)event.getX(), (int)y);
+                int keyIndex = getNearestKeyIndexFast((int)event.getX(), (int)event.getY());
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0);
@@ -408,7 +404,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         currentWord.append(charStr);
                     }
                     
-                    // *** (၂) Fix: Auto Unshift ***
+                    // Auto Unshift Logic
                     if (isCaps) {
                         isCaps = false;
                         updateKeyboardLayout();
@@ -419,6 +415,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             e.printStackTrace();
             currentKeyboard = qwertyKeyboard;
             keyboardView.setKeyboard(currentKeyboard);
+        }
+    }
+
+    // *** FIX 2: Direct Announcement (Not Toast) ***
+    private void announceText(String text) {
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+            event.getText().add(text);
+            accessibilityManager.sendAccessibilityEvent(event);
         }
     }
 
@@ -496,7 +501,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void performCandidateSearch() {
         final String searchWord = currentWord.toString();
-        // *** (၅) Fix: Prediction Bar Visibility Logic ***
         if (searchWord.isEmpty()) {
             handler.post(() -> {
                 for (TextView tv : candidateViews) tv.setVisibility(View.GONE);
@@ -533,26 +537,30 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
+    // *** FIX 1: Remove "null" setting to fix TalkBack Silence ***
     private void updateKeyboardLayout() {
         lastHoverKeyIndex = -1;
         try {
-            if (keyboardView != null) {
-                if (accessibilityHelper != null) {
-                    accessibilityHelper.setKeyboard(null, false, false);
-                }
-                keyboardView.setKeyboard(null); 
-                
-                if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
-                } else if (isCaps) {
-                    if (currentKeyboard == qwertyKeyboard) currentKeyboard = qwertyShiftKeyboard;
-                    else if (currentKeyboard == myanmarKeyboard) currentKeyboard = myanmarShiftKeyboard;
-                    else if (currentKeyboard == shanKeyboard) currentKeyboard = shanShiftKeyboard;
-                } else {
-                    if (currentKeyboard == qwertyShiftKeyboard) currentKeyboard = qwertyKeyboard;
-                    else if (currentKeyboard == myanmarShiftKeyboard) currentKeyboard = myanmarKeyboard;
-                    else if (currentKeyboard == shanShiftKeyboard) currentKeyboard = shanKeyboard;
-                }
+            Keyboard nextKeyboard;
+            // ... Selection Logic ...
+            if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
+                nextKeyboard = currentKeyboard; 
+            } else if (isCaps) {
+                if (currentKeyboard == qwertyKeyboard) nextKeyboard = qwertyShiftKeyboard;
+                else if (currentKeyboard == myanmarKeyboard) nextKeyboard = myanmarShiftKeyboard;
+                else if (currentKeyboard == shanKeyboard) nextKeyboard = shanShiftKeyboard;
+                else nextKeyboard = currentKeyboard;
+            } else {
+                if (currentKeyboard == qwertyShiftKeyboard) nextKeyboard = qwertyKeyboard;
+                else if (currentKeyboard == myanmarShiftKeyboard) nextKeyboard = myanmarKeyboard;
+                else if (currentKeyboard == shanShiftKeyboard) nextKeyboard = shanKeyboard;
+                else nextKeyboard = currentKeyboard;
+            }
+            currentKeyboard = nextKeyboard;
 
+            if (keyboardView != null) {
+                // DO NOT SET NULL HERE! It breaks TalkBack focus.
+                // Helper Safety (added in previous step) protects against crash.
                 keyboardView.setKeyboard(currentKeyboard);
                 keyboardView.invalidateAllKeys();
                 updateHelperState();
@@ -582,11 +590,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             langName = "English";
         }
         
-        // *** (၃) Fix: Language Announce ***
-        Toast.makeText(this, langName, Toast.LENGTH_SHORT).show();
+        // *** FIX 2: Use Direct Announcement ***
+        announceText(langName);
         
         isCaps = false;
-        updateKeyboardLayout();
+        
+        // Same here, no null setting
+        if (keyboardView != null) {
+            keyboardView.setKeyboard(currentKeyboard);
+            keyboardView.invalidateAllKeys();
+            updateHelperState();
+        }
     }
 
     private int getNearestKeyIndexFast(int x, int y) {
