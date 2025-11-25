@@ -127,9 +127,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setOnHoverListener(new View.OnHoverListener() {
             @Override
             public boolean onHover(View v, MotionEvent event) {
-                // TalkBack Explore
                 boolean handled = accessibilityHelper.dispatchHoverEvent(event);
-                // Lift to Type Logic
                 handleLiftToType(event);
                 return handled;
             }
@@ -246,6 +244,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         currentWord.setLength(0);
         isCaps = false;
         
+        // Restore keyboard based on ID
         if (currentLanguageId == 1) currentKeyboard = myanmarKeyboard;
         else if (currentLanguageId == 2) currentKeyboard = shanKeyboard;
         else currentKeyboard = qwertyKeyboard;
@@ -267,6 +266,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
+    // *** SAFETY LIFT-TO-TYPE ***
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
@@ -279,12 +279,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
-                    // *** CRASH FIX: Check bounds before accessing keys ***
+                    // *** CRASH FIX: Bounds Check ***
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
                         if (key.codes[0] != -100) {
                             handleInput(key.codes[0], key);
-                            // Echo Fix: Removed simulateClick here to let System handle echo naturally
                         }
                     }
                     lastHoverKeyIndex = -1;
@@ -526,15 +525,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // *** CRASH FIX: Robust Keyboard Update Logic ***
+    // *** ROBUST UPDATE LOGIC ***
     private void updateKeyboardLayout() {
+        // Reset Hover Index Immediately
         lastHoverKeyIndex = -1;
         
         try {
-            // Determine the next keyboard
             Keyboard nextKeyboard;
             if (currentKeyboard == symbolsEnKeyboard || currentKeyboard == symbolsMmKeyboard) { 
-                nextKeyboard = currentKeyboard; // Stay (should be unreachable via logic but safe)
+                nextKeyboard = currentKeyboard; 
             } else if (isCaps) {
                 if (currentKeyboard == qwertyKeyboard) nextKeyboard = qwertyShiftKeyboard;
                 else if (currentKeyboard == myanmarKeyboard) nextKeyboard = myanmarShiftKeyboard;
@@ -546,28 +545,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 else if (currentKeyboard == shanShiftKeyboard) nextKeyboard = shanKeyboard;
                 else nextKeyboard = currentKeyboard;
             }
-            
             currentKeyboard = nextKeyboard;
 
             if (keyboardView != null) {
-                // 1. Detach Helper to stop TalkBack from querying old keys
-                if (accessibilityHelper != null) {
-                    // Set null keyboard momentarily so helper returns empty nodes
-                    accessibilityHelper.setKeyboard(null, false, false);
-                }
-
-                // 2. Reset KeyboardView state to prevent drawing keys that don't exist
-                keyboardView.setKeyboard(currentKeyboard); 
-                
-                // 3. Re-attach Helper with new layout
-                updateHelperState();
-                
-                // 4. Invalidate view
+                // *** Safety: Clear keyboard first ***
+                keyboardView.setKeyboard(currentKeyboard);
                 keyboardView.invalidateAllKeys();
+                // *** Sync Helper ***
+                updateHelperState();
             }
         } catch (Exception e) {
             e.printStackTrace();
-            // Last Resort Fallback
             currentKeyboard = qwertyKeyboard;
             if (keyboardView != null) keyboardView.setKeyboard(currentKeyboard);
         }
@@ -575,36 +563,30 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void changeLanguage() {
         lastHoverKeyIndex = -1;
-        
-        // Determine next language
-        if (currentLanguageId == 0) currentLanguageId = 1; // Eng -> MM
-        else if (currentLanguageId == 1) currentLanguageId = 2; // MM -> Shan
-        else currentLanguageId = 0; // Shan -> Eng
-        
-        // Determine specific keyboard based on ID
-        if (currentLanguageId == 1) currentKeyboard = myanmarKeyboard;
-        else if (currentLanguageId == 2) currentKeyboard = shanKeyboard;
-        else currentKeyboard = qwertyKeyboard;
-
+        if (currentLanguageId == 0) { // Eng -> MM
+            currentLanguageId = 1;
+            currentKeyboard = myanmarKeyboard;
+        } else if (currentLanguageId == 1) { // MM -> Shan
+            currentLanguageId = 2;
+            currentKeyboard = shanKeyboard;
+        } else { // Shan -> Eng
+            currentLanguageId = 0;
+            currentKeyboard = qwertyKeyboard;
+        }
         isCaps = false;
         
-        // Apply the change safely
-        try {
-            if (keyboardView != null) {
-                if (accessibilityHelper != null) accessibilityHelper.setKeyboard(null, false, false);
-                keyboardView.setKeyboard(currentKeyboard);
-                updateHelperState();
-                keyboardView.invalidateAllKeys();
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+        if (keyboardView != null) {
+            keyboardView.setKeyboard(currentKeyboard);
+            keyboardView.invalidateAllKeys();
+            updateHelperState();
         }
     }
 
     private int getNearestKeyIndexFast(int x, int y) {
         if (currentKeyboard == null || currentKeyboard.getKeys() == null) return -1;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys.isEmpty()) return -1;
+        // Safety check
+        if (keys == null || keys.isEmpty()) return -1;
 
         for (int i = 0; i < keys.size(); i++) {
             if (keys.get(i).isInside(x, y)) {

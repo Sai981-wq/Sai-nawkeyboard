@@ -4,6 +4,7 @@ import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Bundle;
 import android.view.View;
+import android.view.accessibility.AccessibilityEvent;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
@@ -31,8 +32,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
-        // Layout ပြောင်းရင် TalkBack ကို အသစ်ပြန်မြင်အောင် Refresh လုပ်မယ်
-        invalidateRoot(); 
+        // Keyboard ပြောင်းတာနဲ့ TalkBack ကို Refresh လုပ်ခိုင်းမယ်
+        invalidateRoot();
+        sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
 
     @Override
@@ -66,14 +68,18 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     @Override
     protected void onPopulateNodeForVirtualView(int virtualViewId, @NonNull AccessibilityNodeInfoCompat node) {
-        if (currentKeyboard == null) return;
+        if (currentKeyboard == null) {
+            node.setContentDescription("");
+            node.setBoundsInParent(new Rect(0, 0, 1, 1));
+            return;
+        }
+        
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         
-        // *** CRASH FIX: Safety Lock ***
-        // တောင်းဆိုတဲ့ ID က Key အရေအတွက်ထက် များနေရင် ဘာမှမလုပ်ဘူး
+        // *** SUPER SAFETY CHECK (Crash ကာကွယ်ရေး) ***
         if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) {
             node.setContentDescription("");
-            node.setBoundsInParent(new Rect(0, 0, 1, 1)); // Dummy bounds
+            node.setBoundsInParent(new Rect(0, 0, 1, 1));
             return;
         }
         
@@ -84,19 +90,28 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
         
-        Rect bounds = new Rect(key.x, key.y, key.x + key.width, key.y + key.height);
-        node.setBoundsInParent(bounds); 
+        // Bounds Check
+        int right = key.x + key.width;
+        int bottom = key.y + key.height;
+        if (right <= 0 || bottom <= 0) {
+             node.setBoundsInParent(new Rect(0,0,1,1));
+        } else {
+             node.setBoundsInParent(new Rect(key.x, key.y, right, bottom));
+        }
     }
 
     @Override
     protected boolean onPerformActionForVirtualView(int virtualViewId, int action, @Nullable Bundle arguments) {
         if (action == AccessibilityNodeInfoCompat.ACTION_CLICK) {
-            if (currentKeyboard != null && virtualViewId < currentKeyboard.getKeys().size()) {
-                Keyboard.Key key = currentKeyboard.getKeys().get(virtualViewId);
-                if (listener != null) {
-                    listener.onAccessibilityKeyClick(key.codes[0], key);
+            if (currentKeyboard != null) {
+                List<Keyboard.Key> keys = currentKeyboard.getKeys();
+                if (keys != null && virtualViewId >= 0 && virtualViewId < keys.size()) {
+                    Keyboard.Key key = keys.get(virtualViewId);
+                    if (listener != null) {
+                        listener.onAccessibilityKeyClick(key.codes[0], key);
+                    }
+                    return true;
                 }
-                return true;
             }
         }
         return false; 
@@ -109,6 +124,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (code == 32) return "Space";
         if (code == -4) return "Enter";
         if (code == -2) return "Symbol Keyboard";
+        if (code == -6) return "Alphabet Keyboard";
         if (code == -101) return "Switch Language";
         if (code == -10) return "Voice Typing";
         if (code == -100) return ""; 
@@ -117,6 +133,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (key.label != null) label = key.label.toString();
         else if (key.text != null) label = key.text.toString();
 
+        // Capital logic
         if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
              return "Capital " + label;
         }
