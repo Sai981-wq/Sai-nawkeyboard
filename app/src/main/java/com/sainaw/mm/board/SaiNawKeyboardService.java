@@ -362,8 +362,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
+        // Fix for Shan Shift Issue: 
+        // Handle Key.text manually to ensure auto-unshift works
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
+            if (isCaps) {
+                isCaps = false;
+                updateKeyboardLayout();
+            }
             return;
         }
 
@@ -498,7 +504,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- Smart Reordering (Optimized) ---
+    // --- Smart Reordering (Optimized & Fixed for Long Text) ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         CharSequence before = ic.getTextBeforeCursor(2, 0);
         if (before == null) return false;
@@ -511,30 +517,26 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         // Exception for 'အ' (4129) to allow 'အရေ' typing style
         boolean isBlockerConsonant = isConsonant(beforeLastChar) && beforeLastChar != MM_A; 
-
+        
+        boolean shouldSwap = false;
         if (isConsonant(primaryCode) && lastChar == MM_THWAY_HTOE) {
-            if (!isBlockerConsonant) {
-                performBatchReplace(ic, primaryCode, lastChar);
-                return true;
-            }
+            if (!isBlockerConsonant) shouldSwap = true;
+        } else if (isMedial(primaryCode) && lastChar == MM_THWAY_HTOE) {
+             shouldSwap = true;
+        } else if (primaryCode == 4143 && lastChar == 4150) {
+            shouldSwap = true;
         }
-        if (isMedial(primaryCode) && lastChar == MM_THWAY_HTOE) {
-             performBatchReplace(ic, primaryCode, lastChar);
-             return true;
-        }
-        if (primaryCode == 4143 && lastChar == 4150) {
-            performBatchReplace(ic, primaryCode, lastChar);
+
+        if (shouldSwap) {
+            ic.beginBatchEdit(); 
+            ic.deleteSurroundingText(1, 0);
+            // Fix: Combine strings to prevent disappearance in long text
+            String combined = String.valueOf((char) primaryCode) + String.valueOf(lastChar);
+            ic.commitText(combined, 1);
+            ic.endBatchEdit();
             return true;
         }
         return false;
-    }
-
-    private void performBatchReplace(InputConnection ic, int newCode, char oldChar) {
-        ic.beginBatchEdit(); // Optimize Performance
-        ic.deleteSurroundingText(1, 0);
-        ic.commitText(String.valueOf((char) newCode), 1);
-        ic.commitText(String.valueOf(oldChar), 1);
-        ic.endBatchEdit();
     }
 
     private boolean isConsonant(int code) {
