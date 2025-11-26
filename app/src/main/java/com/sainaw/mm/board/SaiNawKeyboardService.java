@@ -53,7 +53,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int CODE_LANG_CHANGE = -101;
     private static final int CODE_VOICE = -10;
 
-    // Myanmar Unicode
+    // Myanmar Unicode Constants
     private static final int MM_THWAY_HTOE = 4145; // 'ေ'
 
     // Components
@@ -143,7 +143,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return this;
     }
 
-    // Unlocked Receiver
+    // Unlocked Receiver to reload DB
     private final BroadcastReceiver userUnlockReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -159,7 +159,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override
     public View onCreateInputView() {
-        // Use getSafeContext() for prefs to work in Direct Boot
+        // Safe Context for Direct Boot
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
@@ -174,12 +174,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         
-        // Safe DB Initialization
+        // Initialize DB only if user is unlocked
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else {
-            suggestionDB = null; // Don't crash, just skip DB
-            // Register receiver to load DB when unlocked
+            suggestionDB = null; 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 registerReceiver(userUnlockReceiver, new IntentFilter(Intent.ACTION_USER_UNLOCKED));
             }
@@ -297,7 +296,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
-        // Use getSafeContext() here too
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
         try { initKeyboards(); } catch (Exception e) { e.printStackTrace(); }
@@ -327,6 +325,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
+    // --- TalkBack Safety: Handle Lift-to-Type with Bounds Check ---
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
@@ -335,7 +334,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int height = keyboardView.getHeight();
             int width = keyboardView.getWidth();
 
-            // TalkBack Safety
             if (y <= 0 || y >= height || x <= 0 || x >= width) {
                 lastHoverKeyIndex = -1;
                 return; 
@@ -403,16 +401,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // --- MAIN INPUT HANDLING ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
+        // Shan/Text Input: Auto-Unshift support
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
             if (isCaps) {
                 isCaps = false;
                 updateKeyboardLayout();
+                announceText("Shift Off");
             }
             return;
         }
@@ -444,6 +445,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     changeLanguage();
                     break;
                 case CODE_ENTER: 
+                    // Gboard Style Enter
                     EditorInfo editorInfo = getCurrentInputEditorInfo();
                     boolean isMultiLine = (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
                     int action = editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
@@ -481,10 +483,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                 case 0: break;
                 default:
-                    // Gboard Style Smart Reordering
+                    // --- SMART REORDERING (FINAL FIX) ---
+                    // Applies to both Myanmar and Shan if they share the Unicode range
                     if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
                         currentWord.append(String.valueOf((char) primaryCode));
                     } else {
+                        // Normal Typing
                         String charStr;
                         if (key != null && key.label != null && key.label.length() > 1) {
                             charStr = key.label.toString();
@@ -498,6 +502,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (isCaps) {
                         isCaps = false;
                         updateKeyboardLayout();
+                        // announceText("Shift Off"); // Optional
                     }
                     triggerCandidateUpdate(200);
             }
@@ -536,41 +541,51 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // --- GBOARD LOGIC: HANDLE 'THWAY HTOE' (ေ) REORDERING ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
-        CharSequence before = ic.getTextBeforeCursor(2, 0);
-        if (before == null) return false;
-        String prevStr = before.toString();
-        int len = prevStr.length();
-        if (len == 0) return false;
+        // Only check 1 character before cursor for immediate reordering
+        CharSequence before = ic.getTextBeforeCursor(1, 0);
+        if (before == null || before.length() == 0) return false;
         
-        char lastChar = prevStr.charAt(len - 1); 
+        char lastChar = before.charAt(0); 
         
-        boolean shouldSwap = false;
-        if (isConsonant(primaryCode) && lastChar == MM_THWAY_HTOE) {
-            shouldSwap = true;
-        } else if (isMedial(primaryCode) && lastChar == MM_THWAY_HTOE) {
-             shouldSwap = true;
-        } else if (primaryCode == 4143 && lastChar == 4150) {
-            shouldSwap = true;
+        // Conditions
+        boolean isLastCharThwayHtoe = (lastChar == MM_THWAY_HTOE);
+        boolean isNewCharConsonant = isConsonant(primaryCode);
+        boolean isNewCharMedial = isMedial(primaryCode);
+
+        // Logic: If previous is 'ေ', we MUST swap if new char is Consonant OR Medial.
+        // Example 1: 'မ' + 'ေ' -> Type 'ပ' (Consonant) -> 'မ' + 'ပ' + 'ေ'
+        // Example 2: 'မ' + 'ပ' + 'ေ' -> Type 'ြ' (Medial) -> 'မ' + 'ပ' + 'ြ' + 'ေ'
+        
+        if (isLastCharThwayHtoe) {
+            if (isNewCharConsonant || isNewCharMedial) {
+                performSwap(ic, primaryCode, lastChar);
+                return true;
+            }
         }
 
-        if (shouldSwap) {
-            ic.beginBatchEdit(); 
-            ic.deleteSurroundingText(1, 0);
-            String combined = String.valueOf((char) primaryCode) + String.valueOf(lastChar);
-            ic.commitText(combined, 1);
-            ic.endBatchEdit();
-            return true;
-        }
         return false;
     }
 
+    private void performSwap(InputConnection ic, int newCode, char oldChar) {
+        ic.beginBatchEdit(); 
+        ic.deleteSurroundingText(1, 0);
+        // Combine new + old (e.g., 'ပ' + 'ေ')
+        String combined = String.valueOf((char) newCode) + String.valueOf(oldChar);
+        ic.commitText(combined, 1);
+        ic.endBatchEdit();
+    }
+
     private boolean isConsonant(int code) {
-        return (code >= 4096 && code <= 4138) || (code >= 4213 && code <= 4225) || code == 4100 || code == 4101;
+        // Basic Myanmar Consonants: Ka (4096) to A (4129)
+        // 4100 (Nya Gyi), 4101 (Nya Lay) included
+        return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101);
     }
 
     private boolean isMedial(int code) {
-        return code == 4155 || code == 4156 || code == 4157 || code == 4158;
+        // Medials: Ya Pin (4155), Ya Yit (4156), Wa Swae (4157), Ha Htoe (4158)
+        return (code >= 4155 && code <= 4158);
     }
 
     private boolean isShanOrMyanmar() {
@@ -578,7 +593,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
     }
 
-    // DB Safe Methods
+    // --- DB Safe Methods ---
     private void saveWordAndReset() {
         if (suggestionDB == null) {
             currentWord.setLength(0);
