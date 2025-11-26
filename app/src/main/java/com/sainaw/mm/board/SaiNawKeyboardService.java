@@ -24,7 +24,6 @@ import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
-import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -71,8 +70,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SaiNawAccessibilityHelper accessibilityHelper;
     private SuggestionDB suggestionDB;
     
-    // --- GBOARD STYLE COMPOSING BUFFER ---
-    // စာလုံးများကို ယာယီသိမ်းဆည်းမည့် Buffer (မျဉ်းသားထားသောစာများအတွက်)
+    // --- COMPOSING BUFFER ---
     private StringBuilder mComposing = new StringBuilder();
 
     // Voice
@@ -258,7 +256,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
                     if (matches != null && !matches.isEmpty()) {
                         String text = matches.get(0);
-                        commitTyped(getCurrentInputConnection()); // Commit existing buffer first
+                        commitTyped(getCurrentInputConnection()); 
                         InputConnection ic = getCurrentInputConnection();
                         if (ic != null) ic.commitText(text + " ", 1);
                     }
@@ -297,18 +295,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
         try { initKeyboards(); } catch (Exception e) { e.printStackTrace(); }
-        
-        // Reset Buffer
         mComposing.setLength(0);
-        
         isCaps = false;
         isSymbols = false;
-        
         updateKeyboardLayout(); 
         triggerCandidateUpdate(0);
     }
 
-    // --- TALKBACK SAFE: 20px MARGIN BOUNDS CHECK ---
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
@@ -316,7 +309,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float y = event.getY();
             int width = keyboardView.getWidth();
             
-            // Safety Margin: Cancel if < 20px from ANY edge
             if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > width - 20) {
                 lastHoverKeyIndex = -1;
                 return;
@@ -356,7 +348,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onText(CharSequence text) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
-        commitTyped(ic); // Commit buffer first
+        commitTyped(ic);
         ic.commitText(text, 1);
         playSound(0);
         if (isCaps) { isCaps = false; updateKeyboardLayout(); }
@@ -374,77 +366,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
-    // --- COMPOSING HELPERS ---
-    
-    /**
-     * Commits the current composing text to the app and clears the buffer.
-     * This removes the underline.
-     */
     private void commitTyped(InputConnection ic) {
         if (mComposing.length() > 0) {
-            ic.commitText(mComposing, 1); // Commit final text
-            mComposing.setLength(0); // Clear buffer
+            ic.commitText(mComposing, 1);
+            mComposing.setLength(0);
         }
     }
     
-    /**
-     * Updates the text with an underline (Composing span).
-     */
     private void updateComposingText(InputConnection ic) {
         if (mComposing.length() > 0) {
-            // 1 means cursor is placed at end of text
             ic.setComposingText(mComposing, 1);
         } else {
             ic.finishComposingText();
         }
     }
 
-    // --- MYANMAR THWAY HTOE (U+1031) REORDERING LOGIC ---
-    /**
-     * Implements Buffer & Swap method for Myanmar Unicode reordering
-     * Specifically handles 'ေ' (U+1031) reordering for visual to logical conversion
-     */
-    private boolean handleThwayHtoeReordering(int primaryCode, InputConnection ic) {
-        // Check if user is typing a Myanmar Consonant
-        if (!isShanOrMyanmar() || !isConsonant(primaryCode)) {
-            return false;
-        }
-        
-        try {
-            // Check character before cursor using getTextBeforeCursor
-            CharSequence textBeforeCursor = ic.getTextBeforeCursor(1, 0);
-            if (textBeforeCursor != null && textBeforeCursor.length() > 0) {
-                char charBefore = textBeforeCursor.charAt(0);
-                
-                // If the character before cursor is 'ေ' (U+1031)
-                if (charBefore == MM_THWAY_HTOE || charBefore == SHAN_E) {
-                    // Delete the 'ေ' using deleteSurroundingText
-                    ic.deleteSurroundingText(1, 0);
-                    
-                    // Commit the Consonant first
-                    char consonant = (char) primaryCode;
-                    ic.commitText(String.valueOf(consonant), 1);
-                    
-                    // Commit the 'ေ' immediately after
-                    ic.commitText(String.valueOf(charBefore), 1);
-                    
-                    // Announce the reordering for accessibility
-                    if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-                        announceText("Reordered " + consonant + charBefore);
-                    }
-                    
-                    return true; // Reordering handled
-                }
-            }
-        } catch (Exception e) {
-            // Fall back to normal handling if reordering fails
-            e.printStackTrace();
-        }
-        
-        return false; // No reordering was performed
-    }
-
-    // --- MAIN INPUT HANDLING ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -460,14 +396,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case CODE_DELETE:
-                    // Buffer Handling for Delete
                     if (mComposing.length() > 0) {
                         mComposing.deleteCharAt(mComposing.length() - 1);
                         updateComposingText(ic);
                         announceText("Delete");
                     } else {
-                        // Regular delete if no composition
-                        // Delete ZWSP barrier first if it exists
                         CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
                         if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
                              ic.deleteSurroundingText(1, 0);
@@ -491,11 +424,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     announceText(currentLanguageId == 1 ? "Myanmar" : (currentLanguageId == 2 ? "Shan" : "English")); 
                     break;
                 case CODE_LANG_CHANGE: 
-                    commitTyped(ic); // Commit before changing lang
+                    commitTyped(ic);
                     changeLanguage(); 
                     break;
                 case CODE_ENTER: 
-                    commitTyped(ic); // Commit buffer first
+                    commitTyped(ic);
                     EditorInfo editorInfo = getCurrentInputEditorInfo();
                     boolean isMultiLine = (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
                     int action = editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
@@ -508,78 +441,78 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                 case CODE_SPACE:
                     if (!isSpaceLongPressed) {
-                        commitTyped(ic); // Commit existing word
-                        ic.commitText(" ", 1); // Add space
-                        saveWordAndReset(); // Save word to DB
+                        commitTyped(ic);
+                        ic.commitText(" ", 1);
+                        saveWordAndReset(); 
                     }
                     isSpaceLongPressed = false;
                     break;
                     
                 default:
-                    // Character Input
                     char c = (char) primaryCode;
                     String charStr = (key != null && key.label != null && key.label.length() > 1) 
                             ? key.label.toString() 
                             : String.valueOf(c);
 
-                    // --- THWAY HTOE REORDERING CHECK ---
-                    // First, try the Buffer & Swap method for 'ေ' reordering
-                    if (handleThwayHtoeReordering(primaryCode, ic)) {
-                        // Reordering was handled, skip normal processing
-                        break;
-                    }
-
                     if (isShanOrMyanmar()) {
                         
-                        // Add to Composing Buffer
-                        mComposing.append(charStr);
-
-                        // --- SMART REORDERING IN BUFFER ---
-                        // 1. Swap Logic for 'ေ' (Thway Htoe) and Consonants
-                        // User types 'ေ' then 'မ' -> Buffer gets "ေမ" -> We swap to "မေ"
-                        if (mComposing.length() >= 2) {
-                            int lastIndex = mComposing.length() - 1;
-                            char lastChar = mComposing.charAt(lastIndex); // Just typed char
-                            char prevChar = mComposing.charAt(lastIndex - 1); 
-
-                            // Check: If Prev is 'ေ' AND Last is Consonant/Medial -> SWAP
-                            // Using standard logical ordering: Consonant comes before 'ေ'
-                            if ((prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) && 
-                                (isConsonant(lastChar) || isMedial(lastChar))) {
-                                
-                                mComposing.setCharAt(lastIndex - 1, lastChar);
-                                mComposing.setCharAt(lastIndex, prevChar);
-                            }
-                            
-                            // 2. Medial Sorting Logic (e.g. 'ှ' before 'ြ')
-                            // Only if we haven't just swapped 'ေ' (or re-check last 2 chars)
-                            // This part ensures standard storage order inside the buffer
-                            int currentWeight = getMedialWeight(lastChar);
-                            int prevWeight = getMedialWeight(prevChar);
-
-                            if (currentWeight > 0 && prevWeight > 0 && prevWeight > currentWeight) {
-                                mComposing.setCharAt(lastIndex - 1, lastChar);
-                                mComposing.setCharAt(lastIndex, prevChar);
-                            }
-
-                            // 3. Vowel Normalization (e.g. ု + ိ -> ို)
-                            if (lastChar == MM_I) {
-                                if (prevChar == MM_U) {
-                                    mComposing.setCharAt(lastIndex - 1, (char) MM_I); // Cast to char
-                                    mComposing.setCharAt(lastIndex, (char) MM_U);     // Cast to char
-                                } else if (prevChar == MM_UU) {
-                                    mComposing.setCharAt(lastIndex - 1, (char) MM_I); // Cast to char
-                                    mComposing.setCharAt(lastIndex, (char) MM_UU);    // Cast to char
+                        // --- HYBRID FIX: CHECK FOR COMMITTED 'THWAY HTOE' ---
+                        // If we are about to type a Consonant, check if 'ေ' was just committed.
+                        // This handles cases where mComposing was reset (e.g., auto-complete, cursor move).
+                        if (mComposing.length() == 0 && (isConsonant(c) || isMedial(c))) {
+                            CharSequence prev = ic.getTextBeforeCursor(1, 0);
+                            if (prev != null && prev.length() > 0) {
+                                char prevChar = prev.charAt(0);
+                                if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
+                                    // Found a stranded Thway Htoe! Pull it back into buffer.
+                                    ic.deleteSurroundingText(1, 0);
+                                    mComposing.append(prevChar);
                                 }
                             }
                         }
 
-                        // Update the screen with the (possibly reordered) buffer
+                        // Add new char
+                        mComposing.append(charStr);
+
+                        // --- ROBUST BUBBLE LOGIC ---
+                        // Move Thway Htoe to the right (Bubble Sort style, but verifying the pair)
+                        // If we have [ThwayHtoe] [Consonant], we swap to [Consonant] [ThwayHtoe].
+                        int i = mComposing.length() - 1;
+                        while (i > 0) {
+                            char cCurrent = mComposing.charAt(i);
+                            char cPrev = mComposing.charAt(i - 1);
+                            
+                            boolean isPrevThwayHtoe = (cPrev == MM_THWAY_HTOE || cPrev == SHAN_E);
+                            boolean isCurrentConsonant = isConsonant(cCurrent);
+                            boolean isCurrentMedial = isMedial(cCurrent);
+                            
+                            // SWAP CONDITION: 
+                            // 1. Prev is Thway Htoe 
+                            // 2. Current is Consonant OR Medial
+                            if (isPrevThwayHtoe && (isCurrentConsonant || isCurrentMedial)) {
+                                mComposing.setCharAt(i - 1, cCurrent);
+                                mComposing.setCharAt(i, cPrev);
+                                i--; // Check further back if needed (e.g. Medial bubbling)
+                            } else if (cCurrent == MM_I) { // Vowel Normalization
+                                if (cPrev == MM_U) {
+                                    mComposing.setCharAt(i - 1, (char) MM_I);
+                                    mComposing.setCharAt(i, (char) MM_U);
+                                    i--;
+                                } else if (cPrev == MM_UU) {
+                                    mComposing.setCharAt(i - 1, (char) MM_I);
+                                    mComposing.setCharAt(i, (char) MM_UU);
+                                    i--;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break; // Order is correct or irrelevant
+                            }
+                        }
+
                         updateComposingText(ic);
 
-                    } 
-                    else {
-                        // For English/Other, also use Composing Text for consistent feel
+                    } else {
                         mComposing.append(charStr);
                         updateComposingText(ic);
                     }
@@ -631,11 +564,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private boolean isConsonant(int code) {
+        // Myanmar Consonants: U+1000 (4096) to U+1021 (4129)
+        // Shan Consonants: U+1075 (4213) to U+1081 (4225)
         return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101) ||
                (code >= 4213 && code <= 4225); 
     }
 
     private boolean isMedial(int code) {
+        // Yapin, Yayit, Wasway, Hahtoe, Shan Wa
         return (code >= 4155 && code <= 4158) || (code == 4226); 
     }
 
@@ -645,9 +581,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private void saveWordAndReset() {
-        // Use logic from mComposing if it was just committed, but standard flow here is usually
-        // called after SPACE commit. Since we commit before SPACE, existing logic might need tweak.
-        // Actually, we can just clear suggestions here.
         mComposing.setLength(0);
         triggerCandidateUpdate(0);
     }
@@ -664,7 +597,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             return;
         }
         
-        // Search using the Composing Buffer
         final String searchWord = mComposing.toString();
         
         if (searchWord.isEmpty()) {
@@ -696,10 +628,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
         
-        // Composing logic: Replace the entire composing text with suggestion
         if (mComposing.length() > 0) {
-            ic.commitText(suggestion + " ", 1); // Commit suggestion + space
-            mComposing.setLength(0); // Clear buffer
+            ic.commitText(suggestion + " ", 1); 
+            mComposing.setLength(0);
         } else {
             ic.commitText(suggestion + " ", 1);
         }
@@ -786,3 +717,4 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void swipeDown() {}
     @Override public void swipeUp() {}
 }
+
