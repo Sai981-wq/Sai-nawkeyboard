@@ -399,60 +399,120 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // === NEW: Buffer Normalization for Myanmar (Swapping & Ordering) ===
+    // === HELPERS: last-cluster extraction & reorder (Gboard-style, Java) ===
+
     /**
-     * Normalize mComposing buffer to canonical/logical ordering for Myanmar/Shan.
-     * - Swaps leading 'ေ' (U+1031) or Shan 'ႄ' (U+1084) with following consonant/medials
-     * - Ensures medial ordering by weight
-     * - Performs simple vowel normalization for ိ (MM_I) with ု/ူး (MM_U/MM_UU)
-     *
-     * This function modifies the StringBuilder in-place and is intentionally conservative:
-     * it's a fast single-pass with local backtracking to handle sequences typed in visual order.
+     * Checks if a character is within Myanmar/related block (basic).
+     * We treat 0x1000..0x109F as Myanmar block (covers Myanmar, Shan characters in that block).
      */
-    private void normalizeMyanmarBuffer(StringBuilder buf) {
-        if (buf == null || buf.length() < 2) return;
+    private boolean isMyanmarChar(char c) {
+        int code = c;
+        return (code >= 0x1000 && code <= 0x109F);
+    }
 
-        int i = 1;
-        while (i < buf.length()) {
-            char prev = buf.charAt(i - 1);
-            char curr = buf.charAt(i);
-
-            boolean changed = false;
-
-            // 1) Swap 'ေ' (U+1031) or Shan 'ႄ' with following consonant or medial
-            if ((prev == (char) MM_THWAY_HTOE || prev == (char) SHAN_E) && (isConsonant(curr) || isMedial(curr))) {
-                // swap prev and curr
-                buf.setCharAt(i - 1, curr);
-                buf.setCharAt(i, prev);
-                changed = true;
-                // move back one position to re-evaluate (but not below 1)
-                if (i > 1) i--;
-            } else {
-                // 2) Medial ordering by weight (if both prev and curr are medials)
-                int prevW = getMedialWeight(prev);
-                int currW = getMedialWeight(curr);
-                if (prevW > 0 && currW > 0 && prevW > currW) {
-                    // swap to ensure smaller weight comes first (correct storage order)
-                    buf.setCharAt(i - 1, curr);
-                    buf.setCharAt(i, prev);
-                    changed = true;
-                    if (i > 1) i--;
-                } else {
-                    // 3) Vowel normalization: if current is ိ (MM_I) and prev is ု or ဲ etc.
-                    if (curr == (char) MM_I) {
-                        if (prev == (char) MM_U || prev == (char) MM_UU) {
-                            // Swap so that ိ comes before ု/ူ
-                            buf.setCharAt(i - 1, curr);
-                            buf.setCharAt(i, prev);
-                            changed = true;
-                            if (i > 1) i--;
-                        }
-                    }
-                }
-            }
-
-            if (!changed) i++;
+    /**
+     * Extract last contiguous Myanmar cluster from given text (up to maxLen).
+     * Walk backwards until non-Myanmar char or reached maxLen.
+     */
+    private String extractLastMyanmarCluster(String text, int maxLen) {
+        if (TextUtils.isEmpty(text)) return "";
+        StringBuilder sb = new StringBuilder();
+        int count = 0;
+        for (int i = text.length() - 1; i >= 0 && count < maxLen; i--, count++) {
+            char ch = text.charAt(i);
+            if (!isMyanmarChar(ch)) break;
+            sb.insert(0, ch);
         }
+        return sb.toString();
+    }
+
+    /**
+     * Reorder a Myanmar cluster (visual → logical).
+     * Conservative, targeted reordering:
+     *  - Places 'ေ' (U+1031) before the consonant visually, but logically it should follow consonant.
+     *  - Ensures medial order: YA(103B), RA(103C), WA(103D), HA(103E)
+     *  - Keeps other vowels/tones in tail
+     *
+     * This handles the majority of common clusters and is designed to operate on the
+     * last cluster only (so whole-sentence replacement is avoided).
+     */
+    private String reorderMyanmarCluster(String cluster) {
+        if (cluster == null || cluster.length() == 0) return cluster;
+
+        // Define categories
+        final char V_E = '\u1031'; // ေ
+        final char M_YA = '\u103B'; // ျ
+        final char M_RA = '\u103C'; // ြ
+        final char M_WA = '\u103D'; // ျွ (ြ/ွ)
+        final char M_HA = '\u103E'; // ့ (ှ)
+        // Vowel range roughly
+        final int V_START = 0x102B;
+        final int V_END = 0x1030;
+        // Tone marks
+        final char T_ANUS = '\u1036';
+        final char T_VISARGA = '\u1037';
+        final char T_ANOTHER = '\u1038';
+
+        String base = "";
+        String ya = "";
+        String ra = "";
+        String wa = "";
+        String ha = "";
+        String eVowel = "";
+        String vowelTail = "";
+        String toneTail = "";
+
+        for (int i = 0; i < cluster.length(); i++) {
+            char c = cluster.charAt(i);
+            if (c == V_E) {
+                eVowel = eVowel + c; // if multiple, we append (defensive)
+            } else if (c == M_YA) {
+                ya = ya + c;
+            } else if (c == M_RA) {
+                ra = ra + c;
+            } else if (c == M_WA) {
+                wa = wa + c;
+            } else if (c == M_HA) {
+                ha = ha + c;
+            } else if ((int)c >= V_START && (int)c <= V_END) {
+                vowelTail = vowelTail + c;
+            } else if (c == T_ANUS || c == T_VISARGA || c == T_ANOTHER) {
+                toneTail = toneTail + c;
+            } else {
+                // Treat as consonant / base (last consonant seen will be base)
+                base = base + c;
+            }
+        }
+
+        // Build logical order: (consonant + medials + vowels + tones)
+        // But recall Unicode logical for 'ေ' (U+1031) is stored AFTER consonant — visually shows before.
+        // Many implementations place eVowel (ေ) in front of consonant when rendering, but stored sequence:
+        // consonant + medials + vowels + tones
+        // However to keep TalkBack & rendering correct when users type visual 'ေ' first, we output:
+        // consonant + medials + vowelTail + toneTail, and then append eVowel AFTER (so final stored becomes consonant + medials + vowelTail + toneTail + ေ)
+        // BUT many engines place U+1031 before base when building for rendering. To be consistent with earlier approach:
+        // We'll place eVowel AFTER the consonant and medials so storage is logical: base+ya+ra+wa+ha + eVowel + vowelTail + toneTail
+        // This ensures cursor & TTS read the logical order (consonant first).
+        // If multiple eVowel chars found, append them after medials.
+
+        StringBuilder out = new StringBuilder();
+        out.append(base);
+        out.append(ya);
+        out.append(ra);
+        out.append(wa);
+        out.append(ha);
+        // append the eVowel(s) after base+medials for logical storage
+        out.append(eVowel);
+        out.append(vowelTail);
+        out.append(toneTail);
+
+        // If nothing parsed as base but there was eVowel first (e.g., user only typed ေ),
+        // just return cluster unchanged to avoid accidental deletion.
+        if (base.isEmpty() && !eVowel.isEmpty() && (ya.isEmpty() && ra.isEmpty() && wa.isEmpty() && ha.isEmpty())) {
+            return cluster;
+        }
+
+        return out.toString();
     }
 
     // --- MAIN INPUT HANDLING ---
@@ -533,42 +593,47 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString()
                             : String.valueOf(c);
 
-                    // === INPUTCONNECTION-LEVEL DIRECT SWAP:
-                    // If typing a Myanmar/Shan consonant directly after 'ေ' or Shan 'ႄ', perform immediate reorder on the InputConnection:
-                    if (isShanOrMyanmar() && isConsonant(primaryCode)) {
-                        CharSequence beforeChar = ic.getTextBeforeCursor(1, 0);
-                        if (beforeChar != null && beforeChar.length() == 1) {
-                            char prev = beforeChar.charAt(0);
-                            if (prev == (char) MM_THWAY_HTOE || prev == (char) SHAN_E) {
-                                // 1) Remove the existing 'ေ' or Shan E
-                                ic.deleteSurroundingText(1, 0);
-                                // 2) Commit the consonant first (logical order)
-                                ic.commitText(charStr, 1);
-                                // 3) Commit the vowel 'ေ' after it
-                                ic.commitText(String.valueOf(prev), 1);
+                    if (isShanOrMyanmar()) {
+                        // Approach: commit the typed character first, then reorder only the last Myanmar cluster.
+                        // This avoids replacing entire sentence and matches Gboard-like behavior.
 
-                                if (isCaps) { isCaps = false; updateKeyboardLayout(); }
+                        // 1) Commit typed char directly
+                        ic.commitText(charStr, 1);
 
-                                triggerCandidateUpdate(200);
-                                // Skip composing buffer flow for this keystroke (we already committed)
-                                return;
+                        // 2) Look back a few characters (max 8) to find the last Myanmar cluster
+                        CharSequence before = ic.getTextBeforeCursor(8, 0);
+                        String beforeStr = (before != null) ? before.toString() : "";
+                        String cluster = extractLastMyanmarCluster(beforeStr, 8);
+
+                        if (!cluster.isEmpty()) {
+                            // Reorder the cluster
+                            String fixed = reorderMyanmarCluster(cluster);
+
+                            if (!fixed.equals(cluster)) {
+                                // Replace only the cluster (delete cluster.length chars before cursor)
+                                ic.deleteSurroundingText(cluster.length(), 0);
+                                ic.commitText(fixed, 1);
                             }
                         }
-                    }
 
-                    if (isShanOrMyanmar()) {
-
-                        // Add to Composing Buffer
-                        mComposing.append(charStr);
-
-                        // Normalize the buffer for canonical/logical ordering
-                        normalizeMyanmarBuffer(mComposing);
-
-                        // Update the screen with the (possibly reordered) buffer
-                        updateComposingText(ic);
+                        // We do not append into mComposing for this keystroke to avoid double-insert;
+                        // but we can update composing buffer by fetching current cluster if needed.
+                        // Keep mComposing empty or synchronized when necessary for suggestions.
+                        mComposing.setLength(0);
+                        // Optionally fill composing with current last cluster for suggestions:
+                        CharSequence nowBefore = ic.getTextBeforeCursor(16, 0);
+                        String nowBeforeStr = (nowBefore != null) ? nowBefore.toString() : "";
+                        String curCluster = extractLastMyanmarCluster(nowBeforeStr, 16);
+                        if (!curCluster.isEmpty()) {
+                            mComposing.append(curCluster);
+                            updateComposingText(ic);
+                        } else {
+                            // keep composing empty
+                            updateComposingText(ic);
+                        }
 
                     } else {
-                        // For English/Other, also use Composing Text for consistent feel
+                        // For English/Other, preserve original composing flow
                         mComposing.append(charStr);
                         updateComposingText(ic);
                     }
