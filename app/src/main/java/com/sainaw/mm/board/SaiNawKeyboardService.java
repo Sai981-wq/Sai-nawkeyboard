@@ -428,16 +428,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 default:
                     if (isShanOrMyanmar()) {
                         
-                        // --- 1. ZWSP BARRIER MANAGEMENT ---
-                        // Check if input is a MEDIAL. If so, remove ZWSP (ZWSP cannot sit before a medial).
-                        if (isMedial(primaryCode)) {
-                             CharSequence before_zwsp = ic.getTextBeforeCursor(1, 0);
-                             if (before_zwsp != null && before_zwsp.length() == 1 && before_zwsp.charAt(0) == ZWSP) {
-                                ic.deleteSurroundingText(1, 0); // Remove the ZWSP barrier
-                             }
+                        // 1. ZWSP BARRIER REMOVAL FOR NEXT SYLLABLE (User Instruction)
+                        // If current input is a Consonant/Medial, check if ZWSP is preceding it. If so, remove ZWSP.
+                        if (isConsonant(primaryCode) || isMedial(primaryCode)) {
+                            CharSequence before_zwsp = ic.getTextBeforeCursor(1, 0);
+                            if (before_zwsp != null && before_zwsp.length() == 1 && before_zwsp.charAt(0) == ZWSP) {
+                                ic.deleteSurroundingText(1, 0); // Remove ZWSP barrier
+                            }
                         }
-                        // Check if input is a CONSONANT after a completed syllable (e.g., 'ပြေ' + 'မ').
-                        // If so, insert ZWSP barrier to prevent sticky 'ေ' from swapping.
+
+                        // 2. ZWSP BARRIER INSERTION (New Rule 1.1)
+                        // Insert ZWSP ONLY if input is a Consonant AND prev char is a completed 'ေ' syllable.
+                        // This prevents the sticky 'ေ' from grabbing the next Consonant.
                         else if (isConsonant(primaryCode)) {
                              CharSequence before2 = ic.getTextBeforeCursor(2, 0);
                              if (before2 != null && before2.length() >= 2) {
@@ -455,7 +457,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                              }
                         }
 
-                        // 2. SMART REORDERING (The core swap logic for 'ေ' and Medial Sorting)
+                        // 3. SMART REORDERING (The core swap logic for 'ေ' and Medial Sorting)
                         if (handleSmartReordering(ic, primaryCode)) {
                              if (currentWord.length() > 0) {
                                 char last = currentWord.charAt(currentWord.length() - 1);
@@ -464,7 +466,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                 currentWord.append(last);
                              }
                         }
-                        // 3. Vowel Normalization (e.g. ု + ိ -> ို)
+                        // 4. Vowel Normalization (e.g. ု + ိ -> ို)
                         else if (handleShanVowelNormalization(ic, primaryCode)) {
                              if (currentWord.length() > 0) {
                                 char prevCharInBuf = currentWord.charAt(currentWord.length() - 1);
@@ -473,7 +475,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                 currentWord.append(prevCharInBuf);
                             }
                         }
-                        // 4. Normal Typing (If no swap/normalize needed)
+                        // 5. Normal Typing (If no swap/normalize needed)
                         else {
                             String charStr = (key != null && key.label != null && key.label.length() > 1) 
                                 ? key.label.toString() 
@@ -535,15 +537,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         // RULE 1: Swap with Thway Htoe / Shan E
         if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
              
-             // Check if previous char is ZWSP (Barrier removal logic for Rule 1 is handled in handleInput)
-            
              if (isConsonant(primaryCode) || isMedial(primaryCode)) {
                  performSwap(ic, primaryCode, prevChar);
                  return true;
              }
         }
 
-        // RULE 2: Sort Medials
+        // RULE 2: Sort Medials (e.g. 'ှ' before 'ြ' -> fix to 'ြ' before 'ှ')
         int currentWeight = getMedialWeight(primaryCode);
         int prevWeight = getMedialWeight((int)prevChar);
 
