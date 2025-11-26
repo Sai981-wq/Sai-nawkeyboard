@@ -70,8 +70,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
 
-    // *** ROBUST FIX: State for Pre-base Vowels ***
-    // ဒီ variable က သဝေထိုးကို ခဏထိန်းထားပေးမယ့် နေရာပါ
+    // *** PENDING STATE FOR PRE-BASE VOWELS ***
+    // Stores 'ေ' or 'ႄ' temporarily until a consonant is typed
     private int pendingPreBaseVowel = 0; 
 
     // Voice
@@ -89,7 +89,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     // State
     private boolean isCaps = false;
     private boolean isSymbols = false; 
-    private int currentLanguageId = 0; 
+    private int currentLanguageId = 0; // 0=Eng, 1=MM, 2=Shan
 
     // System Services
     private AudioManager audioManager;
@@ -105,6 +105,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
+    // Listener reuse
     private final View.OnClickListener candidateListener = v -> {
         String suggestion = (String) v.getTag();
         if (suggestion != null) pickSuggestion(suggestion);
@@ -183,7 +184,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         currentLanguageId = 0;
         isCaps = false;
         isSymbols = false;
-        pendingPreBaseVowel = 0; // Reset state
+        pendingPreBaseVowel = 0;
         
         updateKeyboardLayout(); 
         keyboardView.setOnKeyboardActionListener(this);
@@ -255,7 +256,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         String text = matches.get(0);
                         InputConnection ic = getCurrentInputConnection();
                         if (ic != null) {
-                            flushPendingVowel(ic); // Ensure nothing is pending before voice input
+                            flushPendingVowel(ic);
                             ic.commitText(text + " ", 1);
                         }
                     }
@@ -296,7 +297,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try { initKeyboards(); } catch (Exception e) { e.printStackTrace(); }
         
         currentWord.setLength(0);
-        pendingPreBaseVowel = 0; // Reset
+        pendingPreBaseVowel = 0; 
         isCaps = false;
         isSymbols = false;
         
@@ -338,10 +339,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     @Override public void onKey(int primaryCode, int[] keyCodes) { handleInput(primaryCode, null); }
+    
     @Override public void onText(CharSequence text) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
-        flushPendingVowel(ic); // Flush before text commit
+        flushPendingVowel(ic); // Ensure clean state
         ic.commitText(text, 1);
         playSound(0);
         if (isCaps) { isCaps = false; updateKeyboardLayout(); }
@@ -359,13 +361,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
-    // --- MAIN INPUT HANDLING WITH ROBUST STATE LOGIC ---
+    // --- MAIN INPUT HANDLING ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
-        // Auto-Text / Suggestions
+        // Auto-Text / Suggestions Handling
         if (key != null && key.text != null) {
             flushPendingVowel(ic);
             ic.commitText(key.text, 1);
@@ -374,13 +376,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
 
         try {
-            // *** SPECIAL HANDLING FOR DELETE ***
+            // *** 1. SPECIAL DELETE HANDLING ***
+            // If we have a pending 'ေ', delete removes IT, not the character on screen.
             if (primaryCode == CODE_DELETE) {
-                // If there is a pending 'ေ', delete it first (by just clearing the state)
                 if (pendingPreBaseVowel != 0) {
                     pendingPreBaseVowel = 0;
                     announceText("Deleted Thway Htoe");
-                    return; // Don't actually delete text from screen, just the pending state
+                    return; 
                 }
                 
                 CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
@@ -395,7 +397,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 return;
             }
 
-            // Flush pending vowel if we type a control code (Space, Enter, etc)
+            // Flush pending vowel if we type any control code (Space, Enter, etc)
             if (primaryCode <= 0 && pendingPreBaseVowel != 0) {
                  flushPendingVowel(ic);
             }
@@ -432,33 +434,30 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     // --- MYANMAR/SHAN LOGIC ---
                     if (isShanOrMyanmar()) {
                         
-                        // 1. Capture Thway Htoe / Shan E (Pending State)
+                        // A. Capture Thway Htoe / Shan E
                         if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
                             if (pendingPreBaseVowel != 0) {
-                                // Already have one? Flush it to be safe (e.g. user typed ေေ)
-                                flushPendingVowel(ic);
+                                flushPendingVowel(ic); // Safety flush if double typing
                             }
                             pendingPreBaseVowel = primaryCode;
-                            // Do NOT commit text yet.
+                            // Return early: Do not commit to screen yet
                             return; 
                         }
 
-                        // 2. If we have a Pending Vowel -> Combine with Consonant
+                        // B. Process Pending Vowel
                         if (pendingPreBaseVowel != 0) {
                             if (isConsonant(primaryCode) || isMedial(primaryCode)) {
+                                // Consonant Typed: Commit Consonant FIRST, then Vowel
                                 String charStr = String.valueOf((char) primaryCode);
                                 String vowelStr = String.valueOf((char) pendingPreBaseVowel);
                                 
-                                // Commit Consonant FIRST, then Vowel (Correct Unicode Order)
                                 ic.commitText(charStr, 1);
                                 ic.commitText(vowelStr, 1);
                                 
-                                // Update Buffer (Consonant + Vowel)
                                 currentWord.append(charStr).append(vowelStr);
-                                
-                                pendingPreBaseVowel = 0; // Reset State
+                                pendingPreBaseVowel = 0; // Reset
                             } else {
-                                // Typed something else (e.g. a number)? Flush pending first.
+                                // Non-Consonant Typed: Flush pending, then commit new key
                                 flushPendingVowel(ic);
                                 String charStr = String.valueOf((char) primaryCode);
                                 ic.commitText(charStr, 1);
@@ -466,11 +465,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             }
                         } 
                         
-                        // 3. Normal Processing (No Pending Vowel)
+                        // C. Normal Processing (No Pending Vowel)
                         else {
-                            // Vowel Normalization (ု + ိ -> ို)
+                            // Check Vowel Normalization (e.g. ု + ိ -> ို)
                             if (handleShanVowelNormalization(ic, primaryCode)) {
-                                // Update Buffer for Swap
+                                // Buffer Update for Swap
                                 if (currentWord.length() > 0) {
                                     char prevCharInBuf = currentWord.charAt(currentWord.length() - 1);
                                     currentWord.deleteCharAt(currentWord.length() - 1);
@@ -478,7 +477,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                     currentWord.append(prevCharInBuf);
                                 }
                             } else {
-                                // Standard Key Commit
+                                // Standard Commit
                                 String charStr = (key != null && key.label != null && key.label.length() > 1) 
                                     ? key.label.toString() 
                                     : String.valueOf((char) primaryCode);
@@ -501,12 +500,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         } catch (Exception e) {
             e.printStackTrace();
+            // Fallback safe state
+            pendingPreBaseVowel = 0;
             isSymbols = false;
             updateKeyboardLayout();
         }
     }
 
-    // Helper to flush pending vowel if user interrupts flow (e.g. types Space)
+    // Helper: Commit the pending vowel immediately (used when flow is interrupted)
     private void flushPendingVowel(InputConnection ic) {
         if (pendingPreBaseVowel != 0) {
             String s = String.valueOf((char) pendingPreBaseVowel);
@@ -550,10 +551,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (before == null || before.length() == 0) return false;
         char prevChar = before.charAt(0);
 
+        // Swap ု + ိ -> ိ + ု
         if (primaryCode == MM_I && prevChar == MM_U) {
             performSwap(ic, MM_I, MM_U);
             return true;
         }
+        // Swap ူ + ိ -> ိ + ူ
         if (primaryCode == MM_I && prevChar == MM_UU) {
             performSwap(ic, MM_I, MM_UU);
             return true;
@@ -570,10 +573,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private boolean isConsonant(int code) {
+        // Standard Myanmar/Shan Consonants
         return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101);
     }
 
     private boolean isMedial(int code) {
+        // Medials: Yapin, Yayit, Wasway, Hahtoe
         return (code >= 4155 && code <= 4158);
     }
 
@@ -584,7 +589,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void saveWordAndReset() {
         InputConnection ic = getCurrentInputConnection();
-        if(ic != null) flushPendingVowel(ic); // Final check
+        if(ic != null) flushPendingVowel(ic); 
 
         if (suggestionDB != null && currentWord.length() > 0) {
             final String wordToSave = currentWord.toString();
@@ -725,4 +730,3 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void swipeDown() {}
     @Override public void swipeUp() {}
 }
-
