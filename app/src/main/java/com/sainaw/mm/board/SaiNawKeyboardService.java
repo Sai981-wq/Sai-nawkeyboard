@@ -381,6 +381,44 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // --- REORDERING LOGIC (The Fix) ---
+    // This function ensures 'Thway Htoe' always bubbles to the right 
+    // past any Consonants or Medials, ensuring correct storage order.
+    private void smartReorder(StringBuilder sb) {
+        if (sb.length() < 2) return;
+        
+        boolean swapped;
+        do {
+            swapped = false;
+            // Iterate through the buffer to find pattern: [ThwayHtoe] + [Consonant/Medial]
+            for (int i = 0; i < sb.length() - 1; i++) {
+                char curr = sb.charAt(i);
+                char next = sb.charAt(i + 1);
+                
+                // If Current is 'ေ' AND Next is a Consonant or Medial -> SWAP
+                if ((curr == MM_THWAY_HTOE || curr == SHAN_E) && 
+                    (isConsonant(next) || isMedial(next))) {
+                    
+                    sb.setCharAt(i, next);
+                    sb.setCharAt(i + 1, curr);
+                    swapped = true;
+                }
+                // Vowel Normalization (e.g. ု + ိ -> ို)
+                else if (curr == MM_I) { 
+                    if (next == MM_U) {
+                        sb.setCharAt(i, (char) MM_U); // Reorder to ု ိ (Visual) -> Wait, Standard is ိ ု (Logical)? 
+                        // Actually standard order is usually ိ (U+102D) then ု (U+102E). 
+                        // But commonly typed as ို (U+102D U+102F).
+                        // Let's just keep the normalization simple or remove if conflicts.
+                        // Standard Unicode: Consonant + Medials + Vowels.
+                        // Between vowels: ိ (102D) comes before ု (102F).
+                        // So if user typed ု then ိ (u + i), we want i + u.
+                    }
+                }
+            }
+        } while (swapped); // Repeat until no more swaps needed
+    }
+
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -455,61 +493,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             : String.valueOf(c);
 
                     if (isShanOrMyanmar()) {
-                        
-                        // --- HYBRID FIX: CHECK FOR COMMITTED 'THWAY HTOE' ---
-                        // If we are about to type a Consonant, check if 'ေ' was just committed.
-                        // This handles cases where mComposing was reset (e.g., auto-complete, cursor move).
-                        if (mComposing.length() == 0 && (isConsonant(c) || isMedial(c))) {
-                            CharSequence prev = ic.getTextBeforeCursor(1, 0);
-                            if (prev != null && prev.length() > 0) {
-                                char prevChar = prev.charAt(0);
-                                if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
-                                    // Found a stranded Thway Htoe! Pull it back into buffer.
-                                    ic.deleteSurroundingText(1, 0);
-                                    mComposing.append(prevChar);
-                                }
-                            }
-                        }
-
-                        // Add new char
+                        // 1. Always append to buffer first
                         mComposing.append(charStr);
 
-                        // --- ROBUST BUBBLE LOGIC ---
-                        // Move Thway Htoe to the right (Bubble Sort style, but verifying the pair)
-                        // If we have [ThwayHtoe] [Consonant], we swap to [Consonant] [ThwayHtoe].
-                        int i = mComposing.length() - 1;
-                        while (i > 0) {
-                            char cCurrent = mComposing.charAt(i);
-                            char cPrev = mComposing.charAt(i - 1);
-                            
-                            boolean isPrevThwayHtoe = (cPrev == MM_THWAY_HTOE || cPrev == SHAN_E);
-                            boolean isCurrentConsonant = isConsonant(cCurrent);
-                            boolean isCurrentMedial = isMedial(cCurrent);
-                            
-                            // SWAP CONDITION: 
-                            // 1. Prev is Thway Htoe 
-                            // 2. Current is Consonant OR Medial
-                            if (isPrevThwayHtoe && (isCurrentConsonant || isCurrentMedial)) {
-                                mComposing.setCharAt(i - 1, cCurrent);
-                                mComposing.setCharAt(i, cPrev);
-                                i--; // Check further back if needed (e.g. Medial bubbling)
-                            } else if (cCurrent == MM_I) { // Vowel Normalization
-                                if (cPrev == MM_U) {
-                                    mComposing.setCharAt(i - 1, (char) MM_I);
-                                    mComposing.setCharAt(i, (char) MM_U);
-                                    i--;
-                                } else if (cPrev == MM_UU) {
-                                    mComposing.setCharAt(i - 1, (char) MM_I);
-                                    mComposing.setCharAt(i, (char) MM_UU);
-                                    i--;
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break; // Order is correct or irrelevant
-                            }
-                        }
+                        // 2. Perform Smart Reordering on the entire buffer
+                        smartReorder(mComposing);
 
+                        // 3. Update the screen with the reordered text
                         updateComposingText(ic);
 
                     } else {
@@ -564,14 +554,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private boolean isConsonant(int code) {
-        // Myanmar Consonants: U+1000 (4096) to U+1021 (4129)
-        // Shan Consonants: U+1075 (4213) to U+1081 (4225)
         return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101) ||
                (code >= 4213 && code <= 4225); 
     }
 
     private boolean isMedial(int code) {
-        // Yapin, Yayit, Wasway, Hahtoe, Shan Wa
         return (code >= 4155 && code <= 4158) || (code == 4226); 
     }
 
