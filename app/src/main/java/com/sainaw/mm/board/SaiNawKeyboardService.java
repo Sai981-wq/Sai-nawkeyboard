@@ -513,11 +513,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             // 3. Vowel Normalization (e.g. ု + ိ -> ို)
                             if (lastChar == MM_I) {
                                 if (prevChar == MM_U) {
-                                    mComposing.setCharAt(lastIndex - 1, MM_I);
-                                    mComposing.setCharAt(lastIndex, MM_U);
+                                    mComposing.setCharAt(lastIndex - 1, (char) MM_I); // Cast to char
+                                    mComposing.setCharAt(lastIndex, (char) MM_U);     // Cast to char
                                 } else if (prevChar == MM_UU) {
-                                    mComposing.setCharAt(lastIndex - 1, MM_I);
-                                    mComposing.setCharAt(lastIndex, MM_UU);
+                                    mComposing.setCharAt(lastIndex - 1, (char) MM_I); // Cast to char
+                                    mComposing.setCharAt(lastIndex, (char) MM_UU);    // Cast to char
                                 }
                             }
                         }
