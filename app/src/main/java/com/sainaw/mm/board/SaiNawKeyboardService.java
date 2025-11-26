@@ -24,6 +24,7 @@ import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -398,6 +399,51 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // --- MYANMAR THWAY HTOE (U+1031) REORDERING LOGIC ---
+    /**
+     * Implements Buffer & Swap method for Myanmar Unicode reordering
+     * Specifically handles 'ေ' (U+1031) reordering for visual to logical conversion
+     */
+    private boolean handleThwayHtoeReordering(int primaryCode, InputConnection ic) {
+        // Check if user is typing a Myanmar Consonant
+        if (!isShanOrMyanmar() || !isConsonant(primaryCode)) {
+            return false;
+        }
+        
+        try {
+            // Check character before cursor using getTextBeforeCursor
+            CharSequence textBeforeCursor = ic.getTextBeforeCursor(1, 0);
+            if (textBeforeCursor != null && textBeforeCursor.length() > 0) {
+                char charBefore = textBeforeCursor.charAt(0);
+                
+                // If the character before cursor is 'ေ' (U+1031)
+                if (charBefore == MM_THWAY_HTOE || charBefore == SHAN_E) {
+                    // Delete the 'ေ' using deleteSurroundingText
+                    ic.deleteSurroundingText(1, 0);
+                    
+                    // Commit the Consonant first
+                    char consonant = (char) primaryCode;
+                    ic.commitText(String.valueOf(consonant), 1);
+                    
+                    // Commit the 'ေ' immediately after
+                    ic.commitText(String.valueOf(charBefore), 1);
+                    
+                    // Announce the reordering for accessibility
+                    if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+                        announceText("Reordered " + consonant + charBefore);
+                    }
+                    
+                    return true; // Reordering handled
+                }
+            }
+        } catch (Exception e) {
+            // Fall back to normal handling if reordering fails
+            e.printStackTrace();
+        }
+        
+        return false; // No reordering was performed
+    }
+
     // --- MAIN INPUT HANDLING ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
@@ -476,12 +522,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() 
                             : String.valueOf(c);
 
+                    // --- THWAY HTOE REORDERING CHECK ---
+                    // First, try the Buffer & Swap method for 'ေ' reordering
+                    if (handleThwayHtoeReordering(primaryCode, ic)) {
+                        // Reordering was handled, skip normal processing
+                        break;
+                    }
+
                     if (isShanOrMyanmar()) {
                         
                         // Add to Composing Buffer
                         mComposing.append(charStr);
 
-                        // --- SMART REORDERING IN BUFFER (Fix for TalkBack) ---
+                        // --- SMART REORDERING IN BUFFER ---
                         // 1. Swap Logic for 'ေ' (Thway Htoe) and Consonants
                         // User types 'ေ' then 'မ' -> Buffer gets "ေမ" -> We swap to "မေ"
                         if (mComposing.length() >= 2) {
@@ -522,7 +575,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         }
 
                         // Update the screen with the (possibly reordered) buffer
-                        // This ensures TalkBack reads the *reordered* logical text "Consonant + Thway Htoe" correctly.
                         updateComposingText(ic);
 
                     } 
@@ -734,4 +786,3 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void swipeDown() {}
     @Override public void swipeUp() {}
 }
-
