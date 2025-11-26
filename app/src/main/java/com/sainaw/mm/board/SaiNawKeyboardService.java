@@ -53,8 +53,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int CODE_LANG_CHANGE = -101;
     private static final int CODE_VOICE = -10;
 
-    // Myanmar Unicode
+    // Myanmar/Shan Unicode Constants
     private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
+    private static final int SHAN_E = 4228;        // 'ႄ' (U+1084) - Shan Thway Htoe
+    
+    // Vowel Sorting Constants
+    private static final int MM_I = 4141;  // 'ိ' (U+102D)
+    private static final int MM_U = 4144;  // 'ု' (U+1030)
+    private static final int MM_UU = 4143; // 'ူ' (U+102F)
 
     // Components
     private KeyboardView keyboardView;
@@ -143,7 +149,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return this;
     }
 
-    // Unlocked Receiver to reload DB
     private final BroadcastReceiver userUnlockReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -159,7 +164,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override
     public View onCreateInputView() {
-        // Safe Context for Direct Boot
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
@@ -174,7 +178,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         
-        // Initialize DB only if user is unlocked
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else {
@@ -315,9 +318,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (dbExecutor != null && !dbExecutor.isShutdown()) dbExecutor.shutdown();
         try {
             unregisterReceiver(userUnlockReceiver);
-        } catch (Exception e) {
-            // Ignore if not registered
-        }
+        } catch (Exception e) {}
     }
 
     private void loadSettings() {
@@ -325,7 +326,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
 
-    // --- TalkBack Safety: Handle Lift-to-Type with Bounds Check ---
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
@@ -334,7 +334,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int height = keyboardView.getHeight();
             int width = keyboardView.getWidth();
 
-            // Cancel input if finger slides off the top
             if (y <= 0 || y >= height || x <= 0 || x >= width) {
                 lastHoverKeyIndex = -1;
                 return; 
@@ -408,7 +407,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
-        // Shan/Text Input: Auto-Unshift support
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
             if (isCaps) {
@@ -446,7 +444,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     changeLanguage();
                     break;
                 case CODE_ENTER: 
-                    // Gboard Style Enter
                     EditorInfo editorInfo = getCurrentInputEditorInfo();
                     boolean isMultiLine = (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
                     int action = editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
@@ -483,19 +480,47 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     isSpaceLongPressed = false;
                     break;
                 case 0: break;
+                
                 default:
-                    // --- SMART REORDERING (STANDARD PUSH LOGIC) ---
-                    // This fixes "အဆင်ပြေပြေ" and allows Zawgyi-like visual typing
-                    if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
-                        currentWord.append(String.valueOf((char) primaryCode));
-                    } else {
-                        // Normal Typing
-                        String charStr;
-                        if (key != null && key.label != null && key.label.length() > 1) {
-                            charStr = key.label.toString();
-                        } else {
-                            charStr = String.valueOf((char) primaryCode);
+                    if (isShanOrMyanmar()) {
+                        // 1. Shan/MM Vowel Normalization (e.g. U+I -> I+U)
+                        if (handleShanVowelNormalization(ic, primaryCode)) {
+                            // Update Buffer: Swap last char with new char
+                            if (currentWord.length() > 0) {
+                                char prevCharInBuf = currentWord.charAt(currentWord.length() - 1);
+                                currentWord.deleteCharAt(currentWord.length() - 1);
+                                currentWord.append(String.valueOf((char) primaryCode)); // Insert New First
+                                currentWord.append(prevCharInBuf); // Insert Old Last
+                            }
+                        } 
+                        // 2. Smart Reordering (Thway Htoe/Shan E)
+                        else if (handleSmartReordering(ic, primaryCode)) {
+                            if (currentWord.length() > 0) {
+                                char lastInBuffer = currentWord.charAt(currentWord.length() - 1);
+                                if (lastInBuffer == MM_THWAY_HTOE || lastInBuffer == SHAN_E) {
+                                    currentWord.deleteCharAt(currentWord.length() - 1); // Remove ေ/ႄ
+                                    currentWord.append(String.valueOf((char) primaryCode)); // Add Consonant
+                                    currentWord.append(lastInBuffer); // Add ေ/ႄ back
+                                } else {
+                                    currentWord.append(String.valueOf((char) primaryCode));
+                                }
+                            } else {
+                                currentWord.append(String.valueOf((char) primaryCode));
+                            }
+                        } 
+                        // 3. Normal Typing
+                        else {
+                            String charStr = (key != null && key.label != null && key.label.length() > 1) 
+                                ? key.label.toString() 
+                                : String.valueOf((char) primaryCode);
+                            ic.commitText(charStr, 1);
+                            currentWord.append(charStr);
                         }
+                    } else {
+                        // English/Other
+                        String charStr = (key != null && key.label != null && key.label.length() > 1) 
+                            ? key.label.toString() 
+                            : String.valueOf((char) primaryCode);
                         ic.commitText(charStr, 1);
                         currentWord.append(charStr);
                     }
@@ -541,32 +566,66 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- GBOARD/KEYMAN STANDARD LOGIC FOR 'THWAY HTOE' ---
-    private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
-        // Only verify immediate predecessor for "Push" logic
+    // --- VOWEL NORMALIZATION LOGIC (For ို / ိူ) ---
+    private boolean handleShanVowelNormalization(InputConnection ic, int primaryCode) {
         CharSequence before = ic.getTextBeforeCursor(1, 0);
         if (before == null || before.length() == 0) return false;
+
+        char prevChar = before.charAt(0);
+
+        // Case 1: ု (U) + ိ (I) -> ိ (I) + ု (U)
+        if (primaryCode == MM_I && prevChar == MM_U) {
+            performSwap(ic, MM_I, MM_U);
+            return true;
+        }
+
+        // Case 2: ူ (UU) + ိ (I) -> ိ (I) + ူ (UU)
+        if (primaryCode == MM_I && prevChar == MM_UU) {
+            performSwap(ic, MM_I, MM_UU);
+            return true;
+        }
+        return false;
+    }
+
+    private void performSwap(InputConnection ic, int firstCode, int secondCode) {
+        ic.beginBatchEdit();
+        ic.deleteSurroundingText(1, 0); 
+        ic.commitText(String.valueOf((char) firstCode), 1); 
+        ic.commitText(String.valueOf((char) secondCode), 1);
+        ic.endBatchEdit();
+    }
+
+    // --- SMART REORDERING (THWAY HTOE / SHAN E) ---
+    private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
+        CharSequence before = ic.getTextBeforeCursor(2, 0);
+        if (before == null || before.length() == 0) return false;
         
-        char lastChar = before.charAt(0); 
+        char lastChar = before.charAt(before.length() - 1); 
         
-        // Conditions: Previous is 'ေ' (4145)
-        boolean isPrecededByThwayHtoe = (lastChar == MM_THWAY_HTOE);
+        // Check for 'ေ' or 'ႄ'
+        boolean isPreBaseVowel = (lastChar == MM_THWAY_HTOE || lastChar == SHAN_E);
+        
+        if (!isPreBaseVowel) return false;
+
         boolean isInputConsonant = isConsonant(primaryCode);
         boolean isInputMedial = isMedial(primaryCode);
 
-        // LOGIC: If 'ေ' is sitting before the cursor, and we type a Consonant OR Medial,
-        // we must SWAP them. This pushes 'ေ' to the right.
-        // E.g., Existing: "ေ" -> Type "က" -> Becomes "ကေ"
-        // E.g., Existing: "က" + "ေ" -> Type "ြ" -> Becomes "ကြေ"
-        
-        if (isPrecededByThwayHtoe && (isInputConsonant || isInputMedial)) {
+        // Sticky Check: Ensure the pre-base vowel belongs to THIS consonant
+        if (isInputConsonant) {
+            if (before.length() >= 2) {
+                char prevPrevChar = before.charAt(before.length() - 2);
+                if (isConsonant(prevPrevChar) || isMedial(prevPrevChar)) {
+                    // Previous char is already attached to a consonant
+                    return false; 
+                }
+            }
+        }
+
+        if (isInputConsonant || isInputMedial) {
             ic.beginBatchEdit(); 
-            ic.deleteSurroundingText(1, 0); // Remove 'ေ'
-            
-            // Insert New Char then Re-insert 'ေ'
-            ic.commitText(String.valueOf((char) primaryCode), 1); 
-            ic.commitText(String.valueOf(lastChar), 1);
-            
+            ic.deleteSurroundingText(1, 0); // Remove ေ/ႄ
+            ic.commitText(String.valueOf((char) primaryCode), 1); // Insert Consonant
+            ic.commitText(String.valueOf(lastChar), 1); // Re-insert ေ/ႄ
             ic.endBatchEdit();
             return true;
         }
@@ -575,7 +634,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private boolean isConsonant(int code) {
-        // Standard Myanmar Consonants Range
+        // Standard Myanmar Consonants Range (Including Shan)
         return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101);
     }
 
