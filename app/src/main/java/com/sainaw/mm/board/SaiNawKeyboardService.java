@@ -56,7 +56,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     // Myanmar/Shan Unicode Constants
     private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
     private static final int SHAN_E = 4228;        // 'ႄ' (U+1084)
-    private static final char ZWSP = '\u200B';     // Zero Width Space (Invisible Barrier)
     
     // Vowel Sorting Constants
     private static final int MM_I = 4141;  // 'ိ'
@@ -309,6 +308,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float y = event.getY();
             int width = keyboardView.getWidth();
             
+            // Safety Margin: Cancel if < 20px from ANY edge
             if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > width - 20) {
                 lastHoverKeyIndex = -1;
                 return;
@@ -365,31 +365,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
-    // --- HELPER FUNCTION: REMOVE ZWSP BARRIER ---
-    private void removeZWSPIfNeeded(InputConnection ic) {
-        CharSequence before = ic.getTextBeforeCursor(1, 0);
-        if (before != null && before.length() == 1 && before.charAt(0) == ZWSP) {
-            ic.deleteSurroundingText(1, 0);
-        }
-    }
-
-    // --- HELPER FUNCTION: INSERT ZWSP BARRIER ---
-    private void handleZWSPBeforeConsonant(InputConnection ic) {
-        CharSequence before2 = ic.getTextBeforeCursor(2, 0);
-        if (before2 != null && before2.length() >= 2) {
-            char prevChar = before2.charAt(before2.length() - 1);
-            char prevPrevChar = before2.charAt(0);
-
-            // Check: Is it a completed syllable ending in 'ေ' or 'ႄ'?
-            if ((prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) && 
-                (isConsonant(prevPrevChar) || isMedial(prevPrevChar))) {
-                
-                // Insert ZWSP barrier
-                ic.commitText(String.valueOf(ZWSP), 1);
-            }
-        }
-    }
-    
     // --- MAIN INPUT HANDLING ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
@@ -405,7 +380,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case CODE_DELETE:
-                    // Delete ZWSP barrier first if it exists
+                    // ZWSP deletion is ONLY handled if ZWSP is the immediately preceding char
                     CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
                     if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
                          ic.deleteSurroundingText(1, 0);
@@ -454,10 +429,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         
                         // --- START CLEAN FLOW ---
                         
-                        // Step 1: Remove ZWSP barrier if next syllable is starting
+                        // Step 1: Check ZWSP removal (must run first, for Medials/Consonants)
                         removeZWSPIfNeeded(ic);
 
-                        // Step 2: If consonant, maybe insert ZWSP (Consonant boundary protection)
+                        // Step 2: Insert ZWSP barrier if next syllable is starting with a Consonant
                         if (isConsonant(primaryCode)) {
                             handleZWSPBeforeConsonant(ic);
                         }
@@ -506,6 +481,32 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             updateKeyboardLayout();
         }
     }
+    
+    // --- ZWSP HELPER FUNCTIONS ---
+    private void removeZWSPIfNeeded(InputConnection ic) {
+        CharSequence before = ic.getTextBeforeCursor(1, 0);
+        if (before != null && before.length() == 1 && before.charAt(0) == ZWSP) {
+            ic.deleteSurroundingText(1, 0);
+        }
+    }
+
+    private void handleZWSPBeforeConsonant(InputConnection ic) {
+        CharSequence before2 = ic.getTextBeforeCursor(2, 0);
+        if (before2 != null && before2.length() >= 2) {
+            char prevChar = before2.charAt(before2.length() - 1);
+            char prevPrevChar = before2.charAt(0);
+
+            // Check: Is it a completed syllable ending in 'ေ' or 'ႄ'?
+            if ((prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) && 
+                (isConsonant(prevPrevChar) || isMedial(prevPrevChar))) {
+                
+                // If 'ေ' is bound to previous syllable, insert ZWSP barrier
+                if (ic.getTextBeforeCursor(1, 0).charAt(0) != ZWSP) { 
+                    ic.commitText(String.valueOf(ZWSP), 1);
+                }
+            }
+        }
+    }
 
     private void announceText(String text) {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
@@ -524,6 +525,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
                 intent.setData(Uri.parse("package:" + getPackageName()));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
                 return;
             }
@@ -539,8 +541,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         char prevChar = before.charAt(0);
         
         // RULE 1: Swap with Thway Htoe / Shan E
-        // This handles "ေ" + Consonant/Medial swap.
         if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
+             
              if (isConsonant(primaryCode) || isMedial(primaryCode)) {
                  performSwap(ic, primaryCode, prevChar);
                  return true;
