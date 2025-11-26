@@ -300,7 +300,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- CRITICAL FIX FOR TALKBACK: LIFT-TO-TYPE WITH SAFETY MARGIN ---
+    // --- TALKBACK SAFE LIFT-TO-TYPE WITH 20px MARGIN ---
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
@@ -309,12 +309,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int width = keyboardView.getWidth();
             int height = keyboardView.getHeight();
 
-            // *** SAFETY MARGIN (20 PIXELS) ***
-            // ဘောင်နဲ့ 20px အကွာကို ရောက်တာနဲ့ Key ကို ချက်ချင်း မေ့ပစ်လိုက်မယ် (Clear State)
-            // ဒါမှ အပေါ်ကို ဆွဲလိုက်ရင် အပေါ်တန်းက စာလုံးတွေ ဝင်မလာမှာ
-            if (y < 20 || y > height - 20 || x < 20 || x > width - 20) {
-                lastHoverKeyIndex = -1; // Reset immediately
-                return; // Stop processing any key
+            // Safety Margin: Cancel if < 20px from ANY edge
+            if (x < 20 || y < 20 || x > width - 20 || y > height - 20) {
+                lastHoverKeyIndex = -1;
+                return;
             }
 
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
@@ -324,13 +322,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     playHaptic(0);
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // လက်ကြွတဲ့အချိန်မှာ လက်ရှိမှတ်ထားတဲ့ Key ရှိနေမှသာ ရိုက်မယ်
-                // ဘောင်နားရောက်လို့ lastHoverKeyIndex က -1 ဖြစ်သွားရင် ဒီထဲကို ဝင်တော့မှာ မဟုတ်ဘူး
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        // Double Check: Coordinates must be inside key
+                        // Double check: Must be inside key bounds
                         if (key.isInside((int)x, (int)y)) {
                              if (key.codes[0] != -100) {
                                 handleInput(key.codes[0], key);
@@ -425,8 +421,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     
                 default:
                     if (isShanOrMyanmar()) {
-                        // 1. SMART REORDERING (Bagan Style Swap)
-                        // "ေ" + "က" = "ကေ", "ေ" + "က" + "ြ" = "ကြေ"
+                        // 1. SMART REORDERING (Bagan Style Direct Swap)
+                        // This handles "ပြေ" properly:
+                        // Type 'ေ' -> 'ေ'
+                        // Type 'ပ' -> 'ေ' moves back -> 'ပေ'
+                        // Type 'ြ' -> 'ေ' moves back again -> 'ပြေ'
                         if (handleSmartReordering(ic, primaryCode)) {
                              // Sync Buffer
                              if (currentWord.length() > 0) {
@@ -497,15 +496,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- SMART REORDERING (Bagan Style Direct Swap) ---
+    // --- SMART REORDERING (The Magic "Visual Typing" Logic) ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         CharSequence before = ic.getTextBeforeCursor(1, 0);
         if (before == null || before.length() == 0) return false;
         
         char prevChar = before.charAt(0);
         
-        // RULE 1: Swap with Thway Htoe / Shan E
-        // If previous is 'ေ', move it to the back.
+        // RULE 1: Direct Swap with Thway Htoe / Shan E
+        // If 'ေ' is sitting there, and we type a Consonant OR Medial,
+        // we DELETE 'ေ', insert the new char, then put 'ေ' back.
+        // This creates the visual effect: ေ -> ပေ -> ပြေ
         if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
              if (isConsonant(primaryCode) || isMedial(primaryCode)) {
                  performSwap(ic, primaryCode, prevChar);
