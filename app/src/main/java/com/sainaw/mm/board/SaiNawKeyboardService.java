@@ -56,7 +56,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     // Myanmar/Shan Unicode Constants
     private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
     private static final int SHAN_E = 4228;        // 'ႄ' (U+1084)
-    private static final char ZWSP = '\u200B';     // Zero Width Space
+    private static final char ZWSP = '\u200B';     // Zero Width Space (The Placeholder)
 
     // Components
     private KeyboardView keyboardView;
@@ -361,7 +361,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
-    // --- MAIN INPUT HANDLING (WITH SMART LOGIC) ---
+    // --- MAIN INPUT HANDLING (PLACEHOLDER & FILL-IN-THE-BLANK LOGIC) ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -376,16 +376,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case CODE_DELETE:
-                    // ZWSP Barrier removal logic
+                    // Clean up specific Logic:
+                    // If user deletes 'ေ', we check if the invisible placeholder ZWSP is behind it.
+                    // If so, we delete that too, so we don't leave invisible garbage.
                     CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
                     if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
-                         ic.deleteSurroundingText(1, 0);
-                         announceText("Barrier Removed");
-                         break;
+                         ic.deleteSurroundingText(1, 0); // Delete the leftover ZWSP
                     }
                     
                     CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
-                    ic.deleteSurroundingText(1, 0);
+                    ic.deleteSurroundingText(1, 0); // Normal delete
                     if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore.toString());
                     else announceText("Delete");
                     if (currentWord.length() > 0) {
@@ -393,6 +393,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         triggerCandidateUpdate(50);
                     }
                     break;
+                    
                 case CODE_VOICE: startVoiceInput(); break;
                 case CODE_SHIFT: isCaps = !isCaps; updateKeyboardLayout(); announceText(isCaps ? "Shift On" : "Shift Off"); break;
                 case CODE_SYMBOL_ON: isSymbols = true; updateKeyboardLayout(); announceText("Symbols Keyboard"); break;
@@ -426,82 +427,54 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             : String.valueOf((char) primaryCode);
 
                     if (isShanOrMyanmar()) {
-                        // --- SMART ORDERING LOGIC ---
-                        CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
-                        boolean swapDone = false;
-
-                        if (lastTwo != null && lastTwo.length() > 0) {
-                            char prevChar = lastTwo.charAt(lastTwo.length() - 1);
+                        
+                        // --- STEP 1: USER TYPES 'ေ' (Thway Htoe) ---
+                        if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
+                            // Instead of just 'ေ', we insert [ZWSP] + [ေ]
+                            // ZWSP (\u200B) acts as the "Space/Placeholder" logic.
+                            ic.commitText(String.valueOf(ZWSP) + charStr, 1);
                             
-                            // SCENARIO 1: INPUT IS MEDIAL (Example: 'ြ', 'ွ')
-                            // Purpose: Correct "Ma Pyay" (မပြေ) issue.
-                            if (isMedial(primaryCode)) {
-                                if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
-                                    // Case 1A: Thway Htoe + Medial -> Medial + Thway Htoe
-                                    // E.g. ေ + ြ -> ြေ
-                                    ic.beginBatchEdit();
-                                    ic.deleteSurroundingText(1, 0);
-                                    ic.commitText(charStr, 1);
-                                    ic.commitText(String.valueOf(prevChar), 1);
-                                    ic.endBatchEdit();
-                                    swapDone = true;
-                                } 
-                                else if (isConsonant(prevChar) && lastTwo.length() >= 2) {
-                                    char prevPrevChar = lastTwo.charAt(0);
-                                    if (prevPrevChar == MM_THWAY_HTOE || prevPrevChar == SHAN_E) {
-                                        // Case 1B: The "Ma Pyay" Jump
-                                        // Context: ေ (prevPrev) + ပ (prev)
-                                        // Input: ြ
-                                        // Result: ပ + ြ + ေ (ပြေ)
-                                        ic.beginBatchEdit();
-                                        ic.deleteSurroundingText(2, 0); // Remove 'ေ' and 'ပ'
-                                        ic.commitText(String.valueOf(prevChar), 1); // Type 'ပ'
-                                        ic.commitText(charStr, 1);      // Type 'ြ'
-                                        ic.commitText(String.valueOf(prevPrevChar), 1); // Type 'ေ'
-                                        ic.endBatchEdit();
-                                        swapDone = true;
-                                    }
-                                }
-                            }
-                            
-                            // SCENARIO 2: INPUT IS CONSONANT (Example: 'က', 'မ')
-                            // Purpose: Standard Swap, but protect "Pe Pe Ma" (ပေမ).
-                            else if (isConsonant(primaryCode)) {
-                                if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
-                                    boolean shouldSwap = true;
-                                    
-                                    // Guard Check: Is 'ေ' already part of a completed syllable?
-                                    // If prevPrev is a Consonant, then 'ေ' is attached to it (e.g., "ပေ").
-                                    // In this case, DO NOT swap the new consonant into it.
-                                    if (lastTwo.length() >= 2) {
-                                        char prevPrevChar = lastTwo.charAt(0);
-                                        if (isConsonant(prevPrevChar) || isMedial(prevPrevChar)) {
-                                            shouldSwap = false; 
-                                        }
-                                    }
-                                    
-                                    if (shouldSwap) {
-                                        ic.beginBatchEdit();
-                                        ic.deleteSurroundingText(1, 0); // Remove 'ေ'
-                                        ic.commitText(charStr, 1);      // Type Consonant
-                                        ic.commitText(String.valueOf(prevChar), 1); // Put 'ေ' back
-                                        ic.endBatchEdit();
-                                        swapDone = true;
-                                    }
-                                }
-                            }
+                            // Approximate buffer update (DB might not like ZWSP, but it keeps visual consistent)
+                            currentWord.append(charStr); 
                         }
+                        
+                        // --- STEP 2: USER TYPES A CONSONANT OR MEDIAL ---
+                        else {
+                            // Check the last 2 characters to see if we have our placeholder pattern
+                            CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
+                            boolean replaced = false;
 
-                        if (!swapDone) {
-                            ic.commitText(charStr, 1);
-                            currentWord.append(charStr);
-                        } else {
-                            // Simple append for buffer if swapped (rough approximation for suggestion db)
+                            if (lastTwo != null && lastTwo.length() == 2) {
+                                char charBefore = lastTwo.charAt(1);      // The 'ေ'
+                                char charTwoBefore = lastTwo.charAt(0);   // The [Space] (ZWSP)
+
+                                // DETECT PATTERN: [Space] + [ေ]
+                                if ((charBefore == MM_THWAY_HTOE || charBefore == SHAN_E) && charTwoBefore == ZWSP) {
+                                    
+                                    // LOGIC: FILL IN THE BLANK
+                                    // We found the placeholder! Now replace [Space] with the new Input.
+                                    // This turns [Space][ေ] + [ပ] -> [ပ][ေ]
+                                    
+                                    ic.beginBatchEdit();
+                                    ic.deleteSurroundingText(2, 0); // Delete [Space] and [ေ]
+                                    ic.commitText(charStr, 1);      // Type new char (e.g. 'ပ')
+                                    ic.commitText(String.valueOf(charBefore), 1); // Put 'ေ' back at the end
+                                    ic.endBatchEdit();
+                                    
+                                    replaced = true;
+                                }
+                            }
+                            
+                            if (!replaced) {
+                                // Normal typing (if no placeholder found, e.g., English or normal flow)
+                                ic.commitText(charStr, 1);
+                            }
+                            
                             currentWord.append(charStr);
                         }
                     } 
                     else {
-                        // English / Non-Myanmar
+                        // English / Other
                         ic.commitText(charStr, 1);
                         currentWord.append(charStr);
                     }
@@ -511,8 +484,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         } catch (Exception e) {
             e.printStackTrace();
-            isSymbols = false;
-            updateKeyboardLayout();
         }
     }
 
@@ -539,21 +510,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
             try { speechRecognizer.startListening(speechIntent); isListening = true; } catch (Exception e) {}
         }
-    }
-
-    // Helper to identify Consonants
-    private boolean isConsonant(int code) {
-        // Myanmar Consonants (Ka to A) + Independent Vowels + Shan Consonants + Great Sa
-        return (code >= 4096 && code <= 4129) || // Ka to A
-               (code == 4100) || (code == 4101) || // Nya, Nnya specifics
-               (code == 4212) || // Great Sa (SS)
-               (code >= 4213 && code <= 4225); // Shan Consonants
-    }
-    
-    // Helper to identify Medials (Yapin, Yayit, Wasway, Hahtoe)
-    private boolean isMedial(int code) {
-        // 4155=Ya, 4156=Ra, 4157=Wa, 4158=Ha, 4226=ShanWa
-        return (code >= 4155 && code <= 4158) || (code == 4226);
     }
 
     private boolean isShanOrMyanmar() {
