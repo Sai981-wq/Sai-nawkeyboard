@@ -361,7 +361,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
-    // --- MAIN INPUT HANDLING ---
+    // --- MAIN INPUT HANDLING (WITH SMART LOGIC) ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -426,56 +426,68 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             : String.valueOf((char) primaryCode);
 
                     if (isShanOrMyanmar()) {
-                        // Context Check (Last 2 chars) for Intelligent Swapping
+                        // --- SMART ORDERING LOGIC ---
                         CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
                         boolean swapDone = false;
 
                         if (lastTwo != null && lastTwo.length() > 0) {
-                            char prevChar = lastTwo.charAt(lastTwo.length() - 1); // The char immediately before cursor
+                            char prevChar = lastTwo.charAt(lastTwo.length() - 1);
                             
-                            // CHECK: Is previous char 'ေ' (Thway Htoe)?
-                            if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
-                                
-                                boolean shouldSwap = false;
-                                
-                                // CASE 1: Input is a Medial (ြ, ွ, etc.) -> ALWAYS SWAP
-                                // Example: ပေ + ြ -> ပြေ
-                                if (isMedial(primaryCode)) {
-                                    shouldSwap = true;
+                            // SCENARIO 1: INPUT IS MEDIAL (Example: 'ြ', 'ွ')
+                            // Purpose: Correct "Ma Pyay" (မပြေ) issue.
+                            if (isMedial(primaryCode)) {
+                                if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
+                                    // Case 1A: Thway Htoe + Medial -> Medial + Thway Htoe
+                                    // E.g. ေ + ြ -> ြေ
+                                    ic.beginBatchEdit();
+                                    ic.deleteSurroundingText(1, 0);
+                                    ic.commitText(charStr, 1);
+                                    ic.commitText(String.valueOf(prevChar), 1);
+                                    ic.endBatchEdit();
+                                    swapDone = true;
+                                } 
+                                else if (isConsonant(prevChar) && lastTwo.length() >= 2) {
+                                    char prevPrevChar = lastTwo.charAt(0);
+                                    if (prevPrevChar == MM_THWAY_HTOE || prevPrevChar == SHAN_E) {
+                                        // Case 1B: The "Ma Pyay" Jump
+                                        // Context: ေ (prevPrev) + ပ (prev)
+                                        // Input: ြ
+                                        // Result: ပ + ြ + ေ (ပြေ)
+                                        ic.beginBatchEdit();
+                                        ic.deleteSurroundingText(2, 0); // Remove 'ေ' and 'ပ'
+                                        ic.commitText(String.valueOf(prevChar), 1); // Type 'ပ'
+                                        ic.commitText(charStr, 1);      // Type 'ြ'
+                                        ic.commitText(String.valueOf(prevPrevChar), 1); // Type 'ေ'
+                                        ic.endBatchEdit();
+                                        swapDone = true;
+                                    }
                                 }
-                                // CASE 2: Input is a Consonant (က, ခ, ... မ, တ)
-                                // Only swap if the 'ေ' is NOT attached to a consonant yet.
-                                else if (isConsonant(primaryCode)) {
+                            }
+                            
+                            // SCENARIO 2: INPUT IS CONSONANT (Example: 'က', 'မ')
+                            // Purpose: Standard Swap, but protect "Pe Pe Ma" (ပေမ).
+                            else if (isConsonant(primaryCode)) {
+                                if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
+                                    boolean shouldSwap = true;
+                                    
+                                    // Guard Check: Is 'ေ' already part of a completed syllable?
+                                    // If prevPrev is a Consonant, then 'ေ' is attached to it (e.g., "ပေ").
+                                    // In this case, DO NOT swap the new consonant into it.
                                     if (lastTwo.length() >= 2) {
                                         char prevPrevChar = lastTwo.charAt(0);
-                                        // If prevPrev is Consonant, it means 'ေ' is already busy (e.g., "မေ").
-                                        // So DO NOT swap the new Consonant (e.g., "တ") into it.
-                                        // This Fixes "Metta" (မေတ္တာ) becoming "Ma Tay Tta" (မတေ္တာ).
                                         if (isConsonant(prevPrevChar) || isMedial(prevPrevChar)) {
                                             shouldSwap = false; 
-                                        } else {
-                                            shouldSwap = true; // 'ေ' is alone/prefix. Swap.
                                         }
-                                    } else {
-                                        // Only 1 char context (Just 'ေ'). Must be prefix. Swap.
-                                        shouldSwap = true; 
                                     }
-                                }
-
-                                if (shouldSwap) {
-                                    ic.beginBatchEdit();
-                                    ic.deleteSurroundingText(1, 0); // Remove 'ေ'
-                                    ic.commitText(charStr, 1);      // Type Input
-                                    ic.commitText(String.valueOf(prevChar), 1); // Put 'ေ' back
-                                    ic.endBatchEdit();
                                     
-                                    if (currentWord.length() > 0) {
-                                        currentWord.deleteCharAt(currentWord.length() - 1);
-                                        currentWord.append(charStr).append(prevChar);
-                                    } else {
-                                        currentWord.append(charStr).append(prevChar);
+                                    if (shouldSwap) {
+                                        ic.beginBatchEdit();
+                                        ic.deleteSurroundingText(1, 0); // Remove 'ေ'
+                                        ic.commitText(charStr, 1);      // Type Consonant
+                                        ic.commitText(String.valueOf(prevChar), 1); // Put 'ေ' back
+                                        ic.endBatchEdit();
+                                        swapDone = true;
                                     }
-                                    swapDone = true;
                                 }
                             }
                         }
@@ -483,9 +495,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         if (!swapDone) {
                             ic.commitText(charStr, 1);
                             currentWord.append(charStr);
+                        } else {
+                            // Simple append for buffer if swapped (rough approximation for suggestion db)
+                            currentWord.append(charStr);
                         }
                     } 
                     else {
+                        // English / Non-Myanmar
                         ic.commitText(charStr, 1);
                         currentWord.append(charStr);
                     }
