@@ -1,8 +1,10 @@
 package com.sainaw.mm.board;
 
 import android.Manifest;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -15,6 +17,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.UserManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
@@ -107,7 +110,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     };
 
-    // Space Long Press
     private boolean isSpaceLongPressed = false;
     private Runnable spaceLongPressRunnable = new Runnable() {
         @Override
@@ -120,10 +122,45 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         }
     };
+    
+    // --- DIRECT BOOT HELPERS ---
+    private boolean isUserUnlocked() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            UserManager um = (UserManager) getSystemService(Context.USER_SERVICE);
+            return um != null && um.isUserUnlocked();
+        }
+        return true;
+    }
+
+    private Context getSafeContext() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            if (isUserUnlocked()) {
+                return this;
+            } else {
+                return createDeviceProtectedStorageContext();
+            }
+        }
+        return this;
+    }
+
+    // Unlocked Receiver
+    private final BroadcastReceiver userUnlockReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (Intent.ACTION_USER_UNLOCKED.equals(intent.getAction())) {
+                dbExecutor.execute(() -> {
+                    if (suggestionDB == null) {
+                        suggestionDB = SuggestionDB.getInstance(SaiNawKeyboardService.this);
+                    }
+                });
+            }
+        }
+    };
 
     @Override
     public View onCreateInputView() {
-        prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
+        // Use getSafeContext() for prefs to work in Direct Boot
+        prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
@@ -136,7 +173,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         initCandidateViews(isDarkTheme);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
-        suggestionDB = SuggestionDB.getInstance(this);
+        
+        // Safe DB Initialization
+        if (isUserUnlocked()) {
+            suggestionDB = SuggestionDB.getInstance(this);
+        } else {
+            suggestionDB = null; // Don't crash, just skip DB
+            // Register receiver to load DB when unlocked
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                registerReceiver(userUnlockReceiver, new IntentFilter(Intent.ACTION_USER_UNLOCKED));
+            }
+        }
 
         initKeyboards(); 
 
@@ -250,6 +297,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
+        // Use getSafeContext() here too
+        prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
         try { initKeyboards(); } catch (Exception e) { e.printStackTrace(); }
         
@@ -266,6 +315,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         super.onDestroy();
         if (speechRecognizer != null) speechRecognizer.destroy();
         if (dbExecutor != null && !dbExecutor.isShutdown()) dbExecutor.shutdown();
+        try {
+            unregisterReceiver(userUnlockReceiver);
+        } catch (Exception e) {
+            // Ignore if not registered
+        }
     }
 
     private void loadSettings() {
@@ -281,7 +335,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int height = keyboardView.getHeight();
             int width = keyboardView.getWidth();
 
-            // TalkBack Safety: Cancel input if finger slides off the top
+            // TalkBack Safety
             if (y <= 0 || y >= height || x <= 0 || x >= width) {
                 lastHoverKeyIndex = -1;
                 return; 
@@ -354,7 +408,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
-        // Shan/Text Input with Auto-Unshift
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
             if (isCaps) {
@@ -428,7 +481,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                 case 0: break;
                 default:
-                    // Smart Reordering
+                    // Gboard Style Smart Reordering
                     if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
                         currentWord.append(String.valueOf((char) primaryCode));
                     } else {
@@ -483,7 +536,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- GBOARD STYLE SMART REORDERING (FIXED) ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         CharSequence before = ic.getTextBeforeCursor(2, 0);
         if (before == null) return false;
@@ -493,11 +545,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         
         char lastChar = prevStr.charAt(len - 1); 
         
-        // RULE: If input is Consonant and previous is 'ေ', ALWAYS swap.
-        // This supports typing "ကလေး" as "က" -> "ေ" -> "လ" (Zawgyi style),
-        // effectively moving 'ေ' to sit after 'လ'.
         boolean shouldSwap = false;
-        
         if (isConsonant(primaryCode) && lastChar == MM_THWAY_HTOE) {
             shouldSwap = true;
         } else if (isMedial(primaryCode) && lastChar == MM_THWAY_HTOE) {
@@ -509,7 +557,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (shouldSwap) {
             ic.beginBatchEdit(); 
             ic.deleteSurroundingText(1, 0);
-            // Atomic commit to prevent missing characters
             String combined = String.valueOf((char) primaryCode) + String.valueOf(lastChar);
             ic.commitText(combined, 1);
             ic.endBatchEdit();
@@ -531,7 +578,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
     }
 
+    // DB Safe Methods
     private void saveWordAndReset() {
+        if (suggestionDB == null) {
+            currentWord.setLength(0);
+            return;
+        }
         if (currentWord.length() > 0) {
             final String wordToSave = currentWord.toString();
             dbExecutor.execute(() -> suggestionDB.saveWord(wordToSave));
@@ -547,6 +599,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private void performCandidateSearch() {
+        if (suggestionDB == null) {
+            handler.post(() -> {
+                for (TextView tv : candidateViews) tv.setVisibility(View.GONE);
+            });
+            return;
+        }
+
         final String searchWord = currentWord.toString();
         if (searchWord.isEmpty()) {
             handler.post(() -> {
@@ -580,8 +639,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (ic == null) return;
         ic.deleteSurroundingText(currentWord.length(), 0);
         ic.commitText(suggestion + " ", 1);
-        final String savedWord = suggestion;
-        dbExecutor.execute(() -> suggestionDB.saveWord(savedWord));
+        if (suggestionDB != null) {
+            final String savedWord = suggestion;
+            dbExecutor.execute(() -> suggestionDB.saveWord(savedWord));
+        }
         currentWord.setLength(0);
         triggerCandidateUpdate(0);
     }
