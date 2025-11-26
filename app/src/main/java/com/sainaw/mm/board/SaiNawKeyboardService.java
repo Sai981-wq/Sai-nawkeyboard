@@ -478,30 +478,58 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             : String.valueOf(c);
 
                     if (isShanOrMyanmar()) {
+
+                        // =========================================================================
+                        // NEW LOGIC: 'ေ' (Thway Htoe) Reordering via InputConnection (Buffer & Swap)
+                        // =========================================================================
+                        if (isConsonant(primaryCode)) {
+                            // Check text before cursor directly from the system
+                            CharSequence before = ic.getTextBeforeCursor(1, 0);
+                            
+                            // If user previously typed 'ေ' or 'ႄ'
+                            if (before != null && before.length() > 0 && 
+                               (before.charAt(0) == MM_THWAY_HTOE || before.charAt(0) == SHAN_E)) {
+                                
+                                // 1. Delete the 'ေ' visually
+                                ic.deleteSurroundingText(1, 0);
+
+                                // 2. Fix Internal Buffer: Remove the 'ေ' we just added previously
+                                // This keeps mComposing synced with the screen
+                                if (mComposing.length() > 0 && 
+                                   (mComposing.charAt(mComposing.length() - 1) == MM_THWAY_HTOE || 
+                                    mComposing.charAt(mComposing.length() - 1) == SHAN_E)) {
+                                    mComposing.deleteCharAt(mComposing.length() - 1);
+                                }
+
+                                // 3. Append Consonant (Current Key) -> Logical First
+                                mComposing.append(charStr);
+
+                                // 4. Append 'ေ' (The one we deleted) -> Logical Second
+                                mComposing.append((char) before.charAt(0));
+
+                                // 5. Update Screen (This renders Consonant + ေ)
+                                updateComposingText(ic);
+                                
+                                // 6. Reset flags and return (We handled the input manually)
+                                if (isCaps) { isCaps = false; updateKeyboardLayout(); }
+                                triggerCandidateUpdate(200);
+                                return; 
+                            }
+                        }
+                        // =========================================================================
                         
-                        // Add to Composing Buffer
+                        // Add to Composing Buffer (Standard Flow)
                         mComposing.append(charStr);
 
-                        // --- SMART REORDERING IN BUFFER ---
-                        // 1. Swap Logic for 'ေ' (Thway Htoe) and Consonants
-                        // User types 'ေ' then 'မ' -> Buffer gets "ေမ" -> We swap to "မေ"
+                        // --- OLDER BUFFER LOGIC (Kept as backup for Medials) ---
                         if (mComposing.length() >= 2) {
                             int lastIndex = mComposing.length() - 1;
                             char lastChar = mComposing.charAt(lastIndex); // Just typed char
                             char prevChar = mComposing.charAt(lastIndex - 1); 
 
-                            // Check: If Prev is 'ေ' AND Last is Consonant/Medial -> SWAP
-                            // Using standard logical ordering: Consonant comes before 'ေ'
-                            if ((prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) && 
-                                (isConsonant(lastChar) || isMedial(lastChar))) {
-                                
-                                mComposing.setCharAt(lastIndex - 1, lastChar);
-                                mComposing.setCharAt(lastIndex, prevChar);
-                            }
-                            
-                            // 2. Medial Sorting Logic (e.g. 'ှ' before 'ြ')
-                            // Only if we haven't just swapped 'ေ' (or re-check last 2 chars)
-                            // This part ensures standard storage order inside the buffer
+                            // Medial Sorting Logic (e.g. 'ှ' before 'ြ')
+                            // We don't need to swap Thway Htoe here anymore because the logic above handled it,
+                            // but we keep this for complex medials.
                             int currentWeight = getMedialWeight(lastChar);
                             int prevWeight = getMedialWeight(prevChar);
 
@@ -510,24 +538,24 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                 mComposing.setCharAt(lastIndex, prevChar);
                             }
 
-                            // 3. Vowel Normalization (e.g. ု + ိ -> ို)
+                            // Vowel Normalization (e.g. ု + ိ -> ို)
                             if (lastChar == MM_I) {
                                 if (prevChar == MM_U) {
-                                    mComposing.setCharAt(lastIndex - 1, (char) MM_I); // Cast to char
-                                    mComposing.setCharAt(lastIndex, (char) MM_U);     // Cast to char
+                                    mComposing.setCharAt(lastIndex - 1, (char) MM_I); 
+                                    mComposing.setCharAt(lastIndex, (char) MM_U);     
                                 } else if (prevChar == MM_UU) {
-                                    mComposing.setCharAt(lastIndex - 1, (char) MM_I); // Cast to char
-                                    mComposing.setCharAt(lastIndex, (char) MM_UU);    // Cast to char
+                                    mComposing.setCharAt(lastIndex - 1, (char) MM_I); 
+                                    mComposing.setCharAt(lastIndex, (char) MM_UU);    
                                 }
                             }
                         }
 
-                        // Update the screen with the (possibly reordered) buffer
+                        // Update the screen with the buffer
                         updateComposingText(ic);
 
                     } 
                     else {
-                        // For English/Other, also use Composing Text for consistent feel
+                        // For English/Other
                         mComposing.append(charStr);
                         updateComposingText(ic);
                     }
