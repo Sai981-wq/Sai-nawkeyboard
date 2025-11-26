@@ -53,8 +53,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int CODE_LANG_CHANGE = -101;
     private static final int CODE_VOICE = -10;
 
-    // Myanmar Unicode Constants
-    private static final int MM_THWAY_HTOE = 4145; // 'ေ'
+    // Myanmar Unicode
+    private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
 
     // Components
     private KeyboardView keyboardView;
@@ -334,6 +334,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int height = keyboardView.getHeight();
             int width = keyboardView.getWidth();
 
+            // Cancel input if finger slides off the top
             if (y <= 0 || y >= height || x <= 0 || x >= width) {
                 lastHoverKeyIndex = -1;
                 return; 
@@ -483,8 +484,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                 case 0: break;
                 default:
-                    // --- SMART REORDERING (FINAL FIX) ---
-                    // Applies to both Myanmar and Shan if they share the Unicode range
+                    // --- SMART REORDERING (STANDARD PUSH LOGIC) ---
+                    // This fixes "အဆင်ပြေပြေ" and allows Zawgyi-like visual typing
                     if (isShanOrMyanmar() && handleSmartReordering(ic, primaryCode)) {
                         currentWord.append(String.valueOf((char) primaryCode));
                     } else {
@@ -502,7 +503,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (isCaps) {
                         isCaps = false;
                         updateKeyboardLayout();
-                        // announceText("Shift Off"); // Optional
                     }
                     triggerCandidateUpdate(200);
             }
@@ -541,50 +541,46 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- GBOARD LOGIC: HANDLE 'THWAY HTOE' (ေ) REORDERING ---
+    // --- GBOARD/KEYMAN STANDARD LOGIC FOR 'THWAY HTOE' ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
-        // Only check 1 character before cursor for immediate reordering
+        // Only verify immediate predecessor for "Push" logic
         CharSequence before = ic.getTextBeforeCursor(1, 0);
         if (before == null || before.length() == 0) return false;
         
         char lastChar = before.charAt(0); 
         
-        // Conditions
-        boolean isLastCharThwayHtoe = (lastChar == MM_THWAY_HTOE);
-        boolean isNewCharConsonant = isConsonant(primaryCode);
-        boolean isNewCharMedial = isMedial(primaryCode);
+        // Conditions: Previous is 'ေ' (4145)
+        boolean isPrecededByThwayHtoe = (lastChar == MM_THWAY_HTOE);
+        boolean isInputConsonant = isConsonant(primaryCode);
+        boolean isInputMedial = isMedial(primaryCode);
 
-        // Logic: If previous is 'ေ', we MUST swap if new char is Consonant OR Medial.
-        // Example 1: 'မ' + 'ေ' -> Type 'ပ' (Consonant) -> 'မ' + 'ပ' + 'ေ'
-        // Example 2: 'မ' + 'ပ' + 'ေ' -> Type 'ြ' (Medial) -> 'မ' + 'ပ' + 'ြ' + 'ေ'
+        // LOGIC: If 'ေ' is sitting before the cursor, and we type a Consonant OR Medial,
+        // we must SWAP them. This pushes 'ေ' to the right.
+        // E.g., Existing: "ေ" -> Type "က" -> Becomes "ကေ"
+        // E.g., Existing: "က" + "ေ" -> Type "ြ" -> Becomes "ကြေ"
         
-        if (isLastCharThwayHtoe) {
-            if (isNewCharConsonant || isNewCharMedial) {
-                performSwap(ic, primaryCode, lastChar);
-                return true;
-            }
+        if (isPrecededByThwayHtoe && (isInputConsonant || isInputMedial)) {
+            ic.beginBatchEdit(); 
+            ic.deleteSurroundingText(1, 0); // Remove 'ေ'
+            
+            // Insert New Char then Re-insert 'ေ'
+            ic.commitText(String.valueOf((char) primaryCode), 1); 
+            ic.commitText(String.valueOf(lastChar), 1);
+            
+            ic.endBatchEdit();
+            return true;
         }
 
         return false;
     }
 
-    private void performSwap(InputConnection ic, int newCode, char oldChar) {
-        ic.beginBatchEdit(); 
-        ic.deleteSurroundingText(1, 0);
-        // Combine new + old (e.g., 'ပ' + 'ေ')
-        String combined = String.valueOf((char) newCode) + String.valueOf(oldChar);
-        ic.commitText(combined, 1);
-        ic.endBatchEdit();
-    }
-
     private boolean isConsonant(int code) {
-        // Basic Myanmar Consonants: Ka (4096) to A (4129)
-        // 4100 (Nya Gyi), 4101 (Nya Lay) included
+        // Standard Myanmar Consonants Range
         return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101);
     }
 
     private boolean isMedial(int code) {
-        // Medials: Ya Pin (4155), Ya Yit (4156), Wa Swae (4157), Ha Htoe (4158)
+        // Medials: Yapin, Yayit, Wasway, Hahtoe (4155-4158)
         return (code >= 4155 && code <= 4158);
     }
 
