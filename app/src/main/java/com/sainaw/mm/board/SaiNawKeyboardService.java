@@ -56,7 +56,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     // Myanmar/Shan Unicode Constants
     private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
     private static final int SHAN_E = 4228;        // 'ႄ' (U+1084)
-    private static final char ZWSP = '\u200B';     // Zero Width Space (The Placeholder)
+    private static final char ZWSP = '\u200B';     // Placeholder Space
 
     // Components
     private KeyboardView keyboardView;
@@ -361,7 +361,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
-    // --- MAIN INPUT HANDLING (PLACEHOLDER & FILL-IN-THE-BLANK LOGIC) ---
+    // --- MAIN INPUT HANDLING (JUST THWAY HTOE PLACEHOLDER) ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -376,16 +376,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case CODE_DELETE:
-                    // Clean up specific Logic:
-                    // If user deletes 'ေ', we check if the invisible placeholder ZWSP is behind it.
-                    // If so, we delete that too, so we don't leave invisible garbage.
+                    // Cleanup ZWSP on delete
                     CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
                     if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
-                         ic.deleteSurroundingText(1, 0); // Delete the leftover ZWSP
+                         ic.deleteSurroundingText(1, 0); 
                     }
                     
                     CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
-                    ic.deleteSurroundingText(1, 0); // Normal delete
+                    ic.deleteSurroundingText(1, 0); 
                     if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore.toString());
                     else announceText("Delete");
                     if (currentWord.length() > 0) {
@@ -428,45 +426,37 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                     if (isShanOrMyanmar()) {
                         
-                        // --- STEP 1: USER TYPES 'ေ' (Thway Htoe) ---
+                        // 1. User Types 'ေ' -> Insert [Space]+[ေ]
                         if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
-                            // Instead of just 'ေ', we insert [ZWSP] + [ေ]
-                            // ZWSP (\u200B) acts as the "Space/Placeholder" logic.
                             ic.commitText(String.valueOf(ZWSP) + charStr, 1);
-                            
-                            // Approximate buffer update (DB might not like ZWSP, but it keeps visual consistent)
                             currentWord.append(charStr); 
                         }
-                        
-                        // --- STEP 2: USER TYPES A CONSONANT OR MEDIAL ---
                         else {
-                            // Check the last 2 characters to see if we have our placeholder pattern
+                            // 2. CHECK: Is there a [Space]+[ေ] placeholder?
                             CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
-                            boolean replaced = false;
+                            boolean handled = false;
 
                             if (lastTwo != null && lastTwo.length() == 2) {
-                                char charBefore = lastTwo.charAt(1);      // The 'ေ'
-                                char charTwoBefore = lastTwo.charAt(0);   // The [Space] (ZWSP)
-
-                                // DETECT PATTERN: [Space] + [ေ]
+                                char charBefore = lastTwo.charAt(1);      // 'ေ'
+                                char charTwoBefore = lastTwo.charAt(0);   // ZWSP
+                                
                                 if ((charBefore == MM_THWAY_HTOE || charBefore == SHAN_E) && charTwoBefore == ZWSP) {
-                                    
-                                    // LOGIC: FILL IN THE BLANK
-                                    // We found the placeholder! Now replace [Space] with the new Input.
-                                    // This turns [Space][ေ] + [ပ] -> [ပ][ေ]
-                                    
+                                    // LOGIC: REPLACE PLACEHOLDER
+                                    // Remove [Space][ေ], Type [Input], Put [ေ] back
                                     ic.beginBatchEdit();
-                                    ic.deleteSurroundingText(2, 0); // Delete [Space] and [ေ]
-                                    ic.commitText(charStr, 1);      // Type new char (e.g. 'ပ')
-                                    ic.commitText(String.valueOf(charBefore), 1); // Put 'ေ' back at the end
+                                    ic.deleteSurroundingText(2, 0); 
+                                    ic.commitText(charStr, 1);      
+                                    ic.commitText(String.valueOf(charBefore), 1); 
                                     ic.endBatchEdit();
-                                    
-                                    replaced = true;
+                                    handled = true;
                                 }
                             }
                             
-                            if (!replaced) {
-                                // Normal typing (if no placeholder found, e.g., English or normal flow)
+                            // 3. NO SPECIAL LOGIC FOR MEDIALS (As requested)
+                            // They will just follow the default path below.
+                            
+                            if (!handled) {
+                                // Default: Just type the character
                                 ic.commitText(charStr, 1);
                             }
                             
