@@ -381,12 +381,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case CODE_DELETE:
-                    // Check for ZWSP barrier first (if it exists, delete that instead of the 'ေ')
+                    // Delete ZWSP barrier first if it exists
                     CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
                     if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
                          ic.deleteSurroundingText(1, 0);
                          announceText("Barrier Removed");
-                         // Do NOT delete from currentWord buffer, as ZWSP wasn't there
                          break;
                     }
                     
@@ -429,27 +428,35 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 default:
                     if (isShanOrMyanmar()) {
                         
-                        // --- 1. ZWSP BARRIER INSERTION (New Logic) ---
-                        // Check if the previous character was 'ေ' (or 'ႄ') AND belongs to a finished syllable.
-                        CharSequence before2 = ic.getTextBeforeCursor(2, 0);
-                        if (before2 != null && before2.length() >= 2) {
-                            char prevChar = before2.charAt(before2.length() - 1);
-                            char prevPrevChar = before2.charAt(0);
+                        // --- 1. ZWSP BARRIER MANAGEMENT ---
+                        // Check if input is a MEDIAL. If so, remove ZWSP (ZWSP cannot sit before a medial).
+                        if (isMedial(primaryCode)) {
+                             CharSequence before_zwsp = ic.getTextBeforeCursor(1, 0);
+                             if (before_zwsp != null && before_zwsp.length() == 1 && before_zwsp.charAt(0) == ZWSP) {
+                                ic.deleteSurroundingText(1, 0); // Remove the ZWSP barrier
+                             }
+                        }
+                        // Check if input is a CONSONANT after a completed syllable (e.g., 'ပြေ' + 'မ').
+                        // If so, insert ZWSP barrier to prevent sticky 'ေ' from swapping.
+                        else if (isConsonant(primaryCode)) {
+                             CharSequence before2 = ic.getTextBeforeCursor(2, 0);
+                             if (before2 != null && before2.length() >= 2) {
+                                char prevChar = before2.charAt(before2.length() - 1);
+                                char prevPrevChar = before2.charAt(0);
 
-                            if ((prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) && 
-                                (isConsonant(prevPrevChar) || isMedial(prevPrevChar))) {
-                                
-                                // It's a completed syllable ending in 'ေ' (e.g., 'ပြေ'). 
-                                // Insert ZWSP barrier to protect 'ေ' from the next consonant ('မ').
-                                if (ic.getTextBeforeCursor(1, 0).charAt(0) != ZWSP) { // Only insert if not already there
-                                    ic.commitText(String.valueOf(ZWSP), 1);
+                                if ((prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) && 
+                                    (isConsonant(prevPrevChar) || isMedial(prevPrevChar))) {
+                                    
+                                    // It's a completed syllable ending in 'ေ'. Insert ZWSP.
+                                    if (ic.getTextBeforeCursor(1, 0).charAt(0) != ZWSP) { 
+                                        ic.commitText(String.valueOf(ZWSP), 1);
+                                    }
                                 }
-                            }
+                             }
                         }
 
-                        // 2. SMART REORDERING (The core swap logic)
+                        // 2. SMART REORDERING (The core swap logic for 'ေ' and Medial Sorting)
                         if (handleSmartReordering(ic, primaryCode)) {
-                             // Sync Buffer
                              if (currentWord.length() > 0) {
                                 char last = currentWord.charAt(currentWord.length() - 1);
                                 currentWord.deleteCharAt(currentWord.length() - 1);
@@ -518,7 +525,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- SMART REORDERING ---
+    // --- CORE LOGIC: SMART REORDERING ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         CharSequence before = ic.getTextBeforeCursor(1, 0);
         if (before == null || before.length() == 0) return false;
@@ -527,12 +534,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         
         // RULE 1: Swap with Thway Htoe / Shan E
         if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
-             // If previous char is ZWSP, we have to swap past it!
-             CharSequence before2 = ic.getTextBeforeCursor(2, 0);
-             if (before2 != null && before2.length() >= 2 && before2.charAt(before2.length() - 2) == ZWSP) {
-                 // Remove ZWSP barrier first
-                 ic.deleteSurroundingText(1, 0); 
-             }
+             
+             // Check if previous char is ZWSP (Barrier removal logic for Rule 1 is handled in handleInput)
             
              if (isConsonant(primaryCode) || isMedial(primaryCode)) {
                  performSwap(ic, primaryCode, prevChar);
