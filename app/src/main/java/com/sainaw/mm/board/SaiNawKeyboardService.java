@@ -24,6 +24,7 @@ import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -54,12 +55,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int CODE_VOICE = -10;
 
     // Myanmar/Shan Unicode Constants
-    private static final int MM_THWAY_HTOE = 0x1031; // 'ေ'
-    private static final int SHAN_E = 0x1084;        // 'ႄ'
-    private static final int MM_I = 0x102D;          // 'ိ'
-    private static final int MM_U = 0x102F;          // 'ု'
-    private static final int MM_UU = 0x1030;         // 'ူ'
-    private static final char ZWSP = '\u200B';     
+    private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
+    private static final int SHAN_E = 4228;        // 'ႄ' (U+1084)
+    private static final char ZWSP = '\u200B';     // Zero Width Space
+
+    // Vowel Sorting Constants
+    private static final int MM_I = 4141;  // 'ိ'
+    private static final int MM_U = 4144;  // 'ု'
+    private static final int MM_UU = 4143; // 'ူ'
 
     // Components
     private KeyboardView keyboardView;
@@ -68,9 +71,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SaiNawAccessibilityHelper accessibilityHelper;
     private SuggestionDB suggestionDB;
     
-    // --- COMPOSING BUFFER (Gboard Style) ---
-    private StringBuilder mComposing = new StringBuilder(); 
-    private StringBuilder currentWord = new StringBuilder();
+    // --- GBOARD STYLE COMPOSING BUFFER ---
+    // စာလုံးများကို ယာယီသိမ်းဆည်းမည့် Buffer (မျဉ်းသားထားသောစာများအတွက်)
+    private StringBuilder mComposing = new StringBuilder();
 
     // Voice
     private SpeechRecognizer speechRecognizer;
@@ -111,12 +114,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Runnable pendingCandidateUpdate = this::performCandidateSearch;
 
     private boolean isSpaceLongPressed = false;
-    private Runnable spaceLongPressRunnable = () -> {
-        isSpaceLongPressed = true;
-        InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-        if (imeManager != null) {
-            imeManager.showInputMethodPicker();
-            playHaptic(-99);
+    private Runnable spaceLongPressRunnable = new Runnable() {
+        @Override
+        public void run() {
+            isSpaceLongPressed = true;
+            InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imeManager != null) {
+                imeManager.showInputMethodPicker();
+                playHaptic(-99);
+            }
         }
     };
     
@@ -131,7 +137,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private Context getSafeContext() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            return isUserUnlocked() ? this : createDeviceProtectedStorageContext();
+            if (isUserUnlocked()) return this;
+            else return createDeviceProtectedStorageContext();
         }
         return this;
     }
@@ -159,13 +166,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView = layout.findViewById(R.id.keyboard_view);
         candidateContainer = layout.findViewById(R.id.candidates_container);
 
-        initCandidateViews(isDarkTheme); // Error fix: Method is now included below
+        initCandidateViews(isDarkTheme);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else {
+            suggestionDB = null; 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 registerReceiver(userUnlockReceiver, new IntentFilter(Intent.ACTION_USER_UNLOCKED));
             }
@@ -186,7 +194,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         updateHelperState();
 
-        // TalkBack Handling
         keyboardView.setOnHoverListener((v, event) -> {
             boolean handled = accessibilityHelper.dispatchHoverEvent(event);
             handleLiftToType(event);
@@ -197,206 +204,72 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return layout;
     }
     
-    // --- LIFECYCLE & BUFFER RESET ---
-    @Override
-    public void onFinishInput() {
-        super.onFinishInput();
-        commitTyped(getCurrentInputConnection()); 
-        mComposing.setLength(0);
-        currentWord.setLength(0);
-    }
-
-    @Override
-    public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd, int candidatesStart, int candidatesEnd) {
-        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd);
-        if (mComposing.length() > 0 && (candidatesStart == -1 || candidatesEnd == -1 || newSelEnd != candidatesEnd)) {
-            mComposing.setLength(0);
-            currentWord.setLength(0);
-        }
-    }
-    
-    // --- MAIN INPUT LOGIC (GBOARD STYLE) ---
-    private void handleInput(int primaryCode, Keyboard.Key key) {
-        playSound(primaryCode);
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
-
-        if (key != null && key.text != null) {
-            commitTyped(ic);
-            ic.commitText(key.text, 1);
-            if (isCaps) { isCaps = false; updateKeyboardLayout(); announceText("Shift Off"); }
-            return;
-        }
-
-        switch (primaryCode) {
-            case CODE_DELETE:
-                handleBackspace(ic);
-                break;
-                
-            case CODE_SPACE:
-                if (!isSpaceLongPressed) {
-                    commitTyped(ic);
-                    ic.commitText(" ", 1); 
-                    saveWordAndReset();
-                }
-                isSpaceLongPressed = false;
-                break;
-            
-            case CODE_ENTER:
-                commitTyped(ic);
-                ic.commitText("\n", 1);
-                saveWordAndReset();
-                break;
-                
-            case CODE_VOICE: commitTyped(ic); startVoiceInput(); break;
-            case CODE_SHIFT: commitTyped(ic); isCaps = !isCaps; updateKeyboardLayout(); announceText(isCaps ? "Shift On" : "Shift Off"); break;
-            case CODE_SYMBOL_ON: commitTyped(ic); isSymbols = true; updateKeyboardLayout(); announceText("Symbols"); break;
-            case CODE_SYMBOL_OFF: 
-                commitTyped(ic);
-                isSymbols = false; updateKeyboardLayout(); 
-                announceText(currentLanguageId == 1 ? "Myanmar" : (currentLanguageId == 2 ? "Shan" : "English")); 
-                break;
-            case CODE_LANG_CHANGE: changeLanguage(); break;
-                
-            default:
-                if (isShanOrMyanmar()) {
-                    char c = (char) primaryCode;
-                    mComposing.append(c);
-                    
-                    // Internal Swap Logic
-                    handleBufferReordering();
-                    
-                    // Update System (Composing State)
-                    ic.setComposingText(mComposing, 1);
-                } 
-                else {
-                    commitTyped(ic);
-                    String charStr = (key != null && key.label != null && key.label.length() > 1) 
-                            ? key.label.toString() 
-                            : String.valueOf((char) primaryCode);
-                    ic.commitText(charStr, 1);
-                    currentWord.append(charStr);
-                }
-                
-                if (isCaps) { isCaps = false; updateKeyboardLayout(); }
-                triggerCandidateUpdate(200);
-        }
-    }
-
-    // --- LOGIC: INTERNAL BUFFER REORDERING ---
-    private void handleBufferReordering() {
-        int len = mComposing.length();
-        if (len < 2) return;
-
-        char last = mComposing.charAt(len - 1); 
-        char prev = mComposing.charAt(len - 2); 
-
-        if ((prev == MM_THWAY_HTOE || prev == SHAN_E)) {
-            
-            // Check if 'ေ' is "floating" 
-            boolean isThwayHtoeFloating = true;
-            if (len >= 3) {
-                char prevPrev = mComposing.charAt(len - 3);
-                if (isConsonant(prevPrev) || isMedial(prevPrev)) {
-                    isThwayHtoeFloating = false; // 'ေ' belongs to previous syllable
-                }
-            }
-
-            if (isThwayHtoeFloating) {
-                if (isConsonant(last)) {
-                    mComposing.setCharAt(len - 2, last);
-                    mComposing.setCharAt(len - 1, prev);
-                }
-                else if (isMedial(last)) {
-                    mComposing.setCharAt(len - 2, last);
-                    mComposing.setCharAt(len - 1, prev);
-                }
-            }
-        }
-        else if (isMedial(prev) && isMedial(last)) {
-             int prevW = getMedialWeight(prev);
-             int lastW = getMedialWeight(last);
-             if (prevW > lastW && lastW > 0) {
-                 mComposing.setCharAt(len - 2, last);
-                 mComposing.setCharAt(len - 1, prev);
-             }
-        }
-        else if ((prev == MM_U || prev == MM_UU) && last == MM_I) {
-             mComposing.setCharAt(len - 2, last);
-             mComposing.setCharAt(len - 1, prev);
-        }
-    }
-    
-    private void commitTyped(InputConnection ic) {
-        if (mComposing.length() > 0) {
-            ic.commitText(mComposing, 1);
-            currentWord.append(mComposing);
-            mComposing.setLength(0);
-        }
-    }
-    
-    private void handleBackspace(InputConnection ic) {
-        if (mComposing.length() > 0) {
-            mComposing.deleteCharAt(mComposing.length() - 1);
-            if (mComposing.length() == 0) {
-                ic.commitText("", 0); 
-            } else {
-                ic.setComposingText(mComposing, 1); 
-            }
-        } else {
-            ic.deleteSurroundingText(1, 0);
-            if (currentWord.length() > 0) {
-                currentWord.deleteCharAt(currentWord.length() - 1);
-                triggerCandidateUpdate(50);
-            }
-        }
-    }
-
-    // --- HELPERS (INCLUDED) ---
-    private int getMedialWeight(int code) {
-        switch (code) {
-            case 4155: return 1; // ျ
-            case 4156: return 2; // ြ
-            case 4157: return 3; // ွ
-            case 4226: return 3; // ႂ
-            case 4158: return 4; // ှ
-            default: return 0;
-        }
-    }
-
-    private boolean isConsonant(int code) {
-        return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101) || (code >= 4213 && code <= 4225); 
-    }
-
-    private boolean isMedial(int code) {
-        return (code >= 4155 && code <= 4158) || (code == 4226); 
-    }
-    
     private void loadSettings() {
         isVibrateOn = prefs.getBoolean("vibrate_on", true);
         isSoundOn = prefs.getBoolean("sound_on", true);
+    }
+
+    public int getResId(String name) {
+        return getResources().getIdentifier(name, "xml", getPackageName());
     }
 
     private void initKeyboards() {
         try {
             boolean showNumRow = prefs.getBoolean("number_row", false);
             String suffix = showNumRow ? "_num" : "";
+            
             qwertyKeyboard = new Keyboard(this, getResId("qwerty" + suffix));
             myanmarKeyboard = new Keyboard(this, getResId("myanmar" + suffix));
             shanKeyboard = new Keyboard(this, getResId("shan" + suffix));
+            
             qwertyShiftKeyboard = new Keyboard(this, getResId("qwerty_shift"));
             myanmarShiftKeyboard = new Keyboard(this, getResId("myanmar_shift"));
             shanShiftKeyboard = new Keyboard(this, getResId("shan_shift"));
+            
             int symEnId = getResId("symbols");
             int symMmId = getResId("symbols_mm");
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(this, symEnId) : qwertyKeyboard; 
             symbolsMmKeyboard = (symMmId != 0) ? new Keyboard(this, symMmId) : symbolsEnKeyboard;
-        } catch (Exception e) { qwertyKeyboard = new Keyboard(this, getResId("qwerty")); }
+            
+        } catch (Exception e) {
+            e.printStackTrace();
+            qwertyKeyboard = new Keyboard(this, getResId("qwerty"));
+        }
     }
-    
-    public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
 
-    // This method was missing in previous snippet, added back
+    private void setupSpeechRecognizer() {
+        if (SpeechRecognizer.isRecognitionAvailable(this)) {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+            speechIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "my-MM");
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "my-MM");
+            speechIntent.putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, "my-MM");
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            speechIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+            
+            speechRecognizer.setRecognitionListener(new RecognitionListener() {
+                @Override public void onReadyForSpeech(Bundle params) { playHaptic(-10); }
+                @Override public void onBeginningOfSpeech() {}
+                @Override public void onRmsChanged(float rmsdB) {}
+                @Override public void onBufferReceived(byte[] buffer) {}
+                @Override public void onEndOfSpeech() { isListening = false; }
+                @Override public void onError(int error) { isListening = false; playHaptic(-5); }
+                @Override public void onResults(Bundle results) {
+                    ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                    if (matches != null && !matches.isEmpty()) {
+                        String text = matches.get(0);
+                        commitTyped(getCurrentInputConnection()); // Commit existing buffer first
+                        InputConnection ic = getCurrentInputConnection();
+                        if (ic != null) ic.commitText(text + " ", 1);
+                    }
+                    isListening = false;
+                }
+                @Override public void onPartialResults(Bundle partialResults) {}
+                @Override public void onEvent(int eventType, Bundle params) {}
+            });
+        }
+    }
+
     private void initCandidateViews(boolean isDarkTheme) {
         candidateContainer.removeAllViews();
         candidateViews.clear();
@@ -418,36 +291,413 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    @Override
+    public void onStartInputView(EditorInfo info, boolean restarting) {
+        super.onStartInputView(info, restarting);
+        prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
+        loadSettings();
+        try { initKeyboards(); } catch (Exception e) { e.printStackTrace(); }
+        
+        // Reset Buffer
+        mComposing.setLength(0);
+        
+        isCaps = false;
+        isSymbols = false;
+        
+        updateKeyboardLayout(); 
+        triggerCandidateUpdate(0);
+    }
+
+    // --- TALKBACK SAFE: 20px MARGIN BOUNDS CHECK ---
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
             float x = event.getX();
             float y = event.getY();
-            if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > keyboardView.getWidth() - 20) {
-                lastHoverKeyIndex = -1; return;
+            int width = keyboardView.getWidth();
+            
+            // Safety Margin: Cancel if < 20px from ANY edge
+            if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > width - 20) {
+                lastHoverKeyIndex = -1;
+                return;
             }
+
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
                 int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
-                    lastHoverKeyIndex = keyIndex; playHaptic(0);
+                    lastHoverKeyIndex = keyIndex;
+                    playHaptic(0);
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        if (key.codes[0] != -100) handleInput(key.codes[0], key);
+                        if (key.isInside((int)x, (int)y)) {
+                             if (key.codes[0] != -100) {
+                                handleInput(key.codes[0], key);
+                            }
+                        }
                     }
                 }
                 lastHoverKeyIndex = -1;
             }
         } catch (Exception e) { lastHoverKeyIndex = -1; }
     }
+
+    private void updateHelperState() {
+        if (accessibilityHelper != null) {
+            accessibilityHelper.setKeyboard(currentKeyboard, isShanOrMyanmar(), isCaps);
+        }
+    }
+
+    @Override public void onKey(int primaryCode, int[] keyCodes) { handleInput(primaryCode, null); }
     
-    private void updateHelperState() { if (accessibilityHelper != null) accessibilityHelper.setKeyboard(currentKeyboard, isShanOrMyanmar(), isCaps); }
+    @Override public void onText(CharSequence text) {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        commitTyped(ic); // Commit buffer first
+        ic.commitText(text, 1);
+        playSound(0);
+        if (isCaps) { isCaps = false; updateKeyboardLayout(); }
+    }
+
+    @Override public void onPress(int primaryCode) {
+        if (primaryCode == CODE_SPACE) {
+            isSpaceLongPressed = false;
+            handler.postDelayed(spaceLongPressRunnable, 600);
+        }
+        playHaptic(primaryCode);
+    }
+
+    @Override public void onRelease(int primaryCode) {
+        if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
+    }
+
+    // --- COMPOSING HELPERS ---
+    
+    /**
+     * Commits the current composing text to the app and clears the buffer.
+     * This removes the underline.
+     */
+    private void commitTyped(InputConnection ic) {
+        if (mComposing.length() > 0) {
+            ic.commitText(mComposing, 1); // Commit final text
+            mComposing.setLength(0); // Clear buffer
+        }
+    }
+    
+    /**
+     * Updates the text with an underline (Composing span).
+     */
+    private void updateComposingText(InputConnection ic) {
+        if (mComposing.length() > 0) {
+            // 1 means cursor is placed at end of text
+            ic.setComposingText(mComposing, 1);
+        } else {
+            ic.finishComposingText();
+        }
+    }
+
+    // --- MAIN INPUT HANDLING ---
+    private void handleInput(int primaryCode, Keyboard.Key key) {
+        playSound(primaryCode);
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+
+        if (key != null && key.text != null) {
+            commitTyped(ic);
+            ic.commitText(key.text, 1);
+            if (isCaps) { isCaps = false; updateKeyboardLayout(); announceText("Shift Off"); }
+            return;
+        }
+
+        try {
+            switch (primaryCode) {
+                case CODE_DELETE:
+                    // Buffer Handling for Delete
+                    if (mComposing.length() > 0) {
+                        mComposing.deleteCharAt(mComposing.length() - 1);
+                        updateComposingText(ic);
+                        announceText("Delete");
+                    } else {
+                        // Regular delete if no composition
+                        // Delete ZWSP barrier first if it exists
+                        CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
+                        if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
+                             ic.deleteSurroundingText(1, 0);
+                             announceText("Barrier Removed");
+                             break;
+                        }
+                        
+                        CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
+                        ic.deleteSurroundingText(1, 0);
+                        if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore.toString());
+                        else announceText("Delete");
+                    }
+                    triggerCandidateUpdate(50);
+                    break;
+
+                case CODE_VOICE: startVoiceInput(); break;
+                case CODE_SHIFT: isCaps = !isCaps; updateKeyboardLayout(); announceText(isCaps ? "Shift On" : "Shift Off"); break;
+                case CODE_SYMBOL_ON: isSymbols = true; updateKeyboardLayout(); announceText("Symbols Keyboard"); break;
+                case CODE_SYMBOL_OFF: 
+                    isSymbols = false; updateKeyboardLayout(); 
+                    announceText(currentLanguageId == 1 ? "Myanmar" : (currentLanguageId == 2 ? "Shan" : "English")); 
+                    break;
+                case CODE_LANG_CHANGE: 
+                    commitTyped(ic); // Commit before changing lang
+                    changeLanguage(); 
+                    break;
+                case CODE_ENTER: 
+                    commitTyped(ic); // Commit buffer first
+                    EditorInfo editorInfo = getCurrentInputEditorInfo();
+                    boolean isMultiLine = (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
+                    int action = editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
+                    if (!isMultiLine && (action >= EditorInfo.IME_ACTION_GO && action <= EditorInfo.IME_ACTION_DONE)) {
+                        sendDefaultEditorAction(true);
+                    } else {
+                        ic.commitText("\n", 1);
+                    }
+                    triggerCandidateUpdate(0);
+                    break;
+                case CODE_SPACE:
+                    if (!isSpaceLongPressed) {
+                        commitTyped(ic); // Commit existing word
+                        ic.commitText(" ", 1); // Add space
+                        saveWordAndReset(); // Save word to DB
+                    }
+                    isSpaceLongPressed = false;
+                    break;
+                    
+                default:
+                    // Character Input
+                    char c = (char) primaryCode;
+                    String charStr = (key != null && key.label != null && key.label.length() > 1) 
+                            ? key.label.toString() 
+                            : String.valueOf(c);
+
+                    if (isShanOrMyanmar()) {
+                        
+                        // Add to Composing Buffer
+                        mComposing.append(charStr);
+
+                        // --- SMART REORDERING IN BUFFER ---
+                        // 1. Swap Logic for 'ေ' (Thway Htoe) and Consonants
+                        // User types 'ေ' then 'မ' -> Buffer gets "ေမ" -> We swap to "မေ"
+                        if (mComposing.length() >= 2) {
+                            int lastIndex = mComposing.length() - 1;
+                            char lastChar = mComposing.charAt(lastIndex); // Just typed char
+                            char prevChar = mComposing.charAt(lastIndex - 1); 
+
+                            // Check: If Prev is 'ေ' AND Last is Consonant/Medial -> SWAP
+                            // Using standard logical ordering: Consonant comes before 'ေ'
+                            if ((prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) && 
+                                (isConsonant(lastChar) || isMedial(lastChar))) {
+                                
+                                mComposing.setCharAt(lastIndex - 1, lastChar);
+                                mComposing.setCharAt(lastIndex, prevChar);
+                            }
+                            
+                            // 2. Medial Sorting Logic (e.g. 'ှ' before 'ြ')
+                            // Only if we haven't just swapped 'ေ' (or re-check last 2 chars)
+                            // This part ensures standard storage order inside the buffer
+                            int currentWeight = getMedialWeight(lastChar);
+                            int prevWeight = getMedialWeight(prevChar);
+
+                            if (currentWeight > 0 && prevWeight > 0 && prevWeight > currentWeight) {
+                                mComposing.setCharAt(lastIndex - 1, lastChar);
+                                mComposing.setCharAt(lastIndex, prevChar);
+                            }
+
+                            // 3. Vowel Normalization (e.g. ု + ိ -> ို)
+                            if (lastChar == MM_I) {
+                                if (prevChar == MM_U) {
+                                    mComposing.setCharAt(lastIndex - 1, MM_I);
+                                    mComposing.setCharAt(lastIndex, MM_U);
+                                } else if (prevChar == MM_UU) {
+                                    mComposing.setCharAt(lastIndex - 1, MM_I);
+                                    mComposing.setCharAt(lastIndex, MM_UU);
+                                }
+                            }
+                        }
+
+                        // Update the screen with the (possibly reordered) buffer
+                        updateComposingText(ic);
+
+                    } 
+                    else {
+                        // For English/Other, also use Composing Text for consistent feel
+                        mComposing.append(charStr);
+                        updateComposingText(ic);
+                    }
+                    
+                    if (isCaps) { isCaps = false; updateKeyboardLayout(); }
+                    triggerCandidateUpdate(200);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            isSymbols = false;
+            updateKeyboardLayout();
+        }
+    }
+
+    private void announceText(String text) {
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+            event.getText().add(text);
+            accessibilityManager.sendAccessibilityEvent(event);
+        }
+    }
+
+    private void startVoiceInput() {
+        if (speechRecognizer == null) return;
+        if (isListening) {
+            speechRecognizer.stopListening();
+            isListening = false;
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+                return;
+            }
+            try { speechRecognizer.startListening(speechIntent); isListening = true; } catch (Exception e) {}
+        }
+    }
+
+    private int getMedialWeight(int code) {
+        switch (code) {
+            case 4155: return 1; // ျ (Yapin)
+            case 4156: return 2; // ြ (Yayit)
+            case 4157:           // ွ (Standard Wasway)
+            case 4226: return 3; // ႂ (Shan Medial Wa)
+            case 4158: return 4; // ှ (Hahtoe)
+            default: return 0;
+        }
+    }
+
+    private boolean isConsonant(int code) {
+        return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101) ||
+               (code >= 4213 && code <= 4225); 
+    }
+
+    private boolean isMedial(int code) {
+        return (code >= 4155 && code <= 4158) || (code == 4226); 
+    }
+
+    private boolean isShanOrMyanmar() {
+        return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
+               currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
+    }
+
+    private void saveWordAndReset() {
+        // Use logic from mComposing if it was just committed, but standard flow here is usually
+        // called after SPACE commit. Since we commit before SPACE, existing logic might need tweak.
+        // Actually, we can just clear suggestions here.
+        mComposing.setLength(0);
+        triggerCandidateUpdate(0);
+    }
+
+    private void triggerCandidateUpdate(long delayMillis) {
+        handler.removeCallbacks(pendingCandidateUpdate);
+        if (delayMillis > 0) handler.postDelayed(pendingCandidateUpdate, delayMillis);
+        else handler.post(pendingCandidateUpdate);
+    }
+
+    private void performCandidateSearch() {
+        if (suggestionDB == null) {
+            handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); });
+            return;
+        }
+        
+        // Search using the Composing Buffer
+        final String searchWord = mComposing.toString();
+        
+        if (searchWord.isEmpty()) {
+            handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); });
+            return;
+        }
+
+        dbExecutor.execute(() -> {
+            final List<String> suggestions = suggestionDB.getSuggestions(searchWord);
+            handler.post(() -> {
+                for (int i = 0; i < candidateViews.size(); i++) {
+                    TextView tv = candidateViews.get(i);
+                    if (i < suggestions.size()) {
+                        final String suggestion = suggestions.get(i);
+                        tv.setText(suggestion);
+                        tv.setTag(suggestion);
+                        tv.setContentDescription("Suggestion " + (i + 1) + ", " + suggestion);
+                        tv.setOnClickListener(candidateListener);
+                        tv.setVisibility(View.VISIBLE);
+                    } else {
+                        tv.setVisibility(View.GONE);
+                    }
+                }
+            });
+        });
+    }
+
+    private void pickSuggestion(String suggestion) {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        
+        // Composing logic: Replace the entire composing text with suggestion
+        if (mComposing.length() > 0) {
+            ic.commitText(suggestion + " ", 1); // Commit suggestion + space
+            mComposing.setLength(0); // Clear buffer
+        } else {
+            ic.commitText(suggestion + " ", 1);
+        }
+        
+        if (suggestionDB != null) {
+            final String savedWord = suggestion;
+            dbExecutor.execute(() -> suggestionDB.saveWord(savedWord));
+        }
+        triggerCandidateUpdate(0);
+    }
+
+    private void updateKeyboardLayout() {
+        lastHoverKeyIndex = -1;
+        try {
+            Keyboard nextKeyboard;
+            if (isSymbols) {
+                nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard;
+            } else {
+                if (currentLanguageId == 1) nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
+                else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
+                else nextKeyboard = isCaps ? qwertyShiftKeyboard : qwertyKeyboard;
+            }
+            currentKeyboard = nextKeyboard;
+            if (keyboardView != null) {
+                keyboardView.setKeyboard(currentKeyboard);
+                keyboardView.invalidateAllKeys();
+                updateHelperState();
+            }
+        } catch (Exception e) {
+            currentKeyboard = qwertyKeyboard;
+            if(keyboardView != null) keyboardView.setKeyboard(currentKeyboard);
+        }
+    }
+
+    private void changeLanguage() {
+        lastHoverKeyIndex = -1;
+        String langName;
+        if (currentLanguageId == 0) { currentLanguageId = 1; langName = "Myanmar"; } 
+        else if (currentLanguageId == 1) { currentLanguageId = 2; langName = "Shan"; } 
+        else { currentLanguageId = 0; langName = "English"; }
+        
+        announceText(langName);
+        isCaps = false; isSymbols = false; 
+        updateKeyboardLayout();
+    }
+
     private int getNearestKeyIndexFast(int x, int y) {
         if (currentKeyboard == null || currentKeyboard.getKeys() == null) return -1;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys.isEmpty()) return -1;
         for (int i = 0; i < keys.size(); i++) {
             if (keys.get(i).isInside(x, y)) {
                 if (keys.get(i).codes[0] == -100) return -1;
@@ -456,151 +706,32 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
         return -1;
     }
-    
-    private void announceText(String text) {
-        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
-            event.getText().add(text);
-            accessibilityManager.sendAccessibilityEvent(event);
-        }
-    }
-    
-    private void startVoiceInput() {
-        if (speechRecognizer == null) return;
-        if (isListening) { speechRecognizer.stopListening(); isListening = false; } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(intent); return;
-            }
-            try { speechRecognizer.startListening(speechIntent); isListening = true; } catch (Exception e) {}
-        }
-    }
-    
-    private boolean isShanOrMyanmar() { return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard || currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard; }
-    
-    private void saveWordAndReset() {
-        if (suggestionDB != null && currentWord.length() > 0) {
-            final String wordToSave = currentWord.toString(); dbExecutor.execute(() -> suggestionDB.saveWord(wordToSave));
-        }
-        currentWord.setLength(0); triggerCandidateUpdate(0);
-    }
-    
-    private void triggerCandidateUpdate(long delayMillis) {
-        handler.removeCallbacks(pendingCandidateUpdate);
-        if (delayMillis > 0) handler.postDelayed(pendingCandidateUpdate, delayMillis); else handler.post(pendingCandidateUpdate);
-    }
-    
-    private void performCandidateSearch() {
-        if (suggestionDB == null) { handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); }); return; }
-        final String searchWord = currentWord.toString();
-        if (searchWord.isEmpty()) { handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); }); return; }
-        dbExecutor.execute(() -> {
-            final List<String> suggestions = suggestionDB.getSuggestions(searchWord);
-            handler.post(() -> {
-                for (int i = 0; i < candidateViews.size(); i++) {
-                    TextView tv = candidateViews.get(i);
-                    if (i < suggestions.size()) {
-                        final String suggestion = suggestions.get(i);
-                        tv.setText(suggestion); tv.setTag(suggestion); tv.setContentDescription("Suggestion " + (i + 1) + ", " + suggestion);
-                        tv.setOnClickListener(candidateListener); tv.setVisibility(View.VISIBLE);
-                    } else { tv.setVisibility(View.GONE); }
-                }
-            });
-        });
-    }
-    
-    private void pickSuggestion(String suggestion) {
-        InputConnection ic = getCurrentInputConnection(); if (ic == null) return;
-        if (mComposing.length() > 0) ic.commitText("", 1); 
-        else ic.deleteSurroundingText(currentWord.length(), 0);
-        
-        ic.commitText(suggestion + " ", 1); mComposing.setLength(0);
-        if (suggestionDB != null) { final String savedWord = suggestion; dbExecutor.execute(() -> suggestionDB.saveWord(savedWord)); }
-        currentWord.setLength(0); triggerCandidateUpdate(0);
-    }
-    
-    private void updateKeyboardLayout() {
-        lastHoverKeyIndex = -1;
-        try {
-            Keyboard nextKeyboard;
-            if (isSymbols) { nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard; } 
-            else {
-                if (currentLanguageId == 1) nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
-                else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
-                else nextKeyboard = isCaps ? qwertyShiftKeyboard : qwertyKeyboard;
-            }
-            currentKeyboard = nextKeyboard;
-            if (keyboardView != null) { keyboardView.setKeyboard(currentKeyboard); keyboardView.invalidateAllKeys(); updateHelperState(); }
-        } catch (Exception e) { currentKeyboard = qwertyKeyboard; if(keyboardView != null) keyboardView.setKeyboard(currentKeyboard); }
-    }
-    
-    private void changeLanguage() {
-        lastHoverKeyIndex = -1; commitTyped(getCurrentInputConnection());
-        String langName;
-        if (currentLanguageId == 0) { currentLanguageId = 1; langName = "Myanmar"; } 
-        else if (currentLanguageId == 1) { currentLanguageId = 2; langName = "Shan"; } 
-        else { currentLanguageId = 0; langName = "English"; }
-        announceText(langName); isCaps = false; isSymbols = false; updateKeyboardLayout();
-    }
-    
+
     private void playHaptic(int primaryCode) {
         if (!isVibrateOn) return;
-        try { Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE); if (v != null && v.hasVibrator()) { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE)); else v.vibrate(40); } } catch (Exception e) {}
+        try {
+            Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (v != null && v.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE));
+                else v.vibrate(40);
+            }
+        } catch (Exception e) {}
     }
     
     private void playSound(int primaryCode) {
         if (!isSoundOn) return;
-        try { int soundEffect = AudioManager.FX_KEYPRESS_STANDARD; if (primaryCode == CODE_DELETE) soundEffect = AudioManager.FX_KEYPRESS_DELETE; else if (primaryCode == CODE_SPACE) soundEffect = AudioManager.FX_KEYPRESS_SPACEBAR; else if (primaryCode == CODE_ENTER) soundEffect = AudioManager.FX_KEYPRESS_RETURN; audioManager.playSoundEffect(soundEffect, 1.0f); } catch (Exception e) {}
+        try {
+            int soundEffect = AudioManager.FX_KEYPRESS_STANDARD;
+            if (primaryCode == CODE_DELETE) soundEffect = AudioManager.FX_KEYPRESS_DELETE;
+            else if (primaryCode == CODE_SPACE) soundEffect = AudioManager.FX_KEYPRESS_SPACEBAR;
+            else if (primaryCode == CODE_ENTER) soundEffect = AudioManager.FX_KEYPRESS_RETURN;
+            audioManager.playSoundEffect(soundEffect, 1.0f);
+        } catch (Exception e) {}
     }
     
-    private void setupSpeechRecognizer() {
-        if (SpeechRecognizer.isRecognitionAvailable(this)) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
-            speechIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "my-MM"); speechIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-            speechRecognizer.setRecognitionListener(new RecognitionListener() {
-                @Override public void onReadyForSpeech(Bundle params) { playHaptic(-10); }
-                @Override public void onBeginningOfSpeech() {}
-                @Override public void onRmsChanged(float rmsdB) {}
-                @Override public void onBufferReceived(byte[] buffer) {}
-                @Override public void onEndOfSpeech() { isListening = false; }
-                @Override public void onError(int error) { isListening = false; playHaptic(-5); }
-                @Override public void onResults(Bundle results) {
-                    ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                    if (matches != null && !matches.isEmpty()) { InputConnection ic = getCurrentInputConnection(); if (ic != null) { commitTyped(ic); ic.commitText(matches.get(0) + " ", 1); } }
-                    isListening = false;
-                }
-                @Override public void onPartialResults(Bundle partialResults) {}
-                @Override public void onEvent(int eventType, Bundle params) {}
-            });
-        }
-    }
-    
-    @Override public void onStartInputView(EditorInfo info, boolean restarting) {
-        super.onStartInputView(info, restarting);
-        prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
-        loadSettings();
-        try { initKeyboards(); } catch (Exception e) {}
-        currentWord.setLength(0); isCaps = false; isSymbols = false;
-        updateKeyboardLayout(); triggerCandidateUpdate(0);
-    }
-
-    @Override public void onPress(int primaryCode) {
-        if (primaryCode == CODE_SPACE) { isSpaceLongPressed = false; handler.postDelayed(spaceLongPressRunnable, 600); }
-        playHaptic(primaryCode);
-    }
-    @Override public void onRelease(int primaryCode) { if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable); }
-
-    // This is the method that was causing the error because it wasn't there
-    @Override public void onText(CharSequence text) {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
-        commitTyped(ic); // Commit buffer first
-        ic.commitText(text, 1);
-        if (isCaps) { isCaps = false; updateKeyboardLayout(); }
-    }
-
-    @Override public void swipeLeft() {} @Override public void swipeRight() {} @Override public void swipeDown() {} @Override public void swipeUp() {}
+    @Override public void swipeLeft() {}
+    @Override public void swipeRight() {}
+    @Override public void swipeDown() {}
+    @Override public void swipeUp() {}
 }
 
