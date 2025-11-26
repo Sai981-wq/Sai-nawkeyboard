@@ -376,7 +376,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case CODE_DELETE:
-                    // Delete ZWSP barrier first if it exists
+                    // ZWSP Barrier removal logic
                     CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
                     if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
                          ic.deleteSurroundingText(1, 0);
@@ -425,51 +425,67 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() 
                             : String.valueOf((char) primaryCode);
 
-                    // --- MYANMAR & SHAN SMART SWAP LOGIC ---
                     if (isShanOrMyanmar()) {
-                        
-                        // Check if previous character was 'ေ' (Thway Htoe) or 'ႄ' (Shan E)
-                        CharSequence beforeSeq = ic.getTextBeforeCursor(1, 0);
+                        // Context Check (Last 2 chars) for Intelligent Swapping
+                        CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
                         boolean swapDone = false;
-                        
-                        if (beforeSeq != null && beforeSeq.length() > 0) {
-                            char prevChar = beforeSeq.charAt(0);
+
+                        if (lastTwo != null && lastTwo.length() > 0) {
+                            char prevChar = lastTwo.charAt(lastTwo.length() - 1); // The char immediately before cursor
                             
-                            // IF Preceding char is 'ေ' OR 'ႄ' AND Current Input is a Consonant
-                            if ((prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) && isConsonant(primaryCode)) {
+                            // CHECK: Is previous char 'ေ' (Thway Htoe)?
+                            if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
                                 
-                                // PERFORM SWAP: "ေ" + "က" -> "က" + "ေ"
-                                ic.beginBatchEdit(); // Batch edit prevents TalkBack from announcing the delete
-                                ic.deleteSurroundingText(1, 0); // Delete 'ေ'
-                                ic.commitText(charStr, 1);      // Type Consonant ('က')
-                                ic.commitText(String.valueOf(prevChar), 1); // Type 'ေ' back
-                                ic.endBatchEdit();
+                                boolean shouldSwap = false;
                                 
-                                // Update Internal Suggestion Engine
-                                if (currentWord.length() > 0) {
-                                    // Remove the 'ေ' that was just at the end
-                                    currentWord.deleteCharAt(currentWord.length() - 1); 
-                                    // Append Consonant
-                                    currentWord.append(charStr);
-                                    // Append 'ေ'
-                                    currentWord.append(prevChar);
-                                } else {
-                                    currentWord.append(charStr);
-                                    currentWord.append(prevChar);
+                                // CASE 1: Input is a Medial (ြ, ွ, etc.) -> ALWAYS SWAP
+                                // Example: ပေ + ြ -> ပြေ
+                                if (isMedial(primaryCode)) {
+                                    shouldSwap = true;
                                 }
-                                
-                                swapDone = true;
+                                // CASE 2: Input is a Consonant (က, ခ, ... မ, တ)
+                                // Only swap if the 'ေ' is NOT attached to a consonant yet.
+                                else if (isConsonant(primaryCode)) {
+                                    if (lastTwo.length() >= 2) {
+                                        char prevPrevChar = lastTwo.charAt(0);
+                                        // If prevPrev is Consonant, it means 'ေ' is already busy (e.g., "မေ").
+                                        // So DO NOT swap the new Consonant (e.g., "တ") into it.
+                                        // This Fixes "Metta" (မေတ္တာ) becoming "Ma Tay Tta" (မတေ္တာ).
+                                        if (isConsonant(prevPrevChar) || isMedial(prevPrevChar)) {
+                                            shouldSwap = false; 
+                                        } else {
+                                            shouldSwap = true; // 'ေ' is alone/prefix. Swap.
+                                        }
+                                    } else {
+                                        // Only 1 char context (Just 'ေ'). Must be prefix. Swap.
+                                        shouldSwap = true; 
+                                    }
+                                }
+
+                                if (shouldSwap) {
+                                    ic.beginBatchEdit();
+                                    ic.deleteSurroundingText(1, 0); // Remove 'ေ'
+                                    ic.commitText(charStr, 1);      // Type Input
+                                    ic.commitText(String.valueOf(prevChar), 1); // Put 'ေ' back
+                                    ic.endBatchEdit();
+                                    
+                                    if (currentWord.length() > 0) {
+                                        currentWord.deleteCharAt(currentWord.length() - 1);
+                                        currentWord.append(charStr).append(prevChar);
+                                    } else {
+                                        currentWord.append(charStr).append(prevChar);
+                                    }
+                                    swapDone = true;
+                                }
                             }
                         }
 
-                        // If NO swap happened, just commit normally
                         if (!swapDone) {
                             ic.commitText(charStr, 1);
                             currentWord.append(charStr);
                         }
                     } 
                     else {
-                        // English / Other
                         ic.commitText(charStr, 1);
                         currentWord.append(charStr);
                     }
@@ -509,12 +525,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // Helper to identify Consonants (for Swapping)
+    // Helper to identify Consonants
     private boolean isConsonant(int code) {
-        // Myanmar Consonants (Ka to A) + Independent Vowels + Shan Consonants
-        return (code >= 4096 && code <= 4129) || // Myanmar Consonants
+        // Myanmar Consonants (Ka to A) + Independent Vowels + Shan Consonants + Great Sa
+        return (code >= 4096 && code <= 4129) || // Ka to A
                (code == 4100) || (code == 4101) || // Nya, Nnya specifics
+               (code == 4212) || // Great Sa (SS)
                (code >= 4213 && code <= 4225); // Shan Consonants
+    }
+    
+    // Helper to identify Medials (Yapin, Yayit, Wasway, Hahtoe)
+    private boolean isMedial(int code) {
+        // 4155=Ya, 4156=Ra, 4157=Wa, 4158=Ha, 4226=ShanWa
+        return (code >= 4155 && code <= 4158) || (code == 4226);
     }
 
     private boolean isShanOrMyanmar() {
