@@ -300,19 +300,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- TALKBACK SAFE LIFT-TO-TYPE WITH 20px MARGIN ---
+    // --- CRITICAL FIX: TALKBACK LIFT-TO-TYPE WITH TOP BARRIER ---
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
             float x = event.getX();
             float y = event.getY();
             int width = keyboardView.getWidth();
-            int height = keyboardView.getHeight();
-
-            // Safety Margin: Cancel if < 20px from ANY edge
-            if (x < 20 || y < 20 || x > width - 20 || y > height - 20) {
-                lastHoverKeyIndex = -1;
-                return;
+            
+            // *** TOP BARRIER GUARD ***
+            // အပေါ်ဘောင်နဲ့ 50px (အရင်က 20px) အကွာကို ရောက်တာနဲ့ Cancel လုပ်မယ်။
+            // Talkback သမားတွေ အပေါ်ဆွဲတင်လိုက်ရင် အပေါ်တန်းကို မထိအောင် ကာကွယ်တာပါ။
+            if (y <= 50 || y >= keyboardView.getHeight() - 5 || x <= 5 || x >= width - 5) {
+                lastHoverKeyIndex = -1; // Reset immediately
+                return; // Stop processing
             }
 
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
@@ -322,11 +323,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     playHaptic(0);
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                // လက်ကြွတဲ့အချိန်မှာ ဘောင်ထဲမှာ ရှိနေမှသာ ရိုက်မယ်
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        // Double check: Must be inside key bounds
+                        // Double Check: Coordinates MUST be inside key
                         if (key.isInside((int)x, (int)y)) {
                              if (key.codes[0] != -100) {
                                 handleInput(key.codes[0], key);
@@ -421,13 +423,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     
                 default:
                     if (isShanOrMyanmar()) {
-                        // 1. SMART REORDERING (Bagan Style Direct Swap)
-                        // This handles "ပြေ" properly:
-                        // Type 'ေ' -> 'ေ'
-                        // Type 'ပ' -> 'ေ' moves back -> 'ပေ'
-                        // Type 'ြ' -> 'ေ' moves back again -> 'ပြေ'
+                        // 1. VISUAL TYPING LOGIC (The "Separated" Feel)
+                        // Input 'ေ' -> shows 'ေ'
+                        // Input 'မ' -> code swaps -> 'မေ' (Looks like it filled the gap)
                         if (handleSmartReordering(ic, primaryCode)) {
-                             // Sync Buffer
                              if (currentWord.length() > 0) {
                                 char last = currentWord.charAt(currentWord.length() - 1);
                                 currentWord.deleteCharAt(currentWord.length() - 1);
@@ -435,7 +434,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                 currentWord.append(last);
                              }
                         }
-                        // 2. Vowel Normalization (e.g. ု + ိ -> ို)
+                        // 2. Vowel Normalization
                         else if (handleShanVowelNormalization(ic, primaryCode)) {
                              if (currentWord.length() > 0) {
                                 char prevCharInBuf = currentWord.charAt(currentWord.length() - 1);
@@ -496,17 +495,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- SMART REORDERING (The Magic "Visual Typing" Logic) ---
+    // --- SMART REORDERING ---
+    // This replicates the "Separation then Fill" behavior
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
         CharSequence before = ic.getTextBeforeCursor(1, 0);
         if (before == null || before.length() == 0) return false;
         
         char prevChar = before.charAt(0);
         
-        // RULE 1: Direct Swap with Thway Htoe / Shan E
-        // If 'ေ' is sitting there, and we type a Consonant OR Medial,
-        // we DELETE 'ေ', insert the new char, then put 'ေ' back.
-        // This creates the visual effect: ေ -> ပေ -> ပြေ
+        // If previous is 'ေ' or 'ႄ', and we type Consonant/Medial -> SWAP!
+        // Example: 'ေ' + 'မ' -> 'မေ'
         if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
              if (isConsonant(primaryCode) || isMedial(primaryCode)) {
                  performSwap(ic, primaryCode, prevChar);
@@ -514,7 +512,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
              }
         }
 
-        // RULE 2: Sort Medials (e.g. 'ှ' before 'ြ' -> fix to 'ြ' before 'ှ')
+        // Sort Medials (e.g. fix order of multiple medials)
         int currentWeight = getMedialWeight(primaryCode);
         int prevWeight = getMedialWeight((int)prevChar);
 
@@ -563,11 +561,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private boolean isConsonant(int code) {
         return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101) ||
-               (code >= 4213 && code <= 4225); // Shan Consonants included
+               (code >= 4213 && code <= 4225); 
     }
 
     private boolean isMedial(int code) {
-        return (code >= 4155 && code <= 4158) || (code == 4226); // Shan Wa included
+        return (code >= 4155 && code <= 4158) || (code == 4226); 
     }
 
     private boolean isShanOrMyanmar() {
