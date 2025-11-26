@@ -183,7 +183,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         updateHelperState();
 
-        // TalkBack Handling (Your trusted logic)
+        // TalkBack Handling
         keyboardView.setOnHoverListener((v, event) -> {
             boolean handled = accessibilityHelper.dispatchHoverEvent(event);
             handleLiftToType(event);
@@ -290,14 +290,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- YOUR TRUSTED TALKBACK LOGIC ---
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
             float x = event.getX();
             float y = event.getY();
             
-            // Safety Margin: Cancel if < 20px from ANY edge
             if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > keyboardView.getWidth() - 20) {
                 lastHoverKeyIndex = -1;
                 return;
@@ -352,7 +350,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
-    // --- MAIN INPUT HANDLING ---
+    // --- MAIN INPUT HANDLING (FIXED TO PREVENT DUPLICATION) ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -367,22 +365,25 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case CODE_DELETE:
-                    // ZWSP Barrier Removal Logic
+                    // ZWSP Barrier Clean up
                     CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
                     if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
                          ic.deleteSurroundingText(1, 0);
-                         break;
+                         break; // Don't delete the character before it yet
                     }
                     
                     CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
                     ic.deleteSurroundingText(1, 0);
+                    
                     if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore.toString());
                     else announceText("Delete");
+                    
                     if (currentWord.length() > 0) {
                         currentWord.deleteCharAt(currentWord.length() - 1);
                         triggerCandidateUpdate(50);
                     }
                     break;
+                    
                 case CODE_VOICE: startVoiceInput(); break;
                 case CODE_SHIFT: isCaps = !isCaps; updateKeyboardLayout(); announceText(isCaps ? "Shift On" : "Shift Off"); break;
                 case CODE_SYMBOL_ON: isSymbols = true; updateKeyboardLayout(); announceText("Symbols"); break;
@@ -407,7 +408,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     // --- MYANMAR/SHAN LOGIC ---
                     if (isShanOrMyanmar()) {
                         
-                        // 1. Clean ZWSP Barrier if typing Consonant/Medial
+                        // 1. ZWSP Barrier Cleaning (if typing new Consonant/Medial)
                         if (isConsonant(primaryCode) || isMedial(primaryCode)) {
                             CharSequence before_zwsp = ic.getTextBeforeCursor(1, 0);
                             if (before_zwsp != null && before_zwsp.length() == 1 && before_zwsp.charAt(0) == ZWSP) {
@@ -415,18 +416,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             }
                         }
 
-                        // 2. SMART REORDERING (FIXED LOGIC)
-                        if (handleSmartReordering(ic, primaryCode)) {
-                             // Correct the internal word buffer after a swap
+                        // 2. SMART REORDERING (Check if swap happened)
+                        boolean swapped = handleSmartReordering(ic, primaryCode);
+
+                        if (swapped) {
+                             // If swapped, DO NOT commit text again. handleSmartReordering already did it.
+                             // Just update internal buffer for suggestions.
                              if (currentWord.length() > 0) {
-                                char last = currentWord.charAt(currentWord.length() - 1); // 'ေ'
+                                char last = currentWord.charAt(currentWord.length() - 1);
                                 currentWord.deleteCharAt(currentWord.length() - 1);
-                                currentWord.append(String.valueOf((char) primaryCode)); // Insert Consonant
-                                currentWord.append(last); // Append 'ေ'
+                                currentWord.append(String.valueOf((char) primaryCode));
+                                currentWord.append(last);
                              }
                         }
                         // 3. Vowel Normalization
                         else if (handleShanVowelNormalization(ic, primaryCode)) {
+                             // If normalized, it swapped internally too.
                              if (currentWord.length() > 0) {
                                 char prevCharInBuf = currentWord.charAt(currentWord.length() - 1);
                                 currentWord.deleteCharAt(currentWord.length() - 1);
@@ -434,7 +439,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                 currentWord.append(prevCharInBuf);
                             }
                         }
-                        // 4. Normal Typing
+                        // 4. Normal Typing (IMPORTANT: Only if NOT swapped)
                         else {
                             String charStr = String.valueOf((char) primaryCode);
                             ic.commitText(charStr, 1);
@@ -460,37 +465,40 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- FIX: IMPROVED SMART REORDERING ---
+    // --- CRITICAL LOGIC FIX: Check Before Swapping ---
     private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
-        // Look back 2 characters to understand context (e.g. "Ma" + "Ay" + "Pa")
+        // Need 2 chars back to decide if 'ေ' is free or bound
         CharSequence history = ic.getTextBeforeCursor(2, 0);
         if (history == null || history.length() == 0) return false;
         
-        // Get the immediate previous character
         char prevChar = history.charAt(history.length() - 1);
         
-        // Only trigger if previous char is 'ေ' or Shan 'E'
+        // --- SCENARIO 1: Previous is 'ေ' ---
         if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
              
-             // Check what was BEFORE 'ေ' (to see if 'ေ' is attached or floating)
+             // Check context: Is 'ေ' already attached to something?
              char prevPrevChar = (history.length() >= 2) ? history.charAt(0) : 0;
-             boolean isThwayHtoeAttached = isConsonant(prevPrevChar) || isMedial(prevPrevChar);
+             
+             // If Pre-Prev is Consonant or Medial, then 'ေ' is BOUND (e.g. မ + ေ).
+             // We should NOT attach the NEW Consonant to this 'ေ'.
+             boolean isThwayHtoeBound = isConsonant(prevPrevChar) || isMedial(prevPrevChar);
 
-             // Case 1: Input is a Consonant (e.g. 'Pa')
+             // Sub-Case A: Typing a Consonant (e.g. 'Pa')
              if (isConsonant(primaryCode)) {
-                 if (!isThwayHtoeAttached) {
-                     // 'ေ' is floating (Start of line or Space). SWAP.
-                     // e.g. "ေ" + "မ" -> "မေ"
+                 if (isThwayHtoeBound) {
+                     // e.g. "မေ" + "ပ". 'ေ' is bound to 'မ'. 
+                     // DO NOT SWAP. Result: "မေပ".
+                     return false; 
+                 } else {
+                     // e.g. "Space" + "ေ" + "ပ". 'ေ' is floating.
+                     // SWAP. Result: "ပေ".
                      performSwap(ic, primaryCode, prevChar);
                      return true;
                  }
-                 // Else: 'ေ' is attached (e.g. "မ" + "ေ").
-                 // Input 'Pa' is a NEW syllable. DO NOT SWAP.
-                 // e.g. "မေ" + "ပ" -> "မေပ"
              }
              
-             // Case 2: Input is a Medial (e.g. 'Ya', 'Ra')
-             // Medials usually combine with 'ေ'.
+             // Sub-Case B: Typing a Medial (e.g. 'Ya', 'Ra')
+             // Medials ALWAYS combine with 'ေ', even if bound.
              // e.g. "ပေ" + "ြ" -> "ပြေ"
              else if (isMedial(primaryCode)) {
                  performSwap(ic, primaryCode, prevChar);
@@ -498,7 +506,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
              }
         }
 
-        // RULE 2: Standard Medial Sorting (No change here)
+        // --- SCENARIO 2: Medial Sorting (Standard) ---
         int currentWeight = getMedialWeight(primaryCode);
         int prevWeight = getMedialWeight((int)prevChar);
 
@@ -717,4 +725,3 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void swipeUp() {}
 }
 
-             
