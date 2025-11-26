@@ -70,8 +70,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
 
-    // *** PENDING STATE FOR PRE-BASE VOWELS ***
-    private int pendingPreBaseVowel = 0; 
+    // *** GBOARD STYLE COMPOSING STATE ***
+    private boolean isComposingThwayHtoe = false;
+    private int composingChar = 0;
 
     // Voice
     private SpeechRecognizer speechRecognizer;
@@ -104,7 +105,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
-    // Listener reuse
     private final View.OnClickListener candidateListener = v -> {
         String suggestion = (String) v.getTag();
         if (suggestion != null) pickSuggestion(suggestion);
@@ -156,7 +156,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public View onCreateInputView() {
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
-        loadSettings(); // This was causing error because function was missing
+        loadSettings();
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
         int layoutRes = isDarkTheme ? R.layout.input_view_dark : R.layout.input_view;
@@ -183,7 +183,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         currentLanguageId = 0;
         isCaps = false;
         isSymbols = false;
-        pendingPreBaseVowel = 0;
+        isComposingThwayHtoe = false;
         
         updateKeyboardLayout(); 
         keyboardView.setOnKeyboardActionListener(this);
@@ -204,7 +204,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return layout;
     }
     
-    // --- MISSING FUNCTION ADDED HERE ---
     private void loadSettings() {
         isVibrateOn = prefs.getBoolean("vibrate_on", true);
         isSoundOn = prefs.getBoolean("sound_on", true);
@@ -261,7 +260,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         String text = matches.get(0);
                         InputConnection ic = getCurrentInputConnection();
                         if (ic != null) {
-                            flushPendingVowel(ic);
+                            finishComposing(ic);
                             ic.commitText(text + " ", 1);
                         }
                     }
@@ -302,7 +301,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try { initKeyboards(); } catch (Exception e) { e.printStackTrace(); }
         
         currentWord.setLength(0);
-        pendingPreBaseVowel = 0; 
+        isComposingThwayHtoe = false;
         isCaps = false;
         isSymbols = false;
         
@@ -310,12 +309,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
+    // --- TALKBACK SAFE LIFT-TO-TYPE WITH STRICT BOUNDS ---
     private void handleLiftToType(MotionEvent event) {
         try {
             int action = event.getAction();
             float x = event.getX();
             float y = event.getY();
-            
+            int width = keyboardView.getWidth();
+            int height = keyboardView.getHeight();
+
+            // Safety Margin: Cancel if near/outside edges (5px padding)
+            if (x <= 5 || y <= 5 || x >= width - 5 || y >= height - 5) {
+                lastHoverKeyIndex = -1;
+                return;
+            }
+
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
                 int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
@@ -327,8 +335,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        if (key.codes[0] != -100) {
-                            handleInput(key.codes[0], key);
+                        // STRICT CHECK: Ensure finger lifted INSIDE the key bounds
+                        if (key.isInside((int)x, (int)y)) {
+                             if (key.codes[0] != -100) {
+                                handleInput(key.codes[0], key);
+                            }
                         }
                     }
                 }
@@ -348,7 +359,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onText(CharSequence text) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
-        flushPendingVowel(ic); // Ensure clean state
+        finishComposing(ic);
         ic.commitText(text, 1);
         playSound(0);
         if (isCaps) { isCaps = false; updateKeyboardLayout(); }
@@ -372,21 +383,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
-        // Auto-Text / Suggestions Handling
+        // Auto-Text / Suggestions
         if (key != null && key.text != null) {
-            flushPendingVowel(ic);
+            finishComposing(ic);
             ic.commitText(key.text, 1);
             if (isCaps) { isCaps = false; updateKeyboardLayout(); announceText("Shift Off"); }
             return;
         }
 
         try {
-            // *** 1. SPECIAL DELETE HANDLING ***
+            // *** DELETE HANDLING ***
             if (primaryCode == CODE_DELETE) {
-                if (pendingPreBaseVowel != 0) {
-                    pendingPreBaseVowel = 0;
+                if (isComposingThwayHtoe) {
+                    ic.commitText("", 1); // Clear composing text
+                    isComposingThwayHtoe = false;
                     announceText("Deleted Thway Htoe");
-                    return; 
+                    return;
                 }
                 
                 CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
@@ -401,9 +413,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 return;
             }
 
-            // Flush pending vowel if we type any control code
-            if (primaryCode <= 0 && pendingPreBaseVowel != 0) {
-                 flushPendingVowel(ic);
+            // Flush composing for control codes
+            if (primaryCode <= 0 && isComposingThwayHtoe) {
+                 finishComposing(ic);
             }
 
             switch (primaryCode) {
@@ -435,48 +447,62 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                     
                 default:
-                    // --- MYANMAR/SHAN LOGIC ---
                     if (isShanOrMyanmar()) {
                         
-                        // A. Capture Thway Htoe / Shan E
+                        // 1. Start Composing 'ေ' or 'ႄ'
                         if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
-                            if (pendingPreBaseVowel != 0) {
-                                flushPendingVowel(ic); 
+                            if (isComposingThwayHtoe) {
+                                finishComposing(ic); 
                             }
-                            pendingPreBaseVowel = primaryCode;
+                            // GBOARD STYLE: Show visual indication
+                            String s = String.valueOf((char) primaryCode);
+                            ic.setComposingText(s, 1); 
+                            isComposingThwayHtoe = true;
+                            composingChar = primaryCode;
                             return; 
                         }
 
-                        // B. Process Pending Vowel
-                        if (pendingPreBaseVowel != 0) {
+                        // 2. Consonant Typed -> Combine with Composing Vowel
+                        if (isComposingThwayHtoe) {
                             if (isConsonant(primaryCode) || isMedial(primaryCode)) {
                                 String charStr = String.valueOf((char) primaryCode);
-                                String vowelStr = String.valueOf((char) pendingPreBaseVowel);
+                                String vowelStr = String.valueOf((char) composingChar);
                                 
-                                ic.commitText(charStr, 1);
-                                ic.commitText(vowelStr, 1);
+                                // REPLACE composing text with combined text
+                                ic.commitText(charStr + vowelStr, 1);
                                 
                                 currentWord.append(charStr).append(vowelStr);
-                                pendingPreBaseVowel = 0; // Reset
+                                isComposingThwayHtoe = false; 
                             } else {
-                                flushPendingVowel(ic);
+                                finishComposing(ic);
                                 String charStr = String.valueOf((char) primaryCode);
                                 ic.commitText(charStr, 1);
                                 currentWord.append(charStr);
                             }
                         } 
                         
-                        // C. Normal Processing
+                        // 3. Normal Processing
                         else {
-                            // Check Vowel Normalization (e.g. ု + ိ -> ို)
-                            if (handleShanVowelNormalization(ic, primaryCode)) {
+                            // Medial Reordering (e.g. for "ကြေ", "ငှေ")
+                            if (isMedial(primaryCode) && handleMedialReordering(ic, primaryCode)) {
+                                if (currentWord.length() > 0) {
+                                    char last = currentWord.charAt(currentWord.length() - 1);
+                                    currentWord.deleteCharAt(currentWord.length() - 1);
+                                    currentWord.append(String.valueOf((char) primaryCode));
+                                    currentWord.append(last);
+                                }
+                            }
+                            // Vowel Normalization (e.g. ု + ိ -> ို)
+                            else if (handleShanVowelNormalization(ic, primaryCode)) {
                                 if (currentWord.length() > 0) {
                                     char prevCharInBuf = currentWord.charAt(currentWord.length() - 1);
                                     currentWord.deleteCharAt(currentWord.length() - 1);
                                     currentWord.append(String.valueOf((char) primaryCode));
                                     currentWord.append(prevCharInBuf);
                                 }
-                            } else {
+                            } 
+                            // Standard Commit
+                            else {
                                 String charStr = (key != null && key.label != null && key.label.length() > 1) 
                                     ? key.label.toString() 
                                     : String.valueOf((char) primaryCode);
@@ -485,7 +511,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             }
                         }
                     } 
-                    // --- ENGLISH/OTHER LOGIC ---
                     else {
                         String charStr = (key != null && key.label != null && key.label.length() > 1) 
                             ? key.label.toString() 
@@ -499,18 +524,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         } catch (Exception e) {
             e.printStackTrace();
-            pendingPreBaseVowel = 0;
+            isComposingThwayHtoe = false;
             isSymbols = false;
             updateKeyboardLayout();
         }
     }
 
-    private void flushPendingVowel(InputConnection ic) {
-        if (pendingPreBaseVowel != 0) {
-            String s = String.valueOf((char) pendingPreBaseVowel);
-            ic.commitText(s, 1);
-            currentWord.append(s);
-            pendingPreBaseVowel = 0;
+    private void finishComposing(InputConnection ic) {
+        if (isComposingThwayHtoe) {
+            ic.finishComposingText(); 
+            currentWord.append(String.valueOf((char)composingChar));
+            isComposingThwayHtoe = false;
         }
     }
 
@@ -525,7 +549,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void startVoiceInput() {
         if (speechRecognizer == null) return;
         InputConnection ic = getCurrentInputConnection();
-        if (ic != null) flushPendingVowel(ic); 
+        if (ic != null) finishComposing(ic);
         
         if (isListening) {
             speechRecognizer.stopListening();
@@ -542,6 +566,43 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // --- SMART MEDIAL REORDERING (Stacking Fixes) ---
+    private boolean handleMedialReordering(InputConnection ic, int primaryCode) {
+        CharSequence before = ic.getTextBeforeCursor(1, 0);
+        if (before == null || before.length() == 0) return false;
+        
+        char prevChar = before.charAt(0);
+        
+        // 1. Swap with Thway Htoe/Shan E (e.g. for "ကြေ")
+        if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
+             performSwap(ic, primaryCode, prevChar);
+             return true;
+        }
+
+        // 2. Sort Medials (e.g. for "မြှ") -> Y(1) < R(2) < W(3) < H(4)
+        int currentWeight = getMedialWeight(primaryCode);
+        int prevWeight = getMedialWeight((int)prevChar);
+
+        if (currentWeight > 0 && prevWeight > 0 && prevWeight > currentWeight) {
+            performSwap(ic, primaryCode, prevChar);
+            return true;
+        }
+
+        return false;
+    }
+
+    private int getMedialWeight(int code) {
+        switch (code) {
+            case 4155: return 1; // ျ (Yapin)
+            case 4156: return 2; // ြ (Yayit)
+            case 4157:           // ွ (Standard Wasway)
+            case 4226: return 3; // ႂ (Shan Medial Wa)
+            case 4158: return 4; // ှ (Hahtoe)
+            default: return 0;
+        }
+    }
+
+    // --- Vowel Normalization ---
     private boolean handleShanVowelNormalization(InputConnection ic, int primaryCode) {
         CharSequence before = ic.getTextBeforeCursor(1, 0);
         if (before == null || before.length() == 0) return false;
@@ -567,11 +628,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private boolean isConsonant(int code) {
-        return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101);
+        return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101) ||
+               (code >= 4213 && code <= 4225); // Include Shan Consonants (U+1075 to U+1081)
     }
 
     private boolean isMedial(int code) {
-        return (code >= 4155 && code <= 4158);
+        // Includes Shan Medial Wa (U+1082 -> 4226)
+        return (code >= 4155 && code <= 4158) || (code == 4226);
     }
 
     private boolean isShanOrMyanmar() {
@@ -581,7 +644,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void saveWordAndReset() {
         InputConnection ic = getCurrentInputConnection();
-        if(ic != null) flushPendingVowel(ic); 
+        if(ic != null) finishComposing(ic);
 
         if (suggestionDB != null && currentWord.length() > 0) {
             final String wordToSave = currentWord.toString();
@@ -631,7 +694,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void pickSuggestion(String suggestion) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
-        flushPendingVowel(ic); 
+        finishComposing(ic);
         
         ic.deleteSurroundingText(currentWord.length(), 0);
         ic.commitText(suggestion + " ", 1);
@@ -670,7 +733,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void changeLanguage() {
         lastHoverKeyIndex = -1;
         InputConnection ic = getCurrentInputConnection();
-        if(ic != null) flushPendingVowel(ic);
+        if(ic != null) finishComposing(ic);
 
         String langName;
         if (currentLanguageId == 0) { currentLanguageId = 1; langName = "Myanmar"; } 
