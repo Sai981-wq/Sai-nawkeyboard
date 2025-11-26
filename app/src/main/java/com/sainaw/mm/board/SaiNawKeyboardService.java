@@ -67,7 +67,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private List<TextView> candidateViews = new ArrayList<>();
     private SaiNawAccessibilityHelper accessibilityHelper;
     private SuggestionDB suggestionDB;
-    private StringBuilder currentWord = new StringBuilder();
+    
+    // --- 1. COMPOSING BUFFER (Gboard Style) ---
+    // ဒီဟာက မျဉ်းတားထားတဲ့ စာလုံးတွေကို ယာယီသိမ်းထားမယ့်နေရာပါ
+    private StringBuilder mComposing = new StringBuilder(); 
+    private StringBuilder currentWord = new StringBuilder(); // For Suggestions
 
     // Voice
     private SpeechRecognizer speechRecognizer;
@@ -194,45 +198,360 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return layout;
     }
     
+    // --- CRITICAL FIX for "Duplication/Ghosting" ---
+    // User က Cursor ရွှေ့လိုက်ရင် Buffer ကို ရှင်းထုတ်ရမယ်
+    @Override
+    public void onFinishInput() {
+        super.onFinishInput();
+        commitTyped(getCurrentInputConnection()); // ရှိတာလေး အရင်ပို့
+        mComposing.setLength(0);
+        currentWord.setLength(0);
+    }
+
+    @Override
+    public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd, int candidatesStart, int candidatesEnd) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd);
+        // If the system says "No Composing Region" (candidatesStart == -1), we must clear our buffer.
+        // This stops "ghost" characters from appearing.
+        if (mComposing.length() > 0 && (candidatesStart == -1 || candidatesEnd == -1 || newSelEnd != candidatesEnd)) {
+            mComposing.setLength(0);
+            currentWord.setLength(0);
+        }
+    }
+    
+    // --- MAIN INPUT LOGIC (GBOARD STYLE) ---
+    private void handleInput(int primaryCode, Keyboard.Key key) {
+        playSound(primaryCode);
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+
+        // Special Strings (.com etc)
+        if (key != null && key.text != null) {
+            commitTyped(ic); // Commit current buffer first
+            ic.commitText(key.text, 1);
+            if (isCaps) { isCaps = false; updateKeyboardLayout(); announceText("Shift Off"); }
+            return;
+        }
+
+        switch (primaryCode) {
+            case CODE_DELETE:
+                handleBackspace(ic); // Handle Backspace inside buffer
+                break;
+                
+            case CODE_SPACE:
+                if (!isSpaceLongPressed) {
+                    commitTyped(ic); // Commit buffer
+                    ic.commitText(" ", 1); // Add space
+                    saveWordAndReset();
+                }
+                isSpaceLongPressed = false;
+                break;
+            
+            case CODE_ENTER:
+                commitTyped(ic);
+                ic.commitText("\n", 1);
+                saveWordAndReset();
+                break;
+                
+            case CODE_VOICE: commitTyped(ic); startVoiceInput(); break;
+            case CODE_SHIFT: commitTyped(ic); isCaps = !isCaps; updateKeyboardLayout(); announceText(isCaps ? "Shift On" : "Shift Off"); break;
+            case CODE_SYMBOL_ON: commitTyped(ic); isSymbols = true; updateKeyboardLayout(); announceText("Symbols"); break;
+            case CODE_SYMBOL_OFF: 
+                commitTyped(ic);
+                isSymbols = false; updateKeyboardLayout(); 
+                announceText(currentLanguageId == 1 ? "Myanmar" : (currentLanguageId == 2 ? "Shan" : "English")); 
+                break;
+            case CODE_LANG_CHANGE: changeLanguage(); break;
+                
+            default:
+                // --- CORE LOGIC: COMPOSING TEXT ---
+                if (isShanOrMyanmar()) {
+                    char c = (char) primaryCode;
+                    mComposing.append(c); // 1. Add to buffer
+                    
+                    // 2. INTERNAL SWAP LOGIC (Logic Inside Buffer)
+                    handleBufferReordering();
+                    
+                    // 3. UPDATE SYSTEM (Show underlined text)
+                    ic.setComposingText(mComposing, 1);
+                    
+                    // Note: We do NOT commitText here. We keep it in "Composing State".
+                    // This allows us to modify "ေ" later if needed without deleting.
+                    // System will visually show "မေ" correctly.
+                } 
+                else {
+                    commitTyped(ic); // English doesn't need composing reordering
+                    String charStr = (key != null && key.label != null && key.label.length() > 1) 
+                            ? key.label.toString() 
+                            : String.valueOf((char) primaryCode);
+                    ic.commitText(charStr, 1);
+                    currentWord.append(charStr);
+                }
+                
+                if (isCaps) { isCaps = false; updateKeyboardLayout(); }
+                triggerCandidateUpdate(200);
+        }
+    }
+
+    // --- LOGIC: INTERNAL BUFFER REORDERING ---
+    // This logic runs purely on the StringBuilder, so it's fast and safe.
+    private void handleBufferReordering() {
+        int len = mComposing.length();
+        if (len < 2) return;
+
+        char last = mComposing.charAt(len - 1); // The char just typed
+        char prev = mComposing.charAt(len - 2); // The char before it
+
+        // SCENARIO: User typed 'ေ' then 'မ' -> Buffer "ေမ"
+        // We want to swap to "မေ"
+        if ((prev == MM_THWAY_HTOE || prev == SHAN_E)) {
+            
+            // Check if 'ေ' is "floating" (not attached to a previous consonant)
+            // Look at char at len-3
+            boolean isThwayHtoeFloating = true;
+            if (len >= 3) {
+                char prevPrev = mComposing.charAt(len - 3);
+                if (isConsonant(prevPrev) || isMedial(prevPrev)) {
+                    isThwayHtoeFloating = false; // 'ေ' belongs to previous syllable
+                }
+            }
+
+            if (isThwayHtoeFloating) {
+                if (isConsonant(last)) {
+                    // Swap "ေ" + "မ" -> "မ" + "ေ"
+                    mComposing.setCharAt(len - 2, last);
+                    mComposing.setCharAt(len - 1, prev);
+                }
+                else if (isMedial(last)) {
+                    // Swap "ေ" + "ြ" -> "ြ" + "ေ" (Standard sorting)
+                    mComposing.setCharAt(len - 2, last);
+                    mComposing.setCharAt(len - 1, prev);
+                }
+            }
+        }
+        
+        // SCENARIO: Medial Sorting (User types 'ှ' then 'ြ' -> fix order)
+        else if (isMedial(prev) && isMedial(last)) {
+             int prevW = getMedialWeight(prev);
+             int lastW = getMedialWeight(last);
+             if (prevW > lastW && lastW > 0) {
+                 mComposing.setCharAt(len - 2, last);
+                 mComposing.setCharAt(len - 1, prev);
+             }
+        }
+
+        // SCENARIO: Shan Vowel Normalization
+        else if ((prev == MM_U || prev == MM_UU) && last == MM_I) {
+             mComposing.setCharAt(len - 2, last);
+             mComposing.setCharAt(len - 1, prev);
+        }
+    }
+    
+    // Helper to finalize text (turns underlined text into permanent text)
+    private void commitTyped(InputConnection ic) {
+        if (mComposing.length() > 0) {
+            ic.commitText(mComposing, 1);
+            currentWord.append(mComposing);
+            mComposing.setLength(0);
+        }
+    }
+    
+    // Handle Backspace inside the Composing Buffer
+    private void handleBackspace(InputConnection ic) {
+        if (mComposing.length() > 0) {
+            mComposing.deleteCharAt(mComposing.length() - 1);
+            if (mComposing.length() == 0) {
+                ic.commitText("", 0); // Clear composing region
+            } else {
+                ic.setComposingText(mComposing, 1); // Update visual
+            }
+        } else {
+            ic.deleteSurroundingText(1, 0);
+            if (currentWord.length() > 0) {
+                currentWord.deleteCharAt(currentWord.length() - 1);
+                triggerCandidateUpdate(50);
+            }
+        }
+    }
+
+    // --- HELPERS ---
+    private int getMedialWeight(int code) {
+        switch (code) {
+            case 4155: return 1; // ျ
+            case 4156: return 2; // ြ
+            case 4157: return 3; // ွ
+            case 4226: return 3; // ႂ
+            case 4158: return 4; // ှ
+            default: return 0;
+        }
+    }
+
+    private boolean isConsonant(int code) {
+        return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101) || (code >= 4213 && code <= 4225); 
+    }
+
+    private boolean isMedial(int code) {
+        return (code >= 4155 && code <= 4158) || (code == 4226); 
+    }
+    
+    // ... [KEEP YOUR EXISTING HELPERS BELOW] ...
+    // loadSettings, initKeyboards, setupSpeechRecognizer, initCandidateViews, 
+    // handleLiftToType (TalkBack), updateHelperState, changeLanguage, etc.
+    // ...
+    // Copy them exactly as they were to maintain TalkBack functionality.
+
     private void loadSettings() {
         isVibrateOn = prefs.getBoolean("vibrate_on", true);
         isSoundOn = prefs.getBoolean("sound_on", true);
     }
-
-    public int getResId(String name) {
-        return getResources().getIdentifier(name, "xml", getPackageName());
-    }
-
     private void initKeyboards() {
         try {
             boolean showNumRow = prefs.getBoolean("number_row", false);
             String suffix = showNumRow ? "_num" : "";
-            
             qwertyKeyboard = new Keyboard(this, getResId("qwerty" + suffix));
             myanmarKeyboard = new Keyboard(this, getResId("myanmar" + suffix));
             shanKeyboard = new Keyboard(this, getResId("shan" + suffix));
-            
             qwertyShiftKeyboard = new Keyboard(this, getResId("qwerty_shift"));
             myanmarShiftKeyboard = new Keyboard(this, getResId("myanmar_shift"));
             shanShiftKeyboard = new Keyboard(this, getResId("shan_shift"));
-            
             int symEnId = getResId("symbols");
             int symMmId = getResId("symbols_mm");
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(this, symEnId) : qwertyKeyboard; 
             symbolsMmKeyboard = (symMmId != 0) ? new Keyboard(this, symMmId) : symbolsEnKeyboard;
-            
-        } catch (Exception e) {
-            qwertyKeyboard = new Keyboard(this, getResId("qwerty"));
+        } catch (Exception e) { qwertyKeyboard = new Keyboard(this, getResId("qwerty")); }
+    }
+    public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
+
+    private void handleLiftToType(MotionEvent event) {
+        try {
+            int action = event.getAction();
+            float x = event.getX();
+            float y = event.getY();
+            if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > keyboardView.getWidth() - 20) {
+                lastHoverKeyIndex = -1; return;
+            }
+            if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
+                int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
+                if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
+                    lastHoverKeyIndex = keyIndex; playHaptic(0);
+                }
+            } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                if (lastHoverKeyIndex != -1) {
+                    List<Keyboard.Key> keys = currentKeyboard.getKeys();
+                    if (keys != null && lastHoverKeyIndex < keys.size()) {
+                        Keyboard.Key key = keys.get(lastHoverKeyIndex);
+                        if (key.codes[0] != -100) handleInput(key.codes[0], key);
+                    }
+                }
+                lastHoverKeyIndex = -1;
+            }
+        } catch (Exception e) { lastHoverKeyIndex = -1; }
+    }
+    
+    private void updateHelperState() { if (accessibilityHelper != null) accessibilityHelper.setKeyboard(currentKeyboard, isShanOrMyanmar(), isCaps); }
+    private int getNearestKeyIndexFast(int x, int y) {
+        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return -1;
+        List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        for (int i = 0; i < keys.size(); i++) {
+            if (keys.get(i).isInside(x, y)) {
+                if (keys.get(i).codes[0] == -100) return -1;
+                return i;
+            }
+        }
+        return -1;
+    }
+    
+    private void announceText(String text) {
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+            event.getText().add(text);
+            accessibilityManager.sendAccessibilityEvent(event);
         }
     }
-
+    private void startVoiceInput() {
+        if (speechRecognizer == null) return;
+        if (isListening) { speechRecognizer.stopListening(); isListening = false; } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(intent); return;
+            }
+            try { speechRecognizer.startListening(speechIntent); isListening = true; } catch (Exception e) {}
+        }
+    }
+    private boolean isShanOrMyanmar() { return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard || currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard; }
+    private void saveWordAndReset() {
+        if (suggestionDB != null && currentWord.length() > 0) {
+            final String wordToSave = currentWord.toString(); dbExecutor.execute(() -> suggestionDB.saveWord(wordToSave));
+        }
+        currentWord.setLength(0); triggerCandidateUpdate(0);
+    }
+    private void triggerCandidateUpdate(long delayMillis) {
+        handler.removeCallbacks(pendingCandidateUpdate);
+        if (delayMillis > 0) handler.postDelayed(pendingCandidateUpdate, delayMillis); else handler.post(pendingCandidateUpdate);
+    }
+    private void performCandidateSearch() {
+        if (suggestionDB == null) { handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); }); return; }
+        final String searchWord = currentWord.toString();
+        if (searchWord.isEmpty()) { handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); }); return; }
+        dbExecutor.execute(() -> {
+            final List<String> suggestions = suggestionDB.getSuggestions(searchWord);
+            handler.post(() -> {
+                for (int i = 0; i < candidateViews.size(); i++) {
+                    TextView tv = candidateViews.get(i);
+                    if (i < suggestions.size()) {
+                        final String suggestion = suggestions.get(i);
+                        tv.setText(suggestion); tv.setTag(suggestion); tv.setContentDescription("Suggestion " + (i + 1) + ", " + suggestion);
+                        tv.setOnClickListener(candidateListener); tv.setVisibility(View.VISIBLE);
+                    } else { tv.setVisibility(View.GONE); }
+                }
+            });
+        });
+    }
+    private void pickSuggestion(String suggestion) {
+        InputConnection ic = getCurrentInputConnection(); if (ic == null) return;
+        if (mComposing.length() > 0) ic.commitText("", 1); // Clear buffer
+        else ic.deleteSurroundingText(currentWord.length(), 0);
+        
+        ic.commitText(suggestion + " ", 1); mComposing.setLength(0);
+        if (suggestionDB != null) { final String savedWord = suggestion; dbExecutor.execute(() -> suggestionDB.saveWord(savedWord)); }
+        currentWord.setLength(0); triggerCandidateUpdate(0);
+    }
+    private void updateKeyboardLayout() {
+        lastHoverKeyIndex = -1;
+        try {
+            Keyboard nextKeyboard;
+            if (isSymbols) { nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard; } 
+            else {
+                if (currentLanguageId == 1) nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
+                else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
+                else nextKeyboard = isCaps ? qwertyShiftKeyboard : qwertyKeyboard;
+            }
+            currentKeyboard = nextKeyboard;
+            if (keyboardView != null) { keyboardView.setKeyboard(currentKeyboard); keyboardView.invalidateAllKeys(); updateHelperState(); }
+        } catch (Exception e) { currentKeyboard = qwertyKeyboard; if(keyboardView != null) keyboardView.setKeyboard(currentKeyboard); }
+    }
+    private void changeLanguage() {
+        lastHoverKeyIndex = -1; commitTyped(getCurrentInputConnection());
+        String langName;
+        if (currentLanguageId == 0) { currentLanguageId = 1; langName = "Myanmar"; } 
+        else if (currentLanguageId == 1) { currentLanguageId = 2; langName = "Shan"; } 
+        else { currentLanguageId = 0; langName = "English"; }
+        announceText(langName); isCaps = false; isSymbols = false; updateKeyboardLayout();
+    }
+    private void playHaptic(int primaryCode) {
+        if (!isVibrateOn) return;
+        try { Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE); if (v != null && v.hasVibrator()) { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE)); else v.vibrate(40); } } catch (Exception e) {}
+    }
+    private void playSound(int primaryCode) {
+        if (!isSoundOn) return;
+        try { int soundEffect = AudioManager.FX_KEYPRESS_STANDARD; if (primaryCode == CODE_DELETE) soundEffect = AudioManager.FX_KEYPRESS_DELETE; else if (primaryCode == CODE_SPACE) soundEffect = AudioManager.FX_KEYPRESS_SPACEBAR; else if (primaryCode == CODE_ENTER) soundEffect = AudioManager.FX_KEYPRESS_RETURN; audioManager.playSoundEffect(soundEffect, 1.0f); } catch (Exception e) {}
+    }
     private void setupSpeechRecognizer() {
         if (SpeechRecognizer.isRecognitionAvailable(this)) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
             speechIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "my-MM");
-            speechIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-            
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "my-MM"); speechIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
             speechRecognizer.setRecognitionListener(new RecognitionListener() {
                 @Override public void onReadyForSpeech(Bundle params) { playHaptic(-10); }
                 @Override public void onBeginningOfSpeech() {}
@@ -242,10 +561,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 @Override public void onError(int error) { isListening = false; playHaptic(-5); }
                 @Override public void onResults(Bundle results) {
                     ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                    if (matches != null && !matches.isEmpty()) {
-                        InputConnection ic = getCurrentInputConnection();
-                        if (ic != null) ic.commitText(matches.get(0) + " ", 1);
-                    }
+                    if (matches != null && !matches.isEmpty()) { InputConnection ic = getCurrentInputConnection(); if (ic != null) { commitTyped(ic); ic.commitText(matches.get(0) + " ", 1); } }
                     isListening = false;
                 }
                 @Override public void onPartialResults(Bundle partialResults) {}
@@ -253,475 +569,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             });
         }
     }
-
-    private void initCandidateViews(boolean isDarkTheme) {
-        candidateContainer.removeAllViews();
-        candidateViews.clear();
-        int textColor = isDarkTheme ? Color.WHITE : Color.BLACK;
-
-        for (int i = 0; i < 3; i++) {
-            TextView tv = new TextView(this);
-            tv.setTextSize(18);
-            tv.setTextColor(textColor);
-            tv.setPadding(30, 10, 30, 10);
-            tv.setGravity(Gravity.CENTER);
-            tv.setBackgroundResource(android.R.drawable.btn_default);
-            tv.setFocusable(true);
-            tv.setVisibility(View.GONE); 
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
-            params.setMargins(5, 0, 5, 0);
-            candidateContainer.addView(tv, params);
-            candidateViews.add(tv);
-        }
-    }
-
-    @Override
-    public void onStartInputView(EditorInfo info, boolean restarting) {
-        super.onStartInputView(info, restarting);
-        prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
-        loadSettings();
-        try { initKeyboards(); } catch (Exception e) {}
-        
-        currentWord.setLength(0);
-        isCaps = false;
-        isSymbols = false;
-        
-        updateKeyboardLayout(); 
-        triggerCandidateUpdate(0);
-    }
-
-    private void handleLiftToType(MotionEvent event) {
-        try {
-            int action = event.getAction();
-            float x = event.getX();
-            float y = event.getY();
-            
-            if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > keyboardView.getWidth() - 20) {
-                lastHoverKeyIndex = -1;
-                return;
-            }
-
-            if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
-                int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
-                if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
-                    lastHoverKeyIndex = keyIndex;
-                    playHaptic(0);
-                }
-            } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                if (lastHoverKeyIndex != -1) {
-                    List<Keyboard.Key> keys = currentKeyboard.getKeys();
-                    if (keys != null && lastHoverKeyIndex < keys.size()) {
-                        Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        if (key.codes[0] != -100) {
-                            handleInput(key.codes[0], key);
-                        }
-                    }
-                }
-                lastHoverKeyIndex = -1;
-            }
-        } catch (Exception e) { lastHoverKeyIndex = -1; }
-    }
-
-    private void updateHelperState() {
-        if (accessibilityHelper != null) {
-            accessibilityHelper.setKeyboard(currentKeyboard, isShanOrMyanmar(), isCaps);
-        }
-    }
-
-    @Override public void onKey(int primaryCode, int[] keyCodes) { handleInput(primaryCode, null); }
-    
-    @Override public void onText(CharSequence text) {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
-        ic.commitText(text, 1);
-        playSound(0);
-        if (isCaps) { isCaps = false; updateKeyboardLayout(); }
-    }
-
-    @Override public void onPress(int primaryCode) {
-        if (primaryCode == CODE_SPACE) {
-            isSpaceLongPressed = false;
-            handler.postDelayed(spaceLongPressRunnable, 600);
-        }
-        playHaptic(primaryCode);
-    }
-
-    @Override public void onRelease(int primaryCode) {
-        if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
-    }
-
-    // --- MAIN INPUT HANDLING (FIXED TO PREVENT DUPLICATION) ---
-    private void handleInput(int primaryCode, Keyboard.Key key) {
-        playSound(primaryCode);
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
-
-        if (key != null && key.text != null) {
-            ic.commitText(key.text, 1);
-            if (isCaps) { isCaps = false; updateKeyboardLayout(); announceText("Shift Off"); }
-            return;
-        }
-
-        try {
-            switch (primaryCode) {
-                case CODE_DELETE:
-                    // ZWSP Barrier Clean up
-                    CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
-                    if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
-                         ic.deleteSurroundingText(1, 0);
-                         break; // Don't delete the character before it yet
-                    }
-                    
-                    CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
-                    ic.deleteSurroundingText(1, 0);
-                    
-                    if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore.toString());
-                    else announceText("Delete");
-                    
-                    if (currentWord.length() > 0) {
-                        currentWord.deleteCharAt(currentWord.length() - 1);
-                        triggerCandidateUpdate(50);
-                    }
-                    break;
-                    
-                case CODE_VOICE: startVoiceInput(); break;
-                case CODE_SHIFT: isCaps = !isCaps; updateKeyboardLayout(); announceText(isCaps ? "Shift On" : "Shift Off"); break;
-                case CODE_SYMBOL_ON: isSymbols = true; updateKeyboardLayout(); announceText("Symbols"); break;
-                case CODE_SYMBOL_OFF: 
-                    isSymbols = false; updateKeyboardLayout(); 
-                    announceText(currentLanguageId == 1 ? "Myanmar" : (currentLanguageId == 2 ? "Shan" : "English")); 
-                    break;
-                case CODE_LANG_CHANGE: changeLanguage(); break;
-                case CODE_ENTER: 
-                    ic.commitText("\n", 1);
-                    saveWordAndReset();
-                    break;
-                case CODE_SPACE:
-                    if (!isSpaceLongPressed) {
-                        ic.commitText(" ", 1);
-                        saveWordAndReset();
-                    }
-                    isSpaceLongPressed = false;
-                    break;
-                    
-                default:
-                    // --- MYANMAR/SHAN LOGIC ---
-                    if (isShanOrMyanmar()) {
-                        
-                        // 1. ZWSP Barrier Cleaning (if typing new Consonant/Medial)
-                        if (isConsonant(primaryCode) || isMedial(primaryCode)) {
-                            CharSequence before_zwsp = ic.getTextBeforeCursor(1, 0);
-                            if (before_zwsp != null && before_zwsp.length() == 1 && before_zwsp.charAt(0) == ZWSP) {
-                                ic.deleteSurroundingText(1, 0);
-                            }
-                        }
-
-                        // 2. SMART REORDERING (Check if swap happened)
-                        boolean swapped = handleSmartReordering(ic, primaryCode);
-
-                        if (swapped) {
-                             // If swapped, DO NOT commit text again. handleSmartReordering already did it.
-                             // Just update internal buffer for suggestions.
-                             if (currentWord.length() > 0) {
-                                char last = currentWord.charAt(currentWord.length() - 1);
-                                currentWord.deleteCharAt(currentWord.length() - 1);
-                                currentWord.append(String.valueOf((char) primaryCode));
-                                currentWord.append(last);
-                             }
-                        }
-                        // 3. Vowel Normalization
-                        else if (handleShanVowelNormalization(ic, primaryCode)) {
-                             // If normalized, it swapped internally too.
-                             if (currentWord.length() > 0) {
-                                char prevCharInBuf = currentWord.charAt(currentWord.length() - 1);
-                                currentWord.deleteCharAt(currentWord.length() - 1);
-                                currentWord.append(String.valueOf((char) primaryCode));
-                                currentWord.append(prevCharInBuf);
-                            }
-                        }
-                        // 4. Normal Typing (IMPORTANT: Only if NOT swapped)
-                        else {
-                            String charStr = String.valueOf((char) primaryCode);
-                            ic.commitText(charStr, 1);
-                            currentWord.append(charStr);
-                        }
-                    } 
-                    else {
-                        // English/Other
-                        String charStr = (key != null && key.label != null && key.label.length() > 1) 
-                            ? key.label.toString() 
-                            : String.valueOf((char) primaryCode);
-                        ic.commitText(charStr, 1);
-                        currentWord.append(charStr);
-                    }
-                    
-                    if (isCaps) { isCaps = false; updateKeyboardLayout(); }
-                    triggerCandidateUpdate(200);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            isSymbols = false;
-            updateKeyboardLayout();
-        }
-    }
-
-    // --- CRITICAL LOGIC FIX: Check Before Swapping ---
-    private boolean handleSmartReordering(InputConnection ic, int primaryCode) {
-        // Need 2 chars back to decide if 'ေ' is free or bound
-        CharSequence history = ic.getTextBeforeCursor(2, 0);
-        if (history == null || history.length() == 0) return false;
-        
-        char prevChar = history.charAt(history.length() - 1);
-        
-        // --- SCENARIO 1: Previous is 'ေ' ---
-        if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
-             
-             // Check context: Is 'ေ' already attached to something?
-             char prevPrevChar = (history.length() >= 2) ? history.charAt(0) : 0;
-             
-             // If Pre-Prev is Consonant or Medial, then 'ေ' is BOUND (e.g. မ + ေ).
-             // We should NOT attach the NEW Consonant to this 'ေ'.
-             boolean isThwayHtoeBound = isConsonant(prevPrevChar) || isMedial(prevPrevChar);
-
-             // Sub-Case A: Typing a Consonant (e.g. 'Pa')
-             if (isConsonant(primaryCode)) {
-                 if (isThwayHtoeBound) {
-                     // e.g. "မေ" + "ပ". 'ေ' is bound to 'မ'. 
-                     // DO NOT SWAP. Result: "မေပ".
-                     return false; 
-                 } else {
-                     // e.g. "Space" + "ေ" + "ပ". 'ေ' is floating.
-                     // SWAP. Result: "ပေ".
-                     performSwap(ic, primaryCode, prevChar);
-                     return true;
-                 }
-             }
-             
-             // Sub-Case B: Typing a Medial (e.g. 'Ya', 'Ra')
-             // Medials ALWAYS combine with 'ေ', even if bound.
-             // e.g. "ပေ" + "ြ" -> "ပြေ"
-             else if (isMedial(primaryCode)) {
-                 performSwap(ic, primaryCode, prevChar);
-                 return true;
-             }
-        }
-
-        // --- SCENARIO 2: Medial Sorting (Standard) ---
-        int currentWeight = getMedialWeight(primaryCode);
-        int prevWeight = getMedialWeight((int)prevChar);
-
-        if (currentWeight > 0 && prevWeight > 0 && prevWeight > currentWeight) {
-            performSwap(ic, primaryCode, prevChar);
-            return true;
-        }
-
-        return false;
-    }
-
-    private int getMedialWeight(int code) {
-        switch (code) {
-            case 4155: return 1; // ျ
-            case 4156: return 2; // ြ
-            case 4157:           // ွ
-            case 4226: return 3; // ႂ
-            case 4158: return 4; // ှ
-            default: return 0;
-        }
-    }
-
-    private boolean handleShanVowelNormalization(InputConnection ic, int primaryCode) {
-        CharSequence before = ic.getTextBeforeCursor(1, 0);
-        if (before == null || before.length() == 0) return false;
-        char prevChar = before.charAt(0);
-
-        if (primaryCode == MM_I && (prevChar == MM_U || prevChar == MM_UU)) {
-            performSwap(ic, primaryCode, prevChar);
-            return true;
-        }
-        return false;
-    }
-
-    private void performSwap(InputConnection ic, int firstCode, int secondCode) {
-        ic.beginBatchEdit();
-        ic.deleteSurroundingText(1, 0); 
-        ic.commitText(String.valueOf((char) firstCode), 1); 
-        ic.commitText(String.valueOf((char) secondCode), 1);
-        ic.endBatchEdit();
-    }
-
-    // --- UTILS ---
-    private void announceText(String text) {
-        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
-            event.getText().add(text);
-            accessibilityManager.sendAccessibilityEvent(event);
-        }
-    }
-
-    private void startVoiceInput() {
-        if (speechRecognizer == null) return;
-        if (isListening) {
-            speechRecognizer.stopListening();
-            isListening = false;
-        } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-                return;
-            }
-            try { speechRecognizer.startListening(speechIntent); isListening = true; } catch (Exception e) {}
-        }
-    }
-
-    private boolean isConsonant(int code) {
-        return (code >= 4096 && code <= 4129) || (code == 4100) || (code == 4101) ||
-               (code >= 4213 && code <= 4225); 
-    }
-
-    private boolean isMedial(int code) {
-        return (code >= 4155 && code <= 4158) || (code == 4226); 
-    }
-
-    private boolean isShanOrMyanmar() {
-        return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
-               currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
-    }
-
-    private void saveWordAndReset() {
-        if (suggestionDB != null && currentWord.length() > 0) {
-            final String wordToSave = currentWord.toString();
-            dbExecutor.execute(() -> suggestionDB.saveWord(wordToSave));
-        }
-        currentWord.setLength(0);
-        triggerCandidateUpdate(0);
-    }
-
-    private void triggerCandidateUpdate(long delayMillis) {
-        handler.removeCallbacks(pendingCandidateUpdate);
-        if (delayMillis > 0) handler.postDelayed(pendingCandidateUpdate, delayMillis);
-        else handler.post(pendingCandidateUpdate);
-    }
-
-    private void performCandidateSearch() {
-        if (suggestionDB == null) {
-            handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); });
-            return;
-        }
-        final String searchWord = currentWord.toString();
-        if (searchWord.isEmpty()) {
-            handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); });
-            return;
-        }
-
-        dbExecutor.execute(() -> {
-            final List<String> suggestions = suggestionDB.getSuggestions(searchWord);
-            handler.post(() -> {
-                for (int i = 0; i < candidateViews.size(); i++) {
-                    TextView tv = candidateViews.get(i);
-                    if (i < suggestions.size()) {
-                        final String suggestion = suggestions.get(i);
-                        tv.setText(suggestion);
-                        tv.setTag(suggestion);
-                        tv.setContentDescription("Suggestion " + (i + 1) + ", " + suggestion);
-                        tv.setOnClickListener(candidateListener);
-                        tv.setVisibility(View.VISIBLE);
-                    } else {
-                        tv.setVisibility(View.GONE);
-                    }
-                }
-            });
-        });
-    }
-
-    private void pickSuggestion(String suggestion) {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
-        ic.deleteSurroundingText(currentWord.length(), 0);
-        ic.commitText(suggestion + " ", 1);
-        
-        if (suggestionDB != null) {
-            final String savedWord = suggestion;
-            dbExecutor.execute(() -> suggestionDB.saveWord(savedWord));
-        }
-        currentWord.setLength(0);
-        triggerCandidateUpdate(0);
-    }
-
-    private void updateKeyboardLayout() {
-        lastHoverKeyIndex = -1;
-        try {
-            Keyboard nextKeyboard;
-            if (isSymbols) {
-                nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard;
-            } else {
-                if (currentLanguageId == 1) nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
-                else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
-                else nextKeyboard = isCaps ? qwertyShiftKeyboard : qwertyKeyboard;
-            }
-            currentKeyboard = nextKeyboard;
-            if (keyboardView != null) {
-                keyboardView.setKeyboard(currentKeyboard);
-                keyboardView.invalidateAllKeys();
-                updateHelperState();
-            }
-        } catch (Exception e) {
-            currentKeyboard = qwertyKeyboard;
-            if(keyboardView != null) keyboardView.setKeyboard(currentKeyboard);
-        }
-    }
-
-    private void changeLanguage() {
-        lastHoverKeyIndex = -1;
-        String langName;
-        if (currentLanguageId == 0) { currentLanguageId = 1; langName = "Myanmar"; } 
-        else if (currentLanguageId == 1) { currentLanguageId = 2; langName = "Shan"; } 
-        else { currentLanguageId = 0; langName = "English"; }
-        
-        announceText(langName);
-        isCaps = false; isSymbols = false; 
-        updateKeyboardLayout();
-    }
-
-    private int getNearestKeyIndexFast(int x, int y) {
-        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return -1;
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys.isEmpty()) return -1;
-        for (int i = 0; i < keys.size(); i++) {
-            if (keys.get(i).isInside(x, y)) {
-                if (keys.get(i).codes[0] == -100) return -1;
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private void playHaptic(int primaryCode) {
-        if (!isVibrateOn) return;
-        try {
-            Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-            if (v != null && v.hasVibrator()) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE));
-                else v.vibrate(40);
-            }
-        } catch (Exception e) {}
-    }
-    
-    private void playSound(int primaryCode) {
-        if (!isSoundOn) return;
-        try {
-            int soundEffect = AudioManager.FX_KEYPRESS_STANDARD;
-            if (primaryCode == CODE_DELETE) soundEffect = AudioManager.FX_KEYPRESS_DELETE;
-            else if (primaryCode == CODE_SPACE) soundEffect = AudioManager.FX_KEYPRESS_SPACEBAR;
-            else if (primaryCode == CODE_ENTER) soundEffect = AudioManager.FX_KEYPRESS_RETURN;
-            audioManager.playSoundEffect(soundEffect, 1.0f);
-        } catch (Exception e) {}
-    }
-    
-    @Override public void swipeLeft() {}
-    @Override public void swipeRight() {}
-    @Override public void swipeDown() {}
-    @Override public void swipeUp() {}
+    @Override public void swipeLeft() {} @Override public void swipeRight() {} @Override public void swipeDown() {} @Override public void swipeUp() {}
 }
 
