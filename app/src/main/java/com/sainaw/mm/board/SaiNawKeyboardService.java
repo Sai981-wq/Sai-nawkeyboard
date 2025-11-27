@@ -56,7 +56,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     // Myanmar/Shan Unicode Constants
     private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
     private static final int SHAN_E = 4228;        // 'ႄ' (U+1084)
-    private static final char ZWSP = '\u200B';     // Placeholder Space
+    private static final char ZWSP = '\u200B';     // Placeholder
 
     // Components
     private KeyboardView keyboardView;
@@ -361,7 +361,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
-    // --- MAIN INPUT HANDLING (WITH ALL FIXES) ---
+    // --- MAIN INPUT HANDLING ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -376,6 +376,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case CODE_DELETE:
+                    // Cleanup ZWSP on delete
                     CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
                     if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
                          ic.deleteSurroundingText(1, 0); 
@@ -424,6 +425,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             : String.valueOf((char) primaryCode);
 
                     if (isShanOrMyanmar()) {
+                        
+                        // 1. User Types 'ေ' -> Insert [Space]+[ေ]
                         if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
                             ic.commitText(String.valueOf(ZWSP) + charStr, 1);
                             currentWord.append(charStr); 
@@ -432,9 +435,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
                             boolean handled = false;
 
+                            // 2. Placeholder Logic: [Space]+[ေ] -> Replace [Space] with Input
                             if (lastTwo != null && lastTwo.length() == 2) {
-                                char charBefore = lastTwo.charAt(1);
-                                char charTwoBefore = lastTwo.charAt(0);
+                                char charBefore = lastTwo.charAt(1);      // 'ေ'
+                                char charTwoBefore = lastTwo.charAt(0);   // ZWSP
+                                
                                 if ((charBefore == MM_THWAY_HTOE || charBefore == SHAN_E) && charTwoBefore == ZWSP) {
                                     ic.beginBatchEdit();
                                     ic.deleteSurroundingText(2, 0); 
@@ -445,9 +450,27 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                 }
                             }
                             
+                            // 3. MEDIAL FIX (FOR ALL MEDIALS: ျ ြ ှ ွ)
+                            // Even if we already have [Pe] (ပေ), if user types ANY Medial, we must SWAP.
+                            if (!handled && isMedial(primaryCode)) {
+                                 CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
+                                 if (lastOne != null && lastOne.length() > 0) {
+                                     char prevChar = lastOne.charAt(0);
+                                     if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
+                                         ic.beginBatchEdit();
+                                         ic.deleteSurroundingText(1, 0); // Delete 'ေ'
+                                         ic.commitText(charStr, 1);      // Type Medial (ျ/ြ/ွ/ှ)
+                                         ic.commitText(String.valueOf(prevChar), 1); // Put 'ေ' back
+                                         ic.endBatchEdit();
+                                         handled = true;
+                                     }
+                                 }
+                            }
+                            
                             if (!handled) {
                                 ic.commitText(charStr, 1);
                             }
+                            
                             currentWord.append(charStr);
                         }
                     } 
@@ -464,7 +487,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
     
-    // --- MISSING METHODS ADDED HERE ---
+    // Helper to identify ALL Medials (Ya-pin, Ya-yit, Wa-sway, Ha-htoe, Shan Wa)
+    private boolean isMedial(int code) {
+        // 4155(ျ), 4156(ြ), 4157(ွ), 4158(ှ)
+        return (code >= 4155 && code <= 4158) || (code == 4226);
+    }
 
     private void announceText(String text) {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
@@ -489,11 +516,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
             try { speechRecognizer.startListening(speechIntent); isListening = true; } catch (Exception e) {}
         }
-    }
-    
-    // Helper to identify Medials (not used in simplified logic but good to keep if needed later)
-    private boolean isMedial(int code) {
-        return (code >= 4155 && code <= 4158) || (code == 4226);
     }
 
     private boolean isShanOrMyanmar() {
