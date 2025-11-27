@@ -57,6 +57,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
     private static final int SHAN_E = 4228;        // 'ႄ' (U+1084)
     private static final char ZWSP = '\u200B';     // Placeholder
+    
+    // Vowel Constants for Reordering
+    private static final int MM_I = 4141;          // 'ိ' (U+102D)
+    private static final int MM_U = 4143;          // 'ု' (U+102F)
+    private static final int MM_UU = 4144;         // 'ူ' (U+1030)
+    private static final int MM_ANUSVARA = 4150;   // 'ံ' (U+1036)
 
     // Components
     private KeyboardView keyboardView;
@@ -92,7 +98,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
-    private boolean isLiftToType = true; // New Setting Flag
+    private boolean isLiftToType = true; // Typing Mode Flag
 
     // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -187,12 +193,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateHelperState();
 
         keyboardView.setOnHoverListener((v, event) -> {
-            // Always dispatch hover to Accessibility Helper so TalkBack reads the keys
             boolean handled = accessibilityHelper.dispatchHoverEvent(event);
-            
-            // Only handle Lift-to-Type logic if enabled in settings
             handleLiftToType(event);
-            
             return handled;
         });
 
@@ -203,7 +205,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void loadSettings() {
         isVibrateOn = prefs.getBoolean("vibrate_on", true);
         isSoundOn = prefs.getBoolean("sound_on", true);
-        // Load typing mode preference (Default: true for Lift-to-Type)
         isLiftToType = prefs.getBoolean("lift_to_type", true);
     }
 
@@ -211,19 +212,24 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return getResources().getIdentifier(name, "xml", getPackageName());
     }
 
+    // --- INIT KEYBOARDS ---
     private void initKeyboards() {
         try {
             boolean showNumRow = prefs.getBoolean("number_row", false);
-            String suffix = showNumRow ? "_num" : "";
             
-            qwertyKeyboard = new Keyboard(this, getResId("qwerty" + suffix));
-            myanmarKeyboard = new Keyboard(this, getResId("myanmar" + suffix));
-            shanKeyboard = new Keyboard(this, getResId("shan" + suffix));
-            
+            // 1. English (QWERTY): Respect Setting
+            String engSuffix = showNumRow ? "_num" : "";
+            qwertyKeyboard = new Keyboard(this, getResId("qwerty" + engSuffix));
             qwertyShiftKeyboard = new Keyboard(this, getResId("qwerty_shift"));
+
+            // 2. Myanmar & Shan: Always Default (No Num Row)
+            myanmarKeyboard = new Keyboard(this, getResId("myanmar"));
             myanmarShiftKeyboard = new Keyboard(this, getResId("myanmar_shift"));
+            
+            shanKeyboard = new Keyboard(this, getResId("shan"));
             shanShiftKeyboard = new Keyboard(this, getResId("shan_shift"));
             
+            // Symbols Keyboards
             int symEnId = getResId("symbols");
             int symMmId = getResId("symbols_mm");
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(this, symEnId) : qwertyKeyboard; 
@@ -305,8 +311,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     // --- TALKBACK SAFE: Lift-to-Type Logic ---
     private void handleLiftToType(MotionEvent event) {
-        // If "Lift to Type" is OFF (Double Tap mode), we exit here.
-        // AccessibilityHelper handles the Double Tap clicks via handleInput()
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
             return;
@@ -318,7 +322,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float y = event.getY();
             int width = keyboardView.getWidth();
             
-            // Safety Margin: Cancel if < 20px from ANY edge
             if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > width - 20) {
                 lastHoverKeyIndex = -1;
                 return;
@@ -375,7 +378,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
-    // --- MAIN INPUT HANDLING (PLACEHOLDER + MEDIAL FIX) ---
+    // --- MAIN INPUT HANDLING ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -390,7 +393,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case CODE_DELETE:
-                    // Cleanup ZWSP on delete
                     CharSequence textBeforeDelete = ic.getTextBeforeCursor(1, 0);
                     if (textBeforeDelete != null && textBeforeDelete.length() == 1 && textBeforeDelete.charAt(0) == ZWSP) {
                          ic.deleteSurroundingText(1, 0); 
@@ -451,14 +453,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                             // 2. Placeholder Logic: [Space]+[ေ] -> Replace [Space] with Input
                             if (lastTwo != null && lastTwo.length() == 2) {
-                                char charBefore = lastTwo.charAt(1);      // 'ေ'
-                                char charTwoBefore = lastTwo.charAt(0);   // ZWSP
-                                
+                                char charBefore = lastTwo.charAt(1);
+                                char charTwoBefore = lastTwo.charAt(0);
                                 if ((charBefore == MM_THWAY_HTOE || charBefore == SHAN_E) && charTwoBefore == ZWSP) {
                                     ic.beginBatchEdit();
-                                    ic.deleteSurroundingText(2, 0); // Delete [Space][ေ]
-                                    ic.commitText(charStr, 1);      // Type Input (Consonant)
-                                    ic.commitText(String.valueOf(charBefore), 1); // Put 'ေ' back
+                                    ic.deleteSurroundingText(2, 0); 
+                                    ic.commitText(charStr, 1);      
+                                    ic.commitText(String.valueOf(charBefore), 1); 
                                     ic.endBatchEdit();
                                     handled = true;
                                 }
@@ -479,6 +480,39 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                      }
                                  }
                             }
+                            
+                            // --- NEW: 4. Auto Vowel Sorting (Vowel Logic) ---
+                            // Case A: Input 'ိ' (I), Prev 'ု' (U) or 'ူ' (UU) -> Swap to I+U / I+UU (ို / ိူ)
+                            if (!handled && primaryCode == MM_I) {
+                                CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
+                                if (lastOne != null && lastOne.length() > 0) {
+                                    char prevChar = lastOne.charAt(0);
+                                    if (prevChar == (char)MM_U || prevChar == (char)MM_UU) {
+                                        ic.beginBatchEdit();
+                                        ic.deleteSurroundingText(1, 0);
+                                        ic.commitText(charStr, 1); // Type I
+                                        ic.commitText(String.valueOf(prevChar), 1); // Put U/UU back
+                                        ic.endBatchEdit();
+                                        handled = true;
+                                    }
+                                }
+                            }
+                            // Case B: Input 'ု' (U), Prev 'ံ' (Anusvara) -> Swap to U+Anusvara (ုံ)
+                            else if (!handled && primaryCode == MM_U) {
+                                CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
+                                if (lastOne != null && lastOne.length() > 0) {
+                                    char prevChar = lastOne.charAt(0);
+                                    if (prevChar == (char)MM_ANUSVARA) {
+                                        ic.beginBatchEdit();
+                                        ic.deleteSurroundingText(1, 0);
+                                        ic.commitText(charStr, 1); // Type U
+                                        ic.commitText(String.valueOf(prevChar), 1); // Put Anusvara back
+                                        ic.endBatchEdit();
+                                        handled = true;
+                                    }
+                                }
+                            }
+                            // --- END VOWEL LOGIC ---
                             
                             if (!handled) {
                                 ic.commitText(charStr, 1);
@@ -526,9 +560,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
     
-    // Helper to identify Medials (Ya-pin, Ya-yit, Wa-sway, Ha-htoe, Shan Wa)
+    // Helper to identify Medials
     private boolean isMedial(int code) {
-        // 4155(ျ), 4156(ြ), 4157(ွ), 4158(ှ)
         return (code >= 4155 && code <= 4158) || (code == 4226);
     }
 
