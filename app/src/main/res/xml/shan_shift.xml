@@ -14,10 +14,12 @@
         <Key android:codes="4172" android:keyLabel="၌" android:keyWidth="11.11%p"/>
         <Key android:codes="4133" android:keyLabel="ဥ" android:keyWidth="11.11%p"/>
         <Key android:codes="4134" android:keyLabel="ဤ" android:keyWidth="11.11%p"/>
-        <Key android:codes="4229" android:keyLabel="ႝ" android:keyWidth="11.11%p" android:keyEdgeFlags="right"/> </Row>
+        <Key android:codes="4229" android:keyLabel="ႝ" android:keyWidth="11.11%p" android:keyEdgeFlags="right"/>
+    </Row>
 
     <Row>
-        <Key android:codes="4228" android:keyLabel="ႄ" android:keyWidth="9.09%p" android:keyEdgeFlags="left"/> <Key android:codes="4158" android:keyLabel="ှ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4228" android:keyLabel="ႄ" android:keyWidth="9.09%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="4158" android:keyLabel="ှ" android:keyWidth="9.09%p"/>
         <Key android:codes="4142" android:keyLabel="ီ" android:keyWidth="9.09%p"/>
         <Key android:codes="4153" android:keyLabel="္" android:keyWidth="9.09%p"/>
         <Key android:codes="4157" android:keyLabel="ွ" android:keyWidth="9.09%p"/>
@@ -26,11 +28,11 @@
         <Key android:codes="4114" android:keyLabel="ဒ" android:keyWidth="9.09%p"/>
         <Key android:codes="4115" android:keyLabel="ဓ" android:keyWidth="9.09%p"/>
         <Key android:codes="4099" android:keyLabel="ဃ" android:keyWidth="9.09%p"/>
-        <Key android:codes="4232" android:keyLabel="ႈ" android:keyWidth="9.09%p" android:keyEdgeFlags="right"/> </Row>
+        <Key android:codes="4225" android:keyLabel="ႈ" android:keyWidth="9.09%p" android:keyEdgeFlags="right"/>
+    </Row>
 
     <Row>
         <Key android:codes="-1" android:keyLabel="SHIFT" android:keyWidth="12%p" android:isModifier="true" android:isSticky="true" android:keyEdgeFlags="left"/>
-        
         <Key android:codes="4103" android:keyLabel="ဇ" android:keyWidth="9.5%p"/>
         <Key android:codes="4108" android:keyLabel="ဌ" android:keyWidth="9.5%p"/>
         <Key android:codes="4107" android:keyLabel="ဋ" android:keyWidth="9.5%p"/>
@@ -38,7 +40,9 @@
         <Key android:codes="4105" android:keyLabel="ဉ" android:keyWidth="9.5%p"/>
         <Key android:codes="4109" android:keyLabel="ဍ" android:keyWidth="9.5%p"/>
         <Key android:codes="4110" android:keyLabel="ဎ" android:keyWidth="9.5%p"/>
-        <Key android:codes="4234" android:keyLabel="ႊ" android:keyWidth="9.5%p"/> <Key android:codes="-5" android:keyLabel="DEL" android:keyWidth="12%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
+        <Key android:codes="4198" android:keyLabel="ႊ" android:keyWidth="9.5%p"/>
+
+        <Key android:codes="-5" android:keyLabel="DEL" android:keyWidth="12%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row android:rowEdgeFlags="bottom">
