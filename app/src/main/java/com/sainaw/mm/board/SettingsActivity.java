@@ -45,6 +45,9 @@ public class SettingsActivity extends AppCompatActivity {
             }
         });
 
+        // New Setting: Lift to Type (Default: true)
+        setupSwitch(R.id.switch_typing_mode, "lift_to_type", true);
+
         setupSwitch(R.id.switch_vibrate, "vibrate_on", true);
         setupSwitch(R.id.switch_sound, "sound_on", false);
         setupSwitch(R.id.switch_theme, "dark_theme", false);
