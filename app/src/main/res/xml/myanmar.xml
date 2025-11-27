@@ -3,8 +3,7 @@
     android:keyWidth="9%p"
     android:horizontalGap="0px"
     android:verticalGap="0px"
-    android:keyHeight="50dp">
-
+    android:keyHeight="60dp"> 
     <Row>
         <Key android:codes="4102" android:keyLabel="ဆ" android:keyWidth="8.33%p" android:keyEdgeFlags="left"/>
         <Key android:codes="4112" android:keyLabel="တ" android:keyWidth="8.33%p"/>
@@ -17,34 +16,37 @@
         <Key android:codes="4126" android:keyLabel="သ" android:keyWidth="8.33%p"/>
         <Key android:codes="4101" android:keyLabel="စ" android:keyWidth="8.33%p"/>
         <Key android:codes="4127" android:keyLabel="ဟ" android:keyWidth="8.33%p"/>
-        <Key android:codes="-10" android:keyLabel="🎤" android:keyWidth="8.33%p" android:keyEdgeFlags="right"/> </Row>
-
-    <Row>
-        <Key android:codes="4145" android:keyLabel="ေ" android:keyEdgeFlags="left"/>
-        <Key android:codes="4155" android:keyLabel="ျ"/>
-        <Key android:codes="4141" android:keyLabel="ိ"/>
-        <Key android:codes="4154" android:keyLabel="်"/>
-        <Key android:codes="4139" android:keyLabel="ါ"/>
-        <Key android:codes="4151" android:keyLabel="့"/>
-        <Key android:codes="4156" android:keyLabel="ြ"/>
-        <Key android:codes="4143" android:keyLabel="ု"/>
-        <Key android:codes="4144" android:keyLabel="ူ"/>
-        <Key android:codes="4152" android:keyLabel="း"/>
-        <Key android:codes="4098" android:keyLabel="ဂ" android:keyEdgeFlags="right"/>
+        <Key android:codes="-10" android:keyLabel="🎤" android:keyWidth="8.33%p" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row>
-        <Key android:codes="-1" android:keyLabel="SHIFT" android:keyWidth="10%p" android:isModifier="true" android:isSticky="true" android:keyEdgeFlags="left"/>
-        <Key android:codes="4118" android:keyLabel="ဖ" android:keyWidth="8%p"/>
-        <Key android:codes="4113" android:keyLabel="ထ" android:keyWidth="8%p"/>
-        <Key android:codes="4097" android:keyLabel="ခ" android:keyWidth="8%p"/>
-        <Key android:codes="4124" android:keyLabel="လ" android:keyWidth="8%p"/>
-        <Key android:codes="4120" android:keyLabel="ဘ" android:keyWidth="8%p"/>
-        <Key android:codes="4106" android:keyLabel="ည" android:keyWidth="8%p"/>
-        <Key android:codes="4140" android:keyLabel="ာ" android:keyWidth="8%p"/>
-        <Key android:codes="4122" android:keyLabel="ယ" android:keyWidth="8%p"/>
-        <Key android:codes="4123" android:keyLabel="ရ" android:keyWidth="8%p"/>
-        <Key android:codes="-5" android:keyLabel="DEL" android:keyWidth="10%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
+        <Key android:codes="4145" android:keyLabel="ေ" android:keyWidth="9.09%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="4155" android:keyLabel="ျ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4141" android:keyLabel="ိ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4154" android:keyLabel="်" android:keyWidth="9.09%p"/>
+        <Key android:codes="4139" android:keyLabel="ါ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4151" android:keyLabel="့" android:keyWidth="9.09%p"/>
+        <Key android:codes="4156" android:keyLabel="ြ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4143" android:keyLabel="ု" android:keyWidth="9.09%p"/>
+        <Key android:codes="4144" android:keyLabel="ူ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4152" android:keyLabel="း" android:keyWidth="9.09%p"/>
+        <Key android:codes="4098" android:keyLabel="ဂ" android:keyWidth="9.09%p" android:keyEdgeFlags="right"/>
+    </Row>
+
+    <Row>
+        <Key android:codes="-1" android:keyLabel="SHIFT" android:keyWidth="12%p" android:isModifier="true" android:isSticky="true" android:keyEdgeFlags="left"/>
+        
+        <Key android:codes="4118" android:keyLabel="ဖ" android:keyWidth="8.44%p"/>
+        <Key android:codes="4113" android:keyLabel="ထ" android:keyWidth="8.44%p"/>
+        <Key android:codes="4097" android:keyLabel="ခ" android:keyWidth="8.44%p"/>
+        <Key android:codes="4124" android:keyLabel="လ" android:keyWidth="8.44%p"/>
+        <Key android:codes="4120" android:keyLabel="ဘ" android:keyWidth="8.44%p"/>
+        <Key android:codes="4106" android:keyLabel="ည" android:keyWidth="8.44%p"/>
+        <Key android:codes="4140" android:keyLabel="ာ" android:keyWidth="8.44%p"/>
+        <Key android:codes="4123" android:keyLabel="ရ" android:keyWidth="8.44%p"/>
+        <Key android:codes="4122" android:keyLabel="ယ" android:keyWidth="8.44%p"/>
+        
+        <Key android:codes="-5" android:keyLabel="DEL" android:keyWidth="12%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row android:rowEdgeFlags="bottom">
