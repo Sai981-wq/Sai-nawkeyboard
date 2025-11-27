@@ -577,8 +577,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void changeLanguage() {
         lastHoverKeyIndex = -1;
         String langName;
-        if (currentLanguageId == 0) { currentLanguageId = 1; langName = "Myanmar"; }
-        else if (currentLanguageId == 1) { currentLanguageId = 2; langName = "Shan"; }
+        if (currentLanguageId == 0) { currentLanguageId = 1; langName = "Myanmar"; } 
+        else if (currentLanguageId == 1) { currentLanguageId = 2; langName = "Shan"; } 
         else { currentLanguageId = 0; langName = "English"; }
 
         announceText(langName);
