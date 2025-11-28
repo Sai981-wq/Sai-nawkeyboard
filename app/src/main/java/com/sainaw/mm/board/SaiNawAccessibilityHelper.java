@@ -1,10 +1,9 @@
 package com.sainaw.mm.board;
 
-import android.content.Context;
 import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Bundle;
-import android.view.HapticFeedbackConstants;
+import android.view.HapticFeedbackConstants; // New
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import androidx.annotation.NonNull;
@@ -20,8 +19,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private boolean isCaps = false;
     private OnAccessibilityKeyListener listener;
     
-    // New constants for improved functionality
-    private static final int MAX_SNAP_DISTANCE_SQ = 10000; // 100px threshold squared
+    // Performance: Reuse Rect to prevent Garbage Collection lag
+    private final Rect mTempRect = new Rect();
+    
+    // NEW: Snap Threshold (100px squared) - Don't snap if finger is too far
+    private static final int MAX_SNAP_DISTANCE_SQ = 10000; 
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
@@ -34,19 +36,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     }
 
     public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
-        // Improved error handling without breaking existing flow
-        if (keyboard == null || keyboard.getKeys() == null || keyboard.getKeys().isEmpty()) {
-            this.currentKeyboard = null;
-            invalidateRoot();
-            return;
-        }
-        
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
-        // Refresh TalkBack tree
         invalidateRoot();
-        sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+        view.post(() -> sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED));
     }
 
     @Override
@@ -55,20 +49,19 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null || keys.isEmpty()) return HOST_ID;
 
-        // 1. Strict Check: Is the touch exactly inside a key?
+        // 1. Strict Check
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.isInside((int) x, (int) y)) {
-                if (key.codes[0] == -100) return HOST_ID; // Ignore dummy keys
+                if (key.codes[0] == -100) return HOST_ID; 
                 return i;
             }
         }
 
-        // 2. Nearest Key Check with improved threshold
+        // 2. Nearest Key (Snap) with Distance Limit
         return getNearestKeyIndex((int) x, (int) y);
     }
 
-    // --- IMPROVED NEAREST KEY ALGORITHM ---
     private int getNearestKeyIndex(int x, int y) {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
@@ -78,29 +71,23 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
-            
-            // Skip dummy keys (-100) from snapping
             if (key.codes[0] == -100) continue;
 
-            // Calculate center of the key
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
-
-            // Euclidean distance calculation
             int dx = x - keyCenterX;
             int dy = y - keyCenterY;
             int distSq = (dx * dx) + (dy * dy);
 
-            // Update if this key is closer than the previous best
             if (distSq < minDistSq) {
                 minDistSq = distSq;
                 closestIndex = i;
             }
         }
         
-        // NEW: Only snap if within reasonable distance threshold
+        // NEW: Check threshold
         if (minDistSq > MAX_SNAP_DISTANCE_SQ) {
-            return HOST_ID; // Don't snap to very far keys
+            return HOST_ID; 
         }
         
         return closestIndex;
@@ -113,7 +100,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (keys == null) return;
 
         for (int i = 0; i < keys.size(); i++) {
-            // Only expose non-dummy keys
             if (keys.get(i).codes[0] != -100) {
                 virtualViewIds.add(i);
             }
@@ -122,9 +108,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     @Override
     protected void onPopulateNodeForVirtualView(int virtualViewId, @NonNull AccessibilityNodeInfoCompat node) {
+        mTempRect.set(0, 0, 1, 1);
+
         if (currentKeyboard == null) {
             node.setContentDescription("");
-            node.setBoundsInParent(new Rect(0, 0, 1, 1));
+            node.setBoundsInParent(mTempRect);
             return;
         }
         
@@ -132,7 +120,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         
         if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) {
             node.setContentDescription("");
-            node.setBoundsInParent(new Rect(0, 0, 1, 1));
+            node.setBoundsInParent(mTempRect);
             return;
         }
         
@@ -143,22 +131,15 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
         
-        // NEW: Enhanced focus management for better navigation
-        node.addAction(AccessibilityNodeInfoCompat.ACTION_FOCUS);
-        node.addAction(AccessibilityNodeInfoCompat.ACTION_ACCESSIBILITY_FOCUS);
-        node.setFocusable(true);
-        
-        // NEW: Keyboard navigation support
-        node.addAction(AccessibilityNodeInfoCompat.ACTION_NEXT_HTML_ELEMENT);
-        node.addAction(AccessibilityNodeInfoCompat.ACTION_PREVIOUS_HTML_ELEMENT);
-        
         int right = key.x + key.width;
         int bottom = key.y + key.height;
-        if (right <= 0 || bottom <= 0) {
-             node.setBoundsInParent(new Rect(0,0,1,1));
+        
+        if (right <= key.x || bottom <= key.y) {
+             mTempRect.set(0, 0, 1, 1);
         } else {
-             node.setBoundsInParent(new Rect(key.x, key.y, right, bottom));
+             mTempRect.set(key.x, key.y, right, bottom);
         }
+        node.setBoundsInParent(mTempRect);
     }
 
     @Override
@@ -169,12 +150,10 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 if (keys != null && virtualViewId >= 0 && virtualViewId < keys.size()) {
                     Keyboard.Key key = keys.get(virtualViewId);
                     
-                    // NEW: Enhanced accessibility feedback
-                    sendEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_CLICKED);
-                    
-                    // NEW: Haptic feedback for visually impaired users
+                    // NEW: Better Feedback
                     view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                    
+                    sendEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_CLICKED);
+
                     if (listener != null) {
                         listener.onAccessibilityKeyClick(key.codes[0], key);
                     }
@@ -182,22 +161,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 }
             }
         }
-        
-        // NEW: Handle focus actions for better navigation
-        if (action == AccessibilityNodeInfoCompat.ACTION_FOCUS || 
-            action == AccessibilityNodeInfoCompat.ACTION_ACCESSIBILITY_FOCUS) {
-            sendEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED);
-            return true;
-        }
-        
         return false; 
     }
 
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
-        
-        // NEW: Localization-ready approach (fallback to English for now)
-        // You can replace these with resource strings later
         if (code == -5) return "Delete";
         if (code == -1) return isCaps ? "Shift On" : "Shift";
         if (code == 32) return "Space";
@@ -218,11 +186,5 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
         return label != null ? label : "Unlabeled Key";
     }
-    
-    // NEW: Helper method for future localization implementation
-    private String getLocalizedString(String englishString) {
-        // Currently returns the English string
-        // You can implement resource-based localization here later
-        return englishString;
-    }
 }
+
