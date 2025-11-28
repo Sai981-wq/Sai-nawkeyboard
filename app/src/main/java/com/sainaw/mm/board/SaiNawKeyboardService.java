@@ -107,7 +107,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
-    // Cache for performance
+    // Cache
     private Map<Integer, String> keyDescriptionCache = new HashMap<>();
 
     private final View.OnClickListener candidateListener = v -> {
@@ -339,7 +339,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- TALKBACK SAFE: Lift-to-Type Logic (Gboard Style: Slide Up to Cancel) ---
+    // --- TALKBACK SAFE: Lift-to-Type Logic ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -351,26 +351,37 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float x = event.getX();
             float y = event.getY();
             
-            // Check for smart nearest key (which handles edge cases & slide up)
-            int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
+            // Fix: Defined width inside try block
+            int width = keyboardView.getWidth();
+            
+            if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > width - 20) {
+                lastHoverKeyIndex = -1;
+                return;
+            }
 
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
-                if (keyIndex != lastHoverKeyIndex) {
-                    lastHoverKeyIndex = keyIndex; // Update state immediately (even if -1)
+                int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
+                if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
+                    lastHoverKeyIndex = keyIndex;
+                    playHaptic(0);
                     
-                    // Only play feedback if it's a valid key
-                    if (keyIndex != -1) {
-                        playHaptic(0);
+                    // Smart Hover Announcement
+                    List<Keyboard.Key> keys = currentKeyboard.getKeys();
+                    if (keys != null && keyIndex < keys.size()) {
+                        Keyboard.Key key = keys.get(keyIndex);
+                        String desc = getKeyDescriptionForAccessibility(key);
+                        announceText("Hover " + desc);
                     }
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // Only type if we haven't cancelled (index is not -1)
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        if (key.codes[0] != -100) {
-                            handleInput(key.codes[0], key);
+                        if (key.isInside((int)x, (int)y)) {
+                             if (key.codes[0] != -100) {
+                                handleInput(key.codes[0], key);
+                            }
                         }
                     }
                 }
@@ -384,6 +395,73 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (accessibilityHelper != null) {
             accessibilityHelper.setKeyboard(currentKeyboard, isShanOrMyanmar(), isCaps);
         }
+    }
+
+    private String getCachedKeyDescription(Keyboard.Key key) {
+        int keyCode = key.codes[0];
+        if (keyDescriptionCache.containsKey(keyCode)) {
+            return keyDescriptionCache.get(keyCode);
+        }
+        String description = getKeyDescription(key);
+        keyDescriptionCache.put(keyCode, description);
+        return description;
+    }
+
+    private String getKeyDescription(Keyboard.Key key) {
+        int code = key.codes[0];
+        if (code == CODE_DELETE) return "Delete";
+        if (code == CODE_SHIFT) return isCaps ? "Shift On" : "Shift";
+        if (code == CODE_SPACE) return "Space";
+        if (code == CODE_ENTER) return "Enter";
+        if (code == CODE_SYMBOL_ON) return "Symbol Keyboard";
+        if (code == CODE_SYMBOL_OFF) return "Alphabet Keyboard";
+        if (code == CODE_LANG_CHANGE) return "Switch Language";
+        if (code == CODE_VOICE) return "Voice Typing";
+        if (code == -100) return ""; 
+
+        String label = null;
+        if (key.label != null) label = key.label.toString();
+        else if (key.text != null) label = key.text.toString();
+
+        if (!isShanOrMyanmar() && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
+             return "Capital " + label;
+        }
+        return label != null ? label : "Unlabeled Key";
+    }
+
+    // NEW: Accessibility Description Helper
+    private String getKeyDescriptionForAccessibility(Keyboard.Key key) {
+        int code = key.codes[0];
+        if (code == CODE_SPACE) return "Space bar";
+        if (code == CODE_ENTER) return "Enter key";
+        if (code == CODE_DELETE) return "Delete key";
+        if (code == CODE_SHIFT) return "Shift key";
+        if (code == CODE_VOICE) return "Voice input";
+        if (code == CODE_LANG_CHANGE) return "Change language";
+        return getCachedKeyDescription(key);
+    }
+
+    @Override public void onKey(int primaryCode, int[] keyCodes) { handleInput(primaryCode, null); }
+    
+    // --- MISSING METHOD FIXED: onText ---
+    @Override public void onText(CharSequence text) {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        ic.commitText(text, 1);
+        playSound(0);
+        if (isCaps) { isCaps = false; updateKeyboardLayout(); }
+    }
+
+    @Override public void onPress(int primaryCode) {
+        if (primaryCode == CODE_SPACE) {
+            isSpaceLongPressed = false;
+            handler.postDelayed(spaceLongPressRunnable, 600);
+        }
+        playHaptic(primaryCode);
+    }
+
+    @Override public void onRelease(int primaryCode) {
+        if (primaryCode == CODE_SPACE) handler.removeCallbacks(spaceLongPressRunnable);
     }
 
     // --- MAIN INPUT HANDLING ---
@@ -458,6 +536,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             : String.valueOf((char) primaryCode);
 
                     if (isShanOrMyanmar()) {
+                        
                         // 1. User Types 'ေ' -> Insert [Space]+[ေ]
                         if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
                             ic.commitText(String.valueOf(ZWSP) + charStr, 1);
@@ -537,6 +616,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         ic.commitText(charStr, 1);
                         currentWord.append(charStr);
                     }
+                    
+                    // NO MANUAL ANNOUNCEMENT HERE! (Quiet Mode for typing)
                     
                     if (isCaps) { isCaps = false; updateKeyboardLayout(); }
                     triggerCandidateUpdate(200);
@@ -695,20 +776,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- GBOARD STYLE SMART FINDER (With Slide Up Cancel) ---
     private int getNearestKeyIndexFast(int x, int y) {
         if (currentKeyboard == null || currentKeyboard.getKeys() == null) return -1;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys.isEmpty()) return -1;
         
-        // SLIDE UP TO CANCEL: If finger goes above keyboard, cancel selection
-        if (y < 0) {
-            return -1;
-        }
-
         int closestIndex = -1;
         int minDistSq = Integer.MAX_VALUE;
-        int maxDistSq = 10000; // 100px Threshold for edge typing
+        int maxDistSq = 10000; 
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
@@ -761,13 +836,5 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void swipeRight() {}
     @Override public void swipeDown() {}
     @Override public void swipeUp() {}
-    
-    @Override public void onText(CharSequence text) {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
-        ic.commitText(text, 1);
-        playSound(0);
-        if (isCaps) { isCaps = false; updateKeyboardLayout(); }
-    }
 }
 
