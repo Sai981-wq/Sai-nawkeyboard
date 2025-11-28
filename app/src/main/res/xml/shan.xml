@@ -3,19 +3,19 @@
     android:keyWidth="10%p"
     android:horizontalGap="0px"
     android:verticalGap="0px"
-    android:keyHeight="60dp">
+    android:keyHeight="50dp">
 
     <Row>
-        <Key android:codes="4221" android:keyLabel="ၽ" android:keyEdgeFlags="left"/>
-        <Key android:codes="4112" android:keyLabel="တ"/>
-        <Key android:codes="4220" android:keyLabel="ၼ"/>
-        <Key android:codes="4121" android:keyLabel="မ"/>
-        <Key android:codes="4129" android:keyLabel="ဢ"/>
-        <Key android:codes="4117" android:keyLabel="ပ"/>
-        <Key android:codes="4096" android:keyLabel="က"/>
-        <Key android:codes="4100" android:keyLabel="င"/>
-        <Key android:codes="4219" android:keyLabel="ႁ"/>
-        <Key android:codes="4216" android:keyLabel="ၸ" android:keyEdgeFlags="right"/>
+        <Key android:codes="4221" android:keyLabel="ၽ" android:keyWidth="10%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="4112" android:keyLabel="တ" android:keyWidth="10%p"/>
+        <Key android:codes="4220" android:keyLabel="ၼ" android:keyWidth="10%p"/>
+        <Key android:codes="4121" android:keyLabel="မ" android:keyWidth="10%p"/>
+        <Key android:codes="4129" android:keyLabel="ဢ" android:keyWidth="10%p"/>
+        <Key android:codes="4117" android:keyLabel="ပ" android:keyWidth="10%p"/>
+        <Key android:codes="4096" android:keyLabel="က" android:keyWidth="10%p"/>
+        <Key android:codes="4100" android:keyLabel="င" android:keyWidth="10%p"/>
+        <Key android:codes="4219" android:keyLabel="ႁ" android:keyWidth="10%p"/>
+        <Key android:codes="4216" android:keyLabel="ၸ" android:keyWidth="10%p" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row>
@@ -46,12 +46,12 @@
     </Row>
 
     <Row android:rowEdgeFlags="bottom">
-        <Key android:codes="-2" android:keyLabel="\?123" android:keyWidth="15%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="-2" android:keyLabel="\?123" android:keyWidth="12%p" android:keyEdgeFlags="left"/>
         <Key android:codes="4170" android:keyLabel="၊" android:keyWidth="10%p"/>
         <Key android:codes="-101" android:keyLabel="🌐" android:keyWidth="10%p"/>
-        <Key android:codes="32" android:keyLabel="SPACE" android:keyWidth="40%p" android:isRepeatable="true"/>
+        <Key android:codes="32" android:keyLabel="SPACE" android:keyWidth="46%p" android:isRepeatable="true"/>
         <Key android:codes="4171" android:keyLabel="။" android:keyWidth="10%p"/>
-        <Key android:codes="-4" android:keyLabel="Enter" android:keyWidth="15%p" android:keyEdgeFlags="right"/>
+        <Key android:codes="-4" android:keyLabel="Enter" android:keyWidth="12%p" android:keyEdgeFlags="right"/>
     </Row>
 </Keyboard>
 
