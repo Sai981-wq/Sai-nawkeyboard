@@ -56,11 +56,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int CODE_VOICE = -10;
 
     // Myanmar/Shan Unicode Constants
-    private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
-    private static final int SHAN_E = 4228;        // 'ႄ' (U+1084)
+    private static final int MM_THWAY_HTOE = 4145; // 'ေ'
+    private static final int SHAN_E = 4228;        // 'ႄ'
     private static final char ZWSP = '\u200B';     // Placeholder
     
-    // Vowels for Reordering
+    // Vowels
     private static final int MM_I = 4141;          // 'ိ'
     private static final int MM_U = 4143;          // 'ု'
     private static final int MM_UU = 4144;         // 'ူ'
@@ -339,7 +339,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- TALKBACK SAFE: Lift-to-Type Logic ---
+    // --- TALKBACK SAFE: Lift-to-Type Logic (SILENT VERSION) ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -351,7 +351,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float x = event.getX();
             float y = event.getY();
             
-            // Fix: Defined width inside try block
             int width = keyboardView.getWidth();
             
             if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > width - 20) {
@@ -365,13 +364,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0);
                     
-                    // Smart Hover Announcement
-                    List<Keyboard.Key> keys = currentKeyboard.getKeys();
-                    if (keys != null && keyIndex < keys.size()) {
-                        Keyboard.Key key = keys.get(keyIndex);
-                        String desc = getKeyDescriptionForAccessibility(key);
-                        announceText("Hover " + desc);
-                    }
+                    // REMOVED: Manual "Hover..." announcement.
+                    // TalkBack (via AccessibilityHelper) will handle the reading automatically.
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
                 if (lastHoverKeyIndex != -1) {
@@ -429,7 +423,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return label != null ? label : "Unlabeled Key";
     }
 
-    // NEW: Accessibility Description Helper
     private String getKeyDescriptionForAccessibility(Keyboard.Key key) {
         int code = key.codes[0];
         if (code == CODE_SPACE) return "Space bar";
@@ -443,7 +436,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override public void onKey(int primaryCode, int[] keyCodes) { handleInput(primaryCode, null); }
     
-    // --- MISSING METHOD FIXED: onText ---
     @Override public void onText(CharSequence text) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
@@ -617,7 +609,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         currentWord.append(charStr);
                     }
                     
-                    // NO MANUAL ANNOUNCEMENT HERE! (Quiet Mode for typing)
+                    // NO MANUAL ANNOUNCEMENT HERE! (Silent)
                     
                     if (isCaps) { isCaps = false; updateKeyboardLayout(); }
                     triggerCandidateUpdate(200);
@@ -781,6 +773,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys.isEmpty()) return -1;
         
+        // SLIDE UP TO CANCEL
+        if (y < 0) {
+            return -1;
+        }
+
         int closestIndex = -1;
         int minDistSq = Integer.MAX_VALUE;
         int maxDistSq = 10000; 
