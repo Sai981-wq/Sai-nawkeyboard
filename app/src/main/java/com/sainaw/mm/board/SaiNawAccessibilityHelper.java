@@ -1,8 +1,10 @@
 package com.sainaw.mm.board;
 
+import android.content.Context;
 import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Bundle;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import androidx.annotation.NonNull;
@@ -17,6 +19,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
     private OnAccessibilityKeyListener listener;
+    
+    // New constants for improved functionality
+    private static final int MAX_SNAP_DISTANCE_SQ = 10000; // 100px threshold squared
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
@@ -29,6 +34,13 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     }
 
     public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
+        // Improved error handling without breaking existing flow
+        if (keyboard == null || keyboard.getKeys() == null || keyboard.getKeys().isEmpty()) {
+            this.currentKeyboard = null;
+            invalidateRoot();
+            return;
+        }
+        
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
@@ -52,18 +64,17 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             }
         }
 
-        // 2. Nearest Key Check: If not exactly inside, find the closest key
-        // This makes "Explore by Touch" much smoother.
+        // 2. Nearest Key Check with improved threshold
         return getNearestKeyIndex((int) x, (int) y);
     }
 
-    // --- NEAREST KEY ALGORITHM ---
+    // --- IMPROVED NEAREST KEY ALGORITHM ---
     private int getNearestKeyIndex(int x, int y) {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         
         int closestIndex = HOST_ID;
-        int minDistSq = Integer.MAX_VALUE; // Squared distance
+        int minDistSq = Integer.MAX_VALUE;
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
@@ -75,7 +86,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
 
-            // Euclidean distance calculation (Squared to avoid sqrt for performance)
+            // Euclidean distance calculation
             int dx = x - keyCenterX;
             int dy = y - keyCenterY;
             int distSq = (dx * dx) + (dy * dy);
@@ -87,8 +98,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             }
         }
         
-        // Optional: You can add a threshold here (e.g., only snap if within 100px)
-        // But for accessibility, snapping to *any* nearest key is usually preferred.
+        // NEW: Only snap if within reasonable distance threshold
+        if (minDistSq > MAX_SNAP_DISTANCE_SQ) {
+            return HOST_ID; // Don't snap to very far keys
+        }
+        
         return closestIndex;
     }
 
@@ -129,6 +143,15 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
         
+        // NEW: Enhanced focus management for better navigation
+        node.addAction(AccessibilityNodeInfoCompat.ACTION_FOCUS);
+        node.addAction(AccessibilityNodeInfoCompat.ACTION_ACCESSIBILITY_FOCUS);
+        node.setFocusable(true);
+        
+        // NEW: Keyboard navigation support
+        node.addAction(AccessibilityNodeInfoCompat.ACTION_NEXT_HTML_ELEMENT);
+        node.addAction(AccessibilityNodeInfoCompat.ACTION_PREVIOUS_HTML_ELEMENT);
+        
         int right = key.x + key.width;
         int bottom = key.y + key.height;
         if (right <= 0 || bottom <= 0) {
@@ -145,6 +168,13 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 List<Keyboard.Key> keys = currentKeyboard.getKeys();
                 if (keys != null && virtualViewId >= 0 && virtualViewId < keys.size()) {
                     Keyboard.Key key = keys.get(virtualViewId);
+                    
+                    // NEW: Enhanced accessibility feedback
+                    sendEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_CLICKED);
+                    
+                    // NEW: Haptic feedback for visually impaired users
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                    
                     if (listener != null) {
                         listener.onAccessibilityKeyClick(key.codes[0], key);
                     }
@@ -152,11 +182,22 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 }
             }
         }
+        
+        // NEW: Handle focus actions for better navigation
+        if (action == AccessibilityNodeInfoCompat.ACTION_FOCUS || 
+            action == AccessibilityNodeInfoCompat.ACTION_ACCESSIBILITY_FOCUS) {
+            sendEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED);
+            return true;
+        }
+        
         return false; 
     }
 
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
+        
+        // NEW: Localization-ready approach (fallback to English for now)
+        // You can replace these with resource strings later
         if (code == -5) return "Delete";
         if (code == -1) return isCaps ? "Shift On" : "Shift";
         if (code == 32) return "Space";
@@ -177,5 +218,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
         return label != null ? label : "Unlabeled Key";
     }
+    
+    // NEW: Helper method for future localization implementation
+    private String getLocalizedString(String englishString) {
+        // Currently returns the English string
+        // You can implement resource-based localization here later
+        return englishString;
+    }
 }
-

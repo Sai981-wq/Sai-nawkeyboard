@@ -37,7 +37,9 @@ import android.widget.TextView;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -104,6 +106,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
+    // NEW: Cache for keyboard descriptions to improve performance
+    private Map<Integer, String> keyDescriptionCache = new HashMap<>();
+
     private final View.OnClickListener candidateListener = v -> {
         String suggestion = (String) v.getTag();
         if (suggestion != null) pickSuggestion(suggestion);
@@ -157,6 +162,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
+        // NEW: Auto-optimize for screen reader users
+        optimizeForScreenReader();
+
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
         int layoutRes = isDarkTheme ? R.layout.input_view_dark : R.layout.input_view;
         View layout = getLayoutInflater().inflate(layoutRes, null);
@@ -206,6 +214,29 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isVibrateOn = prefs.getBoolean("vibrate_on", true);
         isSoundOn = prefs.getBoolean("sound_on", true);
         isLiftToType = prefs.getBoolean("lift_to_type", true);
+    }
+
+    // NEW: Auto-optimize for screen reader users
+    private void optimizeForScreenReader() {
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            // Auto-enable features beneficial for screen reader users
+            if (!prefs.contains("vibrate_on")) { // Only if user hasn't set manually
+                isVibrateOn = true;
+            }
+            if (!prefs.contains("sound_on")) {
+                isSoundOn = true;
+            }
+            if (!prefs.contains("lift_to_type")) {
+                isLiftToType = true;
+            }
+            
+            // Save these auto-settings
+            SharedPreferences.Editor editor = prefs.edit();
+            if (!prefs.contains("vibrate_on")) editor.putBoolean("vibrate_on", true);
+            if (!prefs.contains("sound_on")) editor.putBoolean("sound_on", true);
+            if (!prefs.contains("lift_to_type")) editor.putBoolean("lift_to_type", true);
+            editor.apply();
+        }
     }
 
     public int getResId(String name) {
@@ -332,6 +363,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0);
+                    
+                    // NEW: Announce which key is being hovered for screen readers
+                    List<Keyboard.Key> keys = currentKeyboard.getKeys();
+                    if (keys != null && keyIndex < keys.size()) {
+                        Keyboard.Key key = keys.get(keyIndex);
+                        String keyDescription = getKeyDescriptionForAccessibility(key);
+                        announceText("Hovering over " + keyDescription);
+                    }
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
                 if (lastHoverKeyIndex != -1) {
@@ -348,6 +387,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 lastHoverKeyIndex = -1;
             }
         } catch (Exception e) { lastHoverKeyIndex = -1; }
+    }
+
+    // NEW: Special description for accessibility hover
+    private String getKeyDescriptionForAccessibility(Keyboard.Key key) {
+        int code = key.codes[0];
+        if (code == CODE_SPACE) return "Space bar";
+        if (code == CODE_ENTER) return "Enter key";
+        if (code == CODE_DELETE) return "Delete key";
+        if (code == CODE_SHIFT) return "Shift key";
+        if (code == CODE_VOICE) return "Voice input";
+        if (code == CODE_SYMBOL_ON) return "Symbols keyboard";
+        if (code == CODE_SYMBOL_OFF) return "Main keyboard";
+        if (code == CODE_LANG_CHANGE) return "Change language";
+        
+        return getCachedKeyDescription(key); // Use cached description
     }
 
     private void updateHelperState() {
@@ -409,11 +463,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                     
                 case CODE_VOICE: startVoiceInput(); break;
-                case CODE_SHIFT: isCaps = !isCaps; updateKeyboardLayout(); announceText(isCaps ? "Shift On" : "Shift Off"); break;
-                case CODE_SYMBOL_ON: isSymbols = true; updateKeyboardLayout(); announceText("Symbols Keyboard"); break;
+                case CODE_SHIFT: 
+                    isCaps = !isCaps; 
+                    updateKeyboardLayout(); 
+                    announceText(isCaps ? "Shift On" : "Shift Off"); 
+                    break;
+                case CODE_SYMBOL_ON: 
+                    isSymbols = true; 
+                    updateKeyboardLayout(); 
+                    announceKeyboardState();
+                    break;
                 case CODE_SYMBOL_OFF: 
-                    isSymbols = false; updateKeyboardLayout(); 
-                    announceText(currentLanguageId == 1 ? "Myanmar" : (currentLanguageId == 2 ? "Shan" : "English")); 
+                    isSymbols = false; 
+                    updateKeyboardLayout(); 
+                    announceKeyboardState();
                     break;
                 case CODE_LANG_CHANGE: changeLanguage(); break;
                 case CODE_ENTER: 
@@ -527,12 +590,32 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         currentWord.append(charStr);
                     }
                     
+                    // NEW: Provide character feedback for screen readers
+                    if (primaryCode >= 32 && primaryCode <= 126) { // Printable ASCII
+                        announceText("Typed " + charStr);
+                    }
+                    
                     if (isCaps) { isCaps = false; updateKeyboardLayout(); }
                     triggerCandidateUpdate(200);
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    // NEW: Enhanced keyboard state announcement
+    private void announceKeyboardState() {
+        String state = "";
+        if (isSymbols) {
+            state = "Symbols Keyboard";
+        } else {
+            switch (currentLanguageId) {
+                case 0: state = "English" + (isCaps ? " Caps Lock" : ""); break;
+                case 1: state = "Myanmar Keyboard"; break;
+                case 2: state = "Shan Keyboard"; break;
+            }
+        }
+        announceText(state);
     }
 
     private void announceText(String text) {
@@ -631,6 +714,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private void updateKeyboardLayout() {
+        // NEW: Clear cache when keyboard changes
+        keyDescriptionCache.clear();
+        
         lastHoverKeyIndex = -1;
         try {
             Keyboard nextKeyboard;
@@ -651,17 +737,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentKeyboard = qwertyKeyboard;
             if(keyboardView != null) keyboardView.setKeyboard(currentKeyboard);
         }
+        
+        // NEW: Delay announcement for better user experience
+        handler.postDelayed(() -> announceKeyboardState(), 100);
     }
 
     private void changeLanguage() {
         lastHoverKeyIndex = -1;
-        String langName;
-        if (currentLanguageId == 0) { currentLanguageId = 1; langName = "Myanmar"; } 
-        else if (currentLanguageId == 1) { currentLanguageId = 2; langName = "Shan"; } 
-        else { currentLanguageId = 0; langName = "English"; }
+        if (currentLanguageId == 0) { currentLanguageId = 1; } 
+        else if (currentLanguageId == 1) { currentLanguageId = 2; } 
+        else { currentLanguageId = 0; }
         
-        announceText(langName);
-        isCaps = false; isSymbols = false; 
+        isCaps = false; 
+        isSymbols = false; 
         updateKeyboardLayout();
     }
 
@@ -678,15 +766,79 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return -1;
     }
 
+    // NEW: Enhanced haptic feedback with different patterns
     private void playHaptic(int primaryCode) {
         if (!isVibrateOn) return;
         try {
             Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
             if (v != null && v.hasVibrator()) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE));
-                else v.vibrate(40);
+                long[] pattern;
+                
+                // Different patterns for different key types
+                switch (primaryCode) {
+                    case CODE_DELETE:
+                        pattern = new long[]{0, 50, 50, 50}; // Triple tap for delete
+                        break;
+                    case CODE_ENTER:
+                        pattern = new long[]{0, 100}; // Long vibration for enter
+                        break;
+                    case CODE_SHIFT:
+                        pattern = new long[]{0, 30, 30, 30, 30}; // Multiple short for state change
+                        break;
+                    case CODE_SPACE:
+                        pattern = new long[]{0, 80}; // Medium for space
+                        break;
+                    case CODE_VOICE:
+                        pattern = new long[]{0, 60, 60}; // Double for voice
+                        break;
+                    default:
+                        pattern = new long[]{0, 40}; // Default short vibration
+                }
+                
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    v.vibrate(VibrationEffect.createWaveform(pattern, -1));
+                } else {
+                    v.vibrate(pattern, -1);
+                }
             }
         } catch (Exception e) {}
+    }
+    
+    // NEW: Cached key description for better performance
+    private String getCachedKeyDescription(Keyboard.Key key) {
+        int keyCode = key.codes[0];
+        if (keyDescriptionCache.containsKey(keyCode)) {
+            return keyDescriptionCache.get(keyCode);
+        }
+        
+        String description = getKeyDescription(key);
+        keyDescriptionCache.put(keyCode, description);
+        return description;
+    }
+    
+    // Helper method to get key description (existing logic)
+    private String getKeyDescription(Keyboard.Key key) {
+        // This should match the logic in SaiNawAccessibilityHelper
+        int code = key.codes[0];
+        if (code == CODE_DELETE) return "Delete";
+        if (code == CODE_SHIFT) return isCaps ? "Shift On" : "Shift";
+        if (code == CODE_SPACE) return "Space";
+        if (code == CODE_ENTER) return "Enter";
+        if (code == CODE_SYMBOL_ON) return "Symbol Keyboard";
+        if (code == CODE_SYMBOL_OFF) return "Alphabet Keyboard";
+        if (code == CODE_LANG_CHANGE) return "Switch Language";
+        if (code == CODE_VOICE) return "Voice Typing";
+        if (code == -100) return ""; 
+
+        String label = null;
+        if (key.label != null) label = key.label.toString();
+        else if (key.text != null) label = key.text.toString();
+
+        if (!isShanOrMyanmar() && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
+             return "Capital " + label;
+        }
+
+        return label != null ? label : "Unlabeled Key";
     }
     
     private void playSound(int primaryCode) {
@@ -705,4 +857,3 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void swipeDown() {}
     @Override public void swipeUp() {}
 }
-
