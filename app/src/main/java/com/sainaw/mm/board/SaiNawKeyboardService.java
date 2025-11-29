@@ -515,7 +515,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             }
                             currentWord.append(charStr);
                             
-                            // *** NEW: Smart Syllable Feedback ***
+                            // *** NEW: Shan 'ႂ်' Compatible Syllable Feedback ***
                             announceLastSyllable();
                         }
                     } 
@@ -533,13 +533,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** UPDATED FUNCTION: Smart Syllable Detection with Asat/Virama support ***
+    // *** UPDATED: Shan & Myanmar Syllable Logic (Supports Medial+Asat and Stacking) ***
     private void announceLastSyllable() {
         try {
             InputConnection ic = getCurrentInputConnection();
             if (ic == null) return;
 
-            // Get more text to handle longer stacks (e.g. 15 chars)
+            // ၁၅ လုံးလောက် နောက်ပြန်စစ်ပါမယ်
             CharSequence textBefore = ic.getTextBeforeCursor(15, 0);
             if (textBefore == null || textBefore.length() == 0) return;
 
@@ -547,53 +547,61 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int endIndex = text.length();
             int startIndex = endIndex;
             
-            // Flag to track if the current consonant is "killed" (final)
-            boolean isKilled = false;
+            // "သတ်ထားသော/ဆင့်ထားသော" အခြေအနေကို မှတ်သားရန်
+            boolean isKilledOrStacked = false;
 
-            // Scan backwards
+            // နောက်ကနေ ရှေ့ကို တစ်လုံးချင်း စစ်ပါမယ်
             for (int i = endIndex - 1; i >= 0; i--) {
                 char c = text.charAt(i);
                 
-                // 1. Check for Asat (U+103A) or Virama (U+1039)
-                // If found, it means the preceding consonant is a final/stacked char.
+                // ၁။ Asat (အသတ်) သို့မဟုတ် Virama (ပါဌ်ဆင့်) တွေ့ရင်
+                // ရှေ့က ဗျည်းကို "သတ်" မယ် သို့မဟုတ် "ဆင့်" မယ်လို့ မှတ်သားပါ
                 if (c == '\u103A' || c == '\u1039') {
-                    isKilled = true;
+                    isKilledOrStacked = true;
                     continue;
                 }
 
-                // 2. Check for Consonants
-                // Main Myanmar: U+1000 - U+102A
-                // Shan/Ext: U+103F - U+104E, U+1075 - U+1081
-                boolean isConsonant = (c >= '\u1000' && c <= '\u102A') || 
-                                      (c >= '\u103F' && c <= '\u1049') || 
-                                      (c >= '\u1075' && c <= '\u1081') || 
-                                      (c == '\u104E'); // La Gaung
-
-                if (isConsonant) {
-                    if (isKilled) {
-                        // We found a consonant, BUT 'isKilled' was true.
-                        // This means it's a final (e.g., 'Ng' in 'Kaing').
-                        // So we consume the killed flag and KEEP GOING backwards to find the head.
-                        isKilled = false;
+                // ၂။ ဗျည်း ဟုတ်/မဟုတ် စစ်ဆေးခြင်း
+                if (isConsonant(c)) {
+                    if (isKilledOrStacked) {
+                        // ဗျည်းတွေ့ပေမယ့် သူ့နောက်မှာ အသတ်/ပါဌ်ဆင့် ရှိနေတဲ့အတွက်
+                        // ဒါက အဆုံးသတ်ဗျည်း (သို့) အောက်ကဗျည်း ဖြစ်ပါတယ်
+                        // ဒါကြောင့် ဒီကောင်ကိုကျော်ပြီး ရှေ့က ခေါင်းဆောင်ဗျည်းကို ဆက်ရှာပါမယ်
+                        isKilledOrStacked = false; 
                     } else {
-                        // We found a consonant and it's NOT killed.
-                        // This is the HEAD consonant (e.g., 'K' in 'Kaing').
-                        // We stop here.
+                        // ဒါက ခေါင်းဆောင်ဗျည်း ဖြစ်နိုင်ပါတယ်
+                        // ဒါပေမယ့် သူ့ရှေ့မှာ ပါဌ်ဆင့် (Virama) ရှိနေဦးမလား စစ်ရပါမယ် (ဥပမာ - မန္တ)
+                        // တကယ်လို့ သူ့ရှေ့ (i-1) မှာ Virama ရှိနေရင် ဒါက အောက်ကဗျည်းပဲ ရှိပါသေးတယ်
+                        if (i > 0 && text.charAt(i - 1) == '\u1039') {
+                            continue; // ရှေ့ကို ဆက်တိုးပြီး အပေါ်ကဗျည်းကို ရှာမယ်
+                        }
+                        
+                        // Virama မရှိတော့ဘူးဆိုရင်တော့ ဒါဟာ စာလုံးပေါင်းရဲ့ အစ (ခေါင်းဆောင်ဗျည်း) ပါ
                         startIndex = i;
-                        break;
+                        break; 
                     }
-                }
-                
-                // 3. Break on delimiters (Space, Newline)
-                if (c == ' ' || c == '\n' || c == '\t') {
+                } 
+                // ၃။ ဗျည်းမဟုတ်၊ အသတ်မဟုတ် (သရ၊ Medial၊ Tone များ)
+                else if (c == ' ' || c == '\n' || c == '\t') {
+                    // Space တွေ့ရင် ရပ်မယ်
                     startIndex = i + 1;
                     break;
+                } 
+                else {
+                    // *** ရှမ်းစာအတွက် အထူး Logic ***
+                    // ဗျည်းမဟုတ်တဲ့ (Medial/Vowel) တစ်ခုခုကို ကြားဖြတ်တွေ့လိုက်ရင်
+                    // ခုနက တွေ့ခဲ့တဲ့ "အသတ်" (isKilled) ဟာ ဗျည်းကို သတ်တာမဟုတ်ဘဲ 
+                    // သရအနေနဲ့ သုံးထားတာ ဖြစ်သွားပါပြီ (ဥပမာ - မႂ်ႇ မှာ '်' က 'ႂ' နဲ့တွဲနေတာပါ)
+                    // ဒါကြောင့် isKilled ကို ပြန်ဖျက်ပေးရပါမယ်။ ဒါမှ ရှေ့က ဗျည်းအရင်း (မ) ကို မကျော်သွားမှာပါ
+                    if (isKilledOrStacked) {
+                        isKilledOrStacked = false;
+                    }
                 }
             }
 
             if (startIndex < endIndex) {
                 String syllableToSpeak = text.substring(startIndex, endIndex);
-                // Clean up ZWSP
+                // ZWSP တွေပါရင် ဖြုတ်ပြီးမှ အသံထွက်ခိုင်းမယ်
                 syllableToSpeak = syllableToSpeak.replace(String.valueOf(ZWSP), ""); 
 
                 if (!syllableToSpeak.isEmpty() && !syllableToSpeak.trim().isEmpty()) {
@@ -601,6 +609,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
             }
         } catch (Exception e) {}
+    }
+
+    // ဗျည်း ဟုတ်/မဟုတ် စစ်ဆေးပေးမယ့် Helper Function
+    private boolean isConsonant(int c) {
+        return (c >= '\u1000' && c <= '\u102A') || // Myanmar Main (က - ၏)
+               (c == '\u103F') ||                   // Great Sa (ဿ)
+               (c >= '\u1040' && c <= '\u1049') || // Digits (၀-၉) 
+               (c == '\u104E') ||                   // La Gaung (၎)
+               (c >= '\u1050' && c <= '\u1055') || // Mon/Pali Extensions
+               (c >= '\u1075' && c <= '\u1081') || // Shan Consonants (ၵ - ႁ)
+               (c >= '\uA9E0' && c <= '\uA9E6') || // Shan Digits
+               (c >= '\uAA60' && c <= '\uAA6F');   // Khamti Shan
     }
 
     private void announceText(String text) {
