@@ -320,9 +320,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int action = event.getAction();
             float x = event.getX();
             float y = event.getY();
-            int width = keyboardView.getWidth();
             
-            if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > width - 20) {
+            if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > keyboardView.getWidth() - 20) {
                 lastHoverKeyIndex = -1;
                 return;
             }
@@ -465,23 +464,23 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                                 }
                             }
                             
-                            // 3. Medial Logic (Fixes "Pyay" - ပြေ)
+                            // 3. Medial Logic
                             if (!handled && isMedial(primaryCode)) {
                                  CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
                                  if (lastOne != null && lastOne.length() > 0) {
                                      char prevChar = lastOne.charAt(0);
                                      if (prevChar == MM_THWAY_HTOE || prevChar == SHAN_E) {
                                          ic.beginBatchEdit();
-                                         ic.deleteSurroundingText(1, 0); // Delete 'ေ'
-                                         ic.commitText(charStr, 1);      // Type Medial
-                                         ic.commitText(String.valueOf(prevChar), 1); // Put 'ေ' back
+                                         ic.deleteSurroundingText(1, 0); 
+                                         ic.commitText(charStr, 1);      
+                                         ic.commitText(String.valueOf(prevChar), 1); 
                                          ic.endBatchEdit();
                                          handled = true;
                                      }
                                  }
                             }
                             
-                            // 4. Auto Vowel Sorting (Vowel Logic)
+                            // 4. Auto Vowel Sorting
                             if (!handled && primaryCode == MM_I) {
                                 CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
                                 if (lastOne != null && lastOne.length() > 0) {
@@ -516,8 +515,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             }
                             currentWord.append(charStr);
                             
-                            // *** NEW FEATURE: Syllable Feedback (Speak the full syllable) ***
-                            // အသစ်ထည့်ထားသော Function: စာလုံးပေါင်း အသံထွက်စနစ်
+                            // *** NEW: Smart Syllable Feedback ***
                             announceLastSyllable();
                         }
                     } 
@@ -535,39 +533,59 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** NEW HELPER: Detect and announce the last syllable ***
+    // *** UPDATED FUNCTION: Smart Syllable Detection with Asat/Virama support ***
     private void announceLastSyllable() {
         try {
             InputConnection ic = getCurrentInputConnection();
             if (ic == null) return;
 
-            // Get last few chars (enough to cover a syllable)
-            CharSequence textBefore = ic.getTextBeforeCursor(10, 0);
+            // Get more text to handle longer stacks (e.g. 15 chars)
+            CharSequence textBefore = ic.getTextBeforeCursor(15, 0);
             if (textBefore == null || textBefore.length() == 0) return;
 
             String text = textBefore.toString();
             int endIndex = text.length();
             int startIndex = endIndex;
+            
+            // Flag to track if the current consonant is "killed" (final)
+            boolean isKilled = false;
 
-            // Scan backwards to find the start of the syllable (Consonant or Space)
+            // Scan backwards
             for (int i = endIndex - 1; i >= 0; i--) {
                 char c = text.charAt(i);
                 
-                // Define Myanmar/Shan Consonants & Independent Vowels (Start of Syllable)
+                // 1. Check for Asat (U+103A) or Virama (U+1039)
+                // If found, it means the preceding consonant is a final/stacked char.
+                if (c == '\u103A' || c == '\u1039') {
+                    isKilled = true;
+                    continue;
+                }
+
+                // 2. Check for Consonants
                 // Main Myanmar: U+1000 - U+102A
-                // Shan/Ext: U+103F - U+104E, U+1075 - U+1081, etc.
+                // Shan/Ext: U+103F - U+104E, U+1075 - U+1081
                 boolean isConsonant = (c >= '\u1000' && c <= '\u102A') || 
-                                      (c >= '\u103F' && c <= '\u104E') || 
-                                      (c >= '\u1050' && c <= '\u1055') ||
-                                      (c >= '\u1075' && c <= '\u108F');
+                                      (c >= '\u103F' && c <= '\u1049') || 
+                                      (c >= '\u1075' && c <= '\u1081') || 
+                                      (c == '\u104E'); // La Gaung
 
                 if (isConsonant) {
-                    startIndex = i;
-                    break; 
+                    if (isKilled) {
+                        // We found a consonant, BUT 'isKilled' was true.
+                        // This means it's a final (e.g., 'Ng' in 'Kaing').
+                        // So we consume the killed flag and KEEP GOING backwards to find the head.
+                        isKilled = false;
+                    } else {
+                        // We found a consonant and it's NOT killed.
+                        // This is the HEAD consonant (e.g., 'K' in 'Kaing').
+                        // We stop here.
+                        startIndex = i;
+                        break;
+                    }
                 }
                 
-                // Stop at space or newline
-                if (c == ' ' || c == '\n') {
+                // 3. Break on delimiters (Space, Newline)
+                if (c == ' ' || c == '\n' || c == '\t') {
                     startIndex = i + 1;
                     break;
                 }
@@ -575,16 +593,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
             if (startIndex < endIndex) {
                 String syllableToSpeak = text.substring(startIndex, endIndex);
-                // Remove ZWSP so it doesn't affect TTS
+                // Clean up ZWSP
                 syllableToSpeak = syllableToSpeak.replace(String.valueOf(ZWSP), ""); 
 
                 if (!syllableToSpeak.isEmpty() && !syllableToSpeak.trim().isEmpty()) {
                     announceText(syllableToSpeak);
                 }
             }
-        } catch (Exception e) {
-            // Prevent crash if TTS logic fails
-        }
+        } catch (Exception e) {}
     }
 
     private void announceText(String text) {
