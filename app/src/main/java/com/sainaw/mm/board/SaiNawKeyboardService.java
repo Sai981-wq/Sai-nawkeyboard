@@ -54,15 +54,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int CODE_VOICE = -10;
 
     // Myanmar/Shan Unicode Constants
-    private static final int MM_THWAY_HTOE = 4145; // 'ေ' (U+1031)
-    private static final int SHAN_E = 4228;        // 'ႄ' (U+1084)
-    private static final char ZWSP = '\u200B';     // Placeholder
+    private static final int MM_THWAY_HTOE = 4145; 
+    private static final int SHAN_E = 4228;        
+    private static final char ZWSP = '\u200B';     
     
-    // Vowel Constants for Reordering
-    private static final int MM_I = 4141;          // 'ိ' (U+102D)
-    private static final int MM_U = 4143;          // 'ု' (U+102F)
-    private static final int MM_UU = 4144;         // 'ူ' (U+1030)
-    private static final int MM_ANUSVARA = 4150;   // 'ံ' (U+1036)
+    // Vowel Constants
+    private static final int MM_I = 4141;          
+    private static final int MM_U = 4143;          
+    private static final int MM_UU = 4144;         
+    private static final int MM_ANUSVARA = 4150;   
 
     // Components
     private KeyboardView keyboardView;
@@ -83,6 +83,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard shanKeyboard, shanShiftKeyboard;
     private Keyboard symbolsEnKeyboard, symbolsMmKeyboard; 
     private Keyboard currentKeyboard;
+    private List<Keyboard.Key> currentKeys; // Cached keys list for speed
 
     // State
     private boolean isCaps = false;
@@ -98,7 +99,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
-    private boolean isLiftToType = true; // Typing Mode Flag
+    private boolean isLiftToType = true; 
 
     // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -229,7 +230,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             shanKeyboard = new Keyboard(this, getResId("shan"));
             shanShiftKeyboard = new Keyboard(this, getResId("shan_shift"));
             
-            // Symbols Keyboards
+            // Symbols
             int symEnId = getResId("symbols");
             int symMmId = getResId("symbols_mm");
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(this, symEnId) : qwertyKeyboard; 
@@ -309,7 +310,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- TALKBACK SAFE: Improved Lift-to-Type with Overshoot Protection ---
+    // --- OPTIMIZED LIFT-TO-TYPE ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -321,13 +322,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float x = event.getX();
             float y = event.getY();
             
-            // အပေါ်တန်းက စာလုံးတွေ "ထစ်" နေတာပျောက်ဖို့အတွက် အရင်က y < 20 တားထားတာကို ဖြုတ်လိုက်ပါပြီ။
-            // အခုက ဘေးဘောင်တွေလောက်ကိုပဲ Safety ထားပါတော့မယ်။
-            int width = keyboardView.getWidth();
-            int height = keyboardView.getHeight();
-            
-            // Basic bounds check (X only, let Y be flexible for top row access)
-            if (x < 0 || x > width || y > height + 50) {
+            // Quick Bounds Check
+            if (x < 0 || x > keyboardView.getWidth() || y > keyboardView.getHeight() + 50) {
                 lastHoverKeyIndex = -1;
                 return;
             }
@@ -339,19 +335,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     playHaptic(0);
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // *** FIX: Overshoot Protection ***
-                // လက်ကြွလိုက်တဲ့အချိန်မှာ Y တန်ဖိုးက 0 ထက်ငယ်နေရင် (အနုတ်လက္ခဏာပြနေရင်) 
-                // ဒါဟာ အပေါ်ကို ပွတ်ဆွဲလိုက်တာ (Swipe Up) ဖြစ်တဲ့အတွက် စာမရိုက်ဘဲ Cancel လုပ်ပါမယ်။
+                // Swipe Up Cancel Logic
                 if (y < 0) { 
                     lastHoverKeyIndex = -1;
                     return;
                 }
 
                 if (lastHoverKeyIndex != -1) {
-                    List<Keyboard.Key> keys = currentKeyboard.getKeys();
-                    if (keys != null && lastHoverKeyIndex < keys.size()) {
-                        Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        // နောက်ဆုံးစစ်ဆေးချက်အနေနဲ့ Key ထဲမှာ ရှိမရှိ ပြန်စစ်မယ်
+                    if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
+                        Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
                         if (key.isInside((int)x, (int)y)) {
                              if (key.codes[0] != -100) {
                                 handleInput(key.codes[0], key);
@@ -465,7 +457,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
                             boolean handled = false;
 
-                            // 2. Placeholder Logic: [Space]+[ေ] -> Replace [Space] with Input
+                            // 2. Placeholder Logic
                             if (lastTwo != null && lastTwo.length() == 2) {
                                 char charBefore = lastTwo.charAt(1);
                                 char charTwoBefore = lastTwo.charAt(0);
@@ -530,7 +522,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             }
                             currentWord.append(charStr);
                             
-                            // *** NEW: Syllable Feedback ***
                             announceLastSyllable();
                         }
                     } 
@@ -548,13 +539,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** UPDATED: Shan & Myanmar Syllable Logic (Supports Medial+Asat and Stacking) ***
+    // *** OPTIMIZED: Syllable Feedback ***
     private void announceLastSyllable() {
+        // Optimization: Don't run logic if TalkBack is OFF
+        if (accessibilityManager == null || !accessibilityManager.isEnabled()) return;
+
         try {
             InputConnection ic = getCurrentInputConnection();
             if (ic == null) return;
 
-            // ၁၅ လုံးလောက် နောက်ပြန်စစ်ပါမယ်
             CharSequence textBefore = ic.getTextBeforeCursor(15, 0);
             if (textBefore == null || textBefore.length() == 0) return;
 
@@ -562,61 +555,38 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int endIndex = text.length();
             int startIndex = endIndex;
             
-            // "သတ်ထားသော/ဆင့်ထားသော" အခြေအနေကို မှတ်သားရန်
             boolean isKilledOrStacked = false;
 
-            // နောက်ကနေ ရှေ့ကို တစ်လုံးချင်း စစ်ပါမယ်
             for (int i = endIndex - 1; i >= 0; i--) {
                 char c = text.charAt(i);
                 
-                // ၁။ Asat (အသတ်) သို့မဟုတ် Virama (ပါဌ်ဆင့်) တွေ့ရင်
-                // ရှေ့က ဗျည်းကို "သတ်" မယ် သို့မဟုတ် "ဆင့်" မယ်လို့ မှတ်သားပါ
                 if (c == '\u103A' || c == '\u1039') {
                     isKilledOrStacked = true;
                     continue;
                 }
 
-                // ၂။ ဗျည်း ဟုတ်/မဟုတ် စစ်ဆေးခြင်း
                 if (isConsonant(c)) {
                     if (isKilledOrStacked) {
-                        // ဗျည်းတွေ့ပေမယ့် သူ့နောက်မှာ အသတ်/ပါဌ်ဆင့် ရှိနေတဲ့အတွက်
-                        // ဒါက အဆုံးသတ်ဗျည်း (သို့) အောက်ကဗျည်း ဖြစ်ပါတယ်
-                        // ဒါကြောင့် ဒီကောင်ကိုကျော်ပြီး ရှေ့က ခေါင်းဆောင်ဗျည်းကို ဆက်ရှာပါမယ်
                         isKilledOrStacked = false; 
                     } else {
-                        // ဒါက ခေါင်းဆောင်ဗျည်း ဖြစ်နိုင်ပါတယ်
-                        // ဒါပေမယ့် သူ့ရှေ့မှာ ပါဌ်ဆင့် (Virama) ရှိနေဦးမလား စစ်ရပါမယ် (ဥပမာ - မန္တ)
-                        // တကယ်လို့ သူ့ရှေ့ (i-1) မှာ Virama ရှိနေရင် ဒါက အောက်ကဗျည်းပဲ ရှိပါသေးတယ်
                         if (i > 0 && text.charAt(i - 1) == '\u1039') {
-                            continue; // ရှေ့ကို ဆက်တိုးပြီး အပေါ်ကဗျည်းကို ရှာမယ်
+                            continue; 
                         }
-                        
-                        // Virama မရှိတော့ဘူးဆိုရင်တော့ ဒါဟာ စာလုံးပေါင်းရဲ့ အစ (ခေါင်းဆောင်ဗျည်း) ပါ
                         startIndex = i;
                         break; 
                     }
                 } 
-                // ၃။ ဗျည်းမဟုတ်၊ အသတ်မဟုတ် (သရ၊ Medial၊ Tone များ)
                 else if (c == ' ' || c == '\n' || c == '\t') {
-                    // Space တွေ့ရင် ရပ်မယ်
                     startIndex = i + 1;
                     break;
                 } 
                 else {
-                    // *** ရှမ်းစာအတွက် အထူး Logic ***
-                    // ဗျည်းမဟုတ်တဲ့ (Medial/Vowel) တစ်ခုခုကို ကြားဖြတ်တွေ့လိုက်ရင်
-                    // ခုနက တွေ့ခဲ့တဲ့ "အသတ်" (isKilled) ဟာ ဗျည်းကို သတ်တာမဟုတ်ဘဲ 
-                    // သရအနေနဲ့ သုံးထားတာ ဖြစ်သွားပါပြီ (ဥပမာ - မႂ်ႇ မှာ '်' က 'ႂ' နဲ့တွဲနေတာပါ)
-                    // ဒါကြောင့် isKilled ကို ပြန်ဖျက်ပေးရပါမယ်။ ဒါမှ ရှေ့က ဗျည်းအရင်း (မ) ကို မကျော်သွားမှာပါ
-                    if (isKilledOrStacked) {
-                        isKilledOrStacked = false;
-                    }
+                    if (isKilledOrStacked) isKilledOrStacked = false;
                 }
             }
 
             if (startIndex < endIndex) {
                 String syllableToSpeak = text.substring(startIndex, endIndex);
-                // ZWSP တွေပါရင် ဖြုတ်ပြီးမှ အသံထွက်ခိုင်းမယ်
                 syllableToSpeak = syllableToSpeak.replace(String.valueOf(ZWSP), ""); 
 
                 if (!syllableToSpeak.isEmpty() && !syllableToSpeak.trim().isEmpty()) {
@@ -626,16 +596,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         } catch (Exception e) {}
     }
 
-    // ဗျည်း ဟုတ်/မဟုတ် စစ်ဆေးပေးမယ့် Helper Function
     private boolean isConsonant(int c) {
-        return (c >= '\u1000' && c <= '\u102A') || // Myanmar Main (က - ၏)
-               (c == '\u103F') ||                   // Great Sa (ဿ)
-               (c >= '\u1040' && c <= '\u1049') || // Digits (၀-၉) 
-               (c == '\u104E') ||                   // La Gaung (၎)
-               (c >= '\u1050' && c <= '\u1055') || // Mon/Pali Extensions
-               (c >= '\u1075' && c <= '\u1081') || // Shan Consonants (ၵ - ႁ)
-               (c >= '\uA9E0' && c <= '\uA9E6') || // Shan Digits
-               (c >= '\uAA60' && c <= '\uAA6F');   // Khamti Shan
+        return (c >= '\u1000' && c <= '\u102A') || 
+               (c == '\u103F') ||                   
+               (c >= '\u1040' && c <= '\u1049') || 
+               (c == '\u104E') ||                   
+               (c >= '\u1050' && c <= '\u1055') || 
+               (c >= '\u1075' && c <= '\u1081') || 
+               (c >= '\uA9E0' && c <= '\uA9E6') || 
+               (c >= '\uAA60' && c <= '\uAA6F');   
     }
 
     private void announceText(String text) {
@@ -663,7 +632,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
     
-    // Helper to identify Medials
     private boolean isMedial(int code) {
         return (code >= 4155 && code <= 4158) || (code == 4226);
     }
@@ -747,12 +715,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentKeyboard = nextKeyboard;
             if (keyboardView != null) {
                 keyboardView.setKeyboard(currentKeyboard);
+                // Optimization: Cache Keys for faster lookup
+                currentKeys = currentKeyboard.getKeys();
                 keyboardView.invalidateAllKeys();
                 updateHelperState();
             }
         } catch (Exception e) {
             currentKeyboard = qwertyKeyboard;
-            if(keyboardView != null) keyboardView.setKeyboard(currentKeyboard);
+            if(keyboardView != null) {
+                keyboardView.setKeyboard(currentKeyboard);
+                currentKeys = currentKeyboard.getKeys();
+            }
         }
     }
 
@@ -768,13 +741,26 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateKeyboardLayout();
     }
 
+    // *** SUPER OPTIMIZED LOOKUP ***
     private int getNearestKeyIndexFast(int x, int y) {
-        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return -1;
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys.isEmpty()) return -1;
-        for (int i = 0; i < keys.size(); i++) {
-            if (keys.get(i).isInside(x, y)) {
-                if (keys.get(i).codes[0] == -100) return -1;
+        if (currentKeys == null || currentKeys.isEmpty()) return -1;
+        
+        // 1. Check Previous Key First (Temporal Locality)
+        // လက်က Key တစ်ခုပေါ်ရောက်နေရင် နောက်တစ်ခေါက်စစ်တဲ့အခါ အဲဒီ Key ပေါ်မှာပဲ ရှိနေဖို့ 90% သေချာပါတယ်။
+        // ဒါကြောင့် Loop အစအဆုံးမပတ်ဘဲ lastHoverKeyIndex ကို အရင်စစ်လိုက်ပါတယ်။
+        if (lastHoverKeyIndex >= 0 && lastHoverKeyIndex < currentKeys.size()) {
+            Keyboard.Key lastKey = currentKeys.get(lastHoverKeyIndex);
+            if (lastKey.isInside(x, y)) {
+                if (lastKey.codes[0] == -100) return -1;
+                return lastHoverKeyIndex;
+            }
+        }
+
+        // 2. Normal Loop (Only if finger moved to a new key)
+        for (int i = 0; i < currentKeys.size(); i++) {
+            Keyboard.Key k = currentKeys.get(i);
+            if (k.isInside(x, y)) {
+                if (k.codes[0] == -100) return -1;
                 return i;
             }
         }
