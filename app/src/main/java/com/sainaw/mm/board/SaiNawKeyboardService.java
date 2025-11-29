@@ -339,7 +339,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- TALKBACK SAFE: Lift-to-Type Logic (FIXED) ---
+    // --- TALKBACK SAFE: Lift-to-Type Logic ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -351,23 +351,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float x = event.getX();
             float y = event.getY();
             
-            // NO MARGIN CHECK HERE! Process everything.
+            // NO MARGIN CHECK HERE!
 
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
-                // Find nearest key (or -1 if slide up)
                 int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0);
-                    // NO MANUAL ANNOUNCEMENT (Silent Mode)
                 }
-                // Handle Cancel case (keyIndex == -1)
+                // Handle Cancel (Slide Up)
                 else if (keyIndex == -1) {
                     lastHoverKeyIndex = -1;
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // Only type if NOT cancelled
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
@@ -382,52 +379,54 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         } catch (Exception e) { lastHoverKeyIndex = -1; }
     }
 
-    // --- GBOARD STYLE SMART FINDER (With Slide Up Cancel) ---
-    private int getNearestKeyIndexFast(int x, int y) {
-        if (currentKeyboard == null || currentKeyboard.getKeys() == null) return -1;
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys.isEmpty()) return -1;
-
-        // *** CRITICAL FIX: SLIDE UP TO CANCEL ***
-        // If finger goes above the keyboard (y < 0), return -1 to cancel.
-        if (y < 0) {
-            return -1;
-        }
-
-        int closestIndex = -1;
-        int minDistSq = Integer.MAX_VALUE;
-        int distThresholdSq = 10000; // 100px Snap Radius (Handles edge typing)
-
-        for (int i = 0; i < keys.size(); i++) {
-            Keyboard.Key key = keys.get(i);
-            if (key.codes[0] == -100) continue;
-
-            if (key.isInside(x, y)) return i; 
-
-            int keyCenterX = key.x + (key.width / 2);
-            int keyCenterY = key.y + (key.height / 2);
-            int dx = x - keyCenterX;
-            int dy = y - keyCenterY;
-            int distSq = (dx * dx) + (dy * dy);
-
-            if (distSq < minDistSq) {
-                minDistSq = distSq;
-                closestIndex = i;
-            }
-        }
-        
-        if (minDistSq < distThresholdSq) {
-            return closestIndex;
-        }
-
-        return -1;
-    }
-
     // --- HELPER METHODS ---
     private void updateHelperState() {
         if (accessibilityHelper != null) {
             accessibilityHelper.setKeyboard(currentKeyboard, isShanOrMyanmar(), isCaps);
         }
+    }
+
+    private String getCachedKeyDescription(Keyboard.Key key) {
+        int keyCode = key.codes[0];
+        if (keyDescriptionCache.containsKey(keyCode)) {
+            return keyDescriptionCache.get(keyCode);
+        }
+        String description = getKeyDescription(key);
+        keyDescriptionCache.put(keyCode, description);
+        return description;
+    }
+
+    private String getKeyDescription(Keyboard.Key key) {
+        int code = key.codes[0];
+        if (code == CODE_DELETE) return "Delete";
+        if (code == CODE_SHIFT) return isCaps ? "Shift On" : "Shift";
+        if (code == CODE_SPACE) return "Space";
+        if (code == CODE_ENTER) return "Enter";
+        if (code == CODE_SYMBOL_ON) return "Symbol Keyboard";
+        if (code == CODE_SYMBOL_OFF) return "Alphabet Keyboard";
+        if (code == CODE_LANG_CHANGE) return "Switch Language";
+        if (code == CODE_VOICE) return "Voice Typing";
+        if (code == -100) return ""; 
+
+        String label = null;
+        if (key.label != null) label = key.label.toString();
+        else if (key.text != null) label = key.text.toString();
+
+        if (!isShanOrMyanmar() && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
+             return "Capital " + label;
+        }
+        return label != null ? label : "Unlabeled Key";
+    }
+
+    private String getKeyDescriptionForAccessibility(Keyboard.Key key) {
+        int code = key.codes[0];
+        if (code == CODE_SPACE) return "Space bar";
+        if (code == CODE_ENTER) return "Enter key";
+        if (code == CODE_DELETE) return "Delete key";
+        if (code == CODE_SHIFT) return "Shift key";
+        if (code == CODE_VOICE) return "Voice input";
+        if (code == CODE_LANG_CHANGE) return "Change language";
+        return getCachedKeyDescription(key);
     }
 
     @Override public void onKey(int primaryCode, int[] keyCodes) { handleInput(primaryCode, null); }
@@ -524,7 +523,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             : String.valueOf((char) primaryCode);
 
                     if (isShanOrMyanmar()) {
-                        
                         // 1. User Types 'ေ' -> Insert [Space]+[ေ]
                         if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
                             ic.commitText(String.valueOf(ZWSP) + charStr, 1);
@@ -604,6 +602,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         ic.commitText(charStr, 1);
                         currentWord.append(charStr);
                     }
+                    
+                    // Silent typing
                     
                     if (isCaps) { isCaps = false; updateKeyboardLayout(); }
                     triggerCandidateUpdate(200);
@@ -766,17 +766,26 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (currentKeyboard == null || currentKeyboard.getKeys() == null) return -1;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys.isEmpty()) return -1;
-        
+
+        // SLIDE UP TO CANCEL (Must return -1)
+        if (y < 0) {
+            return -1;
+        }
+
         int closestIndex = -1;
         int minDistSq = Integer.MAX_VALUE;
-        int maxDistSq = 10000; 
+        int distThresholdSq = 10000; // 100px Snap
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.codes[0] == -100) continue;
 
-            if (key.isInside(x, y)) return i; 
+            // 1. Exact check
+            if (key.isInside(x, y)) {
+                return i;
+            }
 
+            // 2. Distance check
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
             int dx = x - keyCenterX;
@@ -789,8 +798,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         }
         
-        if (minDistSq > maxDistSq) return -1;
-        return closestIndex;
+        // Check Threshold
+        if (minDistSq < distThresholdSq) {
+            return closestIndex;
+        }
+
+        return -1;
     }
 
     private void playHaptic(int primaryCode) {
