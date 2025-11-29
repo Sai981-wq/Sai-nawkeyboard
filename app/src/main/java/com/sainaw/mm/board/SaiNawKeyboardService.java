@@ -435,11 +435,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                 case CODE_SPACE:
                     if (!isSpaceLongPressed) {
-                        // *** NEW: Read the word before adding space ***
-                        announceLastWordOnSpace();
+                        // *** FIX: Capture word first, then commit, then announce with delay ***
+                        String wordToEcho = getLastWordForEcho(); 
                         
                         ic.commitText(" ", 1);
                         saveWordAndReset();
+                        
+                        if (wordToEcho != null && !wordToEcho.isEmpty()) {
+                            // 70ms delay to ensure "Space" event doesn't override "Word" event
+                            handler.postDelayed(() -> announceText(wordToEcho), 70);
+                        }
                     }
                     isSpaceLongPressed = false;
                     break;
@@ -542,20 +547,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** NEW: Announce Word on Space ***
-    private void announceLastWordOnSpace() {
-        if (accessibilityManager == null || !accessibilityManager.isEnabled()) return;
+    // *** NEW: Helper to get word WITHOUT causing side effects ***
+    private String getLastWordForEcho() {
+        if (accessibilityManager == null || !accessibilityManager.isEnabled()) return null;
 
         InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
+        if (ic == null) return null;
 
-        // Grab text before cursor to determine the last word
         CharSequence textBefore = ic.getTextBeforeCursor(50, 0);
-        if (textBefore == null || textBefore.length() == 0) return;
+        if (textBefore == null || textBefore.length() == 0) return null;
 
         String text = textBefore.toString();
-
-        // Find the last delimiter (Space, Newline)
         int lastSpaceIndex = -1;
         for (int i = text.length() - 1; i >= 0; i--) {
             char c = text.charAt(i);
@@ -565,18 +567,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         }
 
-        // Extract the word
-        String wordToSpeak = "";
-        if (lastSpaceIndex == -1) {
-            wordToSpeak = text; // No space found, speak whole text
-        } else {
-            wordToSpeak = text.substring(lastSpaceIndex + 1); // Speak from last space
-        }
-
-        if (!wordToSpeak.trim().isEmpty()) {
-            wordToSpeak = wordToSpeak.replace(String.valueOf(ZWSP), "");
-            announceText(wordToSpeak);
-        }
+        String word = (lastSpaceIndex == -1) ? text : text.substring(lastSpaceIndex + 1);
+        return word.replace(String.valueOf(ZWSP), "").trim();
     }
 
     // *** OPTIMIZED: Syllable Feedback ***
