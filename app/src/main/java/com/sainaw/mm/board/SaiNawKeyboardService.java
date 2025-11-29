@@ -435,6 +435,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                 case CODE_SPACE:
                     if (!isSpaceLongPressed) {
+                        // *** NEW: Read the word before adding space ***
+                        announceLastWordOnSpace();
+                        
                         ic.commitText(" ", 1);
                         saveWordAndReset();
                     }
@@ -539,9 +542,45 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // *** NEW: Announce Word on Space ***
+    private void announceLastWordOnSpace() {
+        if (accessibilityManager == null || !accessibilityManager.isEnabled()) return;
+
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+
+        // Grab text before cursor to determine the last word
+        CharSequence textBefore = ic.getTextBeforeCursor(50, 0);
+        if (textBefore == null || textBefore.length() == 0) return;
+
+        String text = textBefore.toString();
+
+        // Find the last delimiter (Space, Newline)
+        int lastSpaceIndex = -1;
+        for (int i = text.length() - 1; i >= 0; i--) {
+            char c = text.charAt(i);
+            if (c == ' ' || c == '\n' || c == '\t') {
+                lastSpaceIndex = i;
+                break;
+            }
+        }
+
+        // Extract the word
+        String wordToSpeak = "";
+        if (lastSpaceIndex == -1) {
+            wordToSpeak = text; // No space found, speak whole text
+        } else {
+            wordToSpeak = text.substring(lastSpaceIndex + 1); // Speak from last space
+        }
+
+        if (!wordToSpeak.trim().isEmpty()) {
+            wordToSpeak = wordToSpeak.replace(String.valueOf(ZWSP), "");
+            announceText(wordToSpeak);
+        }
+    }
+
     // *** OPTIMIZED: Syllable Feedback ***
     private void announceLastSyllable() {
-        // Optimization: Don't run logic if TalkBack is OFF
         if (accessibilityManager == null || !accessibilityManager.isEnabled()) return;
 
         try {
@@ -715,7 +754,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentKeyboard = nextKeyboard;
             if (keyboardView != null) {
                 keyboardView.setKeyboard(currentKeyboard);
-                // Optimization: Cache Keys for faster lookup
                 currentKeys = currentKeyboard.getKeys();
                 keyboardView.invalidateAllKeys();
                 updateHelperState();
@@ -746,8 +784,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (currentKeys == null || currentKeys.isEmpty()) return -1;
         
         // 1. Check Previous Key First (Temporal Locality)
-        // လက်က Key တစ်ခုပေါ်ရောက်နေရင် နောက်တစ်ခေါက်စစ်တဲ့အခါ အဲဒီ Key ပေါ်မှာပဲ ရှိနေဖို့ 90% သေချာပါတယ်။
-        // ဒါကြောင့် Loop အစအဆုံးမပတ်ဘဲ lastHoverKeyIndex ကို အရင်စစ်လိုက်ပါတယ်။
         if (lastHoverKeyIndex >= 0 && lastHoverKeyIndex < currentKeys.size()) {
             Keyboard.Key lastKey = currentKeys.get(lastHoverKeyIndex);
             if (lastKey.isInside(x, y)) {
