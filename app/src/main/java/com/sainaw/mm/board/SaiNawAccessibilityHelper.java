@@ -3,7 +3,6 @@ package com.sainaw.mm.board;
 import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Bundle;
-import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import androidx.annotation.NonNull;
@@ -18,12 +17,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
     private OnAccessibilityKeyListener listener;
-    
-    // Performance: Reuse Rect to prevent Garbage Collection lag
-    private final Rect mTempRect = new Rect();
-    
-    // Snap Threshold (100px squared) - Don't snap if finger is too far
-    private static final int MAX_SNAP_DISTANCE_SQ = 10000; 
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
@@ -39,8 +32,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
+        // Refresh TalkBack tree
         invalidateRoot();
-        view.post(() -> sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED));
+        sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
 
     @Override
@@ -49,47 +43,52 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null || keys.isEmpty()) return HOST_ID;
 
-        // 1. Strict Check
+        // 1. Strict Check: Is the touch exactly inside a key?
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.isInside((int) x, (int) y)) {
-                if (key.codes[0] == -100) return HOST_ID; 
+                if (key.codes[0] == -100) return HOST_ID; // Ignore dummy keys
                 return i;
             }
         }
 
-        // 2. Nearest Key (Snap) with Distance Limit
+        // 2. Nearest Key Check: If not exactly inside, find the closest key
+        // This makes "Explore by Touch" much smoother.
         return getNearestKeyIndex((int) x, (int) y);
     }
 
+    // --- NEAREST KEY ALGORITHM ---
     private int getNearestKeyIndex(int x, int y) {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         
         int closestIndex = HOST_ID;
-        int minDistSq = Integer.MAX_VALUE;
+        int minDistSq = Integer.MAX_VALUE; // Squared distance
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
+            
+            // Skip dummy keys (-100) from snapping
             if (key.codes[0] == -100) continue;
 
+            // Calculate center of the key
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
+
+            // Euclidean distance calculation (Squared to avoid sqrt for performance)
             int dx = x - keyCenterX;
             int dy = y - keyCenterY;
             int distSq = (dx * dx) + (dy * dy);
 
+            // Update if this key is closer than the previous best
             if (distSq < minDistSq) {
                 minDistSq = distSq;
                 closestIndex = i;
             }
         }
         
-        // Check threshold
-        if (minDistSq > MAX_SNAP_DISTANCE_SQ) {
-            return HOST_ID; 
-        }
-        
+        // Optional: You can add a threshold here (e.g., only snap if within 100px)
+        // But for accessibility, snapping to *any* nearest key is usually preferred.
         return closestIndex;
     }
 
@@ -100,6 +99,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (keys == null) return;
 
         for (int i = 0; i < keys.size(); i++) {
+            // Only expose non-dummy keys
             if (keys.get(i).codes[0] != -100) {
                 virtualViewIds.add(i);
             }
@@ -108,11 +108,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     @Override
     protected void onPopulateNodeForVirtualView(int virtualViewId, @NonNull AccessibilityNodeInfoCompat node) {
-        mTempRect.set(0, 0, 1, 1);
-
         if (currentKeyboard == null) {
             node.setContentDescription("");
-            node.setBoundsInParent(mTempRect);
+            node.setBoundsInParent(new Rect(0, 0, 1, 1));
             return;
         }
         
@@ -120,7 +118,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         
         if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) {
             node.setContentDescription("");
-            node.setBoundsInParent(mTempRect);
+            node.setBoundsInParent(new Rect(0, 0, 1, 1));
             return;
         }
         
@@ -133,13 +131,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         
         int right = key.x + key.width;
         int bottom = key.y + key.height;
-        
-        if (right <= key.x || bottom <= key.y) {
-             mTempRect.set(0, 0, 1, 1);
+        if (right <= 0 || bottom <= 0) {
+             node.setBoundsInParent(new Rect(0,0,1,1));
         } else {
-             mTempRect.set(key.x, key.y, right, bottom);
+             node.setBoundsInParent(new Rect(key.x, key.y, right, bottom));
         }
-        node.setBoundsInParent(mTempRect);
     }
 
     @Override
@@ -149,11 +145,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 List<Keyboard.Key> keys = currentKeyboard.getKeys();
                 if (keys != null && virtualViewId >= 0 && virtualViewId < keys.size()) {
                     Keyboard.Key key = keys.get(virtualViewId);
-                    
-                    // Better Feedback
-                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
-                    sendEventForVirtualView(virtualViewId, AccessibilityEvent.TYPE_VIEW_CLICKED);
-
                     if (listener != null) {
                         listener.onAccessibilityKeyClick(key.codes[0], key);
                     }
