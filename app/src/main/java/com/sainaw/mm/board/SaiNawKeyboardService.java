@@ -72,7 +72,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
     
-    // Logic Processor
+    // Logic Processor (Refactored Logic)
     private SaiNawTextProcessor textProcessor;
 
     // Voice
@@ -179,6 +179,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
+        // Initialize Refactored Processor
         textProcessor = new SaiNawTextProcessor();
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
@@ -198,7 +199,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         } else {
             suggestionDB = null; 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                // Register receiver only if needed
                 registerReceiver(userUnlockReceiver, new IntentFilter(Intent.ACTION_USER_UNLOCKED));
                 isReceiverRegistered = true;
             }
@@ -602,8 +602,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
-            final String wordToSave = currentWord.toString();
-            dbExecutor.execute(() -> suggestionDB.saveWord(wordToSave));
+            // *** CRITICAL UPDATE: Normalize word before saving to DB ***
+            // This prevents incorrect user typing (e.g., e + ka) from polluting the DB
+            final String rawWord = currentWord.toString();
+            final String normalizedWord = textProcessor.normalizeText(rawWord);
+            
+            dbExecutor.execute(() -> suggestionDB.saveWord(normalizedWord));
         }
         currentWord.setLength(0);
         triggerCandidateUpdate(0);
