@@ -309,7 +309,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- TALKBACK SAFE: Lift-to-Type Logic ---
+    // --- TALKBACK SAFE: Improved Lift-to-Type with Overshoot Protection ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -321,7 +321,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float x = event.getX();
             float y = event.getY();
             
-            if (y < 20 || y > keyboardView.getHeight() - 20 || x < 20 || x > keyboardView.getWidth() - 20) {
+            // အပေါ်တန်းက စာလုံးတွေ "ထစ်" နေတာပျောက်ဖို့အတွက် အရင်က y < 20 တားထားတာကို ဖြုတ်လိုက်ပါပြီ။
+            // အခုက ဘေးဘောင်တွေလောက်ကိုပဲ Safety ထားပါတော့မယ်။
+            int width = keyboardView.getWidth();
+            int height = keyboardView.getHeight();
+            
+            // Basic bounds check (X only, let Y be flexible for top row access)
+            if (x < 0 || x > width || y > height + 50) {
                 lastHoverKeyIndex = -1;
                 return;
             }
@@ -333,10 +339,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     playHaptic(0);
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                // *** FIX: Overshoot Protection ***
+                // လက်ကြွလိုက်တဲ့အချိန်မှာ Y တန်ဖိုးက 0 ထက်ငယ်နေရင် (အနုတ်လက္ခဏာပြနေရင်) 
+                // ဒါဟာ အပေါ်ကို ပွတ်ဆွဲလိုက်တာ (Swipe Up) ဖြစ်တဲ့အတွက် စာမရိုက်ဘဲ Cancel လုပ်ပါမယ်။
+                if (y < 0) { 
+                    lastHoverKeyIndex = -1;
+                    return;
+                }
+
                 if (lastHoverKeyIndex != -1) {
                     List<Keyboard.Key> keys = currentKeyboard.getKeys();
                     if (keys != null && lastHoverKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
+                        // နောက်ဆုံးစစ်ဆေးချက်အနေနဲ့ Key ထဲမှာ ရှိမရှိ ပြန်စစ်မယ်
                         if (key.isInside((int)x, (int)y)) {
                              if (key.codes[0] != -100) {
                                 handleInput(key.codes[0], key);
@@ -515,7 +530,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             }
                             currentWord.append(charStr);
                             
-                            // *** NEW: Shan 'ႂ်' Compatible Syllable Feedback ***
+                            // *** NEW: Syllable Feedback ***
                             announceLastSyllable();
                         }
                     } 
