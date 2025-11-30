@@ -35,8 +35,8 @@
              android:keyEdgeFlags="left"/>
         
         <Key android:codes="-4" 
-             android:keyLabel="⏎" 
-             android:keyIcon="@android:drawable/ic_input_add" /> 
+             android:keyLabel="Enter" 
+             android:keyWidth="34%p"/> 
         
         <Key android:codes="-5" 
              android:keyLabel="⌫" 
