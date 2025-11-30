@@ -22,7 +22,8 @@ public class LanguageSettingsActivity extends AppCompatActivity {
 
         prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
 
-        setupSwitch(R.id.switch_eng, "enable_eng", true);
+        // English switch is removed because it's mandatory.
+        // Only setting up Myanmar and Shan switches.
         setupSwitch(R.id.switch_mm, "enable_mm", true);
         setupSwitch(R.id.switch_shan, "enable_shan", true);
     }
@@ -43,3 +44,4 @@ public class LanguageSettingsActivity extends AppCompatActivity {
         return true;
     }
 }
+

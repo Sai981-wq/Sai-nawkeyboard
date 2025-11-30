@@ -37,23 +37,21 @@ public class SaiNawLayoutManager {
 
     // Load Language Settings from Prefs
     public void loadLanguageSettings(SharedPreferences prefs) {
-        boolean useEng = prefs.getBoolean("enable_eng", true); // Default True
         boolean useMm = prefs.getBoolean("enable_mm", true);   // Default True
         boolean useShan = prefs.getBoolean("enable_shan", true); // Default True
 
         enabledLanguages.clear();
-        if (useEng) enabledLanguages.add(0);
+        
+        // 1. English (0) is ALWAYS added first (Mandatory)
+        enabledLanguages.add(0);
+
+        // 2. Add others if enabled
         if (useMm) enabledLanguages.add(1);
         if (useShan) enabledLanguages.add(2);
 
-        // Fallback: If user disables ALL, force English
-        if (enabledLanguages.isEmpty()) {
-            enabledLanguages.add(0);
-        }
-
-        // Validate current language
+        // Validation: If current language was disabled by user, reset to English
         if (!enabledLanguages.contains(currentLanguageId)) {
-            currentLanguageId = enabledLanguages.get(0);
+            currentLanguageId = 0; // Reset to English
         }
     }
 
@@ -161,7 +159,7 @@ public class SaiNawLayoutManager {
         }
     }
     
-    // *** Modified Logic for Language Switching ***
+    // Change Language Logic
     public void changeLanguage() {
         if (enabledLanguages.isEmpty()) return;
 
