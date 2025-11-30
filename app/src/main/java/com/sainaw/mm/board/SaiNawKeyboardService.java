@@ -53,6 +53,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int CODE_LANG_CHANGE = -101;
     private static final int CODE_VOICE = -10;
 
+    // Lift-to-Type Cancel Threshold (Pixels)
+    // ကီးဘုတ်အပေါ်ဘက် 40 pixels ကျော်မှ Cancel ဖြစ်မည်
+    private static final float CANCEL_THRESHOLD = -40f; 
+
     // Myanmar/Shan Unicode Constants
     private static final int MM_THWAY_HTOE = 4145; 
     private static final int SHAN_E = 4228;        
@@ -72,7 +76,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
     
-    // Logic Processor (Refactored Logic)
+    // Logic Processor
     private SaiNawTextProcessor textProcessor;
 
     // Voice
@@ -179,7 +183,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
-        // Initialize Refactored Processor
+        // Initialize Processor
         textProcessor = new SaiNawTextProcessor();
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
@@ -193,7 +197,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         
-        // Database Initialization Logic with Leak Check
+        // Database Initialization
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else {
@@ -219,10 +223,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         updateHelperState();
 
+        // *** Updated Hover Listener Order ***
         keyboardView.setOnHoverListener((v, event) -> {
-            boolean handled = accessibilityHelper.dispatchHoverEvent(event);
-            handleLiftToType(event);
-            return handled;
+            // Lift Logic ကို အရင်လုပ်ပါစေ (Cancel logic တွေမှန်အောင်)
+            handleLiftToType(event); 
+            // ပြီးမှ Accessibility ကို ပို့မယ်
+            return accessibilityHelper.dispatchHoverEvent(event);
         });
 
         keyboardView.setOnTouchListener((v, event) -> false);
@@ -324,34 +330,54 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
+    // *** REFACTORED LIFT-TO-TYPE LOGIC ***
     private void handleLiftToType(MotionEvent event) {
-        if (!isLiftToType) { lastHoverKeyIndex = -1; return; }
-        try {
-            int action = event.getAction();
-            float x = event.getX();
-            float y = event.getY();
-            if (x < 0 || x > keyboardView.getWidth() || y > keyboardView.getHeight() + 50) {
-                lastHoverKeyIndex = -1; return;
-            }
-            if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
-                int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
-                if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
-                    lastHoverKeyIndex = keyIndex;
-                    playHaptic(0);
+        // Lift to Type ပိတ်ထားရင် သို့မဟုတ် Keys မရှိရင် ဘာမှမလုပ်ဘူး
+        if (!isLiftToType || currentKeys == null) {
+            lastHoverKeyIndex = -1;
+            return;
+        }
+
+        int action = event.getAction();
+        float x = event.getX();
+        float y = event.getY();
+
+        // Safety: Explicit Cancellation Zone
+        // ကီးဘုတ်အပေါ်ဘက် (Threshold) ကျော်သွားရင် Cancel မယ်
+        if (y < CANCEL_THRESHOLD) {
+            lastHoverKeyIndex = -1; 
+            return; 
+        }
+
+        switch (action) {
+            case MotionEvent.ACTION_HOVER_ENTER:
+            case MotionEvent.ACTION_HOVER_MOVE:
+                int newKeyIndex = getNearestKeyIndexFast((int) x, (int) y);
+                
+                // Smart Sticky Focus:
+                // Key အသစ်ပေါ်ရောက်မှ Update လုပ်မယ်။ Gap (နေရာလွတ်) ရောက်နေရင် lastHoverKeyIndex ကိုမပြောင်းဘူး။
+                if (newKeyIndex != -1 && newKeyIndex != lastHoverKeyIndex) {
+                    lastHoverKeyIndex = newKeyIndex;
+                    playHaptic(0); // Feedback for key change
                 }
-            } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                if (y < 0) { lastHoverKeyIndex = -1; return; }
-                if (lastHoverKeyIndex != -1) {
-                    if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
-                        Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
-                        if (key.isInside((int)x, (int)y)) {
-                             if (key.codes[0] != -100) handleInput(key.codes[0], key);
-                        }
+                break;
+
+            case MotionEvent.ACTION_HOVER_EXIT:
+                // Instant Fire Logic:
+                // Coordinates ကို ထပ်မစစ်ဘူး။ Memory ထဲမှာ မှတ်ထားတဲ့ Key ရှိရင် ချက်ချင်းရိုက်မယ်။
+                if (lastHoverKeyIndex != -1 && lastHoverKeyIndex < currentKeys.size()) {
+                    Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
+                    
+                    // Dummy Key (-100) မဟုတ်ရင် ရိုက်ထည့်မယ်
+                    if (key.codes[0] != -100) {
+                        handleInput(key.codes[0], key);
                     }
                 }
+                
+                // ပြီးရင် Reset ချမယ်
                 lastHoverKeyIndex = -1;
-            }
-        } catch (Exception e) { lastHoverKeyIndex = -1; }
+                break;
+        }
     }
 
     private void updateHelperState() {
@@ -370,7 +396,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (isCaps) { isCaps = false; updateKeyboardLayout(); }
     }
 
-    // *** onPress with Long Press Logic ***
     @Override public void onPress(int primaryCode) {
         playHaptic(primaryCode);
         
@@ -384,7 +409,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** onRelease with Cleanup ***
     @Override public void onRelease(int primaryCode) {
         if (primaryCode == CODE_SPACE) {
             handler.removeCallbacks(spaceLongPressRunnable);
@@ -444,7 +468,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     saveWordAndReset();
                     break;
                 case CODE_SPACE:
-                    // Space Long Press Check
                     if (isSpaceLongPressed) {
                         isSpaceLongPressed = false;
                         return;
@@ -602,11 +625,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
-            // *** CRITICAL UPDATE: Normalize word before saving to DB ***
-            // This prevents incorrect user typing (e.g., e + ka) from polluting the DB
             final String rawWord = currentWord.toString();
             final String normalizedWord = textProcessor.normalizeText(rawWord);
-            
             dbExecutor.execute(() -> suggestionDB.saveWord(normalizedWord));
         }
         currentWord.setLength(0);
@@ -722,13 +742,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return -1;
     }
 
+    // *** UPDATED HAPTIC FEEDBACK ***
     private void playHaptic(int primaryCode) {
         if (!isVibrateOn) return;
         try {
             Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
             if (v != null && v.hasVibrator()) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createOneShot(40, VibrationEffect.DEFAULT_AMPLITUDE));
-                else v.vibrate(40);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    // Android 10+ အတွက် Click effect (ပိုပြတ်သားသည်)
+                    v.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK));
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    // အရင်ဖုန်းများအတွက် 20ms သာ (မရှည်စေရ)
+                    v.vibrate(VibrationEffect.createOneShot(20, VibrationEffect.DEFAULT_AMPLITUDE));
+                } else {
+                    v.vibrate(20);
+                }
             }
         } catch (Exception e) {}
     }
@@ -744,7 +772,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         } catch (Exception e) {}
     }
     
-    // *** SUPER CLEAN DESTROY ***
     @Override
     public void onDestroy() {
         super.onDestroy();
@@ -752,13 +779,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (dbExecutor != null && !dbExecutor.isShutdown()) { dbExecutor.shutdown(); }
         if (suggestionDB != null) { suggestionDB.close(); }
         
-        // Unregister receiver safely
         if (isReceiverRegistered) {
             unregisterReceiver(userUnlockReceiver);
             isReceiverRegistered = false;
         }
         
-        // Remove all pending callbacks
         handler.removeCallbacks(deleteRunnable);
         handler.removeCallbacks(spaceLongPressRunnable);
         handler.removeCallbacks(pendingCandidateUpdate);
