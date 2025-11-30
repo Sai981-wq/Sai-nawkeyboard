@@ -48,6 +48,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SaiNawTextProcessor textProcessor;
     private SuggestionDB suggestionDB;
 
+    // System Services
+    private AccessibilityManager accessibilityManager; // Fixed: Added missing declaration
+
     // UI Components
     private KeyboardView keyboardView;
     private LinearLayout candidateContainer;
@@ -101,7 +104,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         touchHandler = new SaiNawTouchHandler(this, layoutManager, feedbackManager);
         textProcessor = new SaiNawTextProcessor();
 
-        // 2. Load Settings safely
+        // 2. Initialize System Services
+        accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE); // Fixed: Initialization
+
+        // 3. Load Settings safely
         Context safeContext = getSafeContext();
         SharedPreferences prefs = safeContext.getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         
@@ -109,14 +115,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         touchHandler.loadSettings(prefs);
         layoutManager.initKeyboards(prefs); // Initial load
 
-        // 3. Setup UI
+        // 4. Setup UI
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
         View layout = getLayoutInflater().inflate(isDarkTheme ? R.layout.input_view_dark : R.layout.input_view, null);
         keyboardView = layout.findViewById(R.id.keyboard_view);
         candidateContainer = layout.findViewById(R.id.candidates_container);
         initCandidateViews(isDarkTheme);
 
-        // 4. Setup Database (Direct Boot Aware)
+        // 5. Setup Database (Direct Boot Aware)
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -124,7 +130,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             isReceiverRegistered = true;
         }
 
-        // 5. Setup Listeners & Accessibility
+        // 6. Setup Listeners & Accessibility
         keyboardView.setOnKeyboardActionListener(this);
         keyboardView.setOnTouchListener((v, event) -> false);
         
@@ -355,11 +361,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
 
     public void announceText(String text) {
-        AccessibilityManager am = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
-        if (am != null && am.isEnabled()) {
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
             event.getText().add(text);
-            am.sendAccessibilityEvent(event);
+            accessibilityManager.sendAccessibilityEvent(event);
         }
     }
 
@@ -502,8 +507,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
             p.setMargins(5,0,5,0); candidateContainer.addView(tv, p); candidateViews.add(tv);
         }
-        // Accessibility manager init
-        AccessibilityManager am = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
     }
     
     // --- Abstract Overrides ---
