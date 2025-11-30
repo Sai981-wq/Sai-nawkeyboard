@@ -72,7 +72,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
     
-    // Logic Processor (Refactored Logic)
     private SaiNawTextProcessor textProcessor;
 
     // Voice
@@ -93,7 +92,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isSymbols = false; 
     private int currentLanguageId = 0; 
     
-    // Leak Prevention for Receiver
+    // Leak Prevention
     private boolean isReceiverRegistered = false;
 
     // System Services
@@ -101,19 +100,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private AccessibilityManager accessibilityManager;
     private SharedPreferences prefs;
 
-    // Settings
+    // Settings & Optimization
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
     private boolean isLiftToType = true; 
+    
+    // Gboard-Style Touch Tracking
+    private float lastX = -1;
+    private float lastY = -1;
+    private boolean isTouchAllowed = true; // Tracks if the swipe is valid
 
     // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
     // --- LONG PRESS HANDLERS ---
-    
-    // 1. Continuous Delete Logic
     private boolean isDeleteActive = false;
     private final Runnable deleteRunnable = new Runnable() {
         @Override
@@ -125,7 +127,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     };
 
-    // 2. Space Long Press Logic (Keyboard Picker)
     private boolean isSpaceLongPressed = false;
     private final Runnable spaceLongPressRunnable = new Runnable() {
         @Override
@@ -179,7 +180,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
-        // Initialize Refactored Processor
         textProcessor = new SaiNawTextProcessor();
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
@@ -193,7 +193,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         
-        // Database Initialization Logic with Leak Check
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else {
@@ -324,7 +323,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- FINAL FIX: Virtual Ceiling & Smart Snapping ---
+    // --- GBOARD STYLE: Touch Handling with "Slide-to-Cancel" ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -335,42 +334,53 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int action = event.getAction();
             float x = event.getX();
             float y = event.getY();
-
-            // 1. Ceiling Check (Swipe Up Cancellation)
-            // အပေါ်ဆုံး -60px ထက်ကျော်သွားရင် Swipe Up လို့ သတ်မှတ်ပြီး Cancel မယ်
-            if (y < -60) {
-                lastHoverKeyIndex = -1;
-                return;
-            }
             
-            // Side & Bottom margin check
-            if (x < -20 || x > keyboardView.getWidth() + 20 || y > keyboardView.getHeight() + 40) {
-                lastHoverKeyIndex = -1;
+            // Gboard Logic: If finger goes above this line, it's a cancel gesture.
+            float topBound = -10.0f; 
+
+            if (action == MotionEvent.ACTION_HOVER_ENTER) {
+                isTouchAllowed = true; // Reset state
+                lastX = x;
+                lastY = y;
+            }
+
+            // Continuous Check: If ever crossed top bound, invalidate the session
+            if (y < topBound) {
+                isTouchAllowed = false;
+                lastHoverKeyIndex = -1; 
                 return;
             }
 
-            if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
-                // 2. Finding Phase (Snapping)
-                // လက်တင်နေစဉ်မှာ အနီးဆုံး Key ကိုရှာပြီး အသံထွက်ပေးမယ် (မထစ်တော့ဘူး)
+            if (action == MotionEvent.ACTION_HOVER_MOVE) {
+                if (!isTouchAllowed) return;
+
+                // Throttling for performance
+                if (Math.abs(x - lastX) < 5 && Math.abs(y - lastY) < 5) {
+                    return; 
+                }
+                lastX = x;
+                lastY = y;
+
                 int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0); 
                 }
-            } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // 3. Typing Phase (Hitbox Check)
-                // လက်ကြွလိုက်တဲ့အချိန်မှာတော့ Snapping မသုံးဘူး။ Virtual Hitbox နဲ့စစ်မယ်။
-                // အပေါ်ကို -60px အထိ Buffer ပေးထားမယ် (လက်လွန်တာကို ခွင့်ပြုမယ်)
+            } 
+            else if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                // Final Check on Lift
+                if (!isTouchAllowed || y < topBound) {
+                    lastHoverKeyIndex = -1;
+                    return;
+                }
+
                 if (lastHoverKeyIndex != -1) {
                     if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
                         
-                        // Strict bounds check with top buffer
-                        int extendedTop = key.y - 60; 
-                        int extendedBottom = key.y + key.height + 30;
-                        
-                        if (x >= key.x && x <= key.x + key.width && 
-                            y >= extendedTop && y <= extendedBottom) {
+                        // Generous vertical hitbox, strict horizontal hitbox
+                        if (x >= key.x && x <= key.x + key.width &&
+                            y >= key.y - 80 && y <= key.y + key.height + 50) {
                                 
                              if (key.codes[0] != -100) {
                                 handleInput(key.codes[0], key);
@@ -401,7 +411,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (isCaps) { isCaps = false; updateKeyboardLayout(); }
     }
 
-    // *** onPress with Long Press Logic ***
     @Override public void onPress(int primaryCode) {
         playHaptic(primaryCode);
         
@@ -415,7 +424,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // *** onRelease with Cleanup ***
     @Override public void onRelease(int primaryCode) {
         if (primaryCode == CODE_SPACE) {
             handler.removeCallbacks(spaceLongPressRunnable);
@@ -426,7 +434,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    // --- MAIN INPUT HANDLING ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -632,10 +639,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
-            // *** Normalization before save ***
             final String rawWord = currentWord.toString();
             final String normalizedWord = textProcessor.normalizeText(rawWord);
-            
             dbExecutor.execute(() -> suggestionDB.saveWord(normalizedWord));
         }
         currentWord.setLength(0);
@@ -780,13 +785,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (dbExecutor != null && !dbExecutor.isShutdown()) { dbExecutor.shutdown(); }
         if (suggestionDB != null) { suggestionDB.close(); }
         
-        // Unregister receiver safely
         if (isReceiverRegistered) {
             unregisterReceiver(userUnlockReceiver);
             isReceiverRegistered = false;
         }
         
-        // Remove all pending callbacks
         handler.removeCallbacks(deleteRunnable);
         handler.removeCallbacks(spaceLongPressRunnable);
         handler.removeCallbacks(pendingCandidateUpdate);
