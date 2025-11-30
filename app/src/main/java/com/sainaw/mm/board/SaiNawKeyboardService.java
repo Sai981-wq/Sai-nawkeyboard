@@ -101,11 +101,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private AccessibilityManager accessibilityManager;
     private SharedPreferences prefs;
 
-    // Settings
+    // Settings & Optimization Variables
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
     private boolean isLiftToType = true; 
+    
+    // Touch Optimization Variables (Gboard-like feel)
+    private float lastX = -1;
+    private float lastY = -1;
 
     // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -324,34 +328,68 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
+    // --- SUPER OPTIMIZED LIFT-TO-TYPE ---
     private void handleLiftToType(MotionEvent event) {
-        if (!isLiftToType) { lastHoverKeyIndex = -1; return; }
+        if (!isLiftToType) {
+            lastHoverKeyIndex = -1;
+            return;
+        }
+
         try {
             int action = event.getAction();
             float x = event.getX();
             float y = event.getY();
-            if (x < 0 || x > keyboardView.getWidth() || y > keyboardView.getHeight() + 50) {
-                lastHoverKeyIndex = -1; return;
+
+            // 1. Expanded Buffer Zone for Top Row
+            // Allow overshoot up to -60 pixels to prevent "stuttering" on top row keys.
+            // Cancel only if y < -60 (Swipe Up)
+            if (y < -60 || y > keyboardView.getHeight() + 50 || x < -20 || x > keyboardView.getWidth() + 20) {
+                lastHoverKeyIndex = -1;
+                return;
             }
+
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
+                // 2. Touch Throttling (Optimization)
+                // Don't re-calculate if finger moved less than 5 pixels
+                if (Math.abs(x - lastX) < 5 && Math.abs(y - lastY) < 5) {
+                    return; 
+                }
+                lastX = x;
+                lastY = y;
+
                 int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
-                    playHaptic(0);
+                    playHaptic(0); // Only vibrate on key change
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                if (y < 0) { lastHoverKeyIndex = -1; return; }
+                // 3. Swipe Up Cancel Logic
+                if (y < -60) { 
+                    lastHoverKeyIndex = -1;
+                    return;
+                }
+
                 if (lastHoverKeyIndex != -1) {
                     if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
-                        if (key.isInside((int)x, (int)y)) {
-                             if (key.codes[0] != -100) handleInput(key.codes[0], key);
+                        
+                        // Strict bounds check with buffer allowance for top row
+                        if (x >= key.x && x <= key.x + key.width && 
+                            y >= key.y - 60 && y <= key.y + key.height + 20) {
+                                
+                             if (key.codes[0] != -100) {
+                                handleInput(key.codes[0], key);
+                            }
                         }
                     }
                 }
                 lastHoverKeyIndex = -1;
+                lastX = -1;
+                lastY = -1;
             }
-        } catch (Exception e) { lastHoverKeyIndex = -1; }
+        } catch (Exception e) { 
+            lastHoverKeyIndex = -1; 
+        }
     }
 
     private void updateHelperState() {
@@ -603,7 +641,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
             // *** CRITICAL UPDATE: Normalize word before saving to DB ***
-            // This prevents incorrect user typing (e.g., e + ka) from polluting the DB
             final String rawWord = currentWord.toString();
             final String normalizedWord = textProcessor.normalizeText(rawWord);
             
