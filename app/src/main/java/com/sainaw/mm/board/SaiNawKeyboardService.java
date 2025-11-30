@@ -98,8 +98,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private int currentLanguageId = 0; 
     private boolean isReceiverRegistered = false;
     
-    // *** NEW: Store EditorInfo to update Enter key anytime ***
-    private EditorInfo currentEditorInfo; 
+    // Editor Info Store (For Dynamic Enter Label)
+    private EditorInfo currentEditorInfo;
 
     // System Services
     private AudioManager audioManager;
@@ -334,10 +334,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         currentWord.setLength(0);
         isCaps = false;
         
-        // *** Store EditorInfo for dynamic Enter key ***
-        currentEditorInfo = info; 
+        // Save EditorInfo for dynamic updates
+        currentEditorInfo = info;
         
-        // --- KEYBOARD SELECTION LOGIC ---
+        // --- AUTO NUMBER PAD LOGIC ---
         int inputType = info.inputType & EditorInfo.TYPE_MASK_CLASS;
         
         if (inputType == EditorInfo.TYPE_CLASS_PHONE) {
@@ -352,18 +352,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         else {
             isSymbols = false;
             updateKeyboardLayout();
-            // Don't return, need to apply Enter key below
         }
 
         if (keyboardView != null) {
-            // Apply keyboard if we manually set it (for Number Pad)
+            // Apply number keyboard if needed
             if (isSymbols && (currentKeyboard == numberKeyboard)) {
                 keyboardView.setKeyboard(currentKeyboard);
                 currentKeys = currentKeyboard.getKeys();
             }
             
-            // *** Apply Dynamic Enter Label ***
-            updateEnterKeyLabel(); 
+            updateEnterKeyLabel(); // Update Enter label (Next/Done)
 
             keyboardView.invalidateAllKeys();
             updateHelperState();
@@ -372,7 +370,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
     
-    // *** Updated: Helper to Change Enter Key Label ***
+    // --- Helper to Change Enter Key Label Dynamically ---
     private void updateEnterKeyLabel() {
         if (currentKeyboard == null || keyboardView == null || currentEditorInfo == null) return;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
@@ -381,27 +379,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 int action = currentEditorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
 
                 switch (action) {
-                    case EditorInfo.IME_ACTION_GO:
-                        key.label = "Go";
-                        break;
-                    case EditorInfo.IME_ACTION_NEXT:
-                        key.label = "Next";
-                        break;
-                    case EditorInfo.IME_ACTION_SEARCH:
-                        key.label = "Search";
-                        break;
-                    case EditorInfo.IME_ACTION_SEND:
-                        key.label = "Send";
-                        break;
-                    case EditorInfo.IME_ACTION_DONE:
-                        key.label = "Done";
-                        break;
-                    default:
-                        key.label = "Enter"; 
-                        break;
+                    case EditorInfo.IME_ACTION_GO: key.label = "Go"; break;
+                    case EditorInfo.IME_ACTION_NEXT: key.label = "Next"; break;
+                    case EditorInfo.IME_ACTION_SEARCH: key.label = "Search"; break;
+                    case EditorInfo.IME_ACTION_SEND: key.label = "Send"; break;
+                    case EditorInfo.IME_ACTION_DONE: key.label = "Done"; break;
+                    default: key.label = "Enter"; break;
                 }
                 
-                // Icon ကို ဖြုတ်လိုက်မှ စာသားပေါ်မှာပါ
+                // Remove Icon to show Label text
                 key.icon = null; 
                 break; 
             }
@@ -438,10 +424,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     int code = key.codes[0];
                     
                     if (code == CODE_SPACE) {
-                        // Space 3000ms
+                        // Space Long Press: 3000ms
                         handler.postDelayed(spaceLongPressTask, 3000);
                     } else if (code == CODE_DELETE) {
-                        // Delete 2000ms
+                        // Delete Long Press: 2000ms
                         handler.postDelayed(deleteStartTask, 2000);
                     }
                 }
@@ -585,8 +571,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() 
                             : String.valueOf((char) primaryCode);
 
+                    // *** Number Handling Optimization ***
                     if (primaryCode >= 48 && primaryCode <= 57) {
                         ic.commitText(charStr, 1);
+                        // နံပါတ်ရိုက်လျှင် လက်ရှိစကားလုံးကို Reset ချပြီး သိမ်းမည် (စာလုံးပေါင်းမမှားစေရန်)
+                        if (currentWord.length() > 0) {
+                            saveWordAndReset();
+                        }
                         return;
                     }
 
@@ -810,7 +801,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 keyboardView.setKeyboard(currentKeyboard);
                 currentKeys = currentKeyboard.getKeys();
                 
-                // *** Dynamic Enter Label Update ***
                 updateEnterKeyLabel();
                 
                 keyboardView.invalidateAllKeys();
