@@ -6,7 +6,7 @@ import android.media.AudioManager;
 import android.os.Build;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
-import android.view.inputmethod.InputMethodService;
+// Import line အမှားကို ဖျက်လိုက်ပါပြီ
 
 public class SaiNawFeedbackManager {
     // Constants
@@ -67,3 +67,4 @@ public class SaiNawFeedbackManager {
         }
     }
 }
+
