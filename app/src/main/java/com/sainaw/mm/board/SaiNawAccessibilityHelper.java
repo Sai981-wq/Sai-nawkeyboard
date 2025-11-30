@@ -32,7 +32,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
-        // Refresh TalkBack tree
         invalidateRoot();
         sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
@@ -40,55 +39,41 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     @Override
     protected int getVirtualViewAt(float x, float y) {
         if (currentKeyboard == null) return HOST_ID;
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys == null || keys.isEmpty()) return HOST_ID;
+        
+        // *** FIX: Adjust for Padding ***
+        // XML မှာ Padding ခံထားရင် ဒီမှာ နှုတ်ပေးမှ Key နေရာအမှန်နဲ့ ကိုက်ညီမယ်
+        int adjustedY = (int) y - view.getPaddingTop();
+        int adjustedX = (int) x - view.getPaddingLeft();
 
-        // 1. Strict Check: Is the touch exactly inside a key?
-        for (int i = 0; i < keys.size(); i++) {
-            Keyboard.Key key = keys.get(i);
-            if (key.isInside((int) x, (int) y)) {
-                if (key.codes[0] == -100) return HOST_ID; // Ignore dummy keys
-                return i;
-            }
-        }
-
-        // 2. Nearest Key Check: If not exactly inside, find the closest key
-        // This makes "Explore by Touch" much smoother.
-        return getNearestKeyIndex((int) x, (int) y);
+        return getNearestKeyIndex(adjustedX, adjustedY);
     }
 
-    // --- NEAREST KEY ALGORITHM ---
+    // *** FIX: Distance-based Finding (Smooth TalkBack) ***
+    // လက်က ဘယ်နားရောက်ရောက် အနီးဆုံး Key ကိုရှာပေးလို့ အသံလုံးဝမထစ်တော့ပါ
     private int getNearestKeyIndex(int x, int y) {
-        if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys == null) return HOST_ID;
         
         int closestIndex = HOST_ID;
-        int minDistSq = Integer.MAX_VALUE; // Squared distance
+        int minDistSq = Integer.MAX_VALUE;
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
-            
-            // Skip dummy keys (-100) from snapping
-            if (key.codes[0] == -100) continue;
+            if (key.codes[0] == -100) continue; // Skip dummy keys
 
-            // Calculate center of the key
+            // Calculate Key Center
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
 
-            // Euclidean distance calculation (Squared to avoid sqrt for performance)
             int dx = x - keyCenterX;
             int dy = y - keyCenterY;
             int distSq = (dx * dx) + (dy * dy);
 
-            // Update if this key is closer than the previous best
             if (distSq < minDistSq) {
                 minDistSq = distSq;
                 closestIndex = i;
             }
         }
-        
-        // Optional: You can add a threshold here (e.g., only snap if within 100px)
-        // But for accessibility, snapping to *any* nearest key is usually preferred.
         return closestIndex;
     }
 
@@ -99,7 +84,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (keys == null) return;
 
         for (int i = 0; i < keys.size(); i++) {
-            // Only expose non-dummy keys
             if (keys.get(i).codes[0] != -100) {
                 virtualViewIds.add(i);
             }
@@ -115,7 +99,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         }
         
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        
         if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) {
             node.setContentDescription("");
             node.setBoundsInParent(new Rect(0, 0, 1, 1));
@@ -128,14 +111,16 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         node.setContentDescription(description);
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
+        node.setFocusable(true);
+        node.setClassName("android.widget.Button");
         
-        int right = key.x + key.width;
-        int bottom = key.y + key.height;
-        if (right <= 0 || bottom <= 0) {
-             node.setBoundsInParent(new Rect(0,0,1,1));
-        } else {
-             node.setBoundsInParent(new Rect(key.x, key.y, right, bottom));
-        }
+        // Bounds Calculation with Padding
+        int left = key.x + view.getPaddingLeft();
+        int top = key.y + view.getPaddingTop();
+        int right = left + key.width;
+        int bottom = top + key.height;
+        
+        node.setBoundsInParent(new Rect(left, top, right, bottom));
     }
 
     @Override
@@ -174,7 +159,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
              return "Capital " + label;
         }
-
         return label != null ? label : "Unlabeled Key";
     }
 }

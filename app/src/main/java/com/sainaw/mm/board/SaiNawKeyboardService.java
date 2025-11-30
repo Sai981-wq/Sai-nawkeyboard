@@ -321,7 +321,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- ULTIMATE LIFT-TO-TYPE: Distance-Based Finding ---
+    // --- CRITICAL FIX: Synchronized Logic for Smoothness & Accuracy ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -333,20 +333,25 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float x = event.getX();
             float y = event.getY();
             
-            // XML Padding Adjustment:
-            // Since we added paddingTop="15dp", we should utilize this logic.
-            // But for finding the NEAREST key, we actually don't need to subtract padding manually.
-            // The distance calculation will automatically find the closest key (even if in padding area).
+            // XML Padding Adjustment (MUST MATCH HELPER CLASS)
+            // Padding ကို ထည့်တွက်ပေးမှ နေရာအမှန်ရပါမယ်
+            int paddingTop = keyboardView.getPaddingTop();
+            int paddingLeft = keyboardView.getPaddingLeft();
             
-            // 1. Swipe Up Cancel (Ceiling)
-            // If raw Y is negative (above the view), cancel.
+            // Adjust coordinates for processing
+            int adjustedX = (int)x - paddingLeft;
+            int adjustedY = (int)y - paddingTop;
+
+            // 1. Swipe Up / Ceiling Check
+            // If raw Y is less than 0 (above the view including padding), Cancel.
+            // Using raw 'y' here because user swipes relative to the screen/view.
             if (y < 0) {
                 isTouchAllowed = false;
                 lastHoverKeyIndex = -1;
                 return;
             }
             
-            // Side Boundaries
+            // Side boundaries
             if (x < -20 || x > keyboardView.getWidth() + 20 || y > keyboardView.getHeight() + 40) {
                 lastHoverKeyIndex = -1;
                 return;
@@ -359,14 +364,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (action == MotionEvent.ACTION_HOVER_MOVE) {
                 if (!isTouchAllowed) return;
 
-                // *** FIX 1: Removed Throttling ***
-                // No more Math.abs check. This makes it feel instant and responsive.
-
-                // *** FIX 2: Distance-based Finding ***
-                // Instead of checking if (x,y) is strictly INSIDE a key, we find the CLOSEST key.
-                // This completely eliminates "stuttering" in the gaps or padding areas.
-                int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
-                
+                // *** FIX: Distance-based Finding using Adjusted Coordinates ***
+                // This ensures "stutter-free" exploration
+                int keyIndex = getNearestKeyIndexFast(adjustedX, adjustedY);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0); 
@@ -383,11 +383,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
                         
-                        // *** FIX 3: Hitbox Check ***
-                        // Only for typing do we check bounds.
-                        // We allow generous vertical buffer for the top row (up to -60px relative to key).
-                        if (x >= key.x && x <= key.x + key.width &&
-                            y >= key.y - 80 && y <= key.y + key.height + 50) {
+                        // *** FIX: Hitbox Check using Adjusted Coordinates ***
+                        // x and y are adjusted, so we compare directly with key.x/key.y
+                        // Allow vertical overshoot upwards (negative adjustedY) since that's the padding area
+                        if (adjustedX >= key.x && adjustedX <= key.x + key.width &&
+                            adjustedY >= key.y - 80 && adjustedY <= key.y + key.height + 50) {
                                 
                              if (key.codes[0] != -100) {
                                 handleInput(key.codes[0], key);
@@ -744,24 +744,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateKeyboardLayout();
     }
 
-    // *** FIX: Distance-based Finding (Key to Smoothness) ***
+    // *** FIX: Distance-based Finding using the same Adjusted Coordinates ***
     private int getNearestKeyIndexFast(int x, int y) {
         if (currentKeys == null || currentKeys.isEmpty()) return -1;
         
         int bestIndex = -1;
-        int minDistanceSq = Integer.MAX_VALUE; // Squared distance
+        int minDistanceSq = Integer.MAX_VALUE; 
 
         for (int i = 0; i < currentKeys.size(); i++) {
             Keyboard.Key key = currentKeys.get(i);
-            
-            // Skip codes -100 if any
             if (key.codes[0] == -100) continue;
 
-            // Calculate Key Center
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
 
-            // Calculate Distance Squared (avoids expensive sqrt)
             int dx = x - keyCenterX;
             int dy = y - keyCenterY;
             int distSq = dx * dx + dy * dy;
