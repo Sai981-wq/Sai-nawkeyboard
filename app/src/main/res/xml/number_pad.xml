@@ -26,7 +26,11 @@
     <Row>
         <Key android:codes="42" android:keyLabel="*" android:keyEdgeFlags="left"/>
         <Key android:codes="48" android:keyLabel="0"/>
-        <Key android:codes="35" android:keyLabel="#" android:keyEdgeFlags="right"/>
+        
+        <Key android:codes="-5" 
+             android:keyLabel="⌫" 
+             android:isRepeatable="true" 
+             android:keyEdgeFlags="right"/>
     </Row>
 
     <Row>
@@ -34,13 +38,10 @@
              android:keyLabel="ABC" 
              android:keyEdgeFlags="left"/>
         
+        <Key android:codes="35" android:keyLabel="#"/>
+        
         <Key android:codes="-4" 
              android:keyLabel="Enter" 
-             android:keyWidth="34%p"/> 
-        
-        <Key android:codes="-5" 
-             android:keyLabel="⌫" 
-             android:isRepeatable="true" 
              android:keyEdgeFlags="right"/>
     </Row>
 
