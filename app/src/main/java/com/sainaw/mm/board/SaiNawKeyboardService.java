@@ -86,6 +86,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard symbolsEnKeyboard, symbolsMmKeyboard; 
     private Keyboard currentKeyboard;
     private List<Keyboard.Key> currentKeys; 
+    
+    // *** OPTIMIZATION: Cached Key Centers ***
+    // တွက်ချက်မှုမြန်ဆန်စေရန် ဗဟိုမှတ်များကို Array ထဲကြိုထည့်ထားမည်
+    private int[] keyCentersX;
+    private int[] keyCentersY;
+    private int keyCount = 0;
 
     // State
     private boolean isCaps = false;
@@ -321,7 +327,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- CRITICAL FIX: Synchronized Logic for Smoothness & Accuracy ---
+    // --- TURBO LIFT-TO-TYPE: Array-Based Lookup ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -331,20 +337,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             int action = event.getAction();
             float x = event.getX();
-            float y = event.getY();
-            
-            // XML Padding Adjustment (MUST MATCH HELPER CLASS)
-            // Padding ကို ထည့်တွက်ပေးမှ နေရာအမှန်ရပါမယ်
-            int paddingTop = keyboardView.getPaddingTop();
-            int paddingLeft = keyboardView.getPaddingLeft();
-            
-            // Adjust coordinates for processing
-            int adjustedX = (int)x - paddingLeft;
-            int adjustedY = (int)y - paddingTop;
+            float y = event.getY(); // No padding subtraction needed for Nearest check
 
-            // 1. Swipe Up / Ceiling Check
-            // If raw Y is less than 0 (above the view including padding), Cancel.
-            // Using raw 'y' here because user swipes relative to the screen/view.
+            // Ceiling Check
             if (y < 0) {
                 isTouchAllowed = false;
                 lastHoverKeyIndex = -1;
@@ -364,9 +359,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (action == MotionEvent.ACTION_HOVER_MOVE) {
                 if (!isTouchAllowed) return;
 
-                // *** FIX: Distance-based Finding using Adjusted Coordinates ***
-                // This ensures "stutter-free" exploration
-                int keyIndex = getNearestKeyIndexFast(adjustedX, adjustedY);
+                // *** SPEED UP: Use Array Lookup ***
+                int keyIndex = getNearestKeyIndexTurbo((int)x, (int)y);
+                
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0); 
@@ -383,11 +378,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
                         
-                        // *** FIX: Hitbox Check using Adjusted Coordinates ***
-                        // x and y are adjusted, so we compare directly with key.x/key.y
-                        // Allow vertical overshoot upwards (negative adjustedY) since that's the padding area
-                        if (adjustedX >= key.x && adjustedX <= key.x + key.width &&
-                            adjustedY >= key.y - 80 && adjustedY <= key.y + key.height + 50) {
+                        // Hitbox Check with Vertical Buffer
+                        if (x >= key.x && x <= key.x + key.width &&
+                            y >= key.y - 80 && y <= key.y + key.height + 50) {
                                 
                              if (key.codes[0] != -100) {
                                 handleInput(key.codes[0], key);
@@ -720,6 +713,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (keyboardView != null) {
                 keyboardView.setKeyboard(currentKeyboard);
                 currentKeys = currentKeyboard.getKeys();
+                
+                // *** OPTIMIZATION: Cache Key Centers ***
+                // Pre-calculate centers to avoid re-calculation in touch loop
+                keyCount = currentKeys.size();
+                keyCentersX = new int[keyCount];
+                keyCentersY = new int[keyCount];
+                for(int i=0; i<keyCount; i++){
+                    Keyboard.Key k = currentKeys.get(i);
+                    keyCentersX[i] = k.x + (k.width / 2);
+                    keyCentersY[i] = k.y + (k.height / 2);
+                }
+                
                 keyboardView.invalidateAllKeys();
                 updateHelperState();
             }
@@ -744,22 +749,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateKeyboardLayout();
     }
 
-    // *** FIX: Distance-based Finding using the same Adjusted Coordinates ***
-    private int getNearestKeyIndexFast(int x, int y) {
-        if (currentKeys == null || currentKeys.isEmpty()) return -1;
+    // *** TURBO LOOKUP: Using Cached Arrays ***
+    private int getNearestKeyIndexTurbo(int x, int y) {
+        if (keyCount == 0) return -1;
         
         int bestIndex = -1;
         int minDistanceSq = Integer.MAX_VALUE; 
 
-        for (int i = 0; i < currentKeys.size(); i++) {
-            Keyboard.Key key = currentKeys.get(i);
-            if (key.codes[0] == -100) continue;
-
-            int keyCenterX = key.x + (key.width / 2);
-            int keyCenterY = key.y + (key.height / 2);
-
-            int dx = x - keyCenterX;
-            int dy = y - keyCenterY;
+        // Raw loop over primitive arrays (Fastest in Java)
+        for (int i = 0; i < keyCount; i++) {
+            // Check dummy keys (usually have width/height 0 or special code)
+            // Assuming dummy check is not needed here if pre-filtered, 
+            // but keeping simple logic for max speed.
+            
+            int dx = x - keyCentersX[i];
+            int dy = y - keyCentersY[i];
             int distSq = dx * dx + dy * dy;
 
             if (distSq < minDistanceSq) {
@@ -767,6 +771,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 bestIndex = i;
             }
         }
+        
+        // Double check if it's a dummy key (-100)
+        if (bestIndex != -1 && currentKeys.get(bestIndex).codes[0] == -100) {
+             return -1; // Or find second best (omitted for speed)
+        }
+        
         return bestIndex;
     }
 

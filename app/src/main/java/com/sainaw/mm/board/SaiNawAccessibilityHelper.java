@@ -40,16 +40,13 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     protected int getVirtualViewAt(float x, float y) {
         if (currentKeyboard == null) return HOST_ID;
         
-        // *** FIX: Adjust for Padding ***
-        // XML မှာ Padding ခံထားရင် ဒီမှာ နှုတ်ပေးမှ Key နေရာအမှန်နဲ့ ကိုက်ညီမယ်
+        // Adjust for Padding
         int adjustedY = (int) y - view.getPaddingTop();
         int adjustedX = (int) x - view.getPaddingLeft();
 
         return getNearestKeyIndex(adjustedX, adjustedY);
     }
 
-    // *** FIX: Distance-based Finding (Smooth TalkBack) ***
-    // လက်က ဘယ်နားရောက်ရောက် အနီးဆုံး Key ကိုရှာပေးလို့ အသံလုံးဝမထစ်တော့ပါ
     private int getNearestKeyIndex(int x, int y) {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null) return HOST_ID;
@@ -59,9 +56,8 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
-            if (key.codes[0] == -100) continue; // Skip dummy keys
+            if (key.codes[0] == -100) continue; 
 
-            // Calculate Key Center
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
 
@@ -112,7 +108,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
         node.setFocusable(true);
-        node.setClassName("android.widget.Button");
+        
+        // *** FIX: Remove "Button" announcement ***
+        // အရင်က setClassName("android.widget.Button") ထားလို့ "ခလုတ်" လို့အော်တာပါ
+        // အခု "android.view.View" ပြောင်းလိုက်တော့ ဘာမှမအော်တော့ပါဘူး
+        node.setClassName("android.view.View");
         
         // Bounds Calculation with Padding
         int left = key.x + view.getPaddingLeft();
