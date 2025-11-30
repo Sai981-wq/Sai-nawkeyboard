@@ -72,7 +72,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
     
-    // Logic Processor (Refactored Logic)
     private SaiNawTextProcessor textProcessor;
 
     // Voice
@@ -107,10 +106,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isSoundOn = true;
     private boolean isLiftToType = true; 
     
-    // Gboard-Style Touch Tracking Variables
-    private float lastX = -1;
-    private float lastY = -1;
-    private boolean isTouchAllowed = true; // Tracks if the swipe is valid
+    // Touch Logic
+    private boolean isTouchAllowed = true; 
 
     // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -181,7 +178,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
-        // Initialize Refactored Processor
         textProcessor = new SaiNawTextProcessor();
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
@@ -195,7 +191,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         
-        // Database Initialization
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else {
@@ -326,7 +321,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- GBOARD STYLE: Smart Touch with Virtual Ceiling & Slide-Cancel ---
+    // --- FIX: Padding Aware Lift-to-Type ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -335,24 +330,25 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         try {
             int action = event.getAction();
-            float x = event.getX();
-            float y = event.getY();
             
-            // Ceiling Limit (Virtual Ceiling)
-            // User can explore the 15dp padding area freely.
-            // But if they swipe UP past that padding into the negative space (-60px), we cancel.
-            float ceilingLimit = -60.0f;
+            // ၁။ Padding ကို ထည့်တွက်ပေးခြင်း (ဒါမှ ထစ်တာပျောက်မယ်)
+            // XML မှာ paddingTop="15dp" ထည့်ထားရင် ဒီမှာ နှုတ်ပေးမှ Key နေရာမှန်ကို ရမယ်
+            int paddingTop = keyboardView.getPaddingTop();
+            int x = (int) event.getX();
+            int y = (int) event.getY() - paddingTop; // Adjust Y coordinate!
+
+            // ၂။ Slide-to-Cancel Logic
+            // Padding ဧရိယာ (-paddingTop) ထက်ကျော်ပြီး အပေါ်ရောက်သွားရင် Cancel မယ်
+            // Buffer အနေနဲ့ -50px လောက် ထပ်ပေးမယ်
+            float cancelLimit = -paddingTop - 50; 
 
             if (action == MotionEvent.ACTION_HOVER_ENTER) {
-                // Reset State on new touch
                 isTouchAllowed = true; 
-                lastX = x;
-                lastY = y;
             }
 
-            // Continuous State Check:
-            // If finger EVER crosses the ceiling, invalidate the entire session.
-            if (y < ceilingLimit) {
+            // Continuous Check
+            // ဒီနေရာမှာ event.getY() (Raw Y) ကို သုံးပြီးစစ်မယ်
+            if (event.getY() < -50) { // If finger goes way above the view
                 isTouchAllowed = false;
                 lastHoverKeyIndex = -1; 
                 return;
@@ -361,23 +357,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (action == MotionEvent.ACTION_HOVER_MOVE) {
                 if (!isTouchAllowed) return;
 
-                // Optimization: Throttle events if movement is < 5px
-                if (Math.abs(x - lastX) < 5 && Math.abs(y - lastY) < 5) {
-                    return; 
-                }
-                lastX = x;
-                lastY = y;
-
-                // Exploring Phase: Always snap to nearest key for smooth feedback
-                int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
+                // Throttling ဖယ်လိုက်ပါပြီ (Response မြန်အောင်)
+                
+                // Adjusted Y ကိုသုံးပြီး ရှာမယ်
+                int keyIndex = getNearestKeyIndexFast(x, y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0); 
                 }
             } 
             else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // Lift Phase: Only type if session is valid
-                if (!isTouchAllowed || y < ceilingLimit) {
+                // Lift Phase
+                if (!isTouchAllowed || event.getY() < -50) {
                     lastHoverKeyIndex = -1;
                     return;
                 }
@@ -386,9 +377,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
                         
-                        // Strict Horizontal Check, Generous Vertical Buffer
-                        // We allow the user to lift finger significantly above key (up to ceilingLimit)
-                        // This fixes the "stuttering" on top row.
+                        // Hitbox Check: y is already adjusted for padding
+                        // Allow generous vertical buffer
                         if (x >= key.x && x <= key.x + key.width &&
                             y >= key.y - 80 && y <= key.y + key.height + 50) {
                                 
@@ -649,11 +639,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
-            // *** CRITICAL UPDATE: Normalize word before saving to DB ***
-            // This prevents incorrect user typing (e.g., e + ka) from polluting the DB
             final String rawWord = currentWord.toString();
             final String normalizedWord = textProcessor.normalizeText(rawWord);
-            
             dbExecutor.execute(() -> suggestionDB.saveWord(normalizedWord));
         }
         currentWord.setLength(0);
