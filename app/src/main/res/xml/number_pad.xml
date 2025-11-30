@@ -25,23 +25,24 @@
 
     <Row>
         <Key android:codes="42" android:keyLabel="*" android:keyEdgeFlags="left"/>
-        
         <Key android:codes="48" android:keyLabel="0"/>
-        
         <Key android:codes="35" android:keyLabel="#" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row>
         <Key android:codes="-6" 
              android:keyLabel="ABC" 
-             android:keyWidth="50%p" 
              android:keyEdgeFlags="left"/>
+        
+        <Key android:codes="-4" 
+             android:keyLabel="⏎" 
+             android:keyIcon="@android:drawable/ic_input_add" /> 
         
         <Key android:codes="-5" 
              android:keyLabel="⌫" 
              android:isRepeatable="true" 
-             android:keyWidth="50%p" 
              android:keyEdgeFlags="right"/>
     </Row>
 
 </Keyboard>
+

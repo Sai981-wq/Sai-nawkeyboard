@@ -88,7 +88,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     private Keyboard shanKeyboard, shanShiftKeyboard;
     private Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
-    private Keyboard numberKeyboard; // *** NEW: Dedicated Number Pad ***
+    private Keyboard numberKeyboard; // *** Dedicated Number Pad ***
     private Keyboard currentKeyboard;
     private List<Keyboard.Key> currentKeys; 
 
@@ -217,7 +217,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         currentLanguageId = 0;
         isCaps = false;
-        isSymbols = false;
         
         // updateKeyboardLayout will be called in onStartInputView based on input type
         keyboardView.setOnKeyboardActionListener(this);
@@ -262,7 +261,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(this, symEnId) : qwertyKeyboard; 
             symbolsMmKeyboard = (symMmId != 0) ? new Keyboard(this, symMmId) : symbolsEnKeyboard;
             
-            // *** NEW: Init Dedicated Number Pad ***
+            // *** Init Dedicated Number Pad ***
             int numPadId = getResId("number_pad");
             // number_pad.xml မရှိလျှင် symbols ကို ယာယီသုံးမည်
             numberKeyboard = (numPadId != 0) ? new Keyboard(this, numPadId) : symbolsEnKeyboard;
@@ -338,28 +337,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         int inputType = info.inputType & EditorInfo.TYPE_MASK_CLASS;
         int variation = info.inputType & EditorInfo.TYPE_MASK_VARIATION;
 
-        // ဖုန်းနံပါတ်ဖြည့်ရမည့် အကွက်ဖြစ်လျှင် (Phone Number)
         if (inputType == EditorInfo.TYPE_CLASS_PHONE) {
             currentKeyboard = numberKeyboard;
-            isSymbols = true; // Mark as special mode
+            isSymbols = true; 
         } 
-        // နံပါတ်သီးသန့်ဖြည့်ရမည့် အကွက်ဖြစ်လျှင် (Number, Date, etc.)
         else if (inputType == EditorInfo.TYPE_CLASS_NUMBER || 
                  inputType == EditorInfo.TYPE_CLASS_DATETIME) {
             currentKeyboard = numberKeyboard;
             isSymbols = true;
         } 
-        // ပုံမှန်စာရိုက်သည့် အကွက်ဖြစ်လျှင်
         else {
             isSymbols = false;
-            // Normal Layout selection logic inside updateKeyboardLayout
             updateKeyboardLayout();
-            // Note: updateKeyboardLayout will set currentKeyboard
-            // So we don't need to do it here for normal text
-            return; // Exit here, let updateKeyboardLayout handle the rest
+            return; 
         }
 
-        // Apply Keyboard (Only for Number Pad case)
         if (keyboardView != null) {
             keyboardView.setKeyboard(currentKeyboard);
             currentKeys = currentKeyboard.getKeys();
@@ -380,6 +372,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         float x = event.getX();
         float y = event.getY();
 
+        // 1. Strict Boundary Check
         if (y < 0) {
             cancelAllLongPress(); 
             lastHoverKeyIndex = -1; 
@@ -398,8 +391,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     
                     Keyboard.Key key = currentKeys.get(newKeyIndex);
                     int code = key.codes[0];
-                    if (code == CODE_SPACE) handler.postDelayed(spaceLongPressTask, 600);
-                    else if (code == CODE_DELETE) handler.postDelayed(deleteStartTask, 400);
+                    if (code == CODE_SPACE) {
+                        handler.postDelayed(spaceLongPressTask, 600);
+                    } else if (code == CODE_DELETE) {
+                        // *** 800ms for safety ***
+                        handler.postDelayed(deleteStartTask, 800);
+                    }
                 }
                 break;
 
@@ -540,17 +537,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() 
                             : String.valueOf((char) primaryCode);
 
-                    // *** Number Handling for NumPad ***
-                    // နံပါတ်များ (0-9) ဖြစ်ခဲ့လျှင် မြန်မာ Logic ထဲမထည့်တော့ဘဲ တန်းရိုက်မယ်
+                    // *** Number Pad Bypass Logic ***
                     if (primaryCode >= 48 && primaryCode <= 57) {
                         ic.commitText(charStr, 1);
                         return;
                     }
 
-                    // English characters: Let System Echo handle it
-                    
                     if (isShanOrMyanmar()) {
-                        // ... (Existing Myanmar/Shan Logic Unchanged) ...
                         if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
                             ic.commitText(String.valueOf(ZWSP) + charStr, 1);
                             currentWord.append(charStr); 
@@ -621,7 +614,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             }
                             currentWord.append(charStr);
                             
-                            // Myanmar/Shan Syllable Echo
                             announceSyllableFromProcessor();
                         }
                     } 
@@ -756,7 +748,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             Keyboard nextKeyboard;
             if (isSymbols) {
-                // If special dedicated number keyboard, keep it or switch to symbols
                 if (currentKeyboard == numberKeyboard) {
                     nextKeyboard = numberKeyboard; 
                 } else {
