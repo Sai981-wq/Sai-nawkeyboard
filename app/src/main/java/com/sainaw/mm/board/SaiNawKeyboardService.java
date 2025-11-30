@@ -72,6 +72,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
     
+    // Logic Processor (Refactored Logic)
     private SaiNawTextProcessor textProcessor;
 
     // Voice
@@ -100,13 +101,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private AccessibilityManager accessibilityManager;
     private SharedPreferences prefs;
 
-    // Settings & Optimization
+    // Settings
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
     private boolean isLiftToType = true; 
     
-    // Gboard-Style Touch Tracking
+    // Gboard-Style Touch Tracking Variables
     private float lastX = -1;
     private float lastY = -1;
     private boolean isTouchAllowed = true; // Tracks if the swipe is valid
@@ -180,6 +181,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
+        // Initialize Refactored Processor
         textProcessor = new SaiNawTextProcessor();
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
@@ -193,6 +195,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         
+        // Database Initialization
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else {
@@ -323,7 +326,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- GBOARD STYLE: Touch Handling with "Slide-to-Cancel" ---
+    // --- GBOARD STYLE: Smart Touch with Virtual Ceiling & Slide-Cancel ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -335,17 +338,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float x = event.getX();
             float y = event.getY();
             
-            // Gboard Logic: If finger goes above this line, it's a cancel gesture.
-            float topBound = -10.0f; 
+            // Ceiling Limit (Virtual Ceiling)
+            // User can explore the 15dp padding area freely.
+            // But if they swipe UP past that padding into the negative space (-60px), we cancel.
+            float ceilingLimit = -60.0f;
 
             if (action == MotionEvent.ACTION_HOVER_ENTER) {
-                isTouchAllowed = true; // Reset state
+                // Reset State on new touch
+                isTouchAllowed = true; 
                 lastX = x;
                 lastY = y;
             }
 
-            // Continuous Check: If ever crossed top bound, invalidate the session
-            if (y < topBound) {
+            // Continuous State Check:
+            // If finger EVER crosses the ceiling, invalidate the entire session.
+            if (y < ceilingLimit) {
                 isTouchAllowed = false;
                 lastHoverKeyIndex = -1; 
                 return;
@@ -354,13 +361,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (action == MotionEvent.ACTION_HOVER_MOVE) {
                 if (!isTouchAllowed) return;
 
-                // Throttling for performance
+                // Optimization: Throttle events if movement is < 5px
                 if (Math.abs(x - lastX) < 5 && Math.abs(y - lastY) < 5) {
                     return; 
                 }
                 lastX = x;
                 lastY = y;
 
+                // Exploring Phase: Always snap to nearest key for smooth feedback
                 int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
@@ -368,8 +376,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
             } 
             else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // Final Check on Lift
-                if (!isTouchAllowed || y < topBound) {
+                // Lift Phase: Only type if session is valid
+                if (!isTouchAllowed || y < ceilingLimit) {
                     lastHoverKeyIndex = -1;
                     return;
                 }
@@ -378,7 +386,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
                         
-                        // Generous vertical hitbox, strict horizontal hitbox
+                        // Strict Horizontal Check, Generous Vertical Buffer
+                        // We allow the user to lift finger significantly above key (up to ceilingLimit)
+                        // This fixes the "stuttering" on top row.
                         if (x >= key.x && x <= key.x + key.width &&
                             y >= key.y - 80 && y <= key.y + key.height + 50) {
                                 
@@ -639,8 +649,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
+            // *** CRITICAL UPDATE: Normalize word before saving to DB ***
+            // This prevents incorrect user typing (e.g., e + ka) from polluting the DB
             final String rawWord = currentWord.toString();
             final String normalizedWord = textProcessor.normalizeText(rawWord);
+            
             dbExecutor.execute(() -> suggestionDB.saveWord(normalizedWord));
         }
         currentWord.setLength(0);
