@@ -72,6 +72,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
     
+    // Logic Processor
     private SaiNawTextProcessor textProcessor;
 
     // Voice
@@ -108,6 +109,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     
     // Touch Logic
     private boolean isTouchAllowed = true; 
+    // Touch Optimization Variables
+    private float lastX = -1;
+    private float lastY = -1;
 
     // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -321,7 +325,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- FIX: Padding Aware Lift-to-Type ---
+    // --- FINAL FIXED: Accurate Touch with Padding Buffer ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -330,37 +334,44 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         try {
             int action = event.getAction();
+            float x = event.getX();
+            float y = event.getY(); // Padding ကို မနှုတ်တော့ပါ (ဒါမှ နေရာပြန်မှန်မှာပါ)
+
+            // ၁။ Ceiling Check (မျက်နှာကြက် စစ်ဆေးခြင်း)
+            // XML မှာ paddingTop="15dp" ထည့်ထားတဲ့အတွက် 0 မှ 15 အထိက Buffer Area ဖြစ်နေပါပြီ။
+            // အကယ်၍ Y < 0 ဖြစ်သွားရင် (Padding အပေါ်ကို ကျော်သွားရင်) Swipe Up လို့သတ်မှတ်ပြီး Cancel မယ်။
+            if (y < 0) {
+                isTouchAllowed = false;
+                lastHoverKeyIndex = -1;
+                return;
+            }
             
-            // ၁။ Padding ကို ထည့်တွက်ပေးခြင်း (ဒါမှ ထစ်တာပျောက်မယ်)
-            // XML မှာ paddingTop="15dp" ထည့်ထားရင် ဒီမှာ နှုတ်ပေးမှ Key နေရာမှန်ကို ရမယ်
-            int paddingTop = keyboardView.getPaddingTop();
-            int x = (int) event.getX();
-            int y = (int) event.getY() - paddingTop; // Adjust Y coordinate!
-
-            // ၂။ Slide-to-Cancel Logic
-            // Padding ဧရိယာ (-paddingTop) ထက်ကျော်ပြီး အပေါ်ရောက်သွားရင် Cancel မယ်
-            // Buffer အနေနဲ့ -50px လောက် ထပ်ပေးမယ်
-            float cancelLimit = -paddingTop - 50; 
-
-            if (action == MotionEvent.ACTION_HOVER_ENTER) {
-                isTouchAllowed = true; 
+            // Side & Bottom margin check
+            if (x < -20 || x > keyboardView.getWidth() + 20 || y > keyboardView.getHeight() + 40) {
+                lastHoverKeyIndex = -1;
+                return;
             }
 
-            // Continuous Check
-            // ဒီနေရာမှာ event.getY() (Raw Y) ကို သုံးပြီးစစ်မယ်
-            if (event.getY() < -50) { // If finger goes way above the view
-                isTouchAllowed = false;
-                lastHoverKeyIndex = -1; 
-                return;
+            if (action == MotionEvent.ACTION_HOVER_ENTER) {
+                isTouchAllowed = true;
+                lastX = x;
+                lastY = y;
             }
 
             if (action == MotionEvent.ACTION_HOVER_MOVE) {
                 if (!isTouchAllowed) return;
 
-                // Throttling ဖယ်လိုက်ပါပြီ (Response မြန်အောင်)
-                
-                // Adjusted Y ကိုသုံးပြီး ရှာမယ်
-                int keyIndex = getNearestKeyIndexFast(x, y);
+                // Optimization: လက်ငြိမ်နေရင် မတွက်ဘူး
+                if (Math.abs(x - lastX) < 5 && Math.abs(y - lastY) < 5) {
+                    return; 
+                }
+                lastX = x;
+                lastY = y;
+
+                // Finding Phase: အနီးဆုံး Key ကိုရှာမယ်
+                // Padding ထည့်ထားပေမယ့် ဒီကောင်က အကွာအဝေးနဲ့ ရှာတာမို့ 
+                // အပေါ်တန်းက စာလုံးတွေကို အလိုအလျောက် မှန်မှန်ကန်ကန် ရှာတွေ့ပါလိမ့်မယ်။
+                int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
                     playHaptic(0); 
@@ -368,7 +379,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             } 
             else if (action == MotionEvent.ACTION_HOVER_EXIT) {
                 // Lift Phase
-                if (!isTouchAllowed || event.getY() < -50) {
+                if (!isTouchAllowed || y < 0) {
                     lastHoverKeyIndex = -1;
                     return;
                 }
@@ -377,8 +388,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
                         
-                        // Hitbox Check: y is already adjusted for padding
-                        // Allow generous vertical buffer
+                        // Hitbox Check
+                        // အပေါ်ဘက်ကို -60px (သို့) -80px အထိ Buffer ပေးထားမယ်
+                        // ဒါမှ Padding ဧရိယာထဲမှာ လက်ကြွလိုက်ရင်လည်း အပေါ်တန်းကို ရိုက်ပေးမှာပါ
                         if (x >= key.x && x <= key.x + key.width &&
                             y >= key.y - 80 && y <= key.y + key.height + 50) {
                                 
