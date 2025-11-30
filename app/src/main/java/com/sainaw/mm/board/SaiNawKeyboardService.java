@@ -56,7 +56,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     // Haptic Constants
     private static final int HAPTIC_FOCUS = 0; 
     private static final int HAPTIC_TYPE = 1;  
-    private static final int HAPTIC_LONG_PRESS = 2; // Long press feedback
+    private static final int HAPTIC_LONG_PRESS = 2;
 
     // Myanmar/Shan Unicode Constants
     private static final int MM_THWAY_HTOE = 4145; 
@@ -87,7 +87,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard qwertyKeyboard, qwertyShiftKeyboard;
     private Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     private Keyboard shanKeyboard, shanShiftKeyboard;
-    private Keyboard symbolsEnKeyboard, symbolsMmKeyboard; 
+    private Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
+    private Keyboard numberKeyboard; // *** NEW: Dedicated Number Pad ***
     private Keyboard currentKeyboard;
     private List<Keyboard.Key> currentKeys; 
 
@@ -108,21 +109,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isSoundOn = true;
     private boolean isLiftToType = true; 
 
-    // --- NEW LONG PRESS VARIABLES ---
-    private boolean isLongPressHandled = false; // Long Press ဖြစ်သွားရင် Lift မှာ စာမရိုက်ဖို့
-    private boolean isDeleteActive = false;     // ဆက်တိုက်ဖျက်နေလား စစ်ဖို့
+    // Long Press Variables
+    private boolean isLongPressHandled = false; 
+    private boolean isDeleteActive = false;     
 
     // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
-    // --- RUNNABLES FOR LONG PRESS ---
-
-    // 1. Space Long Press -> Show Picker
+    // --- RUNNABLES ---
     private final Runnable spaceLongPressTask = new Runnable() {
         @Override
         public void run() {
-            isLongPressHandled = true; // Mark as handled so lift doesn't type space
+            isLongPressHandled = true; 
             playHaptic(HAPTIC_LONG_PRESS);
             InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             if (imeManager != null) {
@@ -131,24 +130,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     };
 
-    // 2. Delete Start Task -> Starts the loop
     private final Runnable deleteStartTask = new Runnable() {
         @Override
         public void run() {
             isLongPressHandled = true;
             isDeleteActive = true;
-            handler.post(deleteLoopTask); // Start the loop immediately
+            handler.post(deleteLoopTask); 
         }
     };
 
-    // 3. Delete Loop Task -> Deletes continuously
     private final Runnable deleteLoopTask = new Runnable() {
         @Override
         public void run() {
             if (isDeleteActive) {
-                playHaptic(HAPTIC_TYPE); // Click feedback per delete
+                playHaptic(HAPTIC_TYPE); 
                 handleInput(CODE_DELETE, null);
-                handler.postDelayed(this, 80); // Speed: 80ms
+                handler.postDelayed(this, 80); 
             }
         }
     };
@@ -222,7 +219,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isCaps = false;
         isSymbols = false;
         
-        updateKeyboardLayout(); 
+        // updateKeyboardLayout will be called in onStartInputView based on input type
         keyboardView.setOnKeyboardActionListener(this);
 
         setupSpeechRecognizer();
@@ -264,6 +261,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             int symMmId = getResId("symbols_mm");
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(this, symEnId) : qwertyKeyboard; 
             symbolsMmKeyboard = (symMmId != 0) ? new Keyboard(this, symMmId) : symbolsEnKeyboard;
+            
+            // *** NEW: Init Dedicated Number Pad ***
+            int numPadId = getResId("number_pad");
+            // number_pad.xml မရှိလျှင် symbols ကို ယာယီသုံးမည်
+            numberKeyboard = (numPadId != 0) ? new Keyboard(this, numPadId) : symbolsEnKeyboard;
+
         } catch (Exception e) {
             e.printStackTrace();
             qwertyKeyboard = new Keyboard(this, getResId("qwerty"));
@@ -330,12 +333,43 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try { initKeyboards(); } catch (Exception e) { e.printStackTrace(); }
         currentWord.setLength(0);
         isCaps = false;
-        isSymbols = false;
-        updateKeyboardLayout(); 
+        
+        // *** AUTO NUMBER PAD LOGIC ***
+        int inputType = info.inputType & EditorInfo.TYPE_MASK_CLASS;
+        int variation = info.inputType & EditorInfo.TYPE_MASK_VARIATION;
+
+        // ဖုန်းနံပါတ်ဖြည့်ရမည့် အကွက်ဖြစ်လျှင် (Phone Number)
+        if (inputType == EditorInfo.TYPE_CLASS_PHONE) {
+            currentKeyboard = numberKeyboard;
+            isSymbols = true; // Mark as special mode
+        } 
+        // နံပါတ်သီးသန့်ဖြည့်ရမည့် အကွက်ဖြစ်လျှင် (Number, Date, etc.)
+        else if (inputType == EditorInfo.TYPE_CLASS_NUMBER || 
+                 inputType == EditorInfo.TYPE_CLASS_DATETIME) {
+            currentKeyboard = numberKeyboard;
+            isSymbols = true;
+        } 
+        // ပုံမှန်စာရိုက်သည့် အကွက်ဖြစ်လျှင်
+        else {
+            isSymbols = false;
+            // Normal Layout selection logic inside updateKeyboardLayout
+            updateKeyboardLayout();
+            // Note: updateKeyboardLayout will set currentKeyboard
+            // So we don't need to do it here for normal text
+            return; // Exit here, let updateKeyboardLayout handle the rest
+        }
+
+        // Apply Keyboard (Only for Number Pad case)
+        if (keyboardView != null) {
+            keyboardView.setKeyboard(currentKeyboard);
+            currentKeys = currentKeyboard.getKeys();
+            keyboardView.invalidateAllKeys();
+            updateHelperState();
+        }
+        
         triggerCandidateUpdate(0);
     }
 
-    // *** UPDATED LIFT-TO-TYPE WITH LONG PRESS SUPPORT ***
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType || currentKeys == null) {
             lastHoverKeyIndex = -1;
@@ -346,9 +380,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         float x = event.getX();
         float y = event.getY();
 
-        // 1. Strict Boundary Check (Cancel immediately if out of bounds)
         if (y < 0) {
-            cancelAllLongPress(); // Reset Everything
+            cancelAllLongPress(); 
             lastHoverKeyIndex = -1; 
             return; 
         }
@@ -358,38 +391,25 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             case MotionEvent.ACTION_HOVER_MOVE:
                 int newKeyIndex = getNearestKeyIndexFast((int) x, (int) y);
                 
-                // Key ပြောင်းသွားလျှင်
                 if (newKeyIndex != -1 && newKeyIndex != lastHoverKeyIndex) {
-                    // အရင် Key ရဲ့ Timer တွေကို ဖျက်လိုက်မယ်
                     cancelAllLongPress();
-
                     lastHoverKeyIndex = newKeyIndex;
                     playHaptic(HAPTIC_FOCUS); 
                     
-                    // Long Press အတွက် စောင့်ကြည့်မယ် (Space or Delete)
                     Keyboard.Key key = currentKeys.get(newKeyIndex);
                     int code = key.codes[0];
-                    
-                    if (code == CODE_SPACE) {
-                        // Space ဖိထားရင် 600ms ကြာရင် Picker တက်မယ်
-                        handler.postDelayed(spaceLongPressTask, 600);
-                    } else if (code == CODE_DELETE) {
-                        // Delete ဖိထားရင် 400ms ကြာရင် ဆက်တိုက်ဖျက်မယ်
-                        handler.postDelayed(deleteStartTask, 400);
-                    }
+                    if (code == CODE_SPACE) handler.postDelayed(spaceLongPressTask, 600);
+                    else if (code == CODE_DELETE) handler.postDelayed(deleteStartTask, 400);
                 }
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
-                // Exit Safety
                 if (y < 0) {
                     cancelAllLongPress();
                     lastHoverKeyIndex = -1;
                     return;
                 }
 
-                // Long Press မဖြစ်ခဲ့ဘူးဆိုမှသာ စာရိုက်မယ် (Lift to Type)
-                // isLongPressHandled = true ဖြစ်နေရင် စာမရိုက်တော့ဘူး (Long press action ဝင်သွားပြီမို့)
                 if (!isLongPressHandled) {
                     if (lastHoverKeyIndex != -1 && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
@@ -400,13 +420,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     }
                 }
                 
-                cancelAllLongPress(); // Cleanup all timers
+                cancelAllLongPress(); 
                 lastHoverKeyIndex = -1;
                 break;
         }
     }
     
-    // Timer များနှင့် State များကို ပြန်ဖျက်ပေးသည့် Helper
     private void cancelAllLongPress() {
         isLongPressHandled = false;
         isDeleteActive = false;
@@ -431,15 +450,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (isCaps) { isCaps = false; updateKeyboardLayout(); }
     }
 
-    // Touch Press (For non-TalkBack or hybrid usage)
     @Override public void onPress(int primaryCode) {
         playHaptic(HAPTIC_FOCUS);
-        // Note: Lift-to-Type users typically use Hover events handled above.
-        // Standard onPress handling is minimal here to avoid conflicts.
     }
 
     @Override public void onRelease(int primaryCode) {
-        // Cleanup if standard touch was used
         cancelAllLongPress();
     }
 
@@ -511,7 +526,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
                     
                 case CODE_SPACE:
-                    // Note: Long press is handled in HandleLiftToType
                     String wordToEcho = getWordFromProcessor();
                     ic.commitText(" ", 1);
                     saveWordAndReset();
@@ -526,9 +540,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() 
                             : String.valueOf((char) primaryCode);
 
-                    // English characters: No manual announceText (Let System Echo handle it)
+                    // *** Number Handling for NumPad ***
+                    // နံပါတ်များ (0-9) ဖြစ်ခဲ့လျှင် မြန်မာ Logic ထဲမထည့်တော့ဘဲ တန်းရိုက်မယ်
+                    if (primaryCode >= 48 && primaryCode <= 57) {
+                        ic.commitText(charStr, 1);
+                        return;
+                    }
+
+                    // English characters: Let System Echo handle it
                     
                     if (isShanOrMyanmar()) {
+                        // ... (Existing Myanmar/Shan Logic Unchanged) ...
                         if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
                             ic.commitText(String.valueOf(ZWSP) + charStr, 1);
                             currentWord.append(charStr); 
@@ -734,7 +756,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             Keyboard nextKeyboard;
             if (isSymbols) {
-                nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard;
+                // If special dedicated number keyboard, keep it or switch to symbols
+                if (currentKeyboard == numberKeyboard) {
+                    nextKeyboard = numberKeyboard; 
+                } else {
+                    nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard;
+                }
             } else {
                 if (currentLanguageId == 1) nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
                 else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
@@ -795,7 +822,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (v != null && v.hasVibrator()) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     if (type == HAPTIC_LONG_PRESS) {
-                         // Long press uses heavy click or specific effect
                          v.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK));
                     } else if (type == HAPTIC_TYPE) {
                          v.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK));
