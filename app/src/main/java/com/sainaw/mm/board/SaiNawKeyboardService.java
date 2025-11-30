@@ -72,6 +72,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
     private StringBuilder currentWord = new StringBuilder();
     
+    // Logic Processor (Refactored Logic)
     private SaiNawTextProcessor textProcessor;
 
     // Voice
@@ -86,19 +87,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard symbolsEnKeyboard, symbolsMmKeyboard; 
     private Keyboard currentKeyboard;
     private List<Keyboard.Key> currentKeys; 
-    
-    // *** OPTIMIZATION: Cached Key Centers ***
-    // တွက်ချက်မှုမြန်ဆန်စေရန် ဗဟိုမှတ်များကို Array ထဲကြိုထည့်ထားမည်
-    private int[] keyCentersX;
-    private int[] keyCentersY;
-    private int keyCount = 0;
 
     // State
     private boolean isCaps = false;
     private boolean isSymbols = false; 
     private int currentLanguageId = 0; 
     
-    // Leak Prevention
+    // Leak Prevention for Receiver
     private boolean isReceiverRegistered = false;
 
     // System Services
@@ -111,15 +106,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
     private boolean isLiftToType = true; 
-    
-    // Touch Logic
-    private boolean isTouchAllowed = true; 
 
     // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
     // --- LONG PRESS HANDLERS ---
+    
+    // 1. Continuous Delete Logic
     private boolean isDeleteActive = false;
     private final Runnable deleteRunnable = new Runnable() {
         @Override
@@ -131,6 +125,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     };
 
+    // 2. Space Long Press Logic (Keyboard Picker)
     private boolean isSpaceLongPressed = false;
     private final Runnable spaceLongPressRunnable = new Runnable() {
         @Override
@@ -184,6 +179,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         loadSettings();
 
+        // Initialize Refactored Processor
         textProcessor = new SaiNawTextProcessor();
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
@@ -197,6 +193,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         
+        // Database Initialization Logic with Leak Check
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else {
@@ -327,72 +324,34 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- TURBO LIFT-TO-TYPE: Array-Based Lookup ---
     private void handleLiftToType(MotionEvent event) {
-        if (!isLiftToType) {
-            lastHoverKeyIndex = -1;
-            return;
-        }
-
+        if (!isLiftToType) { lastHoverKeyIndex = -1; return; }
         try {
             int action = event.getAction();
             float x = event.getX();
-            float y = event.getY(); // No padding subtraction needed for Nearest check
-
-            // Ceiling Check
-            if (y < 0) {
-                isTouchAllowed = false;
-                lastHoverKeyIndex = -1;
-                return;
+            float y = event.getY();
+            if (x < 0 || x > keyboardView.getWidth() || y > keyboardView.getHeight() + 50) {
+                lastHoverKeyIndex = -1; return;
             }
-            
-            // Side boundaries
-            if (x < -20 || x > keyboardView.getWidth() + 20 || y > keyboardView.getHeight() + 40) {
-                lastHoverKeyIndex = -1;
-                return;
-            }
-
-            if (action == MotionEvent.ACTION_HOVER_ENTER) {
-                isTouchAllowed = true;
-            }
-
-            if (action == MotionEvent.ACTION_HOVER_MOVE) {
-                if (!isTouchAllowed) return;
-
-                // *** SPEED UP: Use Array Lookup ***
-                int keyIndex = getNearestKeyIndexTurbo((int)x, (int)y);
-                
+            if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
+                int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
-                    playHaptic(0); 
+                    playHaptic(0);
                 }
-            } 
-            else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // Lift Phase
-                if (!isTouchAllowed || y < 0) {
-                    lastHoverKeyIndex = -1;
-                    return;
-                }
-
+            } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                if (y < 0) { lastHoverKeyIndex = -1; return; }
                 if (lastHoverKeyIndex != -1) {
                     if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
-                        
-                        // Hitbox Check with Vertical Buffer
-                        if (x >= key.x && x <= key.x + key.width &&
-                            y >= key.y - 80 && y <= key.y + key.height + 50) {
-                                
-                             if (key.codes[0] != -100) {
-                                handleInput(key.codes[0], key);
-                            }
+                        if (key.isInside((int)x, (int)y)) {
+                             if (key.codes[0] != -100) handleInput(key.codes[0], key);
                         }
                     }
                 }
                 lastHoverKeyIndex = -1;
             }
-        } catch (Exception e) { 
-            lastHoverKeyIndex = -1; 
-        }
+        } catch (Exception e) { lastHoverKeyIndex = -1; }
     }
 
     private void updateHelperState() {
@@ -411,6 +370,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (isCaps) { isCaps = false; updateKeyboardLayout(); }
     }
 
+    // *** onPress with Long Press Logic ***
     @Override public void onPress(int primaryCode) {
         playHaptic(primaryCode);
         
@@ -424,6 +384,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // *** onRelease with Cleanup ***
     @Override public void onRelease(int primaryCode) {
         if (primaryCode == CODE_SPACE) {
             handler.removeCallbacks(spaceLongPressRunnable);
@@ -434,6 +395,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    // --- MAIN INPUT HANDLING ---
     private void handleInput(int primaryCode, Keyboard.Key key) {
         playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -482,6 +444,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     saveWordAndReset();
                     break;
                 case CODE_SPACE:
+                    // Space Long Press Check
                     if (isSpaceLongPressed) {
                         isSpaceLongPressed = false;
                         return;
@@ -639,8 +602,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
+            // *** CRITICAL UPDATE: Normalize word before saving to DB ***
+            // This prevents incorrect user typing (e.g., e + ka) from polluting the DB
             final String rawWord = currentWord.toString();
             final String normalizedWord = textProcessor.normalizeText(rawWord);
+            
             dbExecutor.execute(() -> suggestionDB.saveWord(normalizedWord));
         }
         currentWord.setLength(0);
@@ -713,18 +679,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (keyboardView != null) {
                 keyboardView.setKeyboard(currentKeyboard);
                 currentKeys = currentKeyboard.getKeys();
-                
-                // *** OPTIMIZATION: Cache Key Centers ***
-                // Pre-calculate centers to avoid re-calculation in touch loop
-                keyCount = currentKeys.size();
-                keyCentersX = new int[keyCount];
-                keyCentersY = new int[keyCount];
-                for(int i=0; i<keyCount; i++){
-                    Keyboard.Key k = currentKeys.get(i);
-                    keyCentersX[i] = k.x + (k.width / 2);
-                    keyCentersY[i] = k.y + (k.height / 2);
-                }
-                
                 keyboardView.invalidateAllKeys();
                 updateHelperState();
             }
@@ -749,35 +703,23 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateKeyboardLayout();
     }
 
-    // *** TURBO LOOKUP: Using Cached Arrays ***
-    private int getNearestKeyIndexTurbo(int x, int y) {
-        if (keyCount == 0) return -1;
-        
-        int bestIndex = -1;
-        int minDistanceSq = Integer.MAX_VALUE; 
-
-        // Raw loop over primitive arrays (Fastest in Java)
-        for (int i = 0; i < keyCount; i++) {
-            // Check dummy keys (usually have width/height 0 or special code)
-            // Assuming dummy check is not needed here if pre-filtered, 
-            // but keeping simple logic for max speed.
-            
-            int dx = x - keyCentersX[i];
-            int dy = y - keyCentersY[i];
-            int distSq = dx * dx + dy * dy;
-
-            if (distSq < minDistanceSq) {
-                minDistanceSq = distSq;
-                bestIndex = i;
+    private int getNearestKeyIndexFast(int x, int y) {
+        if (currentKeys == null || currentKeys.isEmpty()) return -1;
+        if (lastHoverKeyIndex >= 0 && lastHoverKeyIndex < currentKeys.size()) {
+            Keyboard.Key lastKey = currentKeys.get(lastHoverKeyIndex);
+            if (lastKey.isInside(x, y)) {
+                if (lastKey.codes[0] == -100) return -1;
+                return lastHoverKeyIndex;
             }
         }
-        
-        // Double check if it's a dummy key (-100)
-        if (bestIndex != -1 && currentKeys.get(bestIndex).codes[0] == -100) {
-             return -1; // Or find second best (omitted for speed)
+        for (int i = 0; i < currentKeys.size(); i++) {
+            Keyboard.Key k = currentKeys.get(i);
+            if (k.isInside(x, y)) {
+                if (k.codes[0] == -100) return -1;
+                return i;
+            }
         }
-        
-        return bestIndex;
+        return -1;
     }
 
     private void playHaptic(int primaryCode) {
@@ -802,6 +744,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         } catch (Exception e) {}
     }
     
+    // *** SUPER CLEAN DESTROY ***
     @Override
     public void onDestroy() {
         super.onDestroy();
@@ -809,11 +752,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (dbExecutor != null && !dbExecutor.isShutdown()) { dbExecutor.shutdown(); }
         if (suggestionDB != null) { suggestionDB.close(); }
         
+        // Unregister receiver safely
         if (isReceiverRegistered) {
             unregisterReceiver(userUnlockReceiver);
             isReceiverRegistered = false;
         }
         
+        // Remove all pending callbacks
         handler.removeCallbacks(deleteRunnable);
         handler.removeCallbacks(spaceLongPressRunnable);
         handler.removeCallbacks(pendingCandidateUpdate);
