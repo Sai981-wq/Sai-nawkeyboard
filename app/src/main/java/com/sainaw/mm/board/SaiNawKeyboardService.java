@@ -101,15 +101,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private AccessibilityManager accessibilityManager;
     private SharedPreferences prefs;
 
-    // Settings & Optimization Variables
+    // Settings
     private int lastHoverKeyIndex = -1;
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
     private boolean isLiftToType = true; 
-    
-    // Touch Optimization Variables (Gboard-like feel)
-    private float lastX = -1;
-    private float lastY = -1;
 
     // Threading
     private Handler handler = new Handler(Looper.getMainLooper());
@@ -328,7 +324,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- SUPER OPTIMIZED LIFT-TO-TYPE ---
+    // --- FINAL FIX: Virtual Ceiling & Smart Snapping ---
     private void handleLiftToType(MotionEvent event) {
         if (!isLiftToType) {
             lastHoverKeyIndex = -1;
@@ -340,42 +336,41 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             float x = event.getX();
             float y = event.getY();
 
-            // 1. Expanded Buffer Zone for Top Row
-            // Allow overshoot up to -60 pixels to prevent "stuttering" on top row keys.
-            // Cancel only if y < -60 (Swipe Up)
-            if (y < -60 || y > keyboardView.getHeight() + 50 || x < -20 || x > keyboardView.getWidth() + 20) {
+            // 1. Ceiling Check (Swipe Up Cancellation)
+            // အပေါ်ဆုံး -60px ထက်ကျော်သွားရင် Swipe Up လို့ သတ်မှတ်ပြီး Cancel မယ်
+            if (y < -60) {
+                lastHoverKeyIndex = -1;
+                return;
+            }
+            
+            // Side & Bottom margin check
+            if (x < -20 || x > keyboardView.getWidth() + 20 || y > keyboardView.getHeight() + 40) {
                 lastHoverKeyIndex = -1;
                 return;
             }
 
             if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
-                // 2. Touch Throttling (Optimization)
-                // Don't re-calculate if finger moved less than 5 pixels
-                if (Math.abs(x - lastX) < 5 && Math.abs(y - lastY) < 5) {
-                    return; 
-                }
-                lastX = x;
-                lastY = y;
-
+                // 2. Finding Phase (Snapping)
+                // လက်တင်နေစဉ်မှာ အနီးဆုံး Key ကိုရှာပြီး အသံထွက်ပေးမယ် (မထစ်တော့ဘူး)
                 int keyIndex = getNearestKeyIndexFast((int)x, (int)y);
                 if (keyIndex != -1 && keyIndex != lastHoverKeyIndex) {
                     lastHoverKeyIndex = keyIndex;
-                    playHaptic(0); // Only vibrate on key change
+                    playHaptic(0); 
                 }
             } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                // 3. Swipe Up Cancel Logic
-                if (y < -60) { 
-                    lastHoverKeyIndex = -1;
-                    return;
-                }
-
+                // 3. Typing Phase (Hitbox Check)
+                // လက်ကြွလိုက်တဲ့အချိန်မှာတော့ Snapping မသုံးဘူး။ Virtual Hitbox နဲ့စစ်မယ်။
+                // အပေါ်ကို -60px အထိ Buffer ပေးထားမယ် (လက်လွန်တာကို ခွင့်ပြုမယ်)
                 if (lastHoverKeyIndex != -1) {
                     if (currentKeys != null && lastHoverKeyIndex < currentKeys.size()) {
                         Keyboard.Key key = currentKeys.get(lastHoverKeyIndex);
                         
-                        // Strict bounds check with buffer allowance for top row
+                        // Strict bounds check with top buffer
+                        int extendedTop = key.y - 60; 
+                        int extendedBottom = key.y + key.height + 30;
+                        
                         if (x >= key.x && x <= key.x + key.width && 
-                            y >= key.y - 60 && y <= key.y + key.height + 20) {
+                            y >= extendedTop && y <= extendedBottom) {
                                 
                              if (key.codes[0] != -100) {
                                 handleInput(key.codes[0], key);
@@ -384,8 +379,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     }
                 }
                 lastHoverKeyIndex = -1;
-                lastX = -1;
-                lastY = -1;
             }
         } catch (Exception e) { 
             lastHoverKeyIndex = -1; 
@@ -482,7 +475,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     saveWordAndReset();
                     break;
                 case CODE_SPACE:
-                    // Space Long Press Check
                     if (isSpaceLongPressed) {
                         isSpaceLongPressed = false;
                         return;
@@ -640,7 +632,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
-            // *** CRITICAL UPDATE: Normalize word before saving to DB ***
+            // *** Normalization before save ***
             final String rawWord = currentWord.toString();
             final String normalizedWord = textProcessor.normalizeText(rawWord);
             
@@ -781,7 +773,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         } catch (Exception e) {}
     }
     
-    // *** SUPER CLEAN DESTROY ***
     @Override
     public void onDestroy() {
         super.onDestroy();
