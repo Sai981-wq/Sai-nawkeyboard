@@ -5,10 +5,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
-import android.widget.CompoundButton;
 import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
@@ -39,22 +37,18 @@ public class SettingsActivity extends AppCompatActivity {
                 Toast.makeText(SettingsActivity.this, R.string.error_toast, Toast.LENGTH_SHORT).show();
             }
         });
-
-        // --- Settings Switches ---
         
-        // 1. Lift-to-Type (New) - Default is TRUE
+        // --- NEW: Languages Sub-Menu ---
+        Button btnLanguages = findViewById(R.id.btn_languages);
+        btnLanguages.setOnClickListener(v -> {
+            startActivity(new Intent(SettingsActivity.this, LanguageSettingsActivity.class));
+        });
+
+        // --- Other Settings Switches ---
         setupSwitch(R.id.switch_typing_mode, "lift_to_type", true);
-
-        // 2. Vibrate
         setupSwitch(R.id.switch_vibrate, "vibrate_on", true);
-        
-        // 3. Sound
         setupSwitch(R.id.switch_sound, "sound_on", false);
-        
-        // 4. Theme
         setupSwitch(R.id.switch_theme, "dark_theme", false);
-        
-        // 5. Number Row
         setupSwitch(R.id.switch_number_row, "number_row", false);
 
         // About Button
@@ -62,9 +56,8 @@ public class SettingsActivity extends AppCompatActivity {
         btnAbout.setOnClickListener(v -> showAboutDialog());
     }
 
-    // Helper method to setup switches
     private void setupSwitch(int id, final String key, boolean def) {
-        SwitchCompat s = findViewById(id); // Using SwitchCompat to match XML
+        SwitchCompat s = findViewById(id);
         if (s != null) {
             s.setChecked(prefs.getBoolean(key, def));
             s.setOnCheckedChangeListener((buttonView, isChecked) -> 

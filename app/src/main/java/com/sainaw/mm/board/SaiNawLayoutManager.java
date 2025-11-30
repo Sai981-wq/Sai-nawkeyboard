@@ -3,8 +3,8 @@ package com.sainaw.mm.board;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.inputmethodservice.Keyboard;
-import android.inputmethodservice.KeyboardView;
 import android.view.inputmethod.EditorInfo;
+import java.util.ArrayList;
 import java.util.List;
 
 public class SaiNawLayoutManager {
@@ -26,13 +26,41 @@ public class SaiNawLayoutManager {
     public boolean isCapsLocked = false;
     public boolean isSymbols = false;
     public int currentLanguageId = 0; // 0=Eng, 1=MM, 2=Shan
+    
+    // Language Management
+    private List<Integer> enabledLanguages = new ArrayList<>();
 
     public SaiNawLayoutManager(SaiNawKeyboardService service) {
         this.service = service;
         this.context = service;
     }
 
+    // Load Language Settings from Prefs
+    public void loadLanguageSettings(SharedPreferences prefs) {
+        boolean useEng = prefs.getBoolean("enable_eng", true); // Default True
+        boolean useMm = prefs.getBoolean("enable_mm", true);   // Default True
+        boolean useShan = prefs.getBoolean("enable_shan", true); // Default True
+
+        enabledLanguages.clear();
+        if (useEng) enabledLanguages.add(0);
+        if (useMm) enabledLanguages.add(1);
+        if (useShan) enabledLanguages.add(2);
+
+        // Fallback: If user disables ALL, force English
+        if (enabledLanguages.isEmpty()) {
+            enabledLanguages.add(0);
+        }
+
+        // Validate current language
+        if (!enabledLanguages.contains(currentLanguageId)) {
+            currentLanguageId = enabledLanguages.get(0);
+        }
+    }
+
     public void initKeyboards(SharedPreferences prefs) {
+        // Load language preferences first
+        loadLanguageSettings(prefs);
+
         try {
             boolean showNumRow = prefs.getBoolean("number_row", false);
             String engSuffix = showNumRow ? "_num" : "";
@@ -106,7 +134,7 @@ public class SaiNawLayoutManager {
             updateEnterKeyLabel();
             service.getKeyboardView().setKeyboard(currentKeyboard);
             service.getKeyboardView().invalidateAllKeys();
-            service.updateHelperState(); // Update Accessibility Helper
+            service.updateHelperState(); 
         }
     }
 
@@ -124,7 +152,7 @@ public class SaiNawLayoutManager {
         }
 
         for (Keyboard.Key key : currentKeyboard.getKeys()) {
-            if (key.codes[0] == -4) { // CODE_ENTER
+            if (key.codes[0] == -4) { 
                 key.label = label;
                 key.icon = null;
                 key.iconPreview = null;
@@ -133,10 +161,18 @@ public class SaiNawLayoutManager {
         }
     }
     
+    // *** Modified Logic for Language Switching ***
     public void changeLanguage() {
-        if (currentLanguageId == 0) currentLanguageId = 1;
-        else if (currentLanguageId == 1) currentLanguageId = 2;
-        else currentLanguageId = 0;
+        if (enabledLanguages.isEmpty()) return;
+
+        // Find current index in the enabled list
+        int currentIndex = enabledLanguages.indexOf(currentLanguageId);
+        
+        // Calculate next index (cycle through enabled list only)
+        int nextIndex = (currentIndex + 1) % enabledLanguages.size();
+        
+        // Set new Language ID
+        currentLanguageId = enabledLanguages.get(nextIndex);
         
         isCaps = false; isSymbols = false; isCapsLocked = false;
         updateKeyboardLayout();
@@ -149,3 +185,4 @@ public class SaiNawLayoutManager {
                currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
     }
 }
+

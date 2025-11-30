@@ -38,31 +38,33 @@ import java.util.concurrent.Executors;
 
 public class SaiNawKeyboardService extends InputMethodService implements KeyboardView.OnKeyboardActionListener {
 
-    // Helper Classes
+    // Helper Classes (Refactored Managers)
     private SaiNawFeedbackManager feedbackManager;
     private SaiNawLayoutManager layoutManager;
     private SaiNawTouchHandler touchHandler;
+    
+    // Logic Helpers
     private SaiNawAccessibilityHelper accessibilityHelper;
     private SaiNawTextProcessor textProcessor;
     private SuggestionDB suggestionDB;
 
-    // Components
+    // UI Components
     private KeyboardView keyboardView;
     private LinearLayout candidateContainer;
     private List<TextView> candidateViews = new ArrayList<>();
     
-    // Logic
+    // State & Threading
     private StringBuilder currentWord = new StringBuilder();
     private boolean isReceiverRegistered = false;
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
     
-    // Voice
+    // Voice Input
     private SpeechRecognizer speechRecognizer;
     private Intent speechIntent;
     private boolean isListening = false;
 
-    // Constants
+    // Unicode Constants
     private static final int MM_THWAY_HTOE = 4145;
     private static final int SHAN_E = 4228;
     private static final char ZWSP = '\u200B';
@@ -71,7 +73,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int MM_UU = 4144;
     private static final int MM_ANUSVARA = 4150;
 
+    // --- Listeners ---
     private final Runnable pendingCandidateUpdate = this::performCandidateSearch;
+    
     private final View.OnClickListener candidateListener = v -> {
         String suggestion = (String) v.getTag();
         if (suggestion != null) pickSuggestion(suggestion);
@@ -91,28 +95,28 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override
     public View onCreateInputView() {
-        // Initialize Managers
+        // 1. Initialize Managers
         feedbackManager = new SaiNawFeedbackManager(this);
         layoutManager = new SaiNawLayoutManager(this);
         touchHandler = new SaiNawTouchHandler(this, layoutManager, feedbackManager);
         textProcessor = new SaiNawTextProcessor();
 
-        // Safe Context & Prefs
+        // 2. Load Settings safely
         Context safeContext = getSafeContext();
         SharedPreferences prefs = safeContext.getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         
         feedbackManager.loadSettings(prefs);
         touchHandler.loadSettings(prefs);
-        layoutManager.initKeyboards(prefs);
+        layoutManager.initKeyboards(prefs); // Initial load
 
-        // UI Init
+        // 3. Setup UI
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
         View layout = getLayoutInflater().inflate(isDarkTheme ? R.layout.input_view_dark : R.layout.input_view, null);
         keyboardView = layout.findViewById(R.id.keyboard_view);
         candidateContainer = layout.findViewById(R.id.candidates_container);
         initCandidateViews(isDarkTheme);
 
-        // Database Init
+        // 4. Setup Database (Direct Boot Aware)
         if (isUserUnlocked()) {
             suggestionDB = SuggestionDB.getInstance(this);
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -120,14 +124,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             isReceiverRegistered = true;
         }
 
-        // Setup Listener
+        // 5. Setup Listeners & Accessibility
         keyboardView.setOnKeyboardActionListener(this);
         keyboardView.setOnTouchListener((v, event) -> false);
         
-        // Setup Accessibility & Hover
         accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput);
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         
+        // Lift-to-Type Logic attached here
         keyboardView.setOnHoverListener((v, event) -> {
             touchHandler.handleHover(event);
             return accessibilityHelper.dispatchHoverEvent(event);
@@ -140,10 +144,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
+        
+        // Reload settings every time input starts (to catch changes made in Settings Activity)
         SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         feedbackManager.loadSettings(prefs);
         touchHandler.loadSettings(prefs);
-        layoutManager.initKeyboards(prefs); // Reload in case of changes
+        layoutManager.initKeyboards(prefs); // Reloads language enablement
         
         currentWord.setLength(0);
         layoutManager.updateEditorInfo(info);
@@ -151,13 +157,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
+    // --- Main Input Handler ---
     public void handleInput(int primaryCode, Keyboard.Key key) {
         feedbackManager.playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
+        // 1. Handle Key with Text Label (e.g., dedicated text keys)
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
+            // Reset sticky shift
             if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
                 layoutManager.isCaps = false;
                 layoutManager.updateKeyboardLayout();
@@ -170,19 +179,26 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             switch (primaryCode) {
                 case -5: // DELETE
                     CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
+                    // Smart Delete for ZWSP
                     if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
                         ic.deleteSurroundingText(1, 0);
                     }
                     CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
                     ic.deleteSurroundingText(1, 0);
+                    
                     if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
                     else announceText("Delete");
+                    
                     if (currentWord.length() > 0) {
                         currentWord.deleteCharAt(currentWord.length() - 1);
                         triggerCandidateUpdate(50);
                     }
                     break;
-                case -10: startVoiceInput(); break; // VOICE
+
+                case -10: // VOICE
+                    startVoiceInput(); 
+                    break; 
+
                 case -1: // SHIFT
                     if (layoutManager.isCapsLocked) {
                         layoutManager.isCapsLocked = false;
@@ -195,29 +211,34 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     break;
+
                 case -2: // SYMBOL ON
                     layoutManager.isSymbols = true;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     announceText("Symbols Keyboard");
                     break;
+
                 case -6: // SYMBOL OFF
                     layoutManager.isSymbols = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : "English");
+                    announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
                     break;
+
                 case -101: // LANG CHANGE
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.changeLanguage();
-                    touchHandler.reset();
+                    touchHandler.reset(); // Reset hover state
                     announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
                     break;
+
                 case -4: // ENTER
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     EditorInfo editorInfo = getCurrentInputEditorInfo();
                     boolean isMultiLine = (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
                     int action = editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
+                    
                     if (!isMultiLine && (action >= EditorInfo.IME_ACTION_GO && action <= EditorInfo.IME_ACTION_DONE)) {
                         sendDefaultEditorAction(true);
                     } else {
@@ -225,14 +246,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     }
                     saveWordAndReset();
                     break;
+
                 case 32: // SPACE
                     String wordToEcho = getWordFromProcessor();
                     ic.commitText(" ", 1);
                     saveWordAndReset();
-                    if (wordToEcho != null && !wordToEcho.isEmpty()) handler.postDelayed(() -> announceText(wordToEcho), 70);
+                    if (wordToEcho != null && !wordToEcho.isEmpty()) {
+                        handler.postDelayed(() -> announceText(wordToEcho), 70);
+                    }
                     break;
-                default:
+
+                default: // CHARACTER INPUT
                     processCharInput(primaryCode, key, ic);
+                    // Reset sticky shift
                     if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
                         layoutManager.isCaps = false;
                         layoutManager.updateKeyboardLayout();
@@ -246,6 +272,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         String charStr = (key != null && key.label != null && key.label.length() > 1) 
                 ? key.label.toString() : String.valueOf((char) primaryCode);
         
+        // Skip logic for numbers
         if (primaryCode >= 48 && primaryCode <= 57) {
             ic.commitText(charStr, 1);
             return;
@@ -253,12 +280,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (layoutManager.isShanOrMyanmar()) {
             boolean handled = false;
+            
+            // 1. Thway Htoe / Shan E Reordering
             if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
                 ic.commitText(String.valueOf(ZWSP) + charStr, 1);
                 currentWord.append(charStr);
                 return;
             }
-            // Check for Medials/Reordering
+            
+            // 2. Check existing Thway Htoe to reorder
             CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
             if (lastTwo != null && lastTwo.length() == 2) {
                 if ((lastTwo.charAt(1) == MM_THWAY_HTOE || lastTwo.charAt(1) == SHAN_E) && lastTwo.charAt(0) == ZWSP) {
@@ -270,6 +300,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     handled = true;
                 }
             }
+            
+            // 3. Medial Logic
             if (!handled && textProcessor.isMedial(primaryCode)) {
                 CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
                 if (lastOne != null && lastOne.length() > 0 && (lastOne.charAt(0) == MM_THWAY_HTOE || lastOne.charAt(0) == SHAN_E)) {
@@ -281,7 +313,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     handled = true;
                 }
             }
-            // Simple stacking for vowels I, U
+            
+            // 4. Vowel Stacking Logic
             if (!handled) {
                 CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
                 if (lastOne != null && lastOne.length() > 0) {
@@ -295,6 +328,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentWord.append(charStr);
             announceSyllableFromProcessor();
         } else {
+            // English/Other
             ic.commitText(charStr, 1);
             currentWord.append(charStr);
         }
@@ -309,12 +343,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return true;
     }
 
-    // --- Helper Methods ---
+    // --- Accessors for Managers ---
     public KeyboardView getKeyboardView() { return keyboardView; }
+    
     public void updateHelperState() { 
-        if (accessibilityHelper != null) accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps); 
+        if (accessibilityHelper != null) {
+            accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps); 
+        }
     }
+    
     public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
+
     public void announceText(String text) {
         AccessibilityManager am = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
         if (am != null && am.isEnabled()) {
@@ -323,10 +362,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             am.sendAccessibilityEvent(event);
         }
     }
+
+    // --- Internal Helpers ---
     private Context getSafeContext() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !isUserUnlocked()) return createDeviceProtectedStorageContext();
         return this;
     }
+
     private boolean isUserUnlocked() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             UserManager um = (UserManager) getSystemService(Context.USER_SERVICE);
@@ -334,12 +376,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
         return true;
     }
-    
-    // --- Logic for Voice, Database, Candidates omitted for brevity but presumed same structure ---
+
+    // --- Candidate & Database ---
     private void triggerCandidateUpdate(long delayMillis) {
         handler.removeCallbacks(pendingCandidateUpdate);
         handler.postDelayed(pendingCandidateUpdate, delayMillis);
     }
+
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
             final String raw = currentWord.toString();
@@ -348,6 +391,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         currentWord.setLength(0);
         triggerCandidateUpdate(0);
     }
+
     private void performCandidateSearch() {
         if (suggestionDB == null || currentWord.length() == 0) {
             handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); });
@@ -368,6 +412,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             });
         });
     }
+
     private void pickSuggestion(String suggestion) {
         InputConnection ic = getCurrentInputConnection();
         if (ic != null) {
@@ -379,35 +424,57 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
     
-    // Voice & Announcement helpers
+    // --- Voice Input ---
     private void setupSpeechRecognizer() {
         if (SpeechRecognizer.isRecognitionAvailable(this)) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
             speechIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
             speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "my-MM");
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "my-MM");
+            speechIntent.putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, "my-MM");
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            speechIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+
             speechRecognizer.setRecognitionListener(new RecognitionListener() {
-                public void onReadyForSpeech(Bundle p) {} public void onBeginningOfSpeech() {} public void onRmsChanged(float r) {} public void onBufferReceived(byte[] b) {} public void onEndOfSpeech() { isListening = false; }
-                public void onError(int e) { isListening = false; } public void onResults(Bundle r) { 
+                public void onReadyForSpeech(Bundle p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE); } 
+                public void onBeginningOfSpeech() {} 
+                public void onRmsChanged(float r) {} 
+                public void onBufferReceived(byte[] b) {} 
+                public void onEndOfSpeech() { isListening = false; }
+                public void onError(int e) { isListening = false; feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE); } 
+                public void onResults(Bundle r) { 
                     ArrayList<String> m = r.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
                     if (m != null && !m.isEmpty()) { getCurrentInputConnection().commitText(m.get(0) + " ", 1); }
                     isListening = false; 
                 }
-                public void onPartialResults(Bundle p) {} public void onEvent(int t, Bundle p) {}
+                public void onPartialResults(Bundle p) {} 
+                public void onEvent(int t, Bundle p) {}
             });
         }
     }
+
     private void startVoiceInput() {
         if (speechRecognizer == null) return;
+        if (isListening) {
+            speechRecognizer.stopListening();
+            isListening = false;
+            return;
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
             intent.setData(Uri.parse("package:" + getPackageName()));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent); return;
+            startActivity(intent); 
+            return;
         }
-        handler.post(() -> speechRecognizer.startListening(speechIntent));
-        isListening = true;
+        handler.post(() -> {
+            try { speechRecognizer.startListening(speechIntent); isListening = true; } catch (Exception e) {}
+        });
     }
+
+    // --- Announcements ---
     private void announceSyllableFromProcessor() {
+        if (accessibilityManager == null || !accessibilityManager.isEnabled()) return;
         handler.postDelayed(() -> {
             InputConnection ic = getCurrentInputConnection();
             if (ic != null) {
@@ -416,32 +483,50 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         }, 50);
     }
+
     private String getWordFromProcessor() {
+        if (accessibilityManager == null || !accessibilityManager.isEnabled()) return null;
         InputConnection ic = getCurrentInputConnection();
         return (ic != null) ? textProcessor.getWordForEcho(ic.getTextBeforeCursor(50, 0)) : null;
     }
+
     private void initCandidateViews(boolean isDarkTheme) {
         candidateContainer.removeAllViews(); candidateViews.clear();
+        int textColor = isDarkTheme ? Color.WHITE : Color.BLACK;
         for (int i=0; i<3; i++) {
             TextView tv = new TextView(this);
-            tv.setTextColor(isDarkTheme ? Color.WHITE : Color.BLACK);
+            tv.setTextColor(textColor);
             tv.setTextSize(18); tv.setPadding(30,10,30,10); tv.setGravity(Gravity.CENTER);
             tv.setBackgroundResource(android.R.drawable.btn_default); tv.setVisibility(View.GONE);
+            tv.setFocusable(true);
             LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
             p.setMargins(5,0,5,0); candidateContainer.addView(tv, p); candidateViews.add(tv);
         }
+        // Accessibility manager init
+        AccessibilityManager am = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
     }
     
-    // Default abstract methods
+    // --- Abstract Overrides ---
     @Override public void onKey(int p, int[] k) { handleInput(p, null); }
-    @Override public void onText(CharSequence t) { getCurrentInputConnection().commitText(t, 1); }
-    @Override public void onPress(int p) {} @Override public void onRelease(int p) { touchHandler.cancelAllLongPress(); }
+    @Override public void onText(CharSequence t) { 
+        getCurrentInputConnection().commitText(t, 1); 
+        feedbackManager.playSound(0);
+        if (layoutManager.isCaps && !layoutManager.isCapsLocked) { 
+            layoutManager.isCaps = false; layoutManager.updateKeyboardLayout(); 
+        }
+    }
+    @Override public void onPress(int p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); } 
+    @Override public void onRelease(int p) { touchHandler.cancelAllLongPress(); }
     @Override public void swipeLeft() {} @Override public void swipeRight() {} @Override public void swipeDown() {} @Override public void swipeUp() {}
+    
     @Override public void onDestroy() { 
         super.onDestroy(); 
         if(speechRecognizer!=null) speechRecognizer.destroy(); 
+        if(dbExecutor != null && !dbExecutor.isShutdown()) dbExecutor.shutdown();
         if(suggestionDB!=null) suggestionDB.close();
         if(isReceiverRegistered) unregisterReceiver(userUnlockReceiver);
+        touchHandler.cancelAllLongPress();
+        handler.removeCallbacks(pendingCandidateUpdate);
     }
 }
 
