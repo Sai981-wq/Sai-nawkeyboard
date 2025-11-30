@@ -88,7 +88,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     private Keyboard shanKeyboard, shanShiftKeyboard;
     private Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
-    private Keyboard numberKeyboard; // *** Dedicated Number Pad ***
+    private Keyboard numberKeyboard; 
     private Keyboard currentKeyboard;
     private List<Keyboard.Key> currentKeys; 
 
@@ -218,7 +218,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         currentLanguageId = 0;
         isCaps = false;
         
-        // updateKeyboardLayout will be called in onStartInputView based on input type
         keyboardView.setOnKeyboardActionListener(this);
 
         setupSpeechRecognizer();
@@ -261,9 +260,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(this, symEnId) : qwertyKeyboard; 
             symbolsMmKeyboard = (symMmId != 0) ? new Keyboard(this, symMmId) : symbolsEnKeyboard;
             
-            // *** Init Dedicated Number Pad ***
+            // Dedicated Number Pad
             int numPadId = getResId("number_pad");
-            // number_pad.xml မရှိလျှင် symbols ကို ယာယီသုံးမည်
             numberKeyboard = (numPadId != 0) ? new Keyboard(this, numPadId) : symbolsEnKeyboard;
 
         } catch (Exception e) {
@@ -333,10 +331,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         currentWord.setLength(0);
         isCaps = false;
         
-        // *** AUTO NUMBER PAD LOGIC ***
         int inputType = info.inputType & EditorInfo.TYPE_MASK_CLASS;
-        int variation = info.inputType & EditorInfo.TYPE_MASK_VARIATION;
-
+        
         if (inputType == EditorInfo.TYPE_CLASS_PHONE) {
             currentKeyboard = numberKeyboard;
             isSymbols = true; 
@@ -349,17 +345,39 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         else {
             isSymbols = false;
             updateKeyboardLayout();
-            return; 
         }
 
         if (keyboardView != null) {
-            keyboardView.setKeyboard(currentKeyboard);
-            currentKeys = currentKeyboard.getKeys();
+            if (isSymbols && (currentKeyboard == numberKeyboard)) {
+                keyboardView.setKeyboard(currentKeyboard);
+                currentKeys = currentKeyboard.getKeys();
+            }
+            updateEnterKeyLabel(info); 
             keyboardView.invalidateAllKeys();
             updateHelperState();
         }
         
         triggerCandidateUpdate(0);
+    }
+    
+    private void updateEnterKeyLabel(EditorInfo info) {
+        if (currentKeyboard == null || keyboardView == null) return;
+        List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        for (Keyboard.Key key : keys) {
+            if (key.codes[0] == CODE_ENTER) {
+                int action = info.imeOptions & EditorInfo.IME_MASK_ACTION;
+                switch (action) {
+                    case EditorInfo.IME_ACTION_GO: key.label = "Go"; break;
+                    case EditorInfo.IME_ACTION_NEXT: key.label = "Next"; break;
+                    case EditorInfo.IME_ACTION_SEARCH: key.label = "Search"; break;
+                    case EditorInfo.IME_ACTION_SEND: key.label = "Send"; break;
+                    case EditorInfo.IME_ACTION_DONE: key.label = "Done"; break;
+                    default: key.label = "Enter"; break;
+                }
+                key.icon = null; 
+                break; 
+            }
+        }
     }
 
     private void handleLiftToType(MotionEvent event) {
@@ -372,7 +390,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         float x = event.getX();
         float y = event.getY();
 
-        // 1. Strict Boundary Check
         if (y < 0) {
             cancelAllLongPress(); 
             lastHoverKeyIndex = -1; 
@@ -391,11 +408,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     
                     Keyboard.Key key = currentKeys.get(newKeyIndex);
                     int code = key.codes[0];
+                    
                     if (code == CODE_SPACE) {
-                        handler.postDelayed(spaceLongPressTask, 600);
+                        // *** SPACE LONG PRESS: 3000ms ***
+                        handler.postDelayed(spaceLongPressTask, 3000);
                     } else if (code == CODE_DELETE) {
-                        // *** 800ms for safety ***
-                        handler.postDelayed(deleteStartTask, 800);
+                        // *** DELETE LONG PRESS: 2000ms ***
+                        handler.postDelayed(deleteStartTask, 2000);
                     }
                 }
                 break;
@@ -514,6 +533,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     EditorInfo editorInfo = getCurrentInputEditorInfo();
                     boolean isMultiLine = (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
                     int action = editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
+                    
                     if (!isMultiLine && (action >= EditorInfo.IME_ACTION_GO && action <= EditorInfo.IME_ACTION_DONE)) {
                         sendDefaultEditorAction(true);
                     } else {
@@ -537,7 +557,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() 
                             : String.valueOf((char) primaryCode);
 
-                    // *** Number Pad Bypass Logic ***
                     if (primaryCode >= 48 && primaryCode <= 57) {
                         ic.commitText(charStr, 1);
                         return;
