@@ -37,8 +37,8 @@ public class SaiNawLayoutManager {
 
     // Load Language Settings from Prefs
     public void loadLanguageSettings(SharedPreferences prefs) {
-        boolean useMm = prefs.getBoolean("enable_mm", true);   // Default True
-        boolean useShan = prefs.getBoolean("enable_shan", true); // Default True
+        boolean useMm = prefs.getBoolean("enable_mm", true);   
+        boolean useShan = prefs.getBoolean("enable_shan", true); 
 
         enabledLanguages.clear();
         
@@ -49,14 +49,13 @@ public class SaiNawLayoutManager {
         if (useMm) enabledLanguages.add(1);
         if (useShan) enabledLanguages.add(2);
 
-        // Validation: If current language was disabled by user, reset to English
+        // Validation
         if (!enabledLanguages.contains(currentLanguageId)) {
             currentLanguageId = 0; // Reset to English
         }
     }
 
     public void initKeyboards(SharedPreferences prefs) {
-        // Load language preferences first
         loadLanguageSettings(prefs);
 
         try {
@@ -84,6 +83,7 @@ public class SaiNawLayoutManager {
         }
     }
 
+    // *** အရေးကြီး: Input Field အချက်အလက်ကို လက်ခံရယူခြင်း ***
     public void updateEditorInfo(EditorInfo info) {
         this.currentEditorInfo = info;
     }
@@ -129,47 +129,47 @@ public class SaiNawLayoutManager {
 
     private void applyKeyboard() {
         if (service.getKeyboardView() != null) {
-            updateEnterKeyLabel();
+            // *** ဒီနေရာမှာ Enter စာသားကို အခြေအနေလိုက် ပြောင်းပေးပါတယ် ***
+            updateEnterKeyLabel(); 
+            
             service.getKeyboardView().setKeyboard(currentKeyboard);
             service.getKeyboardView().invalidateAllKeys();
             service.updateHelperState(); 
         }
     }
 
+    // *** Dynamic Enter Label Logic ***
     private void updateEnterKeyLabel() {
         if (currentKeyboard == null || currentEditorInfo == null) return;
+        
         int action = currentEditorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
-        String label = "Enter";
+        String label = "Enter"; // Default text
 
+        // အခြေအနေပေါ်မူတည်ပြီး စာသားပြောင်းခြင်း
         switch (action) {
             case EditorInfo.IME_ACTION_GO: label = "Go"; break;
             case EditorInfo.IME_ACTION_NEXT: label = "Next"; break;
             case EditorInfo.IME_ACTION_SEARCH: label = "Search"; break;
             case EditorInfo.IME_ACTION_SEND: label = "Send"; break;
             case EditorInfo.IME_ACTION_DONE: label = "Done"; break;
+            default: label = "Enter"; break;
         }
 
-        for (Keyboard.Key key : currentKeyboard.getKeys()) {
+        // Keyboard ပေါ်က Enter ခလုတ် (-4) ကိုလိုက်ရှာပြီး စာသားပြောင်းခြင်း
+        List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        for (Keyboard.Key key : keys) {
             if (key.codes[0] == -4) { 
                 key.label = label;
-                key.icon = null;
-                key.iconPreview = null;
+                key.icon = null; // Icon ရှိရင် ဖျောက်လိုက်မှ စာသားပေါ်မယ်
                 break;
             }
         }
     }
     
-    // Change Language Logic
     public void changeLanguage() {
         if (enabledLanguages.isEmpty()) return;
-
-        // Find current index in the enabled list
         int currentIndex = enabledLanguages.indexOf(currentLanguageId);
-        
-        // Calculate next index (cycle through enabled list only)
         int nextIndex = (currentIndex + 1) % enabledLanguages.size();
-        
-        // Set new Language ID
         currentLanguageId = enabledLanguages.get(nextIndex);
         
         isCaps = false; isSymbols = false; isCapsLocked = false;

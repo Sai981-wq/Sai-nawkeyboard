@@ -23,7 +23,9 @@
         <Key android:codes="0" android:keyLabel="ဏ္ဍ" android:keyOutputText="ဏ္ဍ"/> 
         <Key android:codes="4131" android:keyLabel="ဣ"/>
         <Key android:codes="4174" android:keyLabel="၎င်း"/>
-        <Key android:codes="4134" android:keyLabel="ဤ"/>
+        
+        <Key android:codes="4132" android:keyLabel="ဤ"/>
+        
         <Key android:codes="4172" android:keyLabel="၌"/>
         <Key android:codes="4133" android:keyLabel="ဥ"/>
         <Key android:codes="4173" android:keyLabel="၍"/>
@@ -52,7 +54,10 @@
         <Key android:codes="4128" android:keyLabel="ဠ" android:keyWidth="9.5%p"/>
         <Key android:codes="4110" android:keyLabel="ဎ" android:keyWidth="9.5%p"/>
         <Key android:codes="4105" android:keyLabel="ဉ" android:keyWidth="9.5%p"/>
-        <Key android:codes="4136" android:keyLabel="ဦ" android:keyWidth="9.5%p"/> <Key android:codes="4135" android:keyLabel="ဧ" android:keyWidth="9.5%p"/>
+        
+        <Key android:codes="4134" android:keyLabel="ဦ" android:keyWidth="9.5%p"/> 
+        
+        <Key android:codes="4135" android:keyLabel="ဧ" android:keyWidth="9.5%p"/>
 
         <Key android:codes="-5" android:keyLabel="DEL" android:keyWidth="12%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
     </Row>
