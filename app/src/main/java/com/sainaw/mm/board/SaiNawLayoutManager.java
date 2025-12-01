@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.inputmethodservice.Keyboard;
 import android.view.inputmethod.EditorInfo;
+import android.widget.Toast; // For Debugging
 import java.util.ArrayList;
 import java.util.List;
 
@@ -25,9 +26,8 @@ public class SaiNawLayoutManager {
     public boolean isCaps = false;
     public boolean isCapsLocked = false;
     public boolean isSymbols = false;
-    public int currentLanguageId = 0; // 0=Eng, 1=MM, 2=Shan
+    public int currentLanguageId = 0; 
     
-    // Language Management
     private List<Integer> enabledLanguages = new ArrayList<>();
 
     public SaiNawLayoutManager(SaiNawKeyboardService service) {
@@ -35,29 +35,22 @@ public class SaiNawLayoutManager {
         this.context = service;
     }
 
-    // Load Language Settings from Prefs
     public void loadLanguageSettings(SharedPreferences prefs) {
         boolean useMm = prefs.getBoolean("enable_mm", true);   
         boolean useShan = prefs.getBoolean("enable_shan", true); 
 
         enabledLanguages.clear();
-        
-        // 1. English (0) is ALWAYS added first (Mandatory)
-        enabledLanguages.add(0);
-
-        // 2. Add others if enabled
+        enabledLanguages.add(0); // English
         if (useMm) enabledLanguages.add(1);
         if (useShan) enabledLanguages.add(2);
 
-        // Validation
         if (!enabledLanguages.contains(currentLanguageId)) {
-            currentLanguageId = 0; // Reset to English
+            currentLanguageId = 0; 
         }
     }
 
     public void initKeyboards(SharedPreferences prefs) {
         loadLanguageSettings(prefs);
-
         try {
             boolean showNumRow = prefs.getBoolean("number_row", false);
             String engSuffix = showNumRow ? "_num" : "";
@@ -76,14 +69,12 @@ public class SaiNawLayoutManager {
 
             int numPadId = service.getResId("number_pad");
             numberKeyboard = (numPadId != 0) ? new Keyboard(context, numPadId) : symbolsEnKeyboard;
-            
         } catch (Exception e) {
             e.printStackTrace();
             qwertyKeyboard = new Keyboard(context, service.getResId("qwerty"));
         }
     }
 
-    // *** အရေးကြီး: Input Field အချက်အလက်ကို လက်ခံရယူခြင်း ***
     public void updateEditorInfo(EditorInfo info) {
         this.currentEditorInfo = info;
     }
@@ -98,7 +89,8 @@ public class SaiNawLayoutManager {
             currentKeyboard = numberKeyboard;
             isSymbols = true;
         } else {
-            isSymbols = false;
+            // Only force reset symbols if switching away from number pad
+            if (currentKeyboard == numberKeyboard) isSymbols = false;
             updateKeyboardLayout();
             return;
         }
@@ -109,11 +101,8 @@ public class SaiNawLayoutManager {
         try {
             Keyboard nextKeyboard;
             if (isSymbols) {
-                if (currentKeyboard == numberKeyboard) {
-                    nextKeyboard = numberKeyboard;
-                } else {
-                    nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard;
-                }
+                if (currentKeyboard == numberKeyboard) nextKeyboard = numberKeyboard;
+                else nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard;
             } else {
                 if (currentLanguageId == 1) nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
                 else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
@@ -129,41 +118,46 @@ public class SaiNawLayoutManager {
 
     private void applyKeyboard() {
         if (service.getKeyboardView() != null) {
-            // *** ဒီနေရာမှာ Enter စာသားကို အခြေအနေလိုက် ပြောင်းပေးပါတယ် ***
-            updateEnterKeyLabel(); 
-            
+            updateEnterKeyLabel(); // Call label update
             service.getKeyboardView().setKeyboard(currentKeyboard);
             service.getKeyboardView().invalidateAllKeys();
             service.updateHelperState(); 
         }
     }
 
-    // *** Dynamic Enter Label Logic ***
+    // *** DEBUG VERSION ***
     private void updateEnterKeyLabel() {
         if (currentKeyboard == null || currentEditorInfo == null) return;
         
         int action = currentEditorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
-        String label = "Enter"; // Default text
+        String label = "Normal"; 
 
-        // အခြေအနေပေါ်မူတည်ပြီး စာသားပြောင်းခြင်း
         switch (action) {
             case EditorInfo.IME_ACTION_GO: label = "Go"; break;
             case EditorInfo.IME_ACTION_NEXT: label = "Next"; break;
             case EditorInfo.IME_ACTION_SEARCH: label = "Search"; break;
             case EditorInfo.IME_ACTION_SEND: label = "Send"; break;
             case EditorInfo.IME_ACTION_DONE: label = "Done"; break;
-            default: label = "Enter"; break;
+            default: label = "Enter"; break; // Fallback
         }
 
-        // Keyboard ပေါ်က Enter ခလုတ် (-4) ကိုလိုက်ရှာပြီး စာသားပြောင်းခြင်း
+        // *** DEBUG: Show Toast to see if logic is working ***
+        // ဒီ Toast ပေါ်လာရင် Logic အလုပ်လုပ်တယ်လို့ မှတ်ယူနိုင်ပါတယ်
+        // Toast.makeText(context, "Action: " + action + " -> " + label, Toast.LENGTH_SHORT).show();
+
+        boolean keyFound = false;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         for (Keyboard.Key key : keys) {
             if (key.codes[0] == -4) { 
-                key.label = label;
-                key.icon = null; // Icon ရှိရင် ဖျောက်လိုက်မှ စာသားပေါ်မယ်
+                key.label = label; 
+                key.icon = null; 
+                key.iconPreview = null;
+                keyFound = true;
                 break;
             }
         }
+        
+        // Key ရှာမတွေ့ရင် Log ထုတ်ကြည့်လို့ရပါတယ် (Optional)
     }
     
     public void changeLanguage() {
@@ -171,7 +165,6 @@ public class SaiNawLayoutManager {
         int currentIndex = enabledLanguages.indexOf(currentLanguageId);
         int nextIndex = (currentIndex + 1) % enabledLanguages.size();
         currentLanguageId = enabledLanguages.get(nextIndex);
-        
         isCaps = false; isSymbols = false; isCapsLocked = false;
         updateKeyboardLayout();
     }
