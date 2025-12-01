@@ -4,7 +4,6 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.inputmethodservice.Keyboard;
 import android.view.inputmethod.EditorInfo;
-import android.widget.Toast; // For Debugging
 import java.util.ArrayList;
 import java.util.List;
 
@@ -40,7 +39,7 @@ public class SaiNawLayoutManager {
         boolean useShan = prefs.getBoolean("enable_shan", true); 
 
         enabledLanguages.clear();
-        enabledLanguages.add(0); // English
+        enabledLanguages.add(0); 
         if (useMm) enabledLanguages.add(1);
         if (useShan) enabledLanguages.add(2);
 
@@ -89,7 +88,6 @@ public class SaiNawLayoutManager {
             currentKeyboard = numberKeyboard;
             isSymbols = true;
         } else {
-            // Only force reset symbols if switching away from number pad
             if (currentKeyboard == numberKeyboard) isSymbols = false;
             updateKeyboardLayout();
             return;
@@ -118,46 +116,47 @@ public class SaiNawLayoutManager {
 
     private void applyKeyboard() {
         if (service.getKeyboardView() != null) {
-            updateEnterKeyLabel(); // Call label update
+            updateEnterKeyLabel(); 
             service.getKeyboardView().setKeyboard(currentKeyboard);
             service.getKeyboardView().invalidateAllKeys();
             service.updateHelperState(); 
         }
     }
 
-    // *** DEBUG VERSION ***
+    // *** FIX IS HERE ***
     private void updateEnterKeyLabel() {
         if (currentKeyboard == null || currentEditorInfo == null) return;
         
+        // Check if the input field is MULTI-LINE (Standard text area)
+        boolean isMultiLine = (currentEditorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
+        
         int action = currentEditorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
-        String label = "Normal"; 
+        String label = "Enter"; 
 
-        switch (action) {
-            case EditorInfo.IME_ACTION_GO: label = "Go"; break;
-            case EditorInfo.IME_ACTION_NEXT: label = "Next"; break;
-            case EditorInfo.IME_ACTION_SEARCH: label = "Search"; break;
-            case EditorInfo.IME_ACTION_SEND: label = "Send"; break;
-            case EditorInfo.IME_ACTION_DONE: label = "Done"; break;
-            default: label = "Enter"; break; // Fallback
+        if (isMultiLine) {
+            // If it's multi-line, FORCE label to be "Enter" (ignoring 'Done')
+            label = "Enter";
+        } else {
+            // Only change label for Single-line fields
+            switch (action) {
+                case EditorInfo.IME_ACTION_GO: label = "Go"; break;
+                case EditorInfo.IME_ACTION_NEXT: label = "Next"; break;
+                case EditorInfo.IME_ACTION_SEARCH: label = "Search"; break;
+                case EditorInfo.IME_ACTION_SEND: label = "Send"; break;
+                case EditorInfo.IME_ACTION_DONE: label = "Done"; break;
+                default: label = "Enter"; break;
+            }
         }
 
-        // *** DEBUG: Show Toast to see if logic is working ***
-        // ဒီ Toast ပေါ်လာရင် Logic အလုပ်လုပ်တယ်လို့ မှတ်ယူနိုင်ပါတယ်
-        // Toast.makeText(context, "Action: " + action + " -> " + label, Toast.LENGTH_SHORT).show();
-
-        boolean keyFound = false;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         for (Keyboard.Key key : keys) {
             if (key.codes[0] == -4) { 
                 key.label = label; 
                 key.icon = null; 
                 key.iconPreview = null;
-                keyFound = true;
                 break;
             }
         }
-        
-        // Key ရှာမတွေ့ရင် Log ထုတ်ကြည့်လို့ရပါတယ် (Optional)
     }
     
     public void changeLanguage() {
