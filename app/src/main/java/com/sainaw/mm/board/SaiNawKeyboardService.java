@@ -49,7 +49,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SuggestionDB suggestionDB;
 
     // System Services
-    private AccessibilityManager accessibilityManager; // Fixed: Added missing declaration
+    private AccessibilityManager accessibilityManager;
 
     // UI Components
     private KeyboardView keyboardView;
@@ -105,7 +105,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         textProcessor = new SaiNawTextProcessor();
 
         // 2. Initialize System Services
-        accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE); // Fixed: Initialization
+        accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
 
         // 3. Load Settings safely
         Context safeContext = getSafeContext();
@@ -147,15 +147,28 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return layout;
     }
 
+    // *** NEW: onStartInput to handle dynamic labels correctly ***
+    @Override
+    public void onStartInput(EditorInfo attribute, boolean restarting) {
+        super.onStartInput(attribute, restarting);
+        
+        // Update Layout Manager with new input field info
+        if (layoutManager != null) {
+            layoutManager.updateEditorInfo(attribute);
+            // This triggers the Enter key label update
+            layoutManager.determineKeyboardForInputType();
+        }
+    }
+
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         
-        // Reload settings every time input starts (to catch changes made in Settings Activity)
+        // Reload settings
         SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         feedbackManager.loadSettings(prefs);
         touchHandler.loadSettings(prefs);
-        layoutManager.initKeyboards(prefs); // Reloads language enablement
+        layoutManager.initKeyboards(prefs); 
         
         currentWord.setLength(0);
         layoutManager.updateEditorInfo(info);
@@ -169,10 +182,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
-        // 1. Handle Key with Text Label (e.g., dedicated text keys)
+        // 1. Handle Key with Text Label
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
-            // Reset sticky shift
             if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
                 layoutManager.isCaps = false;
                 layoutManager.updateKeyboardLayout();
@@ -185,7 +197,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             switch (primaryCode) {
                 case -5: // DELETE
                     CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
-                    // Smart Delete for ZWSP
                     if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
                         ic.deleteSurroundingText(1, 0);
                     }
@@ -235,7 +246,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 case -101: // LANG CHANGE
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.changeLanguage();
-                    touchHandler.reset(); // Reset hover state
+                    touchHandler.reset(); 
                     announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
                     break;
 
@@ -264,7 +275,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 default: // CHARACTER INPUT
                     processCharInput(primaryCode, key, ic);
-                    // Reset sticky shift
                     if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
                         layoutManager.isCaps = false;
                         layoutManager.updateKeyboardLayout();
@@ -278,7 +288,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         String charStr = (key != null && key.label != null && key.label.length() > 1) 
                 ? key.label.toString() : String.valueOf((char) primaryCode);
         
-        // Skip logic for numbers
         if (primaryCode >= 48 && primaryCode <= 57) {
             ic.commitText(charStr, 1);
             return;
@@ -287,14 +296,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (layoutManager.isShanOrMyanmar()) {
             boolean handled = false;
             
-            // 1. Thway Htoe / Shan E Reordering
             if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
                 ic.commitText(String.valueOf(ZWSP) + charStr, 1);
                 currentWord.append(charStr);
                 return;
             }
             
-            // 2. Check existing Thway Htoe to reorder
             CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
             if (lastTwo != null && lastTwo.length() == 2) {
                 if ((lastTwo.charAt(1) == MM_THWAY_HTOE || lastTwo.charAt(1) == SHAN_E) && lastTwo.charAt(0) == ZWSP) {
@@ -307,7 +314,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
             }
             
-            // 3. Medial Logic
             if (!handled && textProcessor.isMedial(primaryCode)) {
                 CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
                 if (lastOne != null && lastOne.length() > 0 && (lastOne.charAt(0) == MM_THWAY_HTOE || lastOne.charAt(0) == SHAN_E)) {
@@ -320,7 +326,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
             }
             
-            // 4. Vowel Stacking Logic
             if (!handled) {
                 CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
                 if (lastOne != null && lastOne.length() > 0) {
@@ -334,7 +339,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentWord.append(charStr);
             announceSyllableFromProcessor();
         } else {
-            // English/Other
             ic.commitText(charStr, 1);
             currentWord.append(charStr);
         }
