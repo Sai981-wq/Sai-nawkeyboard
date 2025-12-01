@@ -53,7 +53,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         }
 
         // 2. Nearest Key Check: If not exactly inside, find the closest key
-        // This makes "Explore by Touch" much smoother.
         return getNearestKeyIndex((int) x, (int) y);
     }
 
@@ -63,32 +62,25 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         
         int closestIndex = HOST_ID;
-        int minDistSq = Integer.MAX_VALUE; // Squared distance
+        int minDistSq = Integer.MAX_VALUE; 
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             
-            // Skip dummy keys (-100) from snapping
             if (key.codes[0] == -100) continue;
 
-            // Calculate center of the key
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
 
-            // Euclidean distance calculation (Squared to avoid sqrt for performance)
             int dx = x - keyCenterX;
             int dy = y - keyCenterY;
             int distSq = (dx * dx) + (dy * dy);
 
-            // Update if this key is closer than the previous best
             if (distSq < minDistSq) {
                 minDistSq = distSq;
                 closestIndex = i;
             }
         }
-        
-        // Optional: You can add a threshold here (e.g., only snap if within 100px)
-        // But for accessibility, snapping to *any* nearest key is usually preferred.
         return closestIndex;
     }
 
@@ -99,7 +91,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (keys == null) return;
 
         for (int i = 0; i < keys.size(); i++) {
-            // Only expose non-dummy keys
             if (keys.get(i).codes[0] != -100) {
                 virtualViewIds.add(i);
             }
@@ -157,10 +148,16 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
+
+        // *** FIX FOR DYNAMIC ENTER LABEL ***
+        if (code == -4) {
+            // If label exists (Go, Search, Next), read it. If not, fallback to "Enter".
+            return (key.label != null) ? key.label.toString() : "Enter";
+        }
+
         if (code == -5) return "Delete";
         if (code == -1) return isCaps ? "Shift On" : "Shift";
         if (code == 32) return "Space";
-        if (code == -4) return "Enter";
         if (code == -2) return "Symbol Keyboard";
         if (code == -6) return "Alphabet Keyboard";
         if (code == -101) return "Switch Language";
@@ -178,3 +175,4 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         return label != null ? label : "Unlabeled Key";
     }
 }
+
