@@ -32,10 +32,9 @@ public class SettingsActivity extends AppCompatActivity {
             else Toast.makeText(this, "Error", Toast.LENGTH_SHORT).show();
         });
 
-        // Sub-Menu Navigation
+        // Sub-Menu Navigation (User Dictionary ဖယ်လိုက်ပါပြီ)
         setupButton(R.id.btn_languages, v -> startActivity(new Intent(this, LanguageSettingsActivity.class)));
         setupButton(R.id.btn_accessibility, v -> startActivity(new Intent(this, AccessibilitySettingsActivity.class)));
-        setupButton(R.id.btn_user_dictionary, v -> startActivity(new Intent(this, UserDictionaryActivity.class)));
         setupButton(R.id.btn_about, v -> showAboutDialog());
 
         // General Switches

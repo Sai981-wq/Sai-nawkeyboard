@@ -58,17 +58,6 @@
             android:text="Accessibility Options  >"
             android:gravity="center_vertical|start"
             android:padding="12dp"
-            android:layout_marginBottom="8dp"
-            style="@style/Widget.AppCompat.Button.Borderless"
-            android:backgroundTint="#E0E0E0"/>
-
-        <Button
-            android:id="@+id/btn_user_dictionary"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="User Dictionary  >"
-            android:gravity="center_vertical|start"
-            android:padding="12dp"
             android:layout_marginBottom="20dp"
             style="@style/Widget.AppCompat.Button.Borderless"
             android:backgroundTint="#E0E0E0"/>
