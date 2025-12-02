@@ -1,5 +1,6 @@
 package com.sainaw.mm.board;
 
+import android.content.Context;
 import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Bundle;
@@ -17,22 +18,25 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
     private OnAccessibilityKeyListener listener;
+    private SaiNawPhoneticManager phoneticManager; 
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
     }
 
-    public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener) {
+    // *** ပြင်ဆင်ထားသောနေရာ: Context ကို လက်ခံသော Constructor ***
+    public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, Context context) {
         super(view);
         this.view = view;
         this.listener = listener;
+        // Phonetic Manager ကို ဒီမှာ စတင်အလုပ်လုပ်ခိုင်းပါတယ်
+        this.phoneticManager = new SaiNawPhoneticManager(context); 
     }
 
     public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
-        // Refresh TalkBack tree
         invalidateRoot();
         sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
@@ -43,20 +47,19 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null || keys.isEmpty()) return HOST_ID;
 
-        // 1. Strict Check: Is the touch exactly inside a key?
+        // 1. Strict Check
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.isInside((int) x, (int) y)) {
-                if (key.codes[0] == -100) return HOST_ID; // Ignore dummy keys
+                if (key.codes[0] == -100) return HOST_ID; 
                 return i;
             }
         }
 
-        // 2. Nearest Key Check: If not exactly inside, find the closest key
+        // 2. Nearest Key Check
         return getNearestKeyIndex((int) x, (int) y);
     }
 
-    // --- NEAREST KEY ALGORITHM ---
     private int getNearestKeyIndex(int x, int y) {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
@@ -66,7 +69,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
-            
             if (key.codes[0] == -100) continue;
 
             int keyCenterX = key.x + (key.width / 2);
@@ -149,9 +151,8 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
 
-        // *** FIX FOR DYNAMIC ENTER LABEL ***
+        // Dynamic Label (Go, Search, etc.)
         if (code == -4) {
-            // If label exists (Go, Search, Next), read it. If not, fallback to "Enter".
             return (key.label != null) ? key.label.toString() : "Enter";
         }
 
@@ -164,15 +165,17 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (code == -10) return "Voice Typing";
         if (code == -100) return ""; 
 
-        String label = null;
-        if (key.label != null) label = key.label.toString();
-        else if (key.text != null) label = key.text.toString();
-
-        if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
-             return "Capital " + label;
+        // Phonetic Manager မှ အသံကို ယူပါသည် (ဥပမာ - ကကြီး)
+        String phonetic = phoneticManager.getPronunciation(code);
+        
+        // အကယ်၍ Phonetic Manager က မူရင်းစာလုံးအတိုင်း ပြန်ပေးရင် Label ကို ကြည့်မယ်
+        if (phonetic.equals(String.valueOf((char)code))) {
+             if (key.label != null) return key.label.toString();
+             if (key.text != null) return key.text.toString();
+             return "Unlabeled";
         }
 
-        return label != null ? label : "Unlabeled Key";
+        return phonetic;
     }
 }
 
