@@ -44,18 +44,34 @@
             android:id="@+id/btn_languages"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Languages  "
+            android:text="Languages  >"
             android:gravity="center_vertical|start"
             android:padding="12dp"
-            android:layout_marginBottom="8dp"/>
+            android:layout_marginBottom="8dp"
+            style="@style/Widget.AppCompat.Button.Borderless"
+            android:backgroundTint="#E0E0E0"/>
 
-        <androidx.appcompat.widget.SwitchCompat
-            android:id="@+id/switch_typing_mode"
+        <Button
+            android:id="@+id/btn_accessibility"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:text="Accessibility Options  >"
+            android:gravity="center_vertical|start"
             android:padding="12dp"
-            android:text="Lift-to-Type Mode (On=Lift, Off=DoubleTap)"
-            android:textSize="16sp"/>
+            android:layout_marginBottom="8dp"
+            style="@style/Widget.AppCompat.Button.Borderless"
+            android:backgroundTint="#E0E0E0"/>
+
+        <Button
+            android:id="@+id/btn_user_dictionary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="User Dictionary  >"
+            android:gravity="center_vertical|start"
+            android:padding="12dp"
+            android:layout_marginBottom="20dp"
+            style="@style/Widget.AppCompat.Button.Borderless"
+            android:backgroundTint="#E0E0E0"/>
 
         <androidx.appcompat.widget.SwitchCompat
             android:id="@+id/switch_vibrate"

@@ -23,37 +23,31 @@ public class SettingsActivity extends AppCompatActivity {
 
         prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
 
-        // Enable Keyboard Button
-        Button btnEnable = findViewById(R.id.btn_enable_keyboard);
-        btnEnable.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)));
-
-        // Select Keyboard Button
-        Button btnSelect = findViewById(R.id.btn_select_keyboard);
-        btnSelect.setOnClickListener(v -> {
-            InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-            if (imeManager != null) {
-                imeManager.showInputMethodPicker();
-            } else {
-                Toast.makeText(SettingsActivity.this, R.string.error_toast, Toast.LENGTH_SHORT).show();
-            }
-        });
+        // Setup Buttons
+        setupButton(R.id.btn_enable_keyboard, v -> startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)));
         
-        // --- NEW: Languages Sub-Menu ---
-        Button btnLanguages = findViewById(R.id.btn_languages);
-        btnLanguages.setOnClickListener(v -> {
-            startActivity(new Intent(SettingsActivity.this, LanguageSettingsActivity.class));
+        setupButton(R.id.btn_select_keyboard, v -> {
+            InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imeManager != null) imeManager.showInputMethodPicker();
+            else Toast.makeText(this, "Error", Toast.LENGTH_SHORT).show();
         });
 
-        // --- Other Settings Switches ---
-        setupSwitch(R.id.switch_typing_mode, "lift_to_type", true);
+        // Sub-Menu Navigation
+        setupButton(R.id.btn_languages, v -> startActivity(new Intent(this, LanguageSettingsActivity.class)));
+        setupButton(R.id.btn_accessibility, v -> startActivity(new Intent(this, AccessibilitySettingsActivity.class)));
+        setupButton(R.id.btn_user_dictionary, v -> startActivity(new Intent(this, UserDictionaryActivity.class)));
+        setupButton(R.id.btn_about, v -> showAboutDialog());
+
+        // General Switches
         setupSwitch(R.id.switch_vibrate, "vibrate_on", true);
         setupSwitch(R.id.switch_sound, "sound_on", false);
         setupSwitch(R.id.switch_theme, "dark_theme", false);
         setupSwitch(R.id.switch_number_row, "number_row", false);
+    }
 
-        // About Button
-        Button btnAbout = findViewById(R.id.btn_about);
-        btnAbout.setOnClickListener(v -> showAboutDialog());
+    private void setupButton(int id, android.view.View.OnClickListener listener) {
+        Button btn = findViewById(id);
+        if (btn != null) btn.setOnClickListener(listener);
     }
 
     private void setupSwitch(int id, final String key, boolean def) {
@@ -68,9 +62,9 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void showAboutDialog() {
         new AlertDialog.Builder(this)
-                .setTitle(R.string.about_title)
-                .setMessage(R.string.about_message)
-                .setPositiveButton(R.string.btn_ok, null)
+                .setTitle("About Sai Naw Keyboard")
+                .setMessage("Created for visually impaired users.\nVersion 1.0")
+                .setPositiveButton("OK", null)
                 .show();
     }
 }
