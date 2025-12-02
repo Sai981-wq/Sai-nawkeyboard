@@ -18,19 +18,17 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
     private OnAccessibilityKeyListener listener;
-    private SaiNawPhoneticManager phoneticManager; 
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
     }
 
-    // *** ပြင်ဆင်ထားသောနေရာ: Context ကို လက်ခံသော Constructor ***
+    // *** Fixed Constructor: Accepts 3 arguments to match Service, but ignores Context ***
     public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, Context context) {
         super(view);
         this.view = view;
         this.listener = listener;
-        // Phonetic Manager ကို ဒီမှာ စတင်အလုပ်လုပ်ခိုင်းပါတယ်
-        this.phoneticManager = new SaiNawPhoneticManager(context); 
+        // PhoneticManager removed
     }
 
     public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
@@ -165,17 +163,16 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (code == -10) return "Voice Typing";
         if (code == -100) return ""; 
 
-        // Phonetic Manager မှ အသံကို ယူပါသည် (ဥပမာ - ကကြီး)
-        String phonetic = phoneticManager.getPronunciation(code);
-        
-        // အကယ်၍ Phonetic Manager က မူရင်းစာလုံးအတိုင်း ပြန်ပေးရင် Label ကို ကြည့်မယ်
-        if (phonetic.equals(String.valueOf((char)code))) {
-             if (key.label != null) return key.label.toString();
-             if (key.text != null) return key.text.toString();
-             return "Unlabeled";
+        // Phonetic Logic removed. Just return standard label.
+        String label = null;
+        if (key.label != null) label = key.label.toString();
+        else if (key.text != null) label = key.text.toString();
+
+        if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
+             return "Capital " + label;
         }
 
-        return phonetic;
+        return label != null ? label : "Unlabeled Key";
     }
 }
 
