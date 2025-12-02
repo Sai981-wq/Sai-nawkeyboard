@@ -21,6 +21,11 @@ public class SettingsActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
 
+        // App Title Bar နာမည်ပြောင်းချင်ရင် ဒီမှာချိတ်နိုင်ပါတယ်
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setTitle(R.string.settings_name);
+        }
+
         prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
 
         // Setup Buttons
@@ -29,12 +34,16 @@ public class SettingsActivity extends AppCompatActivity {
         setupButton(R.id.btn_select_keyboard, v -> {
             InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             if (imeManager != null) imeManager.showInputMethodPicker();
-            else Toast.makeText(this, "Error", Toast.LENGTH_SHORT).show();
+            else Toast.makeText(this, R.string.error_toast, Toast.LENGTH_SHORT).show(); // Changed to R.string
         });
 
-        // Sub-Menu Navigation (User Dictionary ဖယ်လိုက်ပါပြီ)
+        // Sub-Menu Navigation
         setupButton(R.id.btn_languages, v -> startActivity(new Intent(this, LanguageSettingsActivity.class)));
         setupButton(R.id.btn_accessibility, v -> startActivity(new Intent(this, AccessibilitySettingsActivity.class)));
+        // User Dictionary မသုံးသေးရင် ဒီလိုင်းကို Comment ပိတ်ထားနိုင်ပါတယ်
+        // setupButton(R.id.btn_user_dictionary, v -> startActivity(new Intent(this, UserDictionaryActivity.class)));
+        
+        // About Button with XML Strings
         setupButton(R.id.btn_about, v -> showAboutDialog());
 
         // General Switches
@@ -59,11 +68,12 @@ public class SettingsActivity extends AppCompatActivity {
         }
     }
 
+    // *** ဒီနေရာမှာ Strings.xml နဲ့ ချိတ်ထားပါတယ် ***
     private void showAboutDialog() {
         new AlertDialog.Builder(this)
-                .setTitle("About Sai Naw Keyboard")
-                .setMessage("Created for visually impaired users.\nVersion 1.0")
-                .setPositiveButton("OK", null)
+                .setTitle(R.string.about_title)      // "About Sai Naw Keyboard"
+                .setMessage(R.string.about_message)  // "Version: 1.0.0..."
+                .setPositiveButton(R.string.btn_ok, null) // "OK"
                 .show();
     }
 }

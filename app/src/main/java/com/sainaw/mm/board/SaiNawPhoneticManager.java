@@ -9,10 +9,16 @@ public class SaiNawPhoneticManager {
     
     private HashMap<Integer, String> phoneticMap = new HashMap<>();
     private final Context context;
+    private int currentLanguageId = 0; // 0=Eng, 1=MM, 2=Shan
 
     public SaiNawPhoneticManager(Context context) {
         this.context = context;
         loadMappingFromFile();
+    }
+
+    // *** New Method: ဘာသာစကား အပြောင်းအလဲကို လက်ခံရန် ***
+    public void setLanguageId(int languageId) {
+        this.currentLanguageId = languageId;
     }
 
     private void loadMappingFromFile() {
@@ -40,9 +46,16 @@ public class SaiNawPhoneticManager {
     }
 
     public String getPronunciation(int code) {
-        if (phoneticMap.containsKey(code)) {
-            return phoneticMap.get(code);
+        // *** FIX: မြန်မာစာ (ID=1) ဖြစ်မှသာ Mapping ကို သုံးမည် ***
+        if (currentLanguageId == 1) { 
+            if (phoneticMap.containsKey(code)) {
+                return phoneticMap.get(code);
+            }
         }
+        
+        // ရှမ်း (ID=2) သို့မဟုတ် English (ID=0) ဆိုရင် မူရင်းအတိုင်းပြန်ပေးမယ်
+        // (TalkBack က ရှမ်းအသံထွက်မှန်အောင် သူ့ဘာသာသူ ဖတ်ပါလိမ့်မယ်)
         return String.valueOf((char) code);
     }
 }
+

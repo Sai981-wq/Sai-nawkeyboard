@@ -58,14 +58,14 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:padding="15dp"
-        android:text="Character Sounds (ဗျည်း/သရ အသံထွက်)"
+        android:text="Myanmar Character Names"
         android:textSize="16sp"
         android:background="?attr/selectableItemBackground"/>
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="ON: Reads 'Ka-Gyi', 'Lone-Gyi-Tin'.\nOFF: Reads default TalkBack sounds."
+        android:text="ON: Reads traditional names (e.g., 'Ka-Gyi', 'Kha-Kway').\nOFF: Reads default TalkBack sounds."
         android:textSize="12sp"
         android:textColor="#888888"
         android:paddingStart="15dp"
