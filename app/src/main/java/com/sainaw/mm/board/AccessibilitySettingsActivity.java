@@ -22,10 +22,14 @@ public class AccessibilitySettingsActivity extends AppCompatActivity {
 
         prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
 
-        // 1. Lift-to-Type Setup (Default: True for accessibility focus)
+        // 1. Lift-to-Type
         setupSwitch(R.id.switch_typing_mode, "lift_to_type", true);
 
-        // 2. Smart Echo Setup (Default: False to avoid double talk)
+        // 2. Phonetic Sounds (အသစ်ထည့်သော Switch)
+        // Default = true (ဖွင့်ထားမယ်)
+        setupSwitch(R.id.switch_phonetic_sounds, "use_phonetic_sounds", true);
+
+        // 3. Smart Echo
         setupSwitch(R.id.switch_smart_echo, "smart_echo", false);
     }
 
