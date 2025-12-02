@@ -51,6 +51,12 @@
             android:parentActivityName=".SettingsActivity">
         </activity>
 
+        <activity
+            android:name=".AccessibilitySettingsActivity"
+            android:label="Accessibility Options"
+            android:parentActivityName=".SettingsActivity">
+        </activity>
+
     </application>
 </manifest>
 
