@@ -6,16 +6,19 @@
     android:keyHeight="50dp">
 
     <Row>
-        <Key android:codes="4126" android:keyLabel="သ" android:keyEdgeFlags="left"/>
-        <Key android:codes="4216" android:keyLabel="ၸ"/>
-        <Key android:codes="4220" android:keyLabel="ၼ"/>
-        <Key android:codes="4121" android:keyLabel="မ"/>
-        <Key android:codes="4130" android:keyLabel="ဢ"/>
-        <Key android:codes="4117" android:keyLabel="ပ"/>
-        <Key android:codes="4213" android:keyLabel="ၵ"/>
-        <Key android:codes="4100" android:keyLabel="င"/>
-        <Key android:codes="4125" android:keyLabel="ဝ"/>
-        <Key android:codes="4225" android:keyLabel="ႁ" android:keyEdgeFlags="right"/>
+        <Key android:codes="4126" android:keyLabel="သ" android:keyWidth="9.09%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="4216" android:keyLabel="ၸ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4220" android:keyLabel="ၼ" android:keyWidth="9.09%p"/>
+        
+        <Key android:codes="4112" android:keyLabel="တ" android:keyWidth="9.09%p"/>
+        
+        <Key android:codes="4121" android:keyLabel="မ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4130" android:keyLabel="ဢ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4117" android:keyLabel="ပ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4213" android:keyLabel="ၵ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4100" android:keyLabel="င" android:keyWidth="9.09%p"/>
+        <Key android:codes="4125" android:keyLabel="ဝ" android:keyWidth="9.09%p"/>
+        <Key android:codes="4225" android:keyLabel="ႁ" android:keyWidth="9.09%p" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row>
