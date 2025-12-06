@@ -1,62 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.sainaw.mm.board">
-
-    <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    xmlns:tools="http://schemas.android.com/tools">
 
     <queries>
         <intent>
-            <action android:name="android.speech.RecognitionService" />
-        </intent>
-        <intent>
-            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+            <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
     </queries>
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_launcher"
-        android:label="Sai Naw Keyboard"
-        android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
-
-        <service
-            android:name=".SaiNawKeyboardService"
-            android:directBootAware="true"
-            android:exported="true"
-            android:label="Sai Naw Keyboard"
-            android:permission="android.permission.BIND_INPUT_METHOD">
-            <intent-filter>
-                <action android:name="android.view.InputMethod" />
-            </intent-filter>
-            <meta-data
-                android:name="android.view.im"
-                android:resource="@xml/method" />
-        </service>
+        android:icon="@mipmap/ic_launcher"
+        android:label="Shan Auto TTS"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AppCompat.Light">
 
         <activity
-            android:name=".SettingsActivity"
+            android:name=".MainActivity"
             android:exported="true"
-            android:label="Sai Naw Keyboard">
+            android:label="Shan Auto TTS Settings">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".LanguageSettingsActivity"
-            android:label="Languages"
-            android:parentActivityName=".SettingsActivity">
-        </activity>
-
-        <activity
-            android:name=".AccessibilitySettingsActivity"
-            android:label="Accessibility Options"
-            android:parentActivityName=".SettingsActivity">
-        </activity>
+        <service
+            android:name=".AutoTTSManagerService"
+            android:exported="true"
+            android:label="Shan Auto TTS Manager">
+            <intent-filter>
+                <action android:name="android.intent.action.TTS_SERVICE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech.tts"
+                android:resource="@xml/tts_engine_resource" />
+        </service>
 
     </application>
+
 </manifest>
 

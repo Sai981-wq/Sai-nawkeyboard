@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="20dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Shan Auto TTS Settings"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="24dp"
+            android:importantForAccessibility="yes"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Engine for Shan Language:"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_marginTop="10dp"/>
+        
+        <Spinner
+            android:id="@+id/spinnerShan"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:contentDescription="Select engine for Shan"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Engine for Burmese Language:"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_marginTop="20dp"/>
+
+        <Spinner
+            android:id="@+id/spinnerBurmese"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:contentDescription="Select engine for Burmese"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Engine for English Language:"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_marginTop="20dp"/>
+
+        <Spinner
+            android:id="@+id/spinnerEnglish"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:contentDescription="Select engine for English"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Note: If TalkBack stops speaking after changes, please switch TTS engine to Google and back to this app."
+            android:layout_marginTop="30dp"
+            android:textColor="#D32F2F"
+            android:padding="10dp"
+            android:background="#FFEBEE"/>
+
+    </LinearLayout>
+</ScrollView>
