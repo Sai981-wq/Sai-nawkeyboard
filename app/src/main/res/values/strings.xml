@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">Shan Auto TTS</string>
+    <string name="service_label">Shan Auto TTS Manager</string>
+    
+    <string name="title_settings">Shan Auto TTS Settings</string>
+    <string name="label_shan">Engine for Shan Language:</string>
+    <string name="label_burmese">Engine for Burmese Language:</string>
+    <string name="label_english">Engine for English Language:</string>
+    
+    <string name="setup_title">How to Enable (Setup Guide)</string>
+    <string name="setup_instructions">
+        1. Go to Phone Settings.\n
+        2. Find Accessibility.\n
+        3. Go to Text-to-speech output.\n
+        4. Tap on Preferred engine.\n
+        5. Select "Shan Auto TTS Manager".\n
+        6. Tap OK on the warning dialog.
+    </string>
+    
+    <string name="note_restart">Note: If TalkBack stops speaking, switch the engine to Google and then back to this app.</string>
+</resources>
