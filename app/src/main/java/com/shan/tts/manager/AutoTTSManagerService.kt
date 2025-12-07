@@ -8,6 +8,7 @@ import android.speech.tts.SynthesisRequest
 import android.content.Context
 import android.os.Bundle
 import java.util.Locale
+import android.media.AudioManager
 import android.util.Log
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -22,18 +23,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        sendLog("Service Created.")
-
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
-        // 1. Shan
+        // 1. Shan Engine
         val shanPkg = prefs.getString("pref_shan_pkg", "com.espeak.ng")
         initializeEngine("SHAN", shanPkg) { tts -> 
             shanEngine = tts
             isShanReady = true 
         }
 
-        // 2. Burmese
+        // 2. Burmese Engine
         val burmesePkg = prefs.getString("pref_burmese_pkg", "com.google.android.tts")
         initializeEngine("BURMESE", burmesePkg) { tts -> 
             burmeseEngine = tts
@@ -41,7 +40,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             burmeseEngine?.language = Locale("my", "MM")
         }
 
-        // 3. English
+        // 3. English Engine
         val englishPkg = prefs.getString("pref_english_pkg", "com.google.android.tts")
         initializeEngine("ENGLISH", englishPkg) { tts -> 
             englishEngine = tts
@@ -52,20 +51,12 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun initializeEngine(name: String, pkgName: String?, onSuccess: (TextToSpeech) -> Unit) {
         if (pkgName.isNullOrEmpty() || pkgName == packageName) return
-
         try {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    onSuccess(tempTTS!!)
-                    sendLog("$name Ready: $pkgName")
-                } else {
-                    sendLog("$name Failed ($pkgName)")
-                }
+                if (status == TextToSpeech.SUCCESS) onSuccess(tempTTS!!)
             }, pkgName)
-        } catch (e: Exception) {
-            sendLog("Crash Init $name")
-        }
+        } catch (e: Exception) { }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -75,51 +66,83 @@ class AutoTTSManagerService : TextToSpeechService() {
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
         try {
-            // စကားလုံးခွဲခြင်း
-            val words = text.split(Regex("\\s+"))
+            val words = text.split(Regex("\\s+")) // Space ဖြင့်ခွဲသည်
+            
+            var currentBuffer = StringBuilder() // စာကြောင်းပေါင်းမည့်ပုံး
+            var currentLang = "" // လက်ရှိဘာသာစကား
 
             for (word in words) {
-                val lang = LanguageUtils.detectLanguage(word)
-                val wordToSpeak = "$word " 
+                // ဒီစကားလုံးက ဘာစာလဲ စစ်မယ်
+                val detectedLang = LanguageUtils.detectLanguage(word)
 
-                when (lang) {
-                    "SHAN" -> speakSafe(shanEngine, isShanReady, englishEngine, wordToSpeak)
-                    "MYANMAR" -> speakSafe(burmeseEngine, isBurmeseReady, englishEngine, wordToSpeak)
-                    else -> speakSafe(englishEngine, isEnglishReady, null, wordToSpeak)
+                // ပထမဆုံးစလုံး (သို့) ဘာသာစကား တူနေသေးရင် ပုံးထဲထည့်ပေါင်းမယ်
+                if (currentLang.isEmpty() || currentLang == detectedLang) {
+                    currentLang = detectedLang
+                    currentBuffer.append("$word ")
+                } else {
+                    // ဘာသာစကား ပြောင်းသွားပြီ (ဥပမာ English ကနေ Shan ဖြစ်သွားပြီ)
+                    // ၁။ အရင် စုထားတဲ့ စာတွေကို အရင်ဖတ်မယ်
+                    flushAndSpeak(currentLang, currentBuffer.toString())
+                    
+                    // ၂။ ပုံးကို ရှင်းပြီး အသစ်ပြန်စမယ်
+                    currentLang = detectedLang
+                    currentBuffer = StringBuilder("$word ")
                 }
             }
+
+            // ကျန်နေတဲ့ နောက်ဆုံးစာကြောင်းကို ဖတ်မယ်
+            if (currentBuffer.isNotEmpty()) {
+                flushAndSpeak(currentLang, currentBuffer.toString())
+            }
+
         } catch (e: Exception) {
-            sendLog("Error: ${e.message}")
+            // Error handling
         }
 
         callback?.done()
     }
 
-    // *** အဓိက ပြင်ဆင်ချက် (Safe Mode) ***
-    // Bundle/Params လုံးဝ မထည့်တော့ပါ (Null)။ ဒါမှ Engine တိုင်း လက်ခံမှာပါ။
-    private fun speakSafe(primary: TextToSpeech?, isReady: Boolean, backup: TextToSpeech?, text: String) {
-        val utteranceId = System.currentTimeMillis().toString()
-        
-        if (isReady && primary != null) {
-            // Params နေရာမှာ null ထားလိုက်ပါပြီ။
-            val result = primary.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
-            
-            // တကယ်လို့ Error တက်ခဲ့ရင် Backup နဲ့ ဖတ်မယ်
-            if (result == TextToSpeech.ERROR && backup != null) {
-                sendLog("Primary Failed -> Backup")
-                backup.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
-            }
-        } else if (backup != null) {
-            backup.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
+    // စုထားတဲ့ စာကြောင်းကို သက်ဆိုင်ရာ Engine ဆီပို့ခြင်း
+    private fun flushAndSpeak(lang: String, textToSpeak: String) {
+        if (textToSpeak.isBlank()) return
+
+        when (lang) {
+            "SHAN" -> speakSmart(shanEngine, isShanReady, englishEngine, textToSpeak)
+            "MYANMAR" -> speakSmart(burmeseEngine, isBurmeseReady, englishEngine, textToSpeak)
+            else -> speakSmart(englishEngine, isEnglishReady, null, textToSpeak)
         }
     }
 
-    private fun sendLog(msg: String) {
-        // Log အများကြီးမတက်အောင် လိုအပ်မှ ဖွင့်ပါ
-        // val intent = Intent("com.shan.tts.ERROR_REPORT")
-        // intent.putExtra("error_msg", msg)
-        // intent.setPackage(packageName)
-        // sendBroadcast(intent)
+    // အသံကျယ်ကျယ်ထွက်အောင် Volume ညှိပေးခြင်း + Error ကာကွယ်ခြင်း
+    private fun speakSmart(primary: TextToSpeech?, isReady: Boolean, backup: TextToSpeech?, text: String) {
+        val utteranceId = System.currentTimeMillis().toString()
+        
+        // Primary Engine နဲ့ စမ်းမယ်
+        if (isReady && primary != null) {
+            
+            // ၁။ Accessibility Stream (TalkBack Volume) နဲ့ အရင်စမ်းမယ်
+            val params = Bundle()
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
+            
+            val result = primary.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+            
+            // ၂။ Error တက်ခဲ့ရင် (Eloquence လိုကောင်တွေအတွက်) Params မပါဘဲ ပြန်ဖတ်မယ်
+            if (result == TextToSpeech.ERROR) {
+                primary.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
+            }
+        } 
+        // Backup (English) နဲ့ ဖတ်မယ်
+        else if (backup != null) {
+            val params = Bundle()
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
+            
+            val result = backup.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+            if (result == TextToSpeech.ERROR) {
+                 backup.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -148,8 +171,8 @@ object LanguageUtils {
 
         if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
         if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
-        if (ENGLISH_PATTERN.containsMatchIn(input)) return "ENGLISH"
-
+        // English စာလုံးတစ်လုံးချင်းစီကို သိပ်မစစ်ဆေးတော့ဘဲ Default အနေနဲ့ထားလိုက်မယ်
+        
         return "ENGLISH"
     }
 }
