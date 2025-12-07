@@ -8,7 +8,7 @@ import android.speech.tts.SynthesisRequest
 import android.content.Context
 import android.os.Bundle
 import java.util.Locale
-import android.media.AudioManager
+import android.media.AudioAttributes // အရေးကြီးသည်
 import android.util.Log
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -25,14 +25,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onCreate()
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
-        // 1. Shan Engine
+        // 1. Load Shan
         val shanPkg = prefs.getString("pref_shan_pkg", "com.espeak.ng")
         initializeEngine("SHAN", shanPkg) { tts -> 
             shanEngine = tts
             isShanReady = true 
         }
 
-        // 2. Burmese Engine
+        // 2. Load Burmese
         val burmesePkg = prefs.getString("pref_burmese_pkg", "com.google.android.tts")
         initializeEngine("BURMESE", burmesePkg) { tts -> 
             burmeseEngine = tts
@@ -40,7 +40,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             burmeseEngine?.language = Locale("my", "MM")
         }
 
-        // 3. English Engine
+        // 3. Load English
         val englishPkg = prefs.getString("pref_english_pkg", "com.google.android.tts")
         initializeEngine("ENGLISH", englishPkg) { tts -> 
             englishEngine = tts
@@ -62,86 +62,85 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
-        // TalkBack Signal
+        // TalkBack ကို အလုပ်လုပ်နေပြီလို့ ပြောခြင်း
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
         try {
-            val words = text.split(Regex("\\s+")) // Space ဖြင့်ခွဲသည်
-            
-            var currentBuffer = StringBuilder() // စာကြောင်းပေါင်းမည့်ပုံး
-            var currentLang = "" // လက်ရှိဘာသာစကား
+            val words = text.split(Regex("\\s+"))
+            var currentBuffer = StringBuilder()
+            var currentLang = ""
 
             for (word in words) {
-                // ဒီစကားလုံးက ဘာစာလဲ စစ်မယ်
                 val detectedLang = LanguageUtils.detectLanguage(word)
 
-                // ပထမဆုံးစလုံး (သို့) ဘာသာစကား တူနေသေးရင် ပုံးထဲထည့်ပေါင်းမယ်
+                // English လိုမျိုး ဘာသာစကားတူတာတွေ ဆက်တိုက်လာရင် စုထားမယ်
                 if (currentLang.isEmpty() || currentLang == detectedLang) {
                     currentLang = detectedLang
                     currentBuffer.append("$word ")
                 } else {
-                    // ဘာသာစကား ပြောင်းသွားပြီ (ဥပမာ English ကနေ Shan ဖြစ်သွားပြီ)
-                    // ၁။ အရင် စုထားတဲ့ စာတွေကို အရင်ဖတ်မယ်
+                    // ဘာသာစကားပြောင်းသွားရင် စုထားတာတွေကို အရင်ဖတ်မယ်
                     flushAndSpeak(currentLang, currentBuffer.toString())
                     
-                    // ၂။ ပုံးကို ရှင်းပြီး အသစ်ပြန်စမယ်
+                    // အသစ်ပြန်စမယ်
                     currentLang = detectedLang
                     currentBuffer = StringBuilder("$word ")
                 }
             }
-
-            // ကျန်နေတဲ့ နောက်ဆုံးစာကြောင်းကို ဖတ်မယ်
+            // ကျန်နေတာတွေကို ဆက်ဖတ်မယ်
             if (currentBuffer.isNotEmpty()) {
                 flushAndSpeak(currentLang, currentBuffer.toString())
             }
 
-        } catch (e: Exception) {
-            // Error handling
+        } catch (e: Exception) { 
+            Log.e("AutoTTS", "Error: ${e.message}")
         }
 
+        // TalkBack ကို ပြီးပြီလို့ ပြောခြင်း
         callback?.done()
     }
 
-    // စုထားတဲ့ စာကြောင်းကို သက်ဆိုင်ရာ Engine ဆီပို့ခြင်း
     private fun flushAndSpeak(lang: String, textToSpeak: String) {
         if (textToSpeak.isBlank()) return
 
         when (lang) {
-            "SHAN" -> speakSmart(shanEngine, isShanReady, englishEngine, textToSpeak)
-            "MYANMAR" -> speakSmart(burmeseEngine, isBurmeseReady, englishEngine, textToSpeak)
-            else -> speakSmart(englishEngine, isEnglishReady, null, textToSpeak)
+            "SHAN" -> speakPro(shanEngine, isShanReady, englishEngine, textToSpeak)
+            "MYANMAR" -> speakPro(burmeseEngine, isBurmeseReady, englishEngine, textToSpeak)
+            else -> speakPro(englishEngine, isEnglishReady, null, textToSpeak)
         }
     }
 
-    // အသံကျယ်ကျယ်ထွက်အောင် Volume ညှိပေးခြင်း + Error ကာကွယ်ခြင်း
-    private fun speakSmart(primary: TextToSpeech?, isReady: Boolean, backup: TextToSpeech?, text: String) {
+    // *** PROFESSIONAL AUDIO METHOD ***
+    // Accessibility Volume ရအောင် AudioAttributes သုံးနည်း
+    private fun speakPro(primary: TextToSpeech?, isReady: Boolean, backup: TextToSpeech?, text: String) {
+        
+        // Utterance ID မပါရင် TalkBack က Cursor မရွေ့ပါဘူး
         val utteranceId = System.currentTimeMillis().toString()
+        
+        val params = Bundle()
+        
+        // ၁။ Audio Attributes တည်ဆောက်ခြင်း (Accessibility Volume အတွက် အဓိကသော့ချက်)
+        // USAGE_ASSISTANCE_ACCESSIBILITY ဆိုတာ TalkBack အသံလိုင်းပါ
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+            
+        // Bundle ထဲမှာ Attributes ကို ထည့်သွင်းခြင်း
+        params.putParcelable(TextToSpeech.Engine.KEY_PARAM_AUDIO_ATTRIBUTES, audioAttributes)
         
         // Primary Engine နဲ့ စမ်းမယ်
         if (isReady && primary != null) {
-            
-            // ၁။ Accessibility Stream (TalkBack Volume) နဲ့ အရင်စမ်းမယ်
-            val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
-            
             val result = primary.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
             
-            // ၂။ Error တက်ခဲ့ရင် (Eloquence လိုကောင်တွေအတွက်) Params မပါဘဲ ပြန်ဖတ်မယ်
+            // Error တက်ရင် (Attributes မသိတဲ့ Engine တွေအတွက်) Backup Plan
             if (result == TextToSpeech.ERROR) {
+                // Params မပါဘဲ ပြန်ဖတ်မယ်
                 primary.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
             }
         } 
         // Backup (English) နဲ့ ဖတ်မယ်
         else if (backup != null) {
-            val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
-            
-            val result = backup.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
-            if (result == TextToSpeech.ERROR) {
-                 backup.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
-            }
+            backup.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         }
     }
 
@@ -154,12 +153,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 
+    // System Language Requests
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 }
 
-// Helper Object
+// Helper Object (Logic အတူတူပါပဲ)
 object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
@@ -171,8 +171,8 @@ object LanguageUtils {
 
         if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
         if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
-        // English စာလုံးတစ်လုံးချင်းစီကို သိပ်မစစ်ဆေးတော့ဘဲ Default အနေနဲ့ထားလိုက်မယ်
         
+        // English ကို တလုံးချင်းမစစ်တော့ဘူး၊ Default အနေနဲ့ထားမယ်
         return "ENGLISH"
     }
 }
