@@ -45,30 +45,25 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun initializeEngine(name: String, pkgName: String?, onSuccess: (TextToSpeech) -> Unit) {
-        if (pkgName.isNullOrEmpty()) {
-            sendErrorToUI("$name engine package is empty!")
-            return
-        }
+        if (pkgName.isNullOrEmpty() || pkgName == packageName) return
         
         try {
             lateinit var temp: TextToSpeech
             temp = TextToSpeech(applicationContext, { status -> 
                 if (status == TextToSpeech.SUCCESS) {
                     onSuccess(temp)
-                    sendErrorToUI("$name Engine Loaded: $pkgName")
-                } else {
-                    sendErrorToUI("Failed to load $name ($pkgName)")
+                    sendErrorToUI("$name Loaded")
                 }
             }, pkgName)
         } catch (e: Exception) {
-            sendErrorToUI("Crash loading $name: ${e.message}")
+            // Ignore init errors
         }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
-        // TalkBack Stream
+        // TalkBack Stream ကို ဖွင့်ပေးခြင်း (အရေးကြီးသည်)
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
         try {
@@ -84,7 +79,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
         } catch (e: Exception) {
-            sendErrorToUI("Synthesis Error: ${e.message}")
+            // Error handling handled internally
         }
 
         callback?.done()
@@ -94,30 +89,35 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (isReady && primary != null) {
             speakWord(primary, text)
         } else {
-            // Error မပြတော့ဘဲ အသံထွက်အောင် Backup နဲ့ ဖတ်ခိုင်းခြင်း
             if (backup != null) speakWord(backup, text)
-            else sendErrorToUI("No Engine available to speak: $text")
         }
     }
 
+    // *** SMART SPEAK FUNCTION ***
     private fun speakWord(engine: TextToSpeech?, text: String) {
-        if (engine != null) {
-            val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
-            val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, null)
-            
-            if (result == TextToSpeech.ERROR) {
-                sendErrorToUI("Engine Speak Error")
-            }
+        if (engine == null) return
+
+        val utteranceId = System.currentTimeMillis().toString()
+
+        // ၁။ အသံကျယ်ကျယ် (Accessibility Stream) နဲ့ အရင်စမ်းမယ်
+        val params = Bundle()
+        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
+
+        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+
+        // ၂။ တကယ်လို့ Engine က Error (Eloquence/Saomai) ပြန်ပေးခဲ့ရင်...
+        if (result == TextToSpeech.ERROR) {
+            // Params မပါဘဲ ရိုးရိုးပြန်ဖတ်ခိုင်းမယ် (Fallback)
+            // ဒါဆို Error မတက်တော့ဘူး
+            engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
     }
 
-    // Error များကို Activity သို့ ပို့ပေးသော Function
     private fun sendErrorToUI(msg: String) {
         val intent = Intent("com.shan.tts.ERROR_REPORT")
         intent.putExtra("error_msg", msg)
-        intent.setPackage(packageName) // လုံခြုံရေးအတွက် ကိုယ့် App ကိုပဲ ပို့မယ်
+        intent.setPackage(packageName)
         sendBroadcast(intent)
     }
 
