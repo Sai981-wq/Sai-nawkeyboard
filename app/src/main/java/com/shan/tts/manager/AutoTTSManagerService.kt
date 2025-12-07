@@ -22,7 +22,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        sendErrorToUI("Service Started")
+        sendErrorToUI("Service Created. Loading Engines...")
 
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
@@ -40,7 +40,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 englishEngine = engine; isEnglishReady = true; englishEngine?.language = Locale.US 
             }
         } catch (e: Exception) {
-            sendErrorToUI("Init Error: ${e.message}")
+            sendErrorToUI("Init Crash: ${e.message}")
         }
     }
 
@@ -52,18 +52,23 @@ class AutoTTSManagerService : TextToSpeechService() {
             temp = TextToSpeech(applicationContext, { status -> 
                 if (status == TextToSpeech.SUCCESS) {
                     onSuccess(temp)
-                    sendErrorToUI("$name Loaded")
+                    sendErrorToUI("$name Ready ($pkgName)")
+                } else {
+                    sendErrorToUI("$name Failed to Init")
                 }
             }, pkgName)
         } catch (e: Exception) {
-            // Ignore init errors
+             // Ignore
         }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
-        // TalkBack Stream ကို ဖွင့်ပေးခြင်း (အရေးကြီးသည်)
+        // Debug: စာဝင်လာမလာ သိရအောင် Log ထုတ်ကြည့်မယ်
+        // sendErrorToUI("Reading: $text") 
+
+        // TalkBack Stream
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
         try {
@@ -79,7 +84,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
         } catch (e: Exception) {
-            // Error handling handled internally
+             sendErrorToUI("Synthesize Error: ${e.message}")
         }
 
         callback?.done()
@@ -90,10 +95,10 @@ class AutoTTSManagerService : TextToSpeechService() {
             speakWord(primary, text)
         } else {
             if (backup != null) speakWord(backup, text)
+            else sendErrorToUI("Engine Not Ready for: $text")
         }
     }
 
-    // *** SMART SPEAK FUNCTION ***
     private fun speakWord(engine: TextToSpeech?, text: String) {
         if (engine == null) return
 
@@ -106,10 +111,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
 
-        // ၂။ တကယ်လို့ Engine က Error (Eloquence/Saomai) ပြန်ပေးခဲ့ရင်...
+        // ၂။ Error တက်ရင် Params မပါဘဲ ပြန်ဖတ်မယ် (Smart Retry)
         if (result == TextToSpeech.ERROR) {
-            // Params မပါဘဲ ရိုးရိုးပြန်ဖတ်ခိုင်းမယ် (Fallback)
-            // ဒါဆို Error မတက်တော့ဘူး
             engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
     }
@@ -129,9 +132,22 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onStop() {
         shanEngine?.stop(); burmeseEngine?.stop(); englishEngine?.stop()
     }
+
+    // *** အဓိက ပြင်ဆင်ချက် (Language Fix) ***
+    // Android System က "မင်းဒီဘာသာစကားရလား" မေးရင် "အကုန်ရတယ်" လို့ ဖြေမှ စာပို့မှာပါ
     
-    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    override fun onGetLanguage(): Array<String> {
+        return arrayOf("eng", "USA", "") // Default Language
+    }
+
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
+        // ဘာလာမေးမေး Yes (Available) လို့ ဖြေမယ်
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+    }
+
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
+        // ဘာလာလာ လက်ခံမယ်
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+    }
 }
 
