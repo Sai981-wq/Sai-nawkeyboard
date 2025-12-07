@@ -8,7 +8,7 @@ import android.speech.tts.SynthesisRequest
 import android.content.Context
 import android.os.Bundle
 import java.util.Locale
-import android.media.AudioAttributes // အရေးကြီးသည်
+import android.media.AudioAttributes
 import android.util.Log
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -62,7 +62,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
-        // TalkBack ကို အလုပ်လုပ်နေပြီလို့ ပြောခြင်း
+        // TalkBack Signal
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
         try {
@@ -73,20 +73,15 @@ class AutoTTSManagerService : TextToSpeechService() {
             for (word in words) {
                 val detectedLang = LanguageUtils.detectLanguage(word)
 
-                // English လိုမျိုး ဘာသာစကားတူတာတွေ ဆက်တိုက်လာရင် စုထားမယ်
                 if (currentLang.isEmpty() || currentLang == detectedLang) {
                     currentLang = detectedLang
                     currentBuffer.append("$word ")
                 } else {
-                    // ဘာသာစကားပြောင်းသွားရင် စုထားတာတွေကို အရင်ဖတ်မယ်
                     flushAndSpeak(currentLang, currentBuffer.toString())
-                    
-                    // အသစ်ပြန်စမယ်
                     currentLang = detectedLang
                     currentBuffer = StringBuilder("$word ")
                 }
             }
-            // ကျန်နေတာတွေကို ဆက်ဖတ်မယ်
             if (currentBuffer.isNotEmpty()) {
                 flushAndSpeak(currentLang, currentBuffer.toString())
             }
@@ -95,7 +90,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             Log.e("AutoTTS", "Error: ${e.message}")
         }
 
-        // TalkBack ကို ပြီးပြီလို့ ပြောခြင်း
         callback?.done()
     }
 
@@ -109,36 +103,30 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    // *** PROFESSIONAL AUDIO METHOD ***
-    // Accessibility Volume ရအောင် AudioAttributes သုံးနည်း
     private fun speakPro(primary: TextToSpeech?, isReady: Boolean, backup: TextToSpeech?, text: String) {
         
-        // Utterance ID မပါရင် TalkBack က Cursor မရွေ့ပါဘူး
         val utteranceId = System.currentTimeMillis().toString()
-        
         val params = Bundle()
         
-        // ၁။ Audio Attributes တည်ဆောက်ခြင်း (Accessibility Volume အတွက် အဓိကသော့ချက်)
-        // USAGE_ASSISTANCE_ACCESSIBILITY ဆိုတာ TalkBack အသံလိုင်းပါ
-        val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build()
+        // *** FIX FOR BUILD ERROR ***
+        // KEY_PARAM_AUDIO_ATTRIBUTES အစား "audioAttributes" စာသားကို တိုက်ရိုက်သုံးပါသည်
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
             
-        // Bundle ထဲမှာ Attributes ကို ထည့်သွင်းခြင်း
-        params.putParcelable(TextToSpeech.Engine.KEY_PARAM_AUDIO_ATTRIBUTES, audioAttributes)
-        
-        // Primary Engine နဲ့ စမ်းမယ်
+            params.putParcelable("audioAttributes", audioAttributes)
+        }
+
         if (isReady && primary != null) {
             val result = primary.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
             
-            // Error တက်ရင် (Attributes မသိတဲ့ Engine တွေအတွက်) Backup Plan
             if (result == TextToSpeech.ERROR) {
-                // Params မပါဘဲ ပြန်ဖတ်မယ်
+                // Fallback (Plain speak)
                 primary.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
             }
         } 
-        // Backup (English) နဲ့ ဖတ်မယ်
         else if (backup != null) {
             backup.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         }
@@ -153,13 +141,12 @@ class AutoTTSManagerService : TextToSpeechService() {
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 
-    // System Language Requests
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 }
 
-// Helper Object (Logic အတူတူပါပဲ)
+// Helper Object
 object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
@@ -172,7 +159,6 @@ object LanguageUtils {
         if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
         if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
         
-        // English ကို တလုံးချင်းမစစ်တော့ဘူး၊ Default အနေနဲ့ထားမယ်
         return "ENGLISH"
     }
 }
