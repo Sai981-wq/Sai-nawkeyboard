@@ -1,14 +1,14 @@
 package com.shan.tts.manager
 
-import android.content.Intent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
+import android.speech.tts.UtteranceProgressListener
 import android.content.Context
 import android.os.Bundle
 import java.util.Locale
-import android.media.AudioManager
+import android.media.AudioManager // အသံလိုင်းအတွက် Import
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -22,132 +22,114 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        sendErrorToUI("Service Created. Loading Engines...")
-
-        val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
-        try {
-            val shanPkg = prefs.getString("pref_shan_pkg", "com.espeak.ng")
-            initializeEngine("Shan", shanPkg) { engine -> shanEngine = engine; isShanReady = true }
+        val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        val shanPkg = prefs.getString("pref_shan_pkg", "com.espeak.ng")
+        val burmesePkg = prefs.getString("pref_burmese_pkg", "com.google.android.tts")
+        val englishPkg = prefs.getString("pref_english_pkg", "com.google.android.tts")
 
-            val burmesePkg = prefs.getString("pref_burmese_pkg", "com.google.android.tts")
-            initializeEngine("Burmese", burmesePkg) { engine -> 
-                burmeseEngine = engine; isBurmeseReady = true; burmeseEngine?.language = Locale("my", "MM") 
-            }
+        initializeEngine(shanPkg) { engine -> 
+            shanEngine = engine
+            isShanReady = true
+        }
 
-            val englishPkg = prefs.getString("pref_english_pkg", "com.google.android.tts")
-            initializeEngine("English", englishPkg) { engine -> 
-                englishEngine = engine; isEnglishReady = true; englishEngine?.language = Locale.US 
-            }
-        } catch (e: Exception) {
-            sendErrorToUI("Init Crash: ${e.message}")
+        initializeEngine(burmesePkg) { engine -> 
+            burmeseEngine = engine
+            isBurmeseReady = true
+            burmeseEngine?.language = Locale("my", "MM")
+        }
+
+        initializeEngine(englishPkg) { engine -> 
+            englishEngine = engine
+            isEnglishReady = true
+            englishEngine?.language = Locale.US
         }
     }
 
-    private fun initializeEngine(name: String, pkgName: String?, onSuccess: (TextToSpeech) -> Unit) {
-        if (pkgName.isNullOrEmpty() || pkgName == packageName) return
-        
+    private fun initializeEngine(pkgName: String?, onSuccess: (TextToSpeech) -> Unit) {
+        if (pkgName.isNullOrEmpty()) return
         try {
-            lateinit var temp: TextToSpeech
-            temp = TextToSpeech(applicationContext, { status -> 
+            var tempEngine: TextToSpeech? = null
+            tempEngine = TextToSpeech(this, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    onSuccess(temp)
-                    sendErrorToUI("$name Ready ($pkgName)")
-                } else {
-                    sendErrorToUI("$name Failed to Init")
+                    onSuccess(tempEngine!!)
                 }
             }, pkgName)
-        } catch (e: Exception) {
-             // Ignore
-        }
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        
-        // Debug: စာဝင်လာမလာ သိရအောင် Log ထုတ်ကြည့်မယ်
-        // sendErrorToUI("Reading: $text") 
+        val detectedLang = LanguageUtils.detectLanguage(text)
+        val utteranceId = "uid_${System.currentTimeMillis()}"
 
-        // TalkBack Stream
+        // TalkBack Stream Start
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        try {
-            val words = text.split(Regex("\\s+"))
-            for (word in words) {
-                val lang = LanguageUtils.detectLanguage(word)
-                val wordToSpeak = "$word "
-
-                when (lang) {
-                    "SHAN" -> speakOrFallback(shanEngine, isShanReady, englishEngine, wordToSpeak)
-                    "MYANMAR" -> speakOrFallback(burmeseEngine, isBurmeseReady, englishEngine, wordToSpeak)
-                    else -> speakWord(englishEngine, wordToSpeak)
-                }
+        when (detectedLang) {
+            "SHAN" -> {
+                if (isShanReady) speakWithEngine(shanEngine, text, utteranceId, callback)
+                else speakWithEngine(englishEngine, text, utteranceId, callback)
             }
-        } catch (e: Exception) {
-             sendErrorToUI("Synthesize Error: ${e.message}")
-        }
-
-        callback?.done()
-    }
-
-    private fun speakOrFallback(primary: TextToSpeech?, isReady: Boolean, backup: TextToSpeech?, text: String) {
-        if (isReady && primary != null) {
-            speakWord(primary, text)
-        } else {
-            if (backup != null) speakWord(backup, text)
-            else sendErrorToUI("Engine Not Ready for: $text")
+            "MYANMAR" -> {
+                if (isBurmeseReady) speakWithEngine(burmeseEngine, text, utteranceId, callback)
+                else speakWithEngine(englishEngine, text, utteranceId, callback)
+            }
+            else -> {
+                if (isEnglishReady) speakWithEngine(englishEngine, text, utteranceId, callback)
+                else callback?.done()
+            }
         }
     }
 
-    private fun speakWord(engine: TextToSpeech?, text: String) {
-        if (engine == null) return
+    private fun speakWithEngine(engine: TextToSpeech?, text: String, utId: String, callback: SynthesisCallback?) {
+        if (engine == null) {
+            callback?.done()
+            return
+        }
 
-        val utteranceId = System.currentTimeMillis().toString()
-
-        // ၁။ အသံကျယ်ကျယ် (Accessibility Stream) နဲ့ အရင်စမ်းမယ်
         val params = Bundle()
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utId)
+        
+        // *** အသံတိုးတာ ပြင်ဆင်ချက် ***
+        // ၁။ အသံကို အမြင့်ဆုံး (100%) ထားမယ်
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        // ၂။ TalkBack အသံလိုင်း (Accessibility Stream) ကို သုံးမယ်
         params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
 
-        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) { callback?.done() }
+            override fun onError(utteranceId: String?) { callback?.done() }
+        })
 
-        // ၂။ Error တက်ရင် Params မပါဘဲ ပြန်ဖတ်မယ် (Smart Retry)
+        // ၃။ အသံထွက်ခိုင်းမယ် (Smart Retry)
+        // တချို့ Engine (Eloquence) တွေက Stream ပြောင်းရင် Error တက်တတ်လို့ စစ်ပေးထားတာပါ
+        val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, utId)
+        
         if (result == TextToSpeech.ERROR) {
-            engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
+            // Error တက်ခဲ့ရင် Params မပါဘဲ ရိုးရိုးပြန်ဖတ်မယ် (Fallback)
+            val simpleParams = Bundle()
+            simpleParams.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utId)
+            engine.speak(text, TextToSpeech.QUEUE_FLUSH, simpleParams, utId)
         }
-    }
-
-    private fun sendErrorToUI(msg: String) {
-        val intent = Intent("com.shan.tts.ERROR_REPORT")
-        intent.putExtra("error_msg", msg)
-        intent.setPackage(packageName)
-        sendBroadcast(intent)
     }
 
     override fun onDestroy() {
-        shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
+        shanEngine?.shutdown()
+        burmeseEngine?.shutdown()
+        englishEngine?.shutdown()
         super.onDestroy()
     }
     
     override fun onStop() {
-        shanEngine?.stop(); burmeseEngine?.stop(); englishEngine?.stop()
+        shanEngine?.stop()
+        burmeseEngine?.stop()
+        englishEngine?.stop()
     }
-
-    // *** အဓိက ပြင်ဆင်ချက် (Language Fix) ***
-    // Android System က "မင်းဒီဘာသာစကားရလား" မေးရင် "အကုန်ရတယ်" လို့ ဖြေမှ စာပို့မှာပါ
     
-    override fun onGetLanguage(): Array<String> {
-        return arrayOf("eng", "USA", "") // Default Language
-    }
-
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
-        // ဘာလာမေးမေး Yes (Available) လို့ ဖြေမယ်
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE
-    }
-
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        // ဘာလာလာ လက်ခံမယ်
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE
-    }
+    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 }
 
