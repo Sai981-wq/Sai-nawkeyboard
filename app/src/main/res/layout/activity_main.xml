@@ -16,63 +16,44 @@
             android:text="@string/title_settings"
             android:textSize="26sp"
             android:textStyle="bold"
-            android:textColor="#000000"
-            android:layout_marginBottom="24dp"/>
-
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/label_shan" android:textStyle="bold"/>
-        <Spinner android:id="@+id/spinnerShan" android:layout_width="match_parent" android:layout_height="55dp"/>
-
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/label_burmese" android:textStyle="bold" android:layout_marginTop="15dp"/>
-        <Spinner android:id="@+id/spinnerBurmese" android:layout_width="match_parent" android:layout_height="55dp"/>
-
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/label_english" android:textStyle="bold" android:layout_marginTop="15dp"/>
-        <Spinner android:id="@+id/spinnerEnglish" android:layout_width="match_parent" android:layout_height="55dp"/>
-
-        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#CCCCCC" android:layout_marginTop="20dp" android:layout_marginBottom="20dp"/>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="System Logs"
-            android:textSize="18sp"
-            android:textStyle="bold"
             android:textColor="#D32F2F"
-            android:layout_marginBottom="10dp"/>
+            android:gravity="center"
+            android:layout_marginBottom="30dp"/>
 
-        <TextView
-            android:id="@+id/tvErrorLog"
-            android:layout_width="match_parent"
-            android:layout_height="200dp"
-            android:background="#F0F0F0"
-            android:padding="10dp"
-            android:text="No logs yet..."
-            android:textSize="12sp"
-            android:typeface="monospace"
-            android:scrollbars="vertical"
-            android:textIsSelectable="true"/>
+        <TextView android:text="@string/label_shan" android:textStyle="bold" android:textSize="16sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+        <Spinner android:id="@+id/spinnerShan" android:layout_width="match_parent" android:layout_height="50dp" android:background="#F0F0F0"/>
+        
+        <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="5dp">
+            <TextView android:text="Speed" android:layout_width="60dp" android:layout_height="wrap_content"/>
+            <SeekBar android:id="@+id/seekShanRate" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+        </LinearLayout>
+        <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginBottom="20dp">
+            <TextView android:text="Pitch" android:layout_width="60dp" android:layout_height="wrap_content"/>
+            <SeekBar android:id="@+id/seekShanPitch" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+        </LinearLayout>
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="10dp">
+        <TextView android:text="@string/label_burmese" android:textStyle="bold" android:textSize="16sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+        <Spinner android:id="@+id/spinnerBurmese" android:layout_width="match_parent" android:layout_height="50dp" android:background="#F0F0F0"/>
+        
+        <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="5dp">
+            <TextView android:text="Speed" android:layout_width="60dp" android:layout_height="wrap_content"/>
+            <SeekBar android:id="@+id/seekBurmeseRate" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+        </LinearLayout>
+        <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginBottom="20dp">
+            <TextView android:text="Pitch" android:layout_width="60dp" android:layout_height="wrap_content"/>
+            <SeekBar android:id="@+id/seekBurmesePitch" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+        </LinearLayout>
 
-            <Button
-                android:id="@+id/btnCopyLogs"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Copy All"
-                android:layout_marginEnd="5dp"/>
-
-            <Button
-                android:id="@+id/btnClearLogs"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Clear"
-                android:backgroundTint="#757575"
-                android:layout_marginStart="5dp"/>
+        <TextView android:text="@string/label_english" android:textStyle="bold" android:textSize="16sp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+        <Spinner android:id="@+id/spinnerEnglish" android:layout_width="match_parent" android:layout_height="50dp" android:background="#F0F0F0"/>
+        
+        <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="5dp">
+            <TextView android:text="Speed" android:layout_width="60dp" android:layout_height="wrap_content"/>
+            <SeekBar android:id="@+id/seekEnglishRate" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
+        </LinearLayout>
+        <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginBottom="20dp">
+            <TextView android:text="Pitch" android:layout_width="60dp" android:layout_height="wrap_content"/>
+            <SeekBar android:id="@+id/seekEnglishPitch" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"/>
         </LinearLayout>
 
     </LinearLayout>

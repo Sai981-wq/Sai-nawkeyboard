@@ -1,7 +1,6 @@
 package com.shan.tts.manager
 
 import android.content.Context
-import android.content.Intent
 import android.media.AudioAttributes
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
@@ -10,12 +9,17 @@ import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
-import android.util.Log
 import java.util.LinkedList
 import java.util.Locale
 
-// Data Class
-data class TTSChunk(val text: String, val engine: TextToSpeech?, val lang: String)
+// Data Class with System Rate/Pitch
+data class TTSChunk(
+    val text: String, 
+    val engine: TextToSpeech?, 
+    val lang: String,
+    val sysRate: Int, 
+    val sysPitch: Int
+)
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -29,29 +33,22 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val messageQueue = LinkedList<TTSChunk>()
     private var isSpeaking = false
-    
-    // Default Locale
     private var currentLocale: Locale = Locale.US
 
     override fun onCreate() {
         super.onCreate()
-        sendLog("Service Created.")
-
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
         initializeEngine(prefs.getString("pref_shan_pkg", "com.espeak.ng")) { tts -> 
             shanEngine = tts; isShanReady = true; setupListener(tts)
-            sendLog("Shan Ready")
         }
         initializeEngine(prefs.getString("pref_burmese_pkg", "com.google.android.tts")) { tts -> 
             burmeseEngine = tts; isBurmeseReady = true; setupListener(tts)
             burmeseEngine?.language = Locale("my", "MM")
-            sendLog("Burmese Ready")
         }
         initializeEngine(prefs.getString("pref_english_pkg", "com.google.android.tts")) { tts -> 
             englishEngine = tts; isEnglishReady = true; setupListener(tts)
             englishEngine?.language = Locale.US
-            sendLog("English Ready")
         }
     }
 
@@ -70,19 +67,22 @@ class AutoTTSManagerService : TextToSpeechService() {
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) onSuccess(tempTTS!!)
             }, pkgName)
-        } catch (e: Exception) { sendLog("Init Error: ${e.message}") }
+        } catch (e: Exception) { }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        val sysRate = request?.speechRate ?: 100
+        val sysPitch = request?.pitch ?: 100
+
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         stopAll()
-        parseAndQueue(text)
+        parseAndQueue(text, sysRate, sysPitch)
         playNextInQueue()
         callback?.done()
     }
 
-    private fun parseAndQueue(text: String) {
+    private fun parseAndQueue(text: String, sysRate: Int, sysPitch: Int) {
         try {
             val words = text.split(Regex("\\s+"))
             var currentBuffer = StringBuilder()
@@ -94,23 +94,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                     currentLang = detectedLang
                     currentBuffer.append("$word ")
                 } else {
-                    addToQueue(currentLang, currentBuffer.toString())
+                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
                     currentLang = detectedLang
                     currentBuffer = StringBuilder("$word ")
                 }
             }
-            if (currentBuffer.isNotEmpty()) addToQueue(currentLang, currentBuffer.toString())
+            if (currentBuffer.isNotEmpty()) addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
         } catch (e: Exception) { }
     }
 
-    private fun addToQueue(lang: String, text: String) {
+    private fun addToQueue(lang: String, text: String, sysRate: Int, sysPitch: Int) {
         if (text.isBlank()) return
         val engine = when (lang) {
             "SHAN" -> if (isShanReady) shanEngine else englishEngine
             "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
             else -> if (isEnglishReady) englishEngine else null
         }
-        messageQueue.add(TTSChunk(text, engine, lang))
+        messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch))
     }
 
     @Synchronized
@@ -125,9 +125,34 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
 
+        // *** RATE & PITCH CALCULATION ***
+        val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        var userRate = 1.0f
+        var userPitch = 1.0f
+
+        when (chunk.lang) {
+            "SHAN" -> {
+                userRate = prefs.getInt("rate_shan", 100) / 100.0f
+                userPitch = prefs.getInt("pitch_shan", 100) / 100.0f
+            }
+            "MYANMAR" -> {
+                userRate = prefs.getInt("rate_burmese", 100) / 100.0f
+                userPitch = prefs.getInt("pitch_burmese", 100) / 100.0f
+            }
+            else -> {
+                userRate = prefs.getInt("rate_english", 100) / 100.0f
+                userPitch = prefs.getInt("pitch_english", 100) / 100.0f
+            }
+        }
+
+        val finalRate = (chunk.sysRate / 100.0f) * userRate
+        val finalPitch = (chunk.sysPitch / 100.0f) * userPitch
+
+        engine.setSpeechRate(finalRate)
+        engine.setPitch(finalPitch)
+
         val utteranceId = System.nanoTime().toString()
         val params = Bundle()
-
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
             val audioAttributes = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
@@ -146,9 +171,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun stopAll() {
         try {
             messageQueue.clear()
-            shanEngine?.stop()
-            burmeseEngine?.stop()
-            englishEngine?.stop()
+            shanEngine?.stop(); burmeseEngine?.stop(); englishEngine?.stop()
             isSpeaking = false
         } catch (e: Exception) { }
     }
@@ -160,84 +183,36 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onStop() { stopAll() }
 
-    // =========================================================================
-    // *** FIXED LANGUAGE SECTION (Log အရ ပြင်ဆင်ထားသည်) ***
-    // =========================================================================
-
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
-        
-        // 1. Shan (Correct Construction)
-        // Locale("shn", "MM", "") ကို သုံးထားသည်
-        val shanLocale = Locale("shn", "MM") 
-        voices.add(Voice("Shan (Myanmar)", shanLocale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
-        
-        // 2. Burmese
-        val burmeseLocale = Locale("my", "MM")
-        voices.add(Voice("Burmese (Myanmar)", burmeseLocale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
-        
-        // 3. English
-        val englishLocale = Locale("en", "US")
-        voices.add(Voice("English (US)", englishLocale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
-
+        voices.add(Voice("Shan (Myanmar)", Locale("shn", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
+        voices.add(Voice("Burmese (Myanmar)", Locale("my", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
+        voices.add(Voice("English (US)", Locale.US, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
         return voices
     }
-
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
         val checkLang = lang ?: return TextToSpeech.LANG_NOT_SUPPORTED
-        
-        // Log ထုတ်ကြည့်မယ် (System ဘာလာမေးလဲ သိရအောင်)
-        sendLog("Checking: $lang-$country")
-
-        // Strict Checks (အတိအကျ စစ်ဆေးခြင်း)
-        // Shan
-        if (checkLang.contains("shn", ignoreCase = true) || checkLang.contains("shan", ignoreCase = true)) 
-            return TextToSpeech.LANG_COUNTRY_AVAILABLE
-            
-        // Burmese
-        if (checkLang.contains("my", ignoreCase = true) || checkLang.contains("mya", ignoreCase = true)) 
-            return TextToSpeech.LANG_COUNTRY_AVAILABLE
-            
-        // English
-        if (checkLang.contains("en", ignoreCase = true) || checkLang.contains("eng", ignoreCase = true)) 
-            return TextToSpeech.LANG_COUNTRY_AVAILABLE
-
+        if (checkLang.contains("shn", true) || checkLang.contains("shan", true)) return TextToSpeech.LANG_COUNTRY_AVAILABLE
+        if (checkLang.contains("my", true) || checkLang.contains("mya", true)) return TextToSpeech.LANG_COUNTRY_AVAILABLE
+        if (checkLang.contains("en", true) || checkLang.contains("eng", true)) return TextToSpeech.LANG_COUNTRY_AVAILABLE
         return TextToSpeech.LANG_NOT_SUPPORTED
     }
-
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
         val status = onIsLanguageAvailable(lang, country, variant)
         if (status != TextToSpeech.LANG_NOT_SUPPORTED) {
-            // System က လက်ခံတဲ့ Locale အတိုင်း အတိအကျ ပြန်မှတ်မယ်
             currentLocale = Locale(lang ?: "en", country ?: "", variant ?: "")
             return status
         }
         return TextToSpeech.LANG_NOT_SUPPORTED
     }
-
     override fun onGetLanguage(): Array<String> {
-        // System က ၃ လုံးတွဲ (ISO-3) လိုချင်ရင် ပေးမယ်
-        return try {
-            arrayOf(currentLocale.isO3Language, currentLocale.isO3Country, "")
-        } catch (e: Exception) {
-            arrayOf("eng", "USA", "")
-        }
-    }
-    
-    private fun sendLog(msg: String) {
-        try {
-            LogHistory.add(msg) 
-            val intent = Intent("com.shan.tts.ERROR_REPORT")
-            intent.setPackage(packageName)
-            sendBroadcast(intent)
-        } catch (e: Exception) { }
+        return try { arrayOf(currentLocale.isO3Language, currentLocale.isO3Country, "") } catch (e: Exception) { arrayOf("eng", "USA", "") }
     }
 }
 
 object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
-    
     fun detectLanguage(text: CharSequence?): String {
         if (text.isNullOrBlank()) return "ENGLISH"
         val input = text.toString()

@@ -11,21 +11,12 @@ class CheckVoiceData : Activity() {
         super.onCreate(savedInstanceState)
 
         val availableVoices = ArrayList<String>()
-        
-        // Shan (ပုံစံမျိုးစုံ ထည့်ပေးမယ်)
-        availableVoices.add("shn-MM")
-        availableVoices.add("shn-MMR")
-        availableVoices.add("shn")
-
+        // Shan
+        availableVoices.add("shn-MM"); availableVoices.add("shn")
         // Burmese
-        availableVoices.add("my-MM")
-        availableVoices.add("mya-MM")
-        availableVoices.add("my")
-
+        availableVoices.add("my-MM"); availableVoices.add("mya-MM"); availableVoices.add("my")
         // English
-        availableVoices.add("en-US")
-        availableVoices.add("eng-USA")
-        availableVoices.add("eng-MMR") // အစ်ကို့ဖုန်းအတွက် သီးသန့်
+        availableVoices.add("en-US"); availableVoices.add("eng-USA")
 
         val returnIntent = Intent()
         returnIntent.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, availableVoices)
