@@ -1,20 +1,20 @@
 package com.shan.tts.manager
 
+import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.UtteranceProgressListener
-import android.speech.tts.Voice // Voice ကို Import လုပ်ရပါမယ်
-import android.content.Context
-import android.os.Bundle
-import java.util.Locale
-import java.util.LinkedList
-import android.media.AudioAttributes
+import android.speech.tts.Voice
 import android.util.Log
+import java.util.LinkedList
+import java.util.Locale
 
-// Data Class to hold text chunks
+// Data Class
 data class TTSChunk(val text: String, val engine: TextToSpeech?, val lang: String)
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -29,6 +29,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val messageQueue = LinkedList<TTSChunk>()
     private var isSpeaking = false
+    
+    // လက်ရှိ System က ရွေးခိုင်းထားသော ဘာသာစကား
+    private var currentLocale: Locale = Locale.US
 
     override fun onCreate() {
         super.onCreate()
@@ -68,9 +71,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
+        
+        // Stop Old Audio
         stopAll()
+        
+        // Process New Text
         parseAndQueue(text)
         playNextInQueue()
+        
         callback?.done()
     }
 
@@ -152,50 +160,60 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onStop() { stopAll() }
 
-    // *** LANGUAGE SETTINGS FIX (ဒီအပိုင်းက အသစ်ပါ) ***
-    
-    // Android Setting ထဲမှာ ဘာသာစကား List ပေါ်လာစေမည့် Function
+    // =========================================================================
+    // *** LANGUAGE & SETTINGS SECTION (Standard ISO-3 Implementation) ***
+    // =========================================================================
+
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
         
-        // 1. Shan Voice
-        val shanLocale = Locale("shn", "MM")
-        val shanVoice = Voice("Shan (Auto)", shanLocale, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL, false, setOf("male"))
-        voices.add(shanVoice)
-
-        // 2. Burmese Voice
-        val myanmarLocale = Locale("my", "MM")
-        val burmeseVoice = Voice("Burmese (Auto)", myanmarLocale, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL, false, setOf("male"))
-        voices.add(burmeseVoice)
-
-        // 3. English Voice
-        val engVoice = Voice("English (Auto)", Locale.US, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL, false, setOf("female"))
-        voices.add(engVoice)
+        // Shan (ISO3: shn)
+        voices.add(Voice("Shan", Locale("shn"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
+        
+        // Burmese (ISO3: mya)
+        voices.add(Voice("Burmese", Locale("my", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
+        
+        // English (ISO3: eng)
+        voices.add(Voice("English", Locale.US, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
 
         return voices
     }
 
-    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
-    
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
-        // ဘာမေးမေး Available လို့ဖြေမှ Setting ထဲမှာ အမှန်ခြစ်ပြမှာပါ
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+        val checkLang = lang ?: return TextToSpeech.LANG_NOT_SUPPORTED
+        
+        // Log.d("AutoTTS", "Checking Language: $checkLang") // Debugging
+
+        // Check ISO-3 Codes (Standard)
+        if (checkLang.equals("shn", ignoreCase = true) || checkLang.equals("shan", ignoreCase = true)) 
+            return TextToSpeech.LANG_COUNTRY_AVAILABLE
+            
+        if (checkLang.equals("mya", ignoreCase = true) || checkLang.equals("my", ignoreCase = true)) 
+            return TextToSpeech.LANG_COUNTRY_AVAILABLE
+            
+        if (checkLang.equals("eng", ignoreCase = true) || checkLang.equals("en", ignoreCase = true)) 
+            return TextToSpeech.LANG_COUNTRY_AVAILABLE
+
+        return TextToSpeech.LANG_NOT_SUPPORTED
     }
-    
+
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+        val status = onIsLanguageAvailable(lang, country, variant)
+        if (status == TextToSpeech.LANG_COUNTRY_AVAILABLE || status == TextToSpeech.LANG_AVAILABLE) {
+            // System က လက်ခံလိုက်တဲ့ ဘာသာစကားကို မှတ်ထားမယ်
+            currentLocale = Locale(lang ?: "en", country ?: "")
+            return status
+        }
+        return TextToSpeech.LANG_NOT_SUPPORTED
     }
-    
-    override fun onIsValidVoiceName(voiceName: String?): Int {
-        return TextToSpeech.SUCCESS
-    }
-    
-    override fun onLoadVoice(voiceName: String?): Int {
-        return TextToSpeech.SUCCESS
+
+    override fun onGetLanguage(): Array<String> {
+        // ISO-3 Code (3 လုံးတွဲ) နဲ့ ပြန်ဖြေမှ System က နားလည်ပြီး List မှာ ပြပေးမှာပါ
+        return arrayOf(currentLocale.isO3Language, currentLocale.isO3Country, "")
     }
 }
 
-// Helper Object
+// Helper Object (Logic for Word Detection)
 object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
