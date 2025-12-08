@@ -5,11 +5,16 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
+import android.speech.tts.UtteranceProgressListener
 import android.content.Context
 import android.os.Bundle
 import java.util.Locale
+import java.util.LinkedList
 import android.media.AudioAttributes
 import android.util.Log
+
+// Data Class to hold text chunks
+data class TTSChunk(val text: String, val engine: TextToSpeech?, val lang: String)
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -21,26 +26,47 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
+    // *** CUSTOM QUEUE SYSTEM ***
+    // အသံမထပ်အောင် စာတွေကို ဒီ List ထဲအရင်ထည့်ပြီး တစ်ခုပြီးမှတစ်ခု ထုတ်ဖတ်မယ်
+    private val messageQueue = LinkedList<TTSChunk>()
+    private var isSpeaking = false
+
     override fun onCreate() {
         super.onCreate()
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
         initializeEngine(prefs.getString("pref_shan_pkg", "com.espeak.ng")) { tts -> 
-            shanEngine = tts
-            isShanReady = true 
+            shanEngine = tts; isShanReady = true; setupListener(tts)
         }
-
         initializeEngine(prefs.getString("pref_burmese_pkg", "com.google.android.tts")) { tts -> 
-            burmeseEngine = tts
-            isBurmeseReady = true
+            burmeseEngine = tts; isBurmeseReady = true; setupListener(tts)
             burmeseEngine?.language = Locale("my", "MM")
         }
-
         initializeEngine(prefs.getString("pref_english_pkg", "com.google.android.tts")) { tts -> 
-            englishEngine = tts
-            isEnglishReady = true
+            englishEngine = tts; isEnglishReady = true; setupListener(tts)
             englishEngine?.language = Locale.US
         }
+    }
+
+    // Engine တိုင်းမှာ Listener တပ်ဆင်ခြင်း (ပြီးမပြီး နားထောင်ဖို့)
+    private fun setupListener(tts: TextToSpeech) {
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                isSpeaking = true
+            }
+
+            override fun onDone(utteranceId: String?) {
+                // ရှေ့အကောင် ဖတ်ပြီးပြီ၊ နောက်တစ်ကောင် ဆက်ဖတ်!
+                isSpeaking = false
+                playNextInQueue()
+            }
+
+            override fun onError(utteranceId: String?) {
+                // Error တက်လည်း နောက်တစ်ကောင် ဆက်ဖတ်
+                isSpeaking = false
+                playNextInQueue()
+            }
+        })
     }
 
     private fun initializeEngine(pkgName: String?, onSuccess: (TextToSpeech) -> Unit) {
@@ -53,33 +79,27 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
-    // *** အရေးကြီးဆုံး ပြင်ဆင်ချက် (၁) - STOP ***
-    // TalkBack က ရပ်ခိုင်းတာနဲ့ ချက်ချင်း အသံတိတ်ပစ်ရမယ်။
-    // ဒါမှ YouTube ရောက်ရင် Facebook အသံမထွက်တော့မှာ။
-    override fun onStop() {
-        try {
-            shanEngine?.stop()
-            burmeseEngine?.stop()
-            englishEngine?.stop()
-        } catch (e: Exception) { }
-    }
-
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        
-        // TalkBack Signal
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        try {
-            // အသစ်ဝင်လာပြီဆိုတာနဲ့ အရင်အသံဟောင်းတွေကို အရင်ဖြတ်မယ်
-            onStop()
+        // ၁။ အသစ်လာရင် အဟောင်းတွေကို အကုန်ရှင်းပစ်မယ် (Stop All)
+        stopAll()
+        
+        // ၂။ စာသားကို ခွဲပြီး Queue ထဲ အရင်ထည့်မယ် (မဖတ်သေးဘူး)
+        parseAndQueue(text)
 
+        // ၃။ ပထမဆုံးအလုံးကို စဖတ်မယ်
+        playNextInQueue()
+
+        callback?.done()
+    }
+
+    private fun parseAndQueue(text: String) {
+        try {
             val words = text.split(Regex("\\s+"))
             var currentBuffer = StringBuilder()
             var currentLang = ""
-            
-            // စာကြောင်းရဲ့ ပထမဆုံး အပိုင်းဖြစ်ကြောင်း မှတ်သားခြင်း
-            var isFirstChunk = true 
 
             for (word in words) {
                 val detectedLang = LanguageUtils.detectLanguage(word)
@@ -88,44 +108,47 @@ class AutoTTSManagerService : TextToSpeechService() {
                     currentLang = detectedLang
                     currentBuffer.append("$word ")
                 } else {
-                    // အရင်စုထားတာကို ဖတ်မယ်
-                    flushAndSpeak(currentLang, currentBuffer.toString(), isFirstChunk)
-                    
-                    // ပထမဆုံးအသုတ် ဖတ်ပြီးသွားပြီမို့ False ပြောင်းမယ်
-                    if (currentBuffer.isNotEmpty()) isFirstChunk = false
-                    
-                    // အသစ်ပြန်စမယ်
+                    addToQueue(currentLang, currentBuffer.toString())
                     currentLang = detectedLang
                     currentBuffer = StringBuilder("$word ")
                 }
             }
-            
             if (currentBuffer.isNotEmpty()) {
-                flushAndSpeak(currentLang, currentBuffer.toString(), isFirstChunk)
+                addToQueue(currentLang, currentBuffer.toString())
             }
-
-        } catch (e: Exception) { 
-            Log.e("AutoTTS", "Error: ${e.message}")
-        }
-
-        callback?.done()
+        } catch (e: Exception) { }
     }
 
-    private fun flushAndSpeak(lang: String, textToSpeak: String, isFirstChunk: Boolean) {
-        if (textToSpeak.isBlank()) return
-
-        when (lang) {
-            "SHAN" -> speakPro(shanEngine, isShanReady, englishEngine, textToSpeak, isFirstChunk)
-            "MYANMAR" -> speakPro(burmeseEngine, isBurmeseReady, englishEngine, textToSpeak, isFirstChunk)
-            else -> speakPro(englishEngine, isEnglishReady, null, textToSpeak, isFirstChunk)
+    private fun addToQueue(lang: String, text: String) {
+        if (text.isBlank()) return
+        val engine = when (lang) {
+            "SHAN" -> if (isShanReady) shanEngine else englishEngine
+            "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
+            else -> if (isEnglishReady) englishEngine else null
         }
+        messageQueue.add(TTSChunk(text, engine, lang))
     }
 
-    private fun speakPro(primary: TextToSpeech?, isReady: Boolean, backup: TextToSpeech?, text: String, isFirstChunk: Boolean) {
-        val utteranceId = System.currentTimeMillis().toString()
+    // *** THE SEQUENCER (တစ်ခုပြီးမှ တစ်ခုဖတ်စေသူ) ***
+    @Synchronized
+    private fun playNextInQueue() {
+        if (messageQueue.isEmpty()) return
+
+        // ယူမယ်၊ ဒါပေမယ့် မဖျက်သေးဘူး (Processing လုပ်နေတုန်း)
+        val chunk = messageQueue.poll() ?: return
+
+        val engine = chunk.engine
+        val text = chunk.text
+        
+        // Engine မရှိရင် ကျော်ပြီး နောက်တစ်ခုဆက်လုပ်
+        if (engine == null) {
+            playNextInQueue()
+            return
+        }
+
+        val utteranceId = System.nanoTime().toString()
         val params = Bundle()
 
-        // Audio Attributes (Volume Correction)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
             val audioAttributes = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
@@ -133,29 +156,37 @@ class AutoTTSManagerService : TextToSpeechService() {
                 .build()
             params.putParcelable("audioAttributes", audioAttributes)
         }
+        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
-        // *** အရေးကြီးဆုံး ပြင်ဆင်ချက် (၂) - QUEUE MODE ***
-        // စာကြောင်းအသစ်ရဲ့ ပထမဆုံးအစဆိုရင် QUEUE_FLUSH (အဟောင်းတွေဖျက်၊ ဒါကိုချက်ချင်းဖတ်) သုံးမယ်။
-        // နောက်ဆက်တွဲစာသားဆိုရင် QUEUE_ADD (ဆက်ဖတ်) သုံးမယ်။
-        val queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-
-        if (isReady && primary != null) {
-            val result = primary.speak(text, queueMode, params, utteranceId)
-            if (result == TextToSpeech.ERROR) {
-                primary.speak(text, queueMode, null, utteranceId)
-            }
-        } 
-        else if (backup != null) {
-            backup.speak(text, queueMode, params, utteranceId)
+        // Engine ကို ဖတ်ခိုင်းလိုက်ပြီ
+        // Listener က ပြီးမှ playNextInQueue() ကို ပြန်ခေါ်လိမ့်မယ်
+        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+        
+        // Error တက်ရင် Fallback
+        if (result == TextToSpeech.ERROR) {
+             engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
     }
 
-    override fun onDestroy() {
-        shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
-        super.onDestroy()
+    private fun stopAll() {
+        try {
+            messageQueue.clear() // တန်းစီထားတာတွေ ဖျက်မယ်
+            shanEngine?.stop()
+            burmeseEngine?.stop()
+            englishEngine?.stop()
+            isSpeaking = false
+        } catch (e: Exception) { }
     }
 
-    // System Language Requests
+    override fun onDestroy() {
+        stopAll(); shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
+        super.onDestroy()
+    }
+    
+    override fun onStop() {
+        stopAll()
+    }
+
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
