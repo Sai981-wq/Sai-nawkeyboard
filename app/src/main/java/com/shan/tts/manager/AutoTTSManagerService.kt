@@ -12,14 +12,7 @@ import android.speech.tts.Voice
 import java.util.LinkedList
 import java.util.Locale
 
-// Data Class
-data class TTSChunk(
-    val text: String, 
-    val engine: TextToSpeech?, 
-    val lang: String,
-    val sysRate: Int, 
-    val sysPitch: Int
-)
+data class TTSChunk(val text: String, val engine: TextToSpeech?, val lang: String, val sysRate: Int, val sysPitch: Int)
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -33,10 +26,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val messageQueue = LinkedList<TTSChunk>()
     
-    // Volatile သုံးထားတာက Thread တွေကြားမှာ တိကျစေဖို့ပါ
     @Volatile
     private var isSpeaking = false
-    
     private var currentLocale: Locale = Locale.US
 
     override fun onCreate() {
@@ -58,20 +49,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun setupListener(tts: TextToSpeech) {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) { 
-                // onStart မှာ true မလုပ်တော့ပါ (playNextInQueue မှာ လုပ်ပြီးသားမို့လို့)
-            }
-
-            override fun onDone(utteranceId: String?) { 
-                // ပြီးမှပဲ False ပြန်ပေးပြီး နောက်တစ်ခု ဆွဲထုတ်မယ်
-                isSpeaking = false
-                playNextInQueue() 
-            }
-
-            override fun onError(utteranceId: String?) { 
-                isSpeaking = false
-                playNextInQueue() 
-            }
+            override fun onStart(utteranceId: String?) { }
+            override fun onDone(utteranceId: String?) { isSpeaking = false; playNextInQueue() }
+            override fun onError(utteranceId: String?) { isSpeaking = false; playNextInQueue() }
         })
     }
 
@@ -91,35 +71,45 @@ class AutoTTSManagerService : TextToSpeechService() {
         val sysPitch = request?.pitch ?: 100
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
-        
-        // အသစ်လာရင် အကုန်ရပ်မယ်
         stopAll()
-        
         parseAndQueue(text, sysRate, sysPitch)
         playNextInQueue()
-        
         callback?.done()
     }
 
+    // *** SMART SPLITTER: Symbols -> English ***
     private fun parseAndQueue(text: String, sysRate: Int, sysPitch: Int) {
-        try {
-            val words = text.split(Regex("\\s+"))
-            var currentBuffer = StringBuilder()
-            var currentLang = ""
+        if (text.isEmpty()) return
 
-            for (word in words) {
-                val detectedLang = LanguageUtils.detectLanguage(word)
-                if (currentLang.isEmpty() || currentLang == detectedLang) {
-                    currentLang = detectedLang
-                    currentBuffer.append("$word ")
-                } else {
-                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
-                    currentLang = detectedLang
-                    currentBuffer = StringBuilder("$word ")
-                }
+        var currentBuffer = StringBuilder()
+        var currentLang = "" 
+
+        for (char in text) {
+            if (char.isWhitespace()) {
+                currentBuffer.append(char)
+                continue
             }
-            if (currentBuffer.isNotEmpty()) addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
-        } catch (e: Exception) { }
+
+            val charType = LanguageUtils.getCharType(char)
+
+            if (currentBuffer.isEmpty()) {
+                currentLang = charType
+                currentBuffer.append(char)
+                continue
+            }
+
+            if (charType == currentLang) {
+                currentBuffer.append(char)
+            } else {
+                addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                currentLang = charType
+                currentBuffer = StringBuilder()
+                currentBuffer.append(char)
+            }
+        }
+        if (currentBuffer.isNotEmpty()) {
+            addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+        }
     }
 
     private fun addToQueue(lang: String, text: String, sysRate: Int, sysPitch: Int) {
@@ -134,12 +124,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     @Synchronized
     private fun playNextInQueue() {
-        // ၁။ တကယ်လို့ ပြောနေတုန်းဆိုရင် ထပ်မလွှတ်ဘူး (Strict Lock)
         if (isSpeaking) return
-        
         if (messageQueue.isEmpty()) return
         
-        // Queue ထဲက ဆွဲထုတ်မယ်
         val chunk = messageQueue.poll() ?: return
         val engine = chunk.engine
         val text = chunk.text
@@ -149,12 +136,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
 
-        // ၂။ *** အရေးကြီးဆုံး ပြင်ဆင်ချက် ***
-        // Engine ကို speak မခေါ်ခင်ကတည်းက "ပြောနေပြီ" လို့ မှတ်လိုက်မယ်
-        // ဒါမှ နောက်ကောင် ဝင်မလာမှာ
         isSpeaking = true
 
-        // Rate & Pitch Config
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         var userRate = 1.0f
         var userPitch = 1.0f
@@ -174,8 +157,11 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        engine.setSpeechRate((chunk.sysRate / 100.0f) * userRate)
-        engine.setPitch((chunk.sysPitch / 100.0f) * userPitch)
+        val finalRate = (chunk.sysRate / 100.0f) * userRate
+        val finalPitch = (chunk.sysPitch / 100.0f) * userPitch
+
+        engine.setSpeechRate(finalRate)
+        engine.setPitch(finalPitch)
 
         val utteranceId = System.nanoTime().toString()
         val params = Bundle()
@@ -188,13 +174,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
-        // ၃။ Queue Mode ကို ADD သုံးပေမယ့်၊ ကျွန်တော်တို့က Manual Queue လုပ်ထားလို့ ပြဿနာမရှိပါ
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
-        
-        // ၄။ Error တက်ခဲ့ရင်တော့ ပြန်ဖွင့်ပေးရမယ်
         if (result == TextToSpeech.ERROR) {
              isSpeaking = false
-             // Retry with plain params
              engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
     }
@@ -202,7 +184,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun stopAll() {
         try {
             messageQueue.clear()
-            // Stop လုပ်ရင် Flag ကို ချပေးရမယ်
             isSpeaking = false 
             shanEngine?.stop(); burmeseEngine?.stop(); englishEngine?.stop()
         } catch (e: Exception) { }
@@ -215,7 +196,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onStop() { stopAll() }
 
-    // Language Settings Section
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
         voices.add(Voice("Shan (Myanmar)", Locale("shn", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
@@ -223,7 +203,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         voices.add(Voice("English (US)", Locale.US, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
         return voices
     }
-
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
         val checkLang = lang ?: return TextToSpeech.LANG_NOT_SUPPORTED
         if (checkLang.contains("shn", true) || checkLang.contains("shan", true)) return TextToSpeech.LANG_COUNTRY_AVAILABLE
@@ -231,16 +210,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (checkLang.contains("en", true) || checkLang.contains("eng", true)) return TextToSpeech.LANG_COUNTRY_AVAILABLE
         return TextToSpeech.LANG_NOT_SUPPORTED
     }
-
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
         val status = onIsLanguageAvailable(lang, country, variant)
         if (status != TextToSpeech.LANG_NOT_SUPPORTED) {
-            currentLocale = Locale(lang ?: "en", country ?: "", variant ?: "")
+            var cleanLang = lang ?: "en"
+            if (cleanLang.equals("mya", true)) cleanLang = "my"
+            if (cleanLang.equals("shn", true)) cleanLang = "shn"
+            currentLocale = Locale(cleanLang, country ?: "", variant ?: "")
             return status
         }
         return TextToSpeech.LANG_NOT_SUPPORTED
     }
-
     override fun onGetLanguage(): Array<String> {
         return try { arrayOf(currentLocale.isO3Language, currentLocale.isO3Country, "") } catch (e: Exception) { arrayOf("eng", "USA", "") }
     }
@@ -250,6 +230,15 @@ object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
     
+    // Character Type Check for Smart Splitter
+    fun getCharType(char: Char): String {
+        val text = char.toString()
+        if (SHAN_PATTERN.containsMatchIn(text)) return "SHAN"
+        if (MYANMAR_PATTERN.containsMatchIn(text)) return "MYANMAR"
+        return "ENGLISH" // Includes Punctuation, Numbers, English
+    }
+
+    // Backup Detector
     fun detectLanguage(text: CharSequence?): String {
         if (text.isNullOrBlank()) return "ENGLISH"
         val input = text.toString()
