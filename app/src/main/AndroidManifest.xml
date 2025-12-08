@@ -40,8 +40,19 @@
         <activity
             android:name=".CheckVoiceData"
             android:exported="true"
-            android:theme="@android:style/Theme.NoDisplay"> <intent-filter>
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
                 <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ShanTtsSettingsActivity"
+            android:exported="true"
+            android:label="Shan TTS Settings"
+            android:theme="@android:style/Theme.Light">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
             </intent-filter>
         </activity>
 
