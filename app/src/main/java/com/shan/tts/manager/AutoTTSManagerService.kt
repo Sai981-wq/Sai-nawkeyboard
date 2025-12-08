@@ -3,6 +3,8 @@ package com.shan.tts.manager
 import android.content.Context
 import android.media.AudioAttributes
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.SynthesisCallback
@@ -12,7 +14,13 @@ import android.speech.tts.Voice
 import java.util.LinkedList
 import java.util.Locale
 
-data class TTSChunk(val text: String, val engine: TextToSpeech?, val lang: String, val sysRate: Int, val sysPitch: Int)
+data class TTSChunk(
+    val text: String, 
+    val engine: TextToSpeech?, 
+    val lang: String,
+    val sysRate: Int, 
+    val sysPitch: Int
+)
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -25,10 +33,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isEnglishReady = false
 
     private val messageQueue = LinkedList<TTSChunk>()
-    
-    @Volatile
     private var isSpeaking = false
     private var currentLocale: Locale = Locale.US
+    
+    // *** Thread Fix: အလုပ်သမားခေါင်းဆောင် (Main Handler) ***
+    // အလုပ်မှန်သမျှ ဒီကောင်ကနေတဆင့်ပဲ ခိုင်းမယ် (လမ်းမပျောက်အောင်)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate()
@@ -49,9 +59,25 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun setupListener(tts: TextToSpeech) {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) { }
-            override fun onDone(utteranceId: String?) { isSpeaking = false; playNextInQueue() }
-            override fun onError(utteranceId: String?) { isSpeaking = false; playNextInQueue() }
+            override fun onStart(utteranceId: String?) { 
+                // Started
+            }
+
+            override fun onDone(utteranceId: String?) {
+                // Thread-Safe ဖြစ်အောင် Handler နဲ့ လှမ်းခေါ်မယ်
+                mainHandler.post {
+                    isSpeaking = false
+                    playNextInQueue()
+                }
+            }
+
+            override fun onError(utteranceId: String?) {
+                // Error တက်ရင်လည်း နောက်တစ်ခု ဆက်ဖတ်ခိုင်းမယ်
+                mainHandler.post {
+                    isSpeaking = false
+                    playNextInQueue()
+                }
+            }
         })
     }
 
@@ -71,23 +97,25 @@ class AutoTTSManagerService : TextToSpeechService() {
         val sysPitch = request?.pitch ?: 100
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
-        stopAll()
         
-        // *** HYBRID PARSING LOGIC ***
-        if (LanguageUtils.hasShan(text)) {
-            // ရှမ်းစာပါရင် မူရင်းနည်းဟောင်း (Word Split) သုံးမယ်
-            parseShanMode(text, sysRate, sysPitch)
-        } else {
-            // ရှမ်းစာမပါရင် (ဗမာ/အင်္ဂလိပ်) Smart Splitter သုံးမယ်
-            parseSmartMode(text, sysRate, sysPitch)
+        // အသစ်ဝင်လာတာနဲ့ Handler ထဲထည့်ပြီး အလုပ်စမယ်
+        mainHandler.post {
+            stopAll() // အဟောင်းတွေရှင်း
+            
+            // Logic ခွဲခြားခြင်း
+            if (LanguageUtils.hasShan(text)) {
+                parseShanMode(text, sysRate, sysPitch)
+            } else {
+                parseSmartMode(text, sysRate, sysPitch)
+            }
+            
+            playNextInQueue()
         }
         
-        playNextInQueue()
         callback?.done()
     }
 
-    // ၁။ မူရင်းနည်းဟောင်း (For Shan Text)
-    // Space ခြားထားတဲ့ စကားလုံးလိုက်ပဲ ခွဲတဲ့အတွက် ရှမ်းစာကြောင်းတွေ အဆင်ပြေမယ်
+    // ၁။ ရှမ်းစာပါရင် (Space နဲ့ခွဲမယ်)
     private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int) {
         try {
             val words = text.split(Regex("\\s+"))
@@ -109,8 +137,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
-    // ၂။ နည်းလမ်းသစ် (For Burmese/English Mixed)
-    // စာလုံးတစ်လုံးချင်းစီ စစ်ပြီး သင်္ကေတတွေကို English ဖက်ပို့မယ်
+    // ၂။ ဗမာ/အင်္ဂလိပ် (စာလုံးတစ်လုံးချင်း Smart Split)
     private fun parseSmartMode(text: String, sysRate: Int, sysPitch: Int) {
         if (text.isEmpty()) return
 
@@ -118,6 +145,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         var currentLang = "" 
 
         for (char in text) {
+            // Space ဆိုရင် ရှိရင်းစွဲ Buffer ထဲ ထည့်မယ် (မခွဲဘူး)
             if (char.isWhitespace()) {
                 currentBuffer.append(char)
                 continue
@@ -155,7 +183,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch))
     }
 
-    @Synchronized
     private fun playNextInQueue() {
         if (isSpeaking) return
         if (messageQueue.isEmpty()) return
@@ -210,6 +237,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         if (result == TextToSpeech.ERROR) {
              isSpeaking = false
+             // Error တက်ရင် နောက်တစ်ခုမကျော်ဘဲ Manual Fallback လုပ်မယ်
              engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
     }
@@ -229,6 +257,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onStop() { stopAll() }
 
+    // Language Settings
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
         voices.add(Voice("Shan (Myanmar)", Locale("shn", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
@@ -263,18 +292,15 @@ object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
     
-    // Check if text contains any Shan character
     fun hasShan(text: String): Boolean {
         return SHAN_PATTERN.containsMatchIn(text)
     }
-
     fun getCharType(char: Char): String {
         val text = char.toString()
         if (SHAN_PATTERN.containsMatchIn(text)) return "SHAN"
         if (MYANMAR_PATTERN.containsMatchIn(text)) return "MYANMAR"
         return "ENGLISH"
     }
-
     fun detectLanguage(text: CharSequence?): String {
         if (text.isNullOrBlank()) return "ENGLISH"
         val input = text.toString()
