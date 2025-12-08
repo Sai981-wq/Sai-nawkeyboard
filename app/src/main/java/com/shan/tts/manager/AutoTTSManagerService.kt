@@ -156,38 +156,41 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onStop() { stopAll() }
 
     // =========================================================================
-    // *** SYSTEM SETTINGS FIX (အဓိက ပြင်ဆင်ချက်) ***
+    // *** LANGUAGE SETTINGS SECTION (Final Fix) ***
     // =========================================================================
 
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
         
-        // 1. Shan (shn-MM)
-        // System က ဒီ Locale ကို မြင်မှ List မှာ ပြပေးမှာပါ
-        voices.add(Voice("Shan (Myanmar)", Locale("shn", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
+        // Shan (shn-MM)
+        // Locale("shn", "MM") သည် Android တွင် Standard ဖြစ်ရန်ကြိုးစားသည်
+        val shanLocale = Locale("shn", "MM")
+        voices.add(Voice("Shan (Myanmar)", shanLocale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
         
-        // 2. Burmese (my-MM)
-        voices.add(Voice("Burmese (Myanmar)", Locale("my", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
+        // Burmese (my-MM)
+        val burmeseLocale = Locale("my", "MM")
+        voices.add(Voice("Burmese (Myanmar)", burmeseLocale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
         
-        // 3. English (en-US)
+        // English (en-US)
         voices.add(Voice("English (US)", Locale.US, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
 
         return voices
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
+        // System က ၃ လုံးတွဲကုဒ် (ISO-3) နဲ့ လာစစ်တတ်ပါတယ်
         val checkLang = lang ?: return TextToSpeech.LANG_NOT_SUPPORTED
-        
-        // ISO-3 Codes Check (shn, mya, eng)
-        // System က ဒီကုဒ်တွေနဲ့ လာစစ်တဲ့အခါ YES လို့ ဖြေရပါမယ်
-        
-        if (checkLang.equals("shn", ignoreCase = true) || checkLang.equals("shan", ignoreCase = true)) 
+
+        // Shan Check
+        if (checkLang.contains("shn", ignoreCase = true) || checkLang.contains("shan", ignoreCase = true)) 
             return TextToSpeech.LANG_COUNTRY_AVAILABLE
             
-        if (checkLang.equals("my", ignoreCase = true) || checkLang.equals("mya", ignoreCase = true)) 
+        // Burmese Check
+        if (checkLang.contains("my", ignoreCase = true) || checkLang.contains("mya", ignoreCase = true)) 
             return TextToSpeech.LANG_COUNTRY_AVAILABLE
             
-        if (checkLang.equals("en", ignoreCase = true) || checkLang.equals("eng", ignoreCase = true)) 
+        // English Check
+        if (checkLang.contains("en", ignoreCase = true) || checkLang.contains("eng", ignoreCase = true)) 
             return TextToSpeech.LANG_COUNTRY_AVAILABLE
 
         return TextToSpeech.LANG_NOT_SUPPORTED
@@ -203,8 +206,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onGetLanguage(): Array<String> {
-        // System ကို လက်ရှိဘာသာစကားရဲ့ ISO-3 Code ပြန်ဖြေခြင်း
-        // ဒီနေရာမှာ Error တက်ရင် List အလွတ်ဖြစ်သွားတတ်လို့ Try-Catch ခံထားပါတယ်
+        // System crashes များကို ရှောင်ရှားရန် Standard Code များ ပြန်ပို့ခြင်း
         return try {
             arrayOf(currentLocale.isO3Language, currentLocale.isO3Country, "")
         } catch (e: Exception) {
