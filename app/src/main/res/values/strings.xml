@@ -2,9 +2,9 @@
     <string name="app_name">Cherry SME TTS</string>
     <string name="service_label">Cherry SME Auto TTS</string>
     <string name="title_settings">Cherry SME Settings</string>
-    
-    <string name="label_shan">Shan Engine (eSpeak)</string>
-    <string name="label_burmese">Burmese Engine (Google)</string>
-    <string name="label_english">English Engine (Google)</string>
+
+    <string name="label_shan">Shan Engine</string>
+    <string name="label_burmese">Burmese Engine</string>
+    <string name="label_english">English Engine</string>
 </resources>
 
