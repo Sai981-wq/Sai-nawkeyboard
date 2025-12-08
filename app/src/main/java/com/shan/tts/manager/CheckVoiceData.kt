@@ -10,16 +10,22 @@ class CheckVoiceData : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // System က လာစစ်ကြောင်း Log ပို့မယ်
-        sendLogToUI("System called CHECK_TTS_DATA (Voice Check)")
-
         val availableVoices = ArrayList<String>()
-        availableVoices.add("shn-MM")
-        availableVoices.add("my-MM")
-        availableVoices.add("en-US")
         
-        // Log ထပ်ပို့မယ်
-        sendLogToUI("Sending back: $availableVoices")
+        // Shan (ပုံစံမျိုးစုံ ထည့်ပေးမယ်)
+        availableVoices.add("shn-MM")
+        availableVoices.add("shn-MMR")
+        availableVoices.add("shn")
+
+        // Burmese
+        availableVoices.add("my-MM")
+        availableVoices.add("mya-MM")
+        availableVoices.add("my")
+
+        // English
+        availableVoices.add("en-US")
+        availableVoices.add("eng-USA")
+        availableVoices.add("eng-MMR") // အစ်ကို့ဖုန်းအတွက် သီးသန့်
 
         val returnIntent = Intent()
         returnIntent.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, availableVoices)
@@ -27,13 +33,6 @@ class CheckVoiceData : Activity() {
         
         setResult(TextToSpeech.Engine.CHECK_VOICE_DATA_PASS, returnIntent)
         finish()
-    }
-
-    private fun sendLogToUI(msg: String) {
-        val intent = Intent("com.shan.tts.ERROR_REPORT")
-        intent.putExtra("error_msg", "[CheckData] $msg")
-        intent.setPackage(packageName)
-        sendBroadcast(intent)
     }
 }
 
