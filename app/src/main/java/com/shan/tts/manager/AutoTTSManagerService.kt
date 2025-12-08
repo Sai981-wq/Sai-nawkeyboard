@@ -30,23 +30,27 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val messageQueue = LinkedList<TTSChunk>()
     private var isSpeaking = false
     
-    // လက်ရှိ System က ရွေးခိုင်းထားသော ဘာသာစကား
     private var currentLocale: Locale = Locale.US
 
     override fun onCreate() {
         super.onCreate()
+        sendLog("Service Created.") // Log စမှတ်ပြီ
+
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
         initializeEngine(prefs.getString("pref_shan_pkg", "com.espeak.ng")) { tts -> 
             shanEngine = tts; isShanReady = true; setupListener(tts)
+            sendLog("Shan Engine Ready")
         }
         initializeEngine(prefs.getString("pref_burmese_pkg", "com.google.android.tts")) { tts -> 
             burmeseEngine = tts; isBurmeseReady = true; setupListener(tts)
             burmeseEngine?.language = Locale("my", "MM")
+            sendLog("Burmese Engine Ready")
         }
         initializeEngine(prefs.getString("pref_english_pkg", "com.google.android.tts")) { tts -> 
             englishEngine = tts; isEnglishReady = true; setupListener(tts)
             englishEngine?.language = Locale.US
+            sendLog("English Engine Ready")
         }
     }
 
@@ -65,20 +69,20 @@ class AutoTTSManagerService : TextToSpeechService() {
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) onSuccess(tempTTS!!)
             }, pkgName)
-        } catch (e: Exception) { }
+        } catch (e: Exception) { 
+            sendLog("Init Crash: ${e.message}")
+        }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        // Debug လိုရင် အောက်ကလိုင်းကို ဖွင့်ပါ
+        // sendLog("Received: $text") 
+        
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
-        
-        // Stop Old Audio
         stopAll()
-        
-        // Process New Text
         parseAndQueue(text)
         playNextInQueue()
-        
         callback?.done()
     }
 
@@ -100,7 +104,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
             if (currentBuffer.isNotEmpty()) addToQueue(currentLang, currentBuffer.toString())
-        } catch (e: Exception) { }
+        } catch (e: Exception) { 
+            sendLog("Parse Error: ${e.message}")
+        }
     }
 
     private fun addToQueue(lang: String, text: String) {
@@ -121,6 +127,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val text = chunk.text
         
         if (engine == null) {
+            sendLog("Engine NULL for: $text")
             playNextInQueue()
             return
         }
@@ -139,6 +146,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         if (result == TextToSpeech.ERROR) {
+             sendLog("Speak Error on $text")
              engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
     }
@@ -153,6 +161,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
+    // *** LOGGING FUNCTION ***
+    private fun sendLog(msg: String) {
+        // 1. Log History ထဲထည့်မယ် (နောက်မှပြန်ကြည့်ဖို့)
+        LogHistory.add(msg)
+        
+        // 2. UI ပွင့်နေရင် ချက်ချင်းပြဖို့ Broadcast လုပ်မယ်
+        val intent = Intent("com.shan.tts.ERROR_REPORT")
+        intent.setPackage(packageName)
+        sendBroadcast(intent)
+    }
+
     override fun onDestroy() {
         stopAll(); shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
         super.onDestroy()
@@ -160,72 +179,24 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onStop() { stopAll() }
 
-    // =========================================================================
-    // *** LANGUAGE & SETTINGS SECTION (Standard ISO-3 Implementation) ***
-    // =========================================================================
-
+    // Language Settings
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
-        
-        // Shan (ISO3: shn)
-        voices.add(Voice("Shan", Locale("shn"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
-        
-        // Burmese (ISO3: mya)
-        voices.add(Voice("Burmese", Locale("my", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
-        
-        // English (ISO3: eng)
-        voices.add(Voice("English", Locale.US, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
-
+        voices.add(Voice("Shan Language", Locale("shn"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
+        voices.add(Voice("Burmese Language", Locale("my", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
+        voices.add(Voice("English Language", Locale.US, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
         return voices
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
-        val checkLang = lang ?: return TextToSpeech.LANG_NOT_SUPPORTED
-        
-        // Log.d("AutoTTS", "Checking Language: $checkLang") // Debugging
-
-        // Check ISO-3 Codes (Standard)
-        if (checkLang.equals("shn", ignoreCase = true) || checkLang.equals("shan", ignoreCase = true)) 
-            return TextToSpeech.LANG_COUNTRY_AVAILABLE
-            
-        if (checkLang.equals("mya", ignoreCase = true) || checkLang.equals("my", ignoreCase = true)) 
-            return TextToSpeech.LANG_COUNTRY_AVAILABLE
-            
-        if (checkLang.equals("eng", ignoreCase = true) || checkLang.equals("en", ignoreCase = true)) 
-            return TextToSpeech.LANG_COUNTRY_AVAILABLE
-
-        return TextToSpeech.LANG_NOT_SUPPORTED
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
     }
 
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        val status = onIsLanguageAvailable(lang, country, variant)
-        if (status == TextToSpeech.LANG_COUNTRY_AVAILABLE || status == TextToSpeech.LANG_AVAILABLE) {
-            // System က လက်ခံလိုက်တဲ့ ဘာသာစကားကို မှတ်ထားမယ်
-            currentLocale = Locale(lang ?: "en", country ?: "")
-            return status
-        }
-        return TextToSpeech.LANG_NOT_SUPPORTED
+        currentLocale = if (lang != null) Locale(lang) else Locale.US
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
     }
 
-    override fun onGetLanguage(): Array<String> {
-        // ISO-3 Code (3 လုံးတွဲ) နဲ့ ပြန်ဖြေမှ System က နားလည်ပြီး List မှာ ပြပေးမှာပါ
-        return arrayOf(currentLocale.isO3Language, currentLocale.isO3Country, "")
-    }
-}
-
-// Helper Object (Logic for Word Detection)
-object LanguageUtils {
-    private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
-    private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
-    
-    fun detectLanguage(text: CharSequence?): String {
-        if (text.isNullOrBlank()) return "ENGLISH"
-        val input = text.toString()
-
-        if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
-        if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
-        
-        return "ENGLISH"
-    }
+    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
 }
 
