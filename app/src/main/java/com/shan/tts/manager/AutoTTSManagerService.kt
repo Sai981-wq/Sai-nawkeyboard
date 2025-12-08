@@ -72,13 +72,46 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         stopAll()
-        parseAndQueue(text, sysRate, sysPitch)
+        
+        // *** HYBRID PARSING LOGIC ***
+        if (LanguageUtils.hasShan(text)) {
+            // ရှမ်းစာပါရင် မူရင်းနည်းဟောင်း (Word Split) သုံးမယ်
+            parseShanMode(text, sysRate, sysPitch)
+        } else {
+            // ရှမ်းစာမပါရင် (ဗမာ/အင်္ဂလိပ်) Smart Splitter သုံးမယ်
+            parseSmartMode(text, sysRate, sysPitch)
+        }
+        
         playNextInQueue()
         callback?.done()
     }
 
-    // *** SMART SPLITTER: Symbols -> English ***
-    private fun parseAndQueue(text: String, sysRate: Int, sysPitch: Int) {
+    // ၁။ မူရင်းနည်းဟောင်း (For Shan Text)
+    // Space ခြားထားတဲ့ စကားလုံးလိုက်ပဲ ခွဲတဲ့အတွက် ရှမ်းစာကြောင်းတွေ အဆင်ပြေမယ်
+    private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int) {
+        try {
+            val words = text.split(Regex("\\s+"))
+            var currentBuffer = StringBuilder()
+            var currentLang = ""
+
+            for (word in words) {
+                val detectedLang = LanguageUtils.detectLanguage(word)
+                if (currentLang.isEmpty() || currentLang == detectedLang) {
+                    currentLang = detectedLang
+                    currentBuffer.append("$word ")
+                } else {
+                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                    currentLang = detectedLang
+                    currentBuffer = StringBuilder("$word ")
+                }
+            }
+            if (currentBuffer.isNotEmpty()) addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+        } catch (e: Exception) { }
+    }
+
+    // ၂။ နည်းလမ်းသစ် (For Burmese/English Mixed)
+    // စာလုံးတစ်လုံးချင်းစီ စစ်ပြီး သင်္ကေတတွေကို English ဖက်ပို့မယ်
+    private fun parseSmartMode(text: String, sysRate: Int, sysPitch: Int) {
         if (text.isEmpty()) return
 
         var currentBuffer = StringBuilder()
@@ -230,15 +263,18 @@ object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
     
-    // Character Type Check for Smart Splitter
+    // Check if text contains any Shan character
+    fun hasShan(text: String): Boolean {
+        return SHAN_PATTERN.containsMatchIn(text)
+    }
+
     fun getCharType(char: Char): String {
         val text = char.toString()
         if (SHAN_PATTERN.containsMatchIn(text)) return "SHAN"
         if (MYANMAR_PATTERN.containsMatchIn(text)) return "MYANMAR"
-        return "ENGLISH" // Includes Punctuation, Numbers, English
+        return "ENGLISH"
     }
 
-    // Backup Detector
     fun detectLanguage(text: CharSequence?): String {
         if (text.isNullOrBlank()) return "ENGLISH"
         val input = text.toString()
