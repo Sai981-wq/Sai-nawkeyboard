@@ -6,6 +6,7 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice // Voice ကို Import လုပ်ရပါမယ်
 import android.content.Context
 import android.os.Bundle
 import java.util.Locale
@@ -26,8 +27,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
-    // *** CUSTOM QUEUE SYSTEM ***
-    // အသံမထပ်အောင် စာတွေကို ဒီ List ထဲအရင်ထည့်ပြီး တစ်ခုပြီးမှတစ်ခု ထုတ်ဖတ်မယ်
     private val messageQueue = LinkedList<TTSChunk>()
     private var isSpeaking = false
 
@@ -48,24 +47,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    // Engine တိုင်းမှာ Listener တပ်ဆင်ခြင်း (ပြီးမပြီး နားထောင်ဖို့)
     private fun setupListener(tts: TextToSpeech) {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {
-                isSpeaking = true
-            }
-
-            override fun onDone(utteranceId: String?) {
-                // ရှေ့အကောင် ဖတ်ပြီးပြီ၊ နောက်တစ်ကောင် ဆက်ဖတ်!
-                isSpeaking = false
-                playNextInQueue()
-            }
-
-            override fun onError(utteranceId: String?) {
-                // Error တက်လည်း နောက်တစ်ကောင် ဆက်ဖတ်
-                isSpeaking = false
-                playNextInQueue()
-            }
+            override fun onStart(utteranceId: String?) { isSpeaking = true }
+            override fun onDone(utteranceId: String?) { isSpeaking = false; playNextInQueue() }
+            override fun onError(utteranceId: String?) { isSpeaking = false; playNextInQueue() }
         })
     }
 
@@ -82,16 +68,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
-
-        // ၁။ အသစ်လာရင် အဟောင်းတွေကို အကုန်ရှင်းပစ်မယ် (Stop All)
         stopAll()
-        
-        // ၂။ စာသားကို ခွဲပြီး Queue ထဲ အရင်ထည့်မယ် (မဖတ်သေးဘူး)
         parseAndQueue(text)
-
-        // ၃။ ပထမဆုံးအလုံးကို စဖတ်မယ်
         playNextInQueue()
-
         callback?.done()
     }
 
@@ -103,7 +82,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             for (word in words) {
                 val detectedLang = LanguageUtils.detectLanguage(word)
-
                 if (currentLang.isEmpty() || currentLang == detectedLang) {
                     currentLang = detectedLang
                     currentBuffer.append("$word ")
@@ -113,9 +91,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     currentBuffer = StringBuilder("$word ")
                 }
             }
-            if (currentBuffer.isNotEmpty()) {
-                addToQueue(currentLang, currentBuffer.toString())
-            }
+            if (currentBuffer.isNotEmpty()) addToQueue(currentLang, currentBuffer.toString())
         } catch (e: Exception) { }
     }
 
@@ -129,18 +105,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         messageQueue.add(TTSChunk(text, engine, lang))
     }
 
-    // *** THE SEQUENCER (တစ်ခုပြီးမှ တစ်ခုဖတ်စေသူ) ***
     @Synchronized
     private fun playNextInQueue() {
         if (messageQueue.isEmpty()) return
-
-        // ယူမယ်၊ ဒါပေမယ့် မဖျက်သေးဘူး (Processing လုပ်နေတုန်း)
         val chunk = messageQueue.poll() ?: return
-
         val engine = chunk.engine
         val text = chunk.text
         
-        // Engine မရှိရင် ကျော်ပြီး နောက်တစ်ခုဆက်လုပ်
         if (engine == null) {
             playNextInQueue()
             return
@@ -158,11 +129,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
-        // Engine ကို ဖတ်ခိုင်းလိုက်ပြီ
-        // Listener က ပြီးမှ playNextInQueue() ကို ပြန်ခေါ်လိမ့်မယ်
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
-        
-        // Error တက်ရင် Fallback
         if (result == TextToSpeech.ERROR) {
              engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
@@ -170,7 +137,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun stopAll() {
         try {
-            messageQueue.clear() // တန်းစီထားတာတွေ ဖျက်မယ်
+            messageQueue.clear()
             shanEngine?.stop()
             burmeseEngine?.stop()
             englishEngine?.stop()
@@ -183,13 +150,49 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onDestroy()
     }
     
-    override fun onStop() {
-        stopAll()
+    override fun onStop() { stopAll() }
+
+    // *** LANGUAGE SETTINGS FIX (ဒီအပိုင်းက အသစ်ပါ) ***
+    
+    // Android Setting ထဲမှာ ဘာသာစကား List ပေါ်လာစေမည့် Function
+    override fun onGetVoices(): List<Voice> {
+        val voices = ArrayList<Voice>()
+        
+        // 1. Shan Voice
+        val shanLocale = Locale("shn", "MM")
+        val shanVoice = Voice("Shan (Auto)", shanLocale, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL, false, setOf("male"))
+        voices.add(shanVoice)
+
+        // 2. Burmese Voice
+        val myanmarLocale = Locale("my", "MM")
+        val burmeseVoice = Voice("Burmese (Auto)", myanmarLocale, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL, false, setOf("male"))
+        voices.add(burmeseVoice)
+
+        // 3. English Voice
+        val engVoice = Voice("English (Auto)", Locale.US, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL, false, setOf("female"))
+        voices.add(engVoice)
+
+        return voices
     }
 
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
+        // ဘာမေးမေး Available လို့ဖြေမှ Setting ထဲမှာ အမှန်ခြစ်ပြမှာပါ
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+    }
+    
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+    }
+    
+    override fun onIsValidVoiceName(voiceName: String?): Int {
+        return TextToSpeech.SUCCESS
+    }
+    
+    override fun onLoadVoice(voiceName: String?): Int {
+        return TextToSpeech.SUCCESS
+    }
 }
 
 // Helper Object
