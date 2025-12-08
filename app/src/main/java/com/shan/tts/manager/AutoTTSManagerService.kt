@@ -30,15 +30,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val messageQueue = LinkedList<TTSChunk>()
     private var isSpeaking = false
     
-    // Default Locale (English)
+    // Default Locale (System မေးရင်ဖြေဖို့)
     private var currentLocale: Locale = Locale.US
-
-    // Supported Locales List (Setting ထဲပေါ်မည့် စာရင်း)
-    private val supportedLocales = listOf(
-        Locale("shn", "MM"), // Shan (Myanmar)
-        Locale("my", "MM"),  // Burmese (Myanmar)
-        Locale.US            // English (US)
-    )
 
     override fun onCreate() {
         super.onCreate()
@@ -80,6 +73,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
         stopAll()
+        
+        // Setting ထဲက Play Sample နှိပ်ရင် Android က ပုံသေစာသားတွေ ပို့တတ်ပါတယ်
+        // အဲ့ဒါတွေကိုလည်း ခွဲခြားပြီး ဖတ်ပေးပါမယ်
         parseAndQueue(text)
         playNextInQueue()
         
@@ -93,7 +89,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             var currentLang = ""
 
             for (word in words) {
-                // LanguageUtils ကို အောက်ဆုံးမှာ ထည့်ထားပါသည်
                 val detectedLang = LanguageUtils.detectLanguage(word)
                 if (currentLang.isEmpty() || currentLang == detectedLang) {
                     currentLang = detectedLang
@@ -166,41 +161,54 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onStop() { stopAll() }
 
     // =========================================================================
-    // *** LANGUAGE SETTINGS SECTION (Fixed) ***
+    // *** VOICE DECLARATION (Play Sample အတွက် အရေးကြီးသောအပိုင်း) ***
     // =========================================================================
 
-    // Setting ထဲမှာ မြင်ရမည့် List ကို ဖန်တီးခြင်း
+    // ၁။ Setting ထဲမှာ ပေါ်မည့် စာရင်း (ISO-3 Code များနှင့် တွဲဖက်ထားသည်)
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
         
-        // 1. Shan (shn-MM)
+        // Shan -> Locale("shn", "MM")
+        // Android က ဒါကိုမြင်မှ Setting မှာ "Shan" ဆိုပြီး ပြပေးမှာပါ
         val shanLocale = Locale("shn", "MM")
         voices.add(Voice("Shan (Myanmar)", shanLocale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
         
-        // 2. Burmese (my-MM)
+        // Burmese -> Locale("my", "MM")
         val burmeseLocale = Locale("my", "MM")
         voices.add(Voice("Burmese (Myanmar)", burmeseLocale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
         
-        // 3. English (en-US)
-        voices.add(Voice("English (United States)", Locale.US, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
+        // English -> Locale("en", "US")
+        val englishLocale = Locale("en", "US")
+        voices.add(Voice("English (United States)", englishLocale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
 
         return voices
     }
 
-    // System က "ဒီဘာသာစကား ရလား" လို့ လာစစ်တဲ့အခါ
+    // ၂။ System က "ဒီစာသားကို ဖတ်ပြစမ်း (Sample Play)" လို့ ခိုင်းရင် လက်ခံမလား စစ်ဆေးခြင်း
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
-        val checkLocale = Locale(lang ?: "", country ?: "", variant ?: "")
+        val checkLang = lang ?: return TextToSpeech.LANG_NOT_SUPPORTED
         
-        // ကျွန်တော်တို့ Support လုပ်တဲ့ List ထဲမှာ ပါလား စစ်မယ်
-        for (supported in supportedLocales) {
-            if (supported.language.equals(checkLocale.language, ignoreCase = true)) {
-                 return TextToSpeech.LANG_COUNTRY_AVAILABLE
+        // ISO-3 Code တွေကို စစ်ဆေးပေးရပါမယ် (Play Sample အလုပ်လုပ်ဖို့)
+        val supportedCodes = listOf("shn", "my", "mya", "eng", "en")
+        
+        for (code in supportedCodes) {
+            if (checkLang.equals(code, ignoreCase = true)) {
+                return TextToSpeech.LANG_COUNTRY_AVAILABLE
             }
         }
+        
+        // Locale.ISO3Language နဲ့လည်း တိုက်စစ်ပါမယ်
+        val locale = Locale(lang ?: "")
+        try {
+            if (supportedCodes.contains(locale.isO3Language)) {
+                return TextToSpeech.LANG_COUNTRY_AVAILABLE
+            }
+        } catch (e: Exception) {}
+
         return TextToSpeech.LANG_NOT_SUPPORTED
     }
 
-    // User က ဘာသာစကား ရွေးလိုက်တဲ့အခါ
+    // ၃။ User ရွေးလိုက်တဲ့ ဘာသာစကားကို Load လုပ်ခြင်း
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
         val status = onIsLanguageAvailable(lang, country, variant)
         if (status == TextToSpeech.LANG_COUNTRY_AVAILABLE || status == TextToSpeech.LANG_AVAILABLE) {
@@ -210,12 +218,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         return TextToSpeech.LANG_NOT_SUPPORTED
     }
 
-    // System ကို လက်ရှိဘာသာစကားရဲ့ ISO Code (၃ လုံးတွဲ) ပြန်ပေးခြင်း
+    // ၄။ System ကို လက်ရှိဘာသာစကားပြန်ပြောခြင်း (Play Sample နှိပ်ရင် ဒီကောင်ကိုကြည့်ပြီး စာပို့မှာပါ)
     override fun onGetLanguage(): Array<String> {
         try {
             return arrayOf(currentLocale.isO3Language, currentLocale.isO3Country, "")
         } catch (e: Exception) {
-            // Error တက်ရင် Default အနေနဲ့ English ပြန်ပေးမယ်
             return arrayOf("eng", "USA", "")
         }
     }
@@ -225,8 +232,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
-    private val ENGLISH_PATTERN = Regex("[a-zA-Z]")
-
+    
     fun detectLanguage(text: CharSequence?): String {
         if (text.isNullOrBlank()) return "ENGLISH"
         val input = text.toString()
