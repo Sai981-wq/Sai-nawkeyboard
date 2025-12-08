@@ -34,7 +34,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        sendLog("Service Created.") // Log စမှတ်ပြီ
+        sendLog("Service Created.")
 
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
@@ -58,7 +58,10 @@ class AutoTTSManagerService : TextToSpeechService() {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) { isSpeaking = true }
             override fun onDone(utteranceId: String?) { isSpeaking = false; playNextInQueue() }
-            override fun onError(utteranceId: String?) { isSpeaking = false; playNextInQueue() }
+            override fun onError(utteranceId: String?) { 
+                sendLog("Engine Error on utterance: $utteranceId")
+                isSpeaking = false; playNextInQueue() 
+            }
         })
     }
 
@@ -76,8 +79,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        // Debug လိုရင် အောက်ကလိုင်းကို ဖွင့်ပါ
-        // sendLog("Received: $text") 
         
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         stopAll()
@@ -93,6 +94,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             var currentLang = ""
 
             for (word in words) {
+                // ဒီနေရာမှာ LanguageUtils ကို အောက်ဆုံးမှာ ပြန်ထည့်ထားလို့ Error မတက်တော့ပါ
                 val detectedLang = LanguageUtils.detectLanguage(word)
                 if (currentLang.isEmpty() || currentLang == detectedLang) {
                     currentLang = detectedLang
@@ -127,7 +129,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val text = chunk.text
         
         if (engine == null) {
-            sendLog("Engine NULL for: $text")
+            sendLog("Engine NULL for text: $text")
             playNextInQueue()
             return
         }
@@ -146,7 +148,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         if (result == TextToSpeech.ERROR) {
-             sendLog("Speak Error on $text")
+             // Fallback
              engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
     }
@@ -161,15 +163,16 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
-    // *** LOGGING FUNCTION ***
     private fun sendLog(msg: String) {
-        // 1. Log History ထဲထည့်မယ် (နောက်မှပြန်ကြည့်ဖို့)
-        LogHistory.add(msg)
-        
-        // 2. UI ပွင့်နေရင် ချက်ချင်းပြဖို့ Broadcast လုပ်မယ်
-        val intent = Intent("com.shan.tts.ERROR_REPORT")
-        intent.setPackage(packageName)
-        sendBroadcast(intent)
+        try {
+            // LogHistory ရှိမှ ခေါ်မယ် (Error မတက်အောင် Try catch ခံထားသည်)
+            LogHistory.add(msg) 
+            val intent = Intent("com.shan.tts.ERROR_REPORT")
+            intent.setPackage(packageName)
+            sendBroadcast(intent)
+        } catch (e: Exception) {
+            Log.e("AutoTTS", "Log Error: $msg")
+        }
     }
 
     override fun onDestroy() {
@@ -198,5 +201,22 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
+}
+
+// *** LANGUAGE UTILS (Included Here to Prevent Unresolved Reference) ***
+object LanguageUtils {
+    private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
+    private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
+    private val ENGLISH_PATTERN = Regex("[a-zA-Z]")
+
+    fun detectLanguage(text: CharSequence?): String {
+        if (text.isNullOrBlank()) return "ENGLISH"
+        val input = text.toString()
+
+        if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
+        if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
+        
+        return "ENGLISH"
+    }
 }
 
