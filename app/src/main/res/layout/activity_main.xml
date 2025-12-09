@@ -19,13 +19,17 @@
             android:textColor="#D32F2F"
             android:gravity="center"
             android:layout_marginBottom="30dp"
-            android:importantForAccessibility="yes"/> <TextView 
+            android:importantForAccessibility="yes"/>
+
+        <TextView 
             android:text="@string/label_shan" 
             android:textStyle="bold" 
             android:textSize="16sp" 
             android:layout_width="wrap_content" 
             android:layout_height="wrap_content"
-            android:labelFor="@+id/spinnerShan"/> <Spinner 
+            android:labelFor="@+id/spinnerShan"/>
+
+        <Spinner 
             android:id="@+id/spinnerShan" 
             android:layout_width="match_parent" 
             android:layout_height="50dp" 
@@ -33,26 +37,12 @@
             android:contentDescription="Select Shan Text-to-Speech Engine"/>
         
         <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="5dp">
-            <TextView android:text="Speed" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/> <SeekBar 
-                android:id="@+id/seekShanRate" 
-                android:max="200" 
-                android:progress="100" 
-                android:layout_width="0dp" 
-                android:layout_weight="1" 
-                android:layout_height="wrap_content"
-                android:contentDescription="Shan Speech Rate"/>
+            <TextView android:text="Speed" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
+            <SeekBar android:id="@+id/seekShanRate" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="Shan Speech Rate"/>
         </LinearLayout>
-        
         <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginBottom="20dp">
             <TextView android:text="Pitch" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-            <SeekBar 
-                android:id="@+id/seekShanPitch" 
-                android:max="200" 
-                android:progress="100" 
-                android:layout_width="0dp" 
-                android:layout_weight="1" 
-                android:layout_height="wrap_content"
-                android:contentDescription="Shan Voice Pitch"/>
+            <SeekBar android:id="@+id/seekShanPitch" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="Shan Voice Pitch"/>
         </LinearLayout>
 
         <TextView 
@@ -72,26 +62,11 @@
         
         <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="5dp">
             <TextView android:text="Speed" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-            <SeekBar 
-                android:id="@+id/seekBurmeseRate" 
-                android:max="200" 
-                android:progress="100" 
-                android:layout_width="0dp" 
-                android:layout_weight="1" 
-                android:layout_height="wrap_content"
-                android:contentDescription="Burmese Speech Rate"/>
+            <SeekBar android:id="@+id/seekBurmeseRate" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="Burmese Speech Rate"/>
         </LinearLayout>
-
         <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginBottom="20dp">
             <TextView android:text="Pitch" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-            <SeekBar 
-                android:id="@+id/seekBurmesePitch" 
-                android:max="200" 
-                android:progress="100" 
-                android:layout_width="0dp" 
-                android:layout_weight="1" 
-                android:layout_height="wrap_content"
-                android:contentDescription="Burmese Voice Pitch"/>
+            <SeekBar android:id="@+id/seekBurmesePitch" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="Burmese Voice Pitch"/>
         </LinearLayout>
 
         <TextView 
@@ -111,27 +86,59 @@
         
         <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="5dp">
             <TextView android:text="Speed" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-            <SeekBar 
-                android:id="@+id/seekEnglishRate" 
-                android:max="200" 
-                android:progress="100" 
-                android:layout_width="0dp" 
-                android:layout_weight="1" 
-                android:layout_height="wrap_content"
-                android:contentDescription="English Speech Rate"/>
+            <SeekBar android:id="@+id/seekEnglishRate" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="English Speech Rate"/>
         </LinearLayout>
-        
         <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginBottom="20dp">
             <TextView android:text="Pitch" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-            <SeekBar 
-                android:id="@+id/seekEnglishPitch" 
-                android:max="200" 
-                android:progress="100" 
-                android:layout_width="0dp" 
-                android:layout_weight="1" 
-                android:layout_height="wrap_content"
-                android:contentDescription="English Voice Pitch"/>
+            <SeekBar android:id="@+id/seekEnglishPitch" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="English Voice Pitch"/>
         </LinearLayout>
+
+        <View 
+            android:layout_width="match_parent" 
+            android:layout_height="1dp" 
+            android:background="#CCCCCC" 
+            android:layout_marginTop="10dp" 
+            android:layout_marginBottom="20dp"/>
+
+        <TextView 
+            android:text="ဖန်တီးသူကို ကူညီထောက်ပံ့ရန်" 
+            android:textStyle="bold" 
+            android:textColor="#2E7D32"
+            android:layout_width="match_parent" 
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"/>
+
+        <TextView
+            android:id="@+id/btnKpay"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="KBZ Pay: 09750091817 (Copy)"
+            android:background="#E8F5E9"
+            android:gravity="center_vertical"
+            android:paddingStart="15dp"
+            android:textSize="16sp"
+            android:layout_marginBottom="10dp"
+            android:contentDescription="Donate via K B Z Pay, Double tap to copy number 0 9 7 5 0 0 9 1 8 1 7"/>
+
+        <TextView
+            android:id="@+id/btnWave"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="Wave Pay: 09750091817 (Copy)"
+            android:background="#FFF3E0"
+            android:gravity="center_vertical"
+            android:paddingStart="15dp"
+            android:textSize="16sp"
+            android:contentDescription="Donate via Wave Pay, Double tap to copy number 0 9 7 5 0 0 9 1 8 1 7"/>
+            
+        <TextView
+            android:text="Thank you for using Cherry SME TTS!"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:layout_marginTop="20dp"
+            android:textColor="#888888"
+            android:textSize="12sp"/>
 
     </LinearLayout>
 </ScrollView>

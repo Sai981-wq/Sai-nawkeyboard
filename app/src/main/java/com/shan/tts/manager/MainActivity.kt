@@ -1,5 +1,7 @@
 package com.shan.tts.manager
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -23,10 +25,22 @@ class MainActivity : AppCompatActivity() {
 
         loadInstalledEngines()
 
-        // Setup SeekBars & Spinners
         setupEngineUI(R.id.spinnerShan, "pref_shan_pkg", "com.espeak.ng", R.id.seekShanRate, "rate_shan", R.id.seekShanPitch, "pitch_shan")
         setupEngineUI(R.id.spinnerBurmese, "pref_burmese_pkg", "com.google.android.tts", R.id.seekBurmeseRate, "rate_burmese", R.id.seekBurmesePitch, "pitch_burmese")
         setupEngineUI(R.id.spinnerEnglish, "pref_english_pkg", "com.google.android.tts", R.id.seekEnglishRate, "rate_english", R.id.seekEnglishPitch, "pitch_english")
+
+        // *** DONATION LOGIC (UPDATED PHONE NUMBER) ***
+        setupDonation(R.id.btnKpay, "09750091817", "KBZ Pay Number Copied")
+        setupDonation(R.id.btnWave, "09750091817", "Wave Pay Number Copied")
+    }
+    
+    private fun setupDonation(viewId: Int, number: String, msg: String) {
+        findViewById<View>(viewId).setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText("Donation Number", number)
+            clipboard.setPrimaryClip(clip)
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun setupEngineUI(spinnerId: Int, pkgKey: String, defPkg: String, rateId: Int, rateKey: String, pitchId: Int, pitchKey: String) {
@@ -34,15 +48,12 @@ class MainActivity : AppCompatActivity() {
         val seekRate = findViewById<SeekBar>(rateId)
         val seekPitch = findViewById<SeekBar>(pitchId)
 
-        // Load Saved Values (Default 100)
         seekRate.progress = prefs.getInt(rateKey, 100)
         seekPitch.progress = prefs.getInt(pitchKey, 100)
 
-        // Listeners
         seekRate.setOnSeekBarChangeListener(getSeekListener(rateKey))
         seekPitch.setOnSeekBarChangeListener(getSeekListener(pitchKey))
 
-        // Bind Spinner Selection
         val savedPkg = prefs.getString(pkgKey, defPkg)
         val idx = enginePackages.indexOf(savedPkg)
         if (idx >= 0) spinner.setSelection(idx)
