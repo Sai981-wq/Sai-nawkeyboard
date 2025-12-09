@@ -1,10 +1,10 @@
 package com.shan.tts.manager
 
 import android.content.Context
-import android.media.AudioAttributes
 import android.os.Bundle
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
+import android.os.PowerManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.SynthesisCallback
@@ -33,15 +33,28 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isEnglishReady = false
 
     private val messageQueue = LinkedList<TTSChunk>()
-    private var isSpeaking = false
     private var currentLocale: Locale = Locale.US
     
-    // *** Thread Fix: အလုပ်သမားခေါင်းဆောင် (Main Handler) ***
-    // အလုပ်မှန်သမျှ ဒီကောင်ကနေတဆင့်ပဲ ခိုင်းမယ် (လမ်းမပျောက်အောင်)
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private lateinit var workerThread: HandlerThread
+    private lateinit var workHandler: Handler
+    private var wakeLock: PowerManager.WakeLock? = null
+    
+    @Volatile
+    private var isSpeaking = false
+    
+    private val MAX_CHAR_LIMIT = 500
 
     override fun onCreate() {
         super.onCreate()
+        
+        workerThread = HandlerThread("CherryTTSWorker")
+        workerThread.start()
+        workHandler = Handler(workerThread.looper)
+        
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
+        wakeLock?.setReferenceCounted(false)
+
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
         initializeEngine(prefs.getString("pref_shan_pkg", "com.espeak.ng")) { tts -> 
@@ -59,21 +72,17 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun setupListener(tts: TextToSpeech) {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) { 
-                // Started
-            }
-
+            override fun onStart(utteranceId: String?) { }
+            
             override fun onDone(utteranceId: String?) {
-                // Thread-Safe ဖြစ်အောင် Handler နဲ့ လှမ်းခေါ်မယ်
-                mainHandler.post {
+                workHandler.post {
                     isSpeaking = false
                     playNextInQueue()
                 }
             }
 
             override fun onError(utteranceId: String?) {
-                // Error တက်ရင်လည်း နောက်တစ်ခု ဆက်ဖတ်ခိုင်းမယ်
-                mainHandler.post {
+                workHandler.post {
                     isSpeaking = false
                     playNextInQueue()
                 }
@@ -98,11 +107,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
-        // အသစ်ဝင်လာတာနဲ့ Handler ထဲထည့်ပြီး အလုပ်စမယ်
-        mainHandler.post {
-            stopAll() // အဟောင်းတွေရှင်း
+        workHandler.removeCallbacksAndMessages(null)
+        workHandler.post {
+            stopAll()
+            acquireWakeLock()
             
-            // Logic ခွဲခြားခြင်း
             if (LanguageUtils.hasShan(text)) {
                 parseShanMode(text, sysRate, sysPitch)
             } else {
@@ -115,7 +124,16 @@ class AutoTTSManagerService : TextToSpeechService() {
         callback?.done()
     }
 
-    // ၁။ ရှမ်းစာပါရင် (Space နဲ့ခွဲမယ်)
+    private fun acquireWakeLock() {
+        wakeLock?.acquire(10 * 60 * 1000L)
+    }
+
+    private fun releaseWakeLock() {
+        if (wakeLock?.isHeld == true) {
+            wakeLock?.release()
+        }
+    }
+
     private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int) {
         try {
             val words = text.split(Regex("\\s+"))
@@ -124,20 +142,18 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             for (word in words) {
                 val detectedLang = LanguageUtils.detectLanguage(word)
-                if (currentLang.isEmpty() || currentLang == detectedLang) {
-                    currentLang = detectedLang
-                    currentBuffer.append("$word ")
-                } else {
+                if ((currentBuffer.length > MAX_CHAR_LIMIT) || (currentLang.isNotEmpty() && currentLang != detectedLang)) {
                     addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                    currentBuffer = StringBuilder()
                     currentLang = detectedLang
-                    currentBuffer = StringBuilder("$word ")
                 }
+                if (currentLang.isEmpty()) currentLang = detectedLang
+                currentBuffer.append("$word ")
             }
             if (currentBuffer.isNotEmpty()) addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
         } catch (e: Exception) { }
     }
 
-    // ၂။ ဗမာ/အင်္ဂလိပ် (စာလုံးတစ်လုံးချင်း Smart Split)
     private fun parseSmartMode(text: String, sysRate: Int, sysPitch: Int) {
         if (text.isEmpty()) return
 
@@ -145,9 +161,12 @@ class AutoTTSManagerService : TextToSpeechService() {
         var currentLang = "" 
 
         for (char in text) {
-            // Space ဆိုရင် ရှိရင်းစွဲ Buffer ထဲ ထည့်မယ် (မခွဲဘူး)
             if (char.isWhitespace()) {
                 currentBuffer.append(char)
+                if (currentBuffer.length > MAX_CHAR_LIMIT) {
+                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                    currentBuffer = StringBuilder()
+                }
                 continue
             }
 
@@ -159,7 +178,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 continue
             }
 
-            if (charType == currentLang) {
+            if (charType == currentLang && currentBuffer.length < MAX_CHAR_LIMIT) {
                 currentBuffer.append(char)
             } else {
                 addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
@@ -183,9 +202,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch))
     }
 
+    @Synchronized
     private fun playNextInQueue() {
         if (isSpeaking) return
-        if (messageQueue.isEmpty()) return
+        
+        if (messageQueue.isEmpty()) {
+            releaseWakeLock()
+            return
+        }
         
         val chunk = messageQueue.poll() ?: return
         val engine = chunk.engine
@@ -226,9 +250,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         val utteranceId = System.nanoTime().toString()
         val params = Bundle()
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-            val audioAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            val audioAttributes = android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
             params.putParcelable("audioAttributes", audioAttributes)
         }
@@ -237,7 +261,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         if (result == TextToSpeech.ERROR) {
              isSpeaking = false
-             // Error တက်ရင် နောက်တစ်ခုမကျော်ဘဲ Manual Fallback လုပ်မယ်
              engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
     }
@@ -246,18 +269,23 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             messageQueue.clear()
             isSpeaking = false 
+            releaseWakeLock()
             shanEngine?.stop(); burmeseEngine?.stop(); englishEngine?.stop()
         } catch (e: Exception) { }
     }
 
     override fun onDestroy() {
-        stopAll(); shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
+        stopAll()
+        releaseWakeLock()
+        workerThread.quitSafely()
+        shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
         super.onDestroy()
     }
     
-    override fun onStop() { stopAll() }
+    override fun onStop() { 
+        stopAll() 
+    }
 
-    // Language Settings
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
         voices.add(Voice("Shan (Myanmar)", Locale("shn", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
