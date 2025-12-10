@@ -34,7 +34,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
-    // Queue ကို Thread-Safe ဖြစ်အောင် Synchronized List သုံးမယ်
+    // Thread-Safe Queue
     private val messageQueue = java.util.Collections.synchronizedList(LinkedList<TTSChunk>())
     private var currentLocale: Locale = Locale.US
     
@@ -82,13 +82,15 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) { }
             
             override fun onDone(utteranceId: String?) {
-                // Gap ကို 50ms ထိ လျှော့လိုက်တယ် (ပိုသွက်အောင်)
+                // *** 100ms Gap for Overlap Prevention ***
+                // ဒီ Gap က စာတစ်ကြောင်းတည်းက အပိုင်းတွေ (မင်္ဂလာပါ + Hello) ကြားမှာပဲ အလုပ်လုပ်မယ်။
+                // ပွတ်ဆွဲလိုက်ရင် onStop က ဒီ Gap တွေကိုပါ ဖျက်ပစ်မှာမို့ မနှေးစေဘူး။
                 workHandler.postDelayed({
                     if (utteranceId == currentUtteranceId) {
                         isSpeaking = false
                         playNextInQueue()
                     }
-                }, 50) 
+                }, 100) 
             }
 
             override fun onError(utteranceId: String?) {
@@ -119,12 +121,17 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
-        // Long Text အတွက် ဒီမှာ stopAll မလုပ်ဘူး။ Queue ထဲ ထပ်ထည့်သွားမယ်။
-        // ဒါပေမယ့် ပွတ်ဆွဲရင် onStop() က ရှင်းပေးမှာမို့ ပြဿနာမရှိ။
+        // *** အဓိက ပြင်ဆင်ချက် (၁) ***
+        // စာအသစ်ဝင်လာတာနဲ့ အရင်တန်းစီထားတဲ့ အလုပ်ဟောင်းတွေ (Runnable Tasks) အကုန်ဖျက်မယ်
+        workHandler.removeCallbacksAndMessages(null)
         
         workHandler.post {
+            // လာနေတဲ့အသံကို အရင်ဖြတ်မယ်
+            stopAll()
             acquireWakeLock()
             
+            currentUtteranceId = UUID.randomUUID().toString() 
+
             if (LanguageUtils.hasShan(text)) {
                 parseShanMode(text, sysRate, sysPitch)
             } else {
@@ -137,17 +144,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         callback?.done()
     }
 
-    // *** အရေးကြီးဆုံး ပြင်ဆင်ချက် (TalkBack ပွတ်ဆွဲရင် ဒီကောင်အလုပ်လုပ်မယ်) ***
+    // *** အဓိက ပြင်ဆင်ချက် (၂) ***
+    // TalkBack က ပွတ်ဆွဲလိုက်ရင် onStop ကို ခေါ်ပါတယ်
     override fun onStop() {
-        // ၁။ Delay တွေ၊ Pending အလုပ်တွေ အကုန်ချက်ချင်းဖျက်
+        // Handler ထဲမှာ စောင့်နေတဲ့ အလုပ်တွေ၊ Gap တွေ အကုန်ချက်ချင်းဖျက်
         workHandler.removeCallbacksAndMessages(null)
         
-        // ၂။ Queue ထဲမှာ ကျန်နေတဲ့ စာတွေ (Facebook အစအနတွေ) ကို ချက်ချင်းလောင်းပစ်မယ်
-        synchronized(messageQueue) {
-            messageQueue.clear()
-        }
-        
-        // ၃။ အသံထွက်နေတာကို ချက်ချင်းရပ်ဖို့ "ထိပ်ဆုံးကနေ" ဝင်တိုးမယ် (Priority Stop)
+        // ချက်ချင်းရပ်ဖို့ ထိပ်ဆုံးကနေ အမိန့်ပေး
         workHandler.postAtFrontOfQueue {
             stopAll()
         }
@@ -231,7 +234,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             else -> if (isEnglishReady) englishEngine else null
         }
         
-        // List မဟုတ်ဘဲ Synchronized Block နဲ့ ထည့်မယ်
         synchronized(messageQueue) {
             messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch))
         }
@@ -244,7 +246,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         var chunk: TTSChunk? = null
         synchronized(messageQueue) {
             if (messageQueue.isNotEmpty()) {
-                chunk = messageQueue.removeAt(0) // Poll
+                chunk = messageQueue.removeAt(0)
             }
         }
 
@@ -311,9 +313,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun stopAll() {
         try {
+            // အရေးကြီးဆုံးအချက်: Queue ထဲက စာတွေကို အကုန်လောင်းပစ်မယ်
             synchronized(messageQueue) {
                 messageQueue.clear()
             }
+            // Handler ထဲက Delay တွေကိုလည်း ဖျက်မယ်
             workHandler.removeCallbacksAndMessages(null)
             
             isSpeaking = false 
