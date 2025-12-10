@@ -52,7 +52,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onCreate() {
         super.onCreate()
         
-        // Priority Audio (စက်မလေးအောင်)
         workerThread = HandlerThread("CherryTTSWorker", Process.THREAD_PRIORITY_AUDIO)
         workerThread.start()
         workHandler = Handler(workerThread.looper)
@@ -81,13 +80,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) { }
             
             override fun onDone(utteranceId: String?) {
-                // အသံမထပ်အောင် 150ms ခြားပေးခြင်း
+                // Gap 100ms
                 workHandler.postDelayed({
                     if (utteranceId == currentUtteranceId) {
                         isSpeaking = false
                         playNextInQueue()
                     }
-                }, 150) 
+                }, 100) 
             }
 
             override fun onError(utteranceId: String?) {
@@ -118,38 +117,39 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
+        // *** အမှားပြင်ဆင်ချက် ***
+        // ဒီနေရာမှာ removeCallbacksAndMessages ကို ဖြုတ်လိုက်ပါပြီ။
+        // ဒါမှ onDone က အလုပ်လုပ်ပြီး isSpeaking ကို false ပြန်ပြောင်းပေးနိုင်မှာပါ။
+        
         workHandler.post {
-            // *** အဓိက ပြင်ဆင်ချက် ***
-            // ဒီနေရာမှာ stopAll() ကို ဖြုတ်လိုက်ပါပြီ။
-            // စာအရှည်ကြီးတွေ အပိုင်းလိုက်ဝင်လာရင် မဖြတ်ဘဲ ဆက်ထည့်ပါမယ်။
-            
+            // stopAll() ကိုလည်း မခေါ်ပါဘူး (Long Text ဆက်ဖတ်ဖို့)
             acquireWakeLock()
             
-            // ID အသစ်မထုတ်ပါ (Queue ထဲမှာ တစ်ဆက်တည်းသွားစေချင်လို့ပါ)
-            // onStop ခေါ်မှသာ ID Reset ချပါမယ်
-
+            // Queue ထဲကို ဖြည့်မယ်
             if (LanguageUtils.hasShan(text)) {
                 parseShanMode(text, sysRate, sysPitch)
             } else {
                 parseSmartMode(text, sysRate, sysPitch)
             }
             
+            // ပြောစရာရှိတာ ပြောမယ်
             playNextInQueue()
         }
         
         callback?.done()
     }
-    
-    // TalkBack က ပွတ်ဆွဲလိုက်ရင် ဒီကောင်ကို System က လှမ်းခေါ်ပါတယ်
+
+    // *** TalkBack က ပွတ်ဆွဲလိုက်ရင် ဒီကောင်အလုပ်လုပ်ပါတယ် ***
     override fun onStop() {
-        workHandler.removeCallbacksAndMessages(null) // Delay တွေကိုဖျက်
+        // ဒီရောက်မှသာ အကုန်ဖျက်ပစ်မယ်
+        workHandler.removeCallbacksAndMessages(null)
         workHandler.post {
-            stopAll() // *** ဒီရောက်မှ အကုန်ဖျက်မယ် ***
+            stopAll()
         }
     }
 
     private fun acquireWakeLock() {
-        wakeLock?.acquire(60 * 1000L) // 60s Timeout
+        wakeLock?.acquire(60 * 1000L)
     }
 
     private fun releaseWakeLock() {
@@ -297,8 +297,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun stopAll() {
         try {
             messageQueue.clear()
-            workHandler.removeCallbacksAndMessages(null) // Clear delays
-            
+            workHandler.removeCallbacksAndMessages(null) // Delay တွေကိုဖျက်
             isSpeaking = false 
             currentUtteranceId = "" 
             releaseWakeLock()
