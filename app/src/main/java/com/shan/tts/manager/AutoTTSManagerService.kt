@@ -53,7 +53,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onCreate() {
         super.onCreate()
         
-        // Priority Audio (UI မလေးစေရန်)
         workerThread = HandlerThread("CherryTTSWorker", Process.THREAD_PRIORITY_AUDIO)
         workerThread.start()
         workHandler = Handler(workerThread.looper)
@@ -82,9 +81,10 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) { }
             
             override fun onDone(utteranceId: String?) {
-                // *** 100ms Gap for Overlap Prevention ***
-                // ဒီ Gap က စာတစ်ကြောင်းတည်းက အပိုင်းတွေ (မင်္ဂလာပါ + Hello) ကြားမှာပဲ အလုပ်လုပ်မယ်။
-                // ပွတ်ဆွဲလိုက်ရင် onStop က ဒီ Gap တွေကိုပါ ဖျက်ပစ်မှာမို့ မနှေးစေဘူး။
+                // Watchdog Timer ကို ဖျက်
+                workHandler.removeCallbacksAndMessages(utteranceId)
+
+                // 100ms Gap (အသံမထပ်အောင်)
                 workHandler.postDelayed({
                     if (utteranceId == currentUtteranceId) {
                         isSpeaking = false
@@ -94,6 +94,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
             override fun onError(utteranceId: String?) {
+                workHandler.removeCallbacksAndMessages(utteranceId)
                 workHandler.post {
                     if (utteranceId == currentUtteranceId) {
                         isSpeaking = false
@@ -121,17 +122,13 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
-        // *** အဓိက ပြင်ဆင်ချက် (၁) ***
-        // စာအသစ်ဝင်လာတာနဲ့ အရင်တန်းစီထားတဲ့ အလုပ်ဟောင်းတွေ (Runnable Tasks) အကုန်ဖျက်မယ်
-        workHandler.removeCallbacksAndMessages(null)
+        // *** အရေးကြီးဆုံး ပြုပြင်ချက် ***
+        // ဒီနေရာမှာ removeCallbacks နဲ့ stopAll ကို ဖြုတ်လိုက်ပါပြီ။
+        // ဒါမှ Code အရှည်ကြီးတွေ အပိုင်းလိုက်ဝင်လာရင် မပြတ်တောက်ဘဲ ဆက်ဖတ်မှာပါ။
         
         workHandler.post {
-            // လာနေတဲ့အသံကို အရင်ဖြတ်မယ်
-            stopAll()
             acquireWakeLock()
             
-            currentUtteranceId = UUID.randomUUID().toString() 
-
             if (LanguageUtils.hasShan(text)) {
                 parseShanMode(text, sysRate, sysPitch)
             } else {
@@ -144,15 +141,19 @@ class AutoTTSManagerService : TextToSpeechService() {
         callback?.done()
     }
 
-    // *** အဓိက ပြင်ဆင်ချက် (၂) ***
-    // TalkBack က ပွတ်ဆွဲလိုက်ရင် onStop ကို ခေါ်ပါတယ်
+    // *** TalkBack ပွတ်ဆွဲရင် ဒီကောင်အလုပ်လုပ်မယ် (Aggressive Stop) ***
     override fun onStop() {
-        // Handler ထဲမှာ စောင့်နေတဲ့ အလုပ်တွေ၊ Gap တွေ အကုန်ချက်ချင်းဖျက်
+        // 1. Handler ထဲက Watchdog တွေ၊ Gap တွေ အကုန်ဖျက်
         workHandler.removeCallbacksAndMessages(null)
         
-        // ချက်ချင်းရပ်ဖို့ ထိပ်ဆုံးကနေ အမိန့်ပေး
+        // 2. Queue ထဲက စာတွေ အကုန်သွန်ပစ်
+        synchronized(messageQueue) {
+            messageQueue.clear()
+        }
+        
+        // 3. အသံထွက်နေတာကို ချက်ချင်းရပ်
         workHandler.postAtFrontOfQueue {
-            stopAll()
+            stopAllEnginesInternal()
         }
     }
 
@@ -233,7 +234,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
             else -> if (isEnglishReady) englishEngine else null
         }
-        
         synchronized(messageQueue) {
             messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch))
         }
@@ -303,23 +303,27 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
+        // *** WATCHDOG TIMER ***
+        // စာဖတ်ချိန်ကြာနေရင် (Engine ကြောင်နေရင်) အတင်းဖြတ်ချမယ်
+        val timeout = (text.length * 200L) + 4000L
+        workHandler.postDelayed({
+            if (currentUtteranceId == utteranceId) {
+                isSpeaking = false
+                playNextInQueue()
+            }
+        }, utteranceId, timeout) 
+
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         
         if (result == TextToSpeech.ERROR) {
+             workHandler.removeCallbacksAndMessages(utteranceId)
              isSpeaking = false
              engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
         }
     }
 
-    private fun stopAll() {
+    private fun stopAllEnginesInternal() {
         try {
-            // အရေးကြီးဆုံးအချက်: Queue ထဲက စာတွေကို အကုန်လောင်းပစ်မယ်
-            synchronized(messageQueue) {
-                messageQueue.clear()
-            }
-            // Handler ထဲက Delay တွေကိုလည်း ဖျက်မယ်
-            workHandler.removeCallbacksAndMessages(null)
-            
             isSpeaking = false 
             currentUtteranceId = "" 
             releaseWakeLock()
@@ -328,7 +332,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() {
-        stopAll()
+        stopAllEnginesInternal()
         releaseWakeLock()
         workerThread.quitSafely()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
