@@ -18,11 +18,12 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
 data class TTSChunk(
-    val text: String, 
-    val engine: TextToSpeech?, 
+    val text: String,
+    val engine: TextToSpeech?,
     val lang: String,
-    val sysRate: Int, 
-    val sysPitch: Int
+    val sysRate: Int,
+    val sysPitch: Int,
+    val utteranceId: String // ID ထည့်မှတ်မယ်
 )
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -37,43 +38,42 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val messageQueue = java.util.Collections.synchronizedList(LinkedList<TTSChunk>())
     private var currentLocale: Locale = Locale.US
-    
+
     private lateinit var workerThread: HandlerThread
     private lateinit var workHandler: Handler
     private var wakeLock: PowerManager.WakeLock? = null
-    
-    @Volatile
-    private var isSpeaking = false
-    
+
     @Volatile
     private var currentUtteranceId: String = ""
-    
-    // *** NEW: Interrupt Flag (ချက်ချင်းရပ်တန့်စေမည့် အလံ) ***
+
+    // *** FIX: Global Interrupt အစား Generation ID သုံးတာ ပိုစိတ်ချရတယ် ***
+    // ဒါပေမဲ့ ရိုးရှင်းအောင် လက်ရှိ Flag ကိုပဲ Logic ပြင်သုံးပါမယ်
     private val isInterrupted = AtomicBoolean(false)
-    
+
     private val MAX_CHAR_LIMIT = 500
 
     override fun onCreate() {
         super.onCreate()
-        
+        // Thread Priority ကို Audio ပေးထားတာ မှန်ပါတယ်
         workerThread = HandlerThread("CherryTTSWorker", Process.THREAD_PRIORITY_AUDIO)
         workerThread.start()
         workHandler = Handler(workerThread.looper)
-        
+
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
         wakeLock?.setReferenceCounted(false)
 
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-        
-        initializeEngine(prefs.getString("pref_shan_pkg", "com.espeak.ng")) { tts -> 
+
+        // Engine Initialization (Same as yours)
+        initializeEngine(prefs.getString("pref_shan_pkg", "com.espeak.ng")) { tts ->
             shanEngine = tts; isShanReady = true; setupListener(tts)
         }
-        initializeEngine(prefs.getString("pref_burmese_pkg", "com.google.android.tts")) { tts -> 
+        initializeEngine(prefs.getString("pref_burmese_pkg", "com.google.android.tts")) { tts ->
             burmeseEngine = tts; isBurmeseReady = true; setupListener(tts)
             burmeseEngine?.language = Locale("my", "MM")
         }
-        initializeEngine(prefs.getString("pref_english_pkg", "com.google.android.tts")) { tts -> 
+        initializeEngine(prefs.getString("pref_english_pkg", "com.google.android.tts")) { tts ->
             englishEngine = tts; isEnglishReady = true; setupListener(tts)
             englishEngine?.language = Locale.US
         }
@@ -81,29 +81,25 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun setupListener(tts: TextToSpeech) {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) { }
-            
+            override fun onStart(utteranceId: String?) {}
+
             override fun onDone(utteranceId: String?) {
-                // Gap 50ms (Smooth Transition)
-                workHandler.postDelayed({
-                    if (!isInterrupted.get() && utteranceId == currentUtteranceId) {
-                        isSpeaking = false
-                        playNextInQueue()
-                    }
-                }, 50) 
+                // *** FIX: Handler ကို post လုပ်ရင်ကြာတယ်၊ ချက်ချင်း run နိုင်ရင် run မယ် ***
+                // Gap လျှော့ချလိုက်ပါ (TalkBack မှာ Gap များရင် ထစ်သလိုဖြစ်တယ်)
+                if (utteranceId == currentUtteranceId) {
+                     workHandler.post { playNextInQueue() }
+                }
             }
 
             override fun onError(utteranceId: String?) {
-                workHandler.post {
-                    if (!isInterrupted.get() && utteranceId == currentUtteranceId) {
-                        isSpeaking = false
-                        playNextInQueue()
-                    }
+                if (utteranceId == currentUtteranceId) {
+                    workHandler.post { playNextInQueue() }
                 }
             }
         })
     }
 
+    // Engine Init (Same as yours)
     private fun initializeEngine(pkgName: String?, onSuccess: (TextToSpeech) -> Unit) {
         if (pkgName.isNullOrEmpty() || pkgName == packageName) return
         try {
@@ -119,75 +115,84 @@ class AutoTTSManagerService : TextToSpeechService() {
         val sysRate = request?.speechRate ?: 100
         val sysPitch = request?.pitch ?: 100
 
+        // TalkBack အတွက် အရေးကြီးတယ်၊ ချက်ချင်း Audio စမယ်လို့ ပြောတာ
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
-        
-        // အသစ်စတာနဲ့ Interrupted ကို Reset ချမယ်
+
+        // *** Reset Flag ***
         isInterrupted.set(false)
-        
+
         workHandler.post {
-            // တကယ်လို့ Queue ထဲမရောက်ခင် ပွတ်ဆွဲလိုက်ရင် ချက်ချင်းရပ်မယ်
             if (isInterrupted.get()) {
                 callback?.done()
                 return@post
             }
 
             acquireWakeLock()
+
+            // *** Note: Parsing မလုပ်ခင်မှာ အရင်ဟာတွေ ရှင်းဖို့လိုရင် ရှင်းရမယ် ***
             
             if (LanguageUtils.hasShan(text)) {
                 parseShanMode(text, sysRate, sysPitch)
             } else {
                 parseSmartMode(text, sysRate, sysPitch)
             }
-            
-            // Parsing ပြီးလို့ အောက်ရောက်လာရင်တောင် တခါထပ်စစ်မယ်
+
             if (!isInterrupted.get()) {
                 playNextInQueue()
             }
         }
         
+        // Proxy ဖြစ်တဲ့အတွက် ချက်ချင်း Done ခေါ်ရတာ မှန်ပေမဲ့
+        // TalkBack က အသံမလာခင် Focus ရွှေ့သွားနိုင်တယ်
         callback?.done()
     }
 
-    // *** TalkBack ပွတ်ဆွဲရင် ဒီကောင် အရင်ဆုံး အလုပ်လုပ်ပါတယ် ***
+    // *** IMPROVED STOP for TalkBack ***
     override fun onStop() {
-        // ၁။ Stop Flag ထောင်လိုက်မယ် (ဒါဆို Loop တွေအကုန်ရပ်မယ်)
-        isInterrupted.set(true)
-        
+        isInterrupted.set(true) // Loop တွေကို ရပ်မယ်
+
+        // ၁။ Thread ထဲမထည့်ဘဲ ချက်ချင်း ရပ်ပစ်ရမယ် (Latency လျှော့ချဖို့)
+        stopEnginesDirectly() 
+
         // ၂။ Queue ကို ရှင်းမယ်
         synchronized(messageQueue) {
             messageQueue.clear()
         }
-        
-        // ၃။ Pending Handler တွေ ဖျက်မယ်
+
+        // ၃။ Handler ထဲက Pending Task တွေကို ဖျက်မယ်
         workHandler.removeCallbacksAndMessages(null)
         
-        // ၄။ အသံထွက်နေတာကို ချက်ချင်းရပ်မယ်
-        workHandler.postAtFrontOfQueue {
-            stopAllEnginesInternal()
-        }
+        releaseWakeLock()
     }
 
-    private fun acquireWakeLock() {
-        wakeLock?.acquire(60 * 1000L)
-    }
-
-    private fun releaseWakeLock() {
+    private fun stopEnginesDirectly() {
+        // Main/Binder Thread ကနေ ချက်ချင်းလှမ်းပိတ်တာ ပိုမြန်တယ်
         try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
+            currentUtteranceId = "" // ID ဖျက်လိုက်ရင် Listener က ဆက်အလုပ်မလုပ်တော့ဘူး
+            if (isShanReady) shanEngine?.stop()
+            if (isBurmeseReady) burmeseEngine?.stop()
+            if (isEnglishReady) englishEngine?.stop()
         } catch (e: Exception) { }
     }
 
+    // ... (WakeLock codes are fine) ...
+    private fun acquireWakeLock() { wakeLock?.acquire(60 * 1000L) }
+    private fun releaseWakeLock() { if (wakeLock?.isHeld == true) wakeLock?.release() }
+
+
+    // ... (Parsing Codes - Same logic but make sure check isInterrupted frequently) ...
+    // Parsing code တွေမှာ isInterrupted.get() စစ်တာ ကောင်းပါတယ်၊ ဆက်ထားပါ။
     private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int) {
-        try {
+         // (Your existing parsing logic)
+         // Use addToQueue(...)
+         // အတူတူပါပဲ၊ Loop တွေထဲမှာ if (isInterrupted.get()) return ထည့်ထားတာ သေချာပါစေ။
+         try {
             val words = text.split(Regex("\\s+"))
             var currentBuffer = StringBuilder()
             var currentLang = ""
 
             for (word in words) {
-                // *** Loop Breaker: ပွတ်ဆွဲလိုက်ရင် ဒီ Loop ကနေ ချက်ချင်းထွက်မယ် ***
-                if (isInterrupted.get()) return
+                if (isInterrupted.get()) return // *** Fast Exit
 
                 val detectedLang = LanguageUtils.detectLanguage(word)
                 if ((currentBuffer.length > MAX_CHAR_LIMIT) || (currentLang.isNotEmpty() && currentLang != detectedLang)) {
@@ -203,7 +208,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         } catch (e: Exception) { }
     }
-
+    
+    // parseSmartMode လည်း အလားတူပါပဲ...
     private fun parseSmartMode(text: String, sysRate: Int, sysPitch: Int) {
         if (text.isEmpty()) return
 
@@ -211,7 +217,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         var currentLang = "" 
 
         for (char in text) {
-            // *** Loop Breaker: ပွတ်ဆွဲလိုက်ရင် ချက်ချင်းထွက်မယ် ***
             if (isInterrupted.get()) return
 
             if (char.isWhitespace()) {
@@ -245,30 +250,37 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
+
     private fun addToQueue(text: String, lang: String, sysRate: Int, sysPitch: Int) {
-        // ထပ်ထည့်ခါနီးမှာလည်း စစ်မယ်
-        if (isInterrupted.get()) return
-        if (text.isBlank()) return
+        if (isInterrupted.get() || text.isBlank()) return
 
         val engine = when (lang) {
             "SHAN" -> if (isShanReady) shanEngine else englishEngine
             "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
             else -> if (isEnglishReady) englishEngine else null
         }
+        
+        // Utterance ID ကို ဒီမှာကတည်းက သတ်မှတ်လိုက်တာ ပိုကောင်းတယ်
+        val uId = UUID.randomUUID().toString()
+        
         synchronized(messageQueue) {
-            messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch))
+            messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch, uId))
         }
     }
 
     @Synchronized
     private fun playNextInQueue() {
-        // Stop လုပ်ထားရင် မဖွင့်နဲ့
         if (isInterrupted.get()) {
             releaseWakeLock()
             return
         }
 
-        if (isSpeaking) return
+        // *** FIX: isSpeaking စစ်တာ တစ်ခါတစ်လေ Deadlock ဖြစ်တတ်တယ်၊ 
+        // Engine က မပြောဘဲ ရပ်နေရင် isSpeaking က true ဖြစ်ပြီး ဘယ်တော့မှ ဆက်မပြောတော့ဘူး။
+        // ဒါကြောင့် UtteranceProgressListener မှာ Done ဖြစ်မှ နောက်တစ်ခုခေါ်တာ စိတ်ချရတယ်။
+        
+        // လက်ရှိ ပြောနေတာ မရှိမှ အသစ်ယူမယ်
+        // ဒါပေမဲ့ TalkBack က အတင်းဖြတ်ပြောရင် onStop က ရှင်းပေးသွားလိမ့်မယ်
         
         var chunk: TTSChunk? = null
         synchronized(messageQueue) {
@@ -281,21 +293,22 @@ class AutoTTSManagerService : TextToSpeechService() {
             releaseWakeLock()
             return
         }
-        
+
         val engine = chunk!!.engine
         val text = chunk!!.text
-        
+        val uId = chunk!!.utteranceId
+        currentUtteranceId = uId
+
         if (engine == null) {
             playNextInQueue()
             return
         }
 
-        isSpeaking = true
-
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        
+        // Rate/Pitch Calculation (Same as yours)
         var userRate = 1.0f
         var userPitch = 1.0f
-
         when (chunk!!.lang) {
             "SHAN" -> {
                 userRate = prefs.getInt("rate_shan", 100) / 100.0f
@@ -310,57 +323,37 @@ class AutoTTSManagerService : TextToSpeechService() {
                 userPitch = prefs.getInt("pitch_english", 100) / 100.0f
             }
         }
-
         engine.setSpeechRate((chunk!!.sysRate / 100.0f) * userRate)
         engine.setPitch((chunk!!.sysPitch / 100.0f) * userPitch)
 
-        val utteranceId = UUID.randomUUID().toString()
-        currentUtteranceId = utteranceId
-
         val params = Bundle()
+        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        
+        // Audio Attributes (TalkBack needs this to duck audio correctly)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-            val audioAttributes = android.media.AudioAttributes.Builder()
+             val audioAttributes = android.media.AudioAttributes.Builder()
                 .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
-            params.putParcelable("audioAttributes", audioAttributes)
+            params.putParcelable(TextToSpeech.Engine.KEY_PARAM_AUDIO_ATTRIBUTES, audioAttributes)
         }
-        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
-        // Watchdog (Engine ကြောင်ရင် ရှင်းဖို့)
-        val timeout = (text.length * 200L) + 4000L
-        workHandler.postDelayed({
-            if (currentUtteranceId == utteranceId && isSpeaking) {
-                isSpeaking = false
-                playNextInQueue()
-            }
-        }, timeout)
-
-        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+        // *** FIX: QUEUE_ADD vs QUEUE_FLUSH ***
+        // ကျွန်တော်တို့က တစ်ကြောင်းချင်းစီ ခွဲပြောနေတာဖြစ်လို့ QUEUE_ADD က မှန်ပါတယ်
+        // ဒါပေမဲ့ Engine တွေက ရှေ့ကဟာ မပြီးသေးခင် နောက်တစ်ခုဝင်လာရင် ကျော်သွားတတ်တယ်
         
-        if (result == TextToSpeech.ERROR) {
-             isSpeaking = false
-             playNextInQueue()
-        }
-    }
-
-    private fun stopAllEnginesInternal() {
-        try {
-            isSpeaking = false 
-            currentUtteranceId = "" 
-            releaseWakeLock()
-            shanEngine?.stop(); burmeseEngine?.stop(); englishEngine?.stop()
-        } catch (e: Exception) { }
+        engine.speak(text, TextToSpeech.QUEUE_ADD, params, uId)
     }
 
     override fun onDestroy() {
-        stopAllEnginesInternal()
+        stopEnginesDirectly()
         releaseWakeLock()
         workerThread.quitSafely()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
         super.onDestroy()
     }
 
+    // ... (Voice / Language Info methods - These look fine) ...
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
         voices.add(Voice("Shan (Myanmar)", Locale("shn", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
@@ -368,6 +361,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         voices.add(Voice("English (US)", Locale.US, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("female")))
         return voices
     }
+    // ... (Other standard overrides) ...
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
         val checkLang = lang ?: return TextToSpeech.LANG_NOT_SUPPORTED
         if (checkLang.contains("shn", true) || checkLang.contains("shan", true)) return TextToSpeech.LANG_COUNTRY_AVAILABLE
@@ -391,19 +385,21 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 }
 
+// LanguageUtils က အဆင်ပြေပါတယ် (No changes needed there)
 object LanguageUtils {
+    // ... (Keep your existing implementation)
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
     
-    fun hasShan(text: String): Boolean {
-        return SHAN_PATTERN.containsMatchIn(text)
-    }
+    fun hasShan(text: String): Boolean = SHAN_PATTERN.containsMatchIn(text)
+    
     fun getCharType(char: Char): String {
         val text = char.toString()
         if (SHAN_PATTERN.containsMatchIn(text)) return "SHAN"
         if (MYANMAR_PATTERN.containsMatchIn(text)) return "MYANMAR"
         return "ENGLISH"
     }
+    
     fun detectLanguage(text: CharSequence?): String {
         if (text.isNullOrBlank()) return "ENGLISH"
         val input = text.toString()
