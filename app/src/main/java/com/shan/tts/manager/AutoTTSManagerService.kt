@@ -34,7 +34,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
-    private val messageQueue = LinkedList<TTSChunk>()
+    // Queue ကို Thread-Safe ဖြစ်အောင် Synchronized List သုံးမယ်
+    private val messageQueue = java.util.Collections.synchronizedList(LinkedList<TTSChunk>())
     private var currentLocale: Locale = Locale.US
     
     private lateinit var workerThread: HandlerThread
@@ -52,6 +53,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onCreate() {
         super.onCreate()
         
+        // Priority Audio (UI မလေးစေရန်)
         workerThread = HandlerThread("CherryTTSWorker", Process.THREAD_PRIORITY_AUDIO)
         workerThread.start()
         workHandler = Handler(workerThread.looper)
@@ -80,13 +82,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) { }
             
             override fun onDone(utteranceId: String?) {
-                // Gap 100ms
+                // Gap ကို 50ms ထိ လျှော့လိုက်တယ် (ပိုသွက်အောင်)
                 workHandler.postDelayed({
                     if (utteranceId == currentUtteranceId) {
                         isSpeaking = false
                         playNextInQueue()
                     }
-                }, 100) 
+                }, 50) 
             }
 
             override fun onError(utteranceId: String?) {
@@ -117,33 +119,36 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
-        // *** အမှားပြင်ဆင်ချက် ***
-        // ဒီနေရာမှာ removeCallbacksAndMessages ကို ဖြုတ်လိုက်ပါပြီ။
-        // ဒါမှ onDone က အလုပ်လုပ်ပြီး isSpeaking ကို false ပြန်ပြောင်းပေးနိုင်မှာပါ။
+        // Long Text အတွက် ဒီမှာ stopAll မလုပ်ဘူး။ Queue ထဲ ထပ်ထည့်သွားမယ်။
+        // ဒါပေမယ့် ပွတ်ဆွဲရင် onStop() က ရှင်းပေးမှာမို့ ပြဿနာမရှိ။
         
         workHandler.post {
-            // stopAll() ကိုလည်း မခေါ်ပါဘူး (Long Text ဆက်ဖတ်ဖို့)
             acquireWakeLock()
             
-            // Queue ထဲကို ဖြည့်မယ်
             if (LanguageUtils.hasShan(text)) {
                 parseShanMode(text, sysRate, sysPitch)
             } else {
                 parseSmartMode(text, sysRate, sysPitch)
             }
             
-            // ပြောစရာရှိတာ ပြောမယ်
             playNextInQueue()
         }
         
         callback?.done()
     }
 
-    // *** TalkBack က ပွတ်ဆွဲလိုက်ရင် ဒီကောင်အလုပ်လုပ်ပါတယ် ***
+    // *** အရေးကြီးဆုံး ပြင်ဆင်ချက် (TalkBack ပွတ်ဆွဲရင် ဒီကောင်အလုပ်လုပ်မယ်) ***
     override fun onStop() {
-        // ဒီရောက်မှသာ အကုန်ဖျက်ပစ်မယ်
+        // ၁။ Delay တွေ၊ Pending အလုပ်တွေ အကုန်ချက်ချင်းဖျက်
         workHandler.removeCallbacksAndMessages(null)
-        workHandler.post {
+        
+        // ၂။ Queue ထဲမှာ ကျန်နေတဲ့ စာတွေ (Facebook အစအနတွေ) ကို ချက်ချင်းလောင်းပစ်မယ်
+        synchronized(messageQueue) {
+            messageQueue.clear()
+        }
+        
+        // ၃။ အသံထွက်နေတာကို ချက်ချင်းရပ်ဖို့ "ထိပ်ဆုံးကနေ" ဝင်တိုးမယ် (Priority Stop)
+        workHandler.postAtFrontOfQueue {
             stopAll()
         }
     }
@@ -225,21 +230,31 @@ class AutoTTSManagerService : TextToSpeechService() {
             "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
             else -> if (isEnglishReady) englishEngine else null
         }
-        messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch))
+        
+        // List မဟုတ်ဘဲ Synchronized Block နဲ့ ထည့်မယ်
+        synchronized(messageQueue) {
+            messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch))
+        }
     }
 
     @Synchronized
     private fun playNextInQueue() {
         if (isSpeaking) return
         
-        if (messageQueue.isEmpty()) {
+        var chunk: TTSChunk? = null
+        synchronized(messageQueue) {
+            if (messageQueue.isNotEmpty()) {
+                chunk = messageQueue.removeAt(0) // Poll
+            }
+        }
+
+        if (chunk == null) {
             releaseWakeLock()
             return
         }
         
-        val chunk = messageQueue.poll() ?: return
-        val engine = chunk.engine
-        val text = chunk.text
+        val engine = chunk!!.engine
+        val text = chunk!!.text
         
         if (engine == null) {
             playNextInQueue()
@@ -252,7 +267,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         var userRate = 1.0f
         var userPitch = 1.0f
 
-        when (chunk.lang) {
+        when (chunk!!.lang) {
             "SHAN" -> {
                 userRate = prefs.getInt("rate_shan", 100) / 100.0f
                 userPitch = prefs.getInt("pitch_shan", 100) / 100.0f
@@ -267,8 +282,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        val finalRate = (chunk.sysRate / 100.0f) * userRate
-        val finalPitch = (chunk.sysPitch / 100.0f) * userPitch
+        val finalRate = (chunk!!.sysRate / 100.0f) * userRate
+        val finalPitch = (chunk!!.sysPitch / 100.0f) * userPitch
 
         engine.setSpeechRate(finalRate)
         engine.setPitch(finalPitch)
@@ -296,8 +311,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun stopAll() {
         try {
-            messageQueue.clear()
-            workHandler.removeCallbacksAndMessages(null) // Delay တွေကိုဖျက်
+            synchronized(messageQueue) {
+                messageQueue.clear()
+            }
+            workHandler.removeCallbacksAndMessages(null)
+            
             isSpeaking = false 
             currentUtteranceId = "" 
             releaseWakeLock()
