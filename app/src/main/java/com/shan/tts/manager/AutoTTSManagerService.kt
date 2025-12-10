@@ -15,6 +15,7 @@ import android.speech.tts.Voice
 import java.util.LinkedList
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class TTSChunk(
     val text: String, 
@@ -34,7 +35,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
-    // Thread-Safe Queue
     private val messageQueue = java.util.Collections.synchronizedList(LinkedList<TTSChunk>())
     private var currentLocale: Locale = Locale.US
     
@@ -47,6 +47,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     @Volatile
     private var currentUtteranceId: String = ""
+    
+    // *** NEW: Interrupt Flag (ချက်ချင်းရပ်တန့်စေမည့် အလံ) ***
+    private val isInterrupted = AtomicBoolean(false)
     
     private val MAX_CHAR_LIMIT = 500
 
@@ -81,20 +84,20 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) { }
             
             override fun onDone(utteranceId: String?) {
-                // Gap 50ms (အသံမထပ်အောင်)
+                // Gap 50ms (Smooth Transition)
                 workHandler.postDelayed({
-                    if (utteranceId == currentUtteranceId) {
+                    if (!isInterrupted.get() && utteranceId == currentUtteranceId) {
                         isSpeaking = false
-                        processQueue()
+                        playNextInQueue()
                     }
                 }, 50) 
             }
 
             override fun onError(utteranceId: String?) {
                 workHandler.post {
-                    if (utteranceId == currentUtteranceId) {
+                    if (!isInterrupted.get() && utteranceId == currentUtteranceId) {
                         isSpeaking = false
-                        processQueue()
+                        playNextInQueue()
                     }
                 }
             }
@@ -118,11 +121,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
-        // *** အမှားပြင်ဆင်ချက် ***
-        // ဒီနေရာမှာ removeCallbacksAndMessages ကို ဖြုတ်လိုက်ပါပြီ။
-        // ဒါမှ Code အရှည်ကြီးတွေ အပိုင်းလိုက်ဝင်လာရင် မဖြတ်ဘဲ ဆက်ဖတ်မှာပါ။
+        // အသစ်စတာနဲ့ Interrupted ကို Reset ချမယ်
+        isInterrupted.set(false)
         
         workHandler.post {
+            // တကယ်လို့ Queue ထဲမရောက်ခင် ပွတ်ဆွဲလိုက်ရင် ချက်ချင်းရပ်မယ်
+            if (isInterrupted.get()) {
+                callback?.done()
+                return@post
+            }
+
             acquireWakeLock()
             
             if (LanguageUtils.hasShan(text)) {
@@ -131,28 +139,31 @@ class AutoTTSManagerService : TextToSpeechService() {
                 parseSmartMode(text, sysRate, sysPitch)
             }
             
-            processQueue()
+            // Parsing ပြီးလို့ အောက်ရောက်လာရင်တောင် တခါထပ်စစ်မယ်
+            if (!isInterrupted.get()) {
+                playNextInQueue()
+            }
         }
         
         callback?.done()
     }
 
-    // *** TalkBack ပွတ်ဆွဲရင် ဒီကောင်အလုပ်လုပ်မယ် ***
+    // *** TalkBack ပွတ်ဆွဲရင် ဒီကောင် အရင်ဆုံး အလုပ်လုပ်ပါတယ် ***
     override fun onStop() {
-        // ၁။ Handler ထဲက Delay တွေ၊ Pending အလုပ်တွေ အကုန်ချက်ချင်းဖျက်
-        workHandler.removeCallbacksAndMessages(null)
+        // ၁။ Stop Flag ထောင်လိုက်မယ် (ဒါဆို Loop တွေအကုန်ရပ်မယ်)
+        isInterrupted.set(true)
         
-        // ၂။ Queue ထဲက စာတွေ အကုန်သွန်ပစ် (ချက်ချင်းရှင်း)
-        // synchronized block သုံးထားလို့ Thread Safe ဖြစ်တယ်
+        // ၂။ Queue ကို ရှင်းမယ်
         synchronized(messageQueue) {
             messageQueue.clear()
         }
         
-        // ၃။ အသံထွက်နေတာကို ချက်ချင်းရပ်ဖို့ ထိပ်ဆုံးကနေ ဝင်တိုး
+        // ၃။ Pending Handler တွေ ဖျက်မယ်
+        workHandler.removeCallbacksAndMessages(null)
+        
+        // ၄။ အသံထွက်နေတာကို ချက်ချင်းရပ်မယ်
         workHandler.postAtFrontOfQueue {
-            forceStopEngines()
-            isSpeaking = false
-            currentUtteranceId = ""
+            stopAllEnginesInternal()
         }
     }
 
@@ -175,16 +186,21 @@ class AutoTTSManagerService : TextToSpeechService() {
             var currentLang = ""
 
             for (word in words) {
+                // *** Loop Breaker: ပွတ်ဆွဲလိုက်ရင် ဒီ Loop ကနေ ချက်ချင်းထွက်မယ် ***
+                if (isInterrupted.get()) return
+
                 val detectedLang = LanguageUtils.detectLanguage(word)
                 if ((currentBuffer.length > MAX_CHAR_LIMIT) || (currentLang.isNotEmpty() && currentLang != detectedLang)) {
-                    addToQueue(currentBuffer.toString(), currentLang, sysRate, sysPitch)
+                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
                     currentBuffer = StringBuilder()
                     currentLang = detectedLang
                 }
                 if (currentLang.isEmpty()) currentLang = detectedLang
                 currentBuffer.append("$word ")
             }
-            if (currentBuffer.isNotEmpty()) addToQueue(currentBuffer.toString(), currentLang, sysRate, sysPitch)
+            if (currentBuffer.isNotEmpty() && !isInterrupted.get()) {
+                addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+            }
         } catch (e: Exception) { }
     }
 
@@ -195,6 +211,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         var currentLang = "" 
 
         for (char in text) {
+            // *** Loop Breaker: ပွတ်ဆွဲလိုက်ရင် ချက်ချင်းထွက်မယ် ***
+            if (isInterrupted.get()) return
+
             if (char.isWhitespace()) {
                 currentBuffer.append(char)
                 if (currentBuffer.length > MAX_CHAR_LIMIT) {
@@ -221,13 +240,16 @@ class AutoTTSManagerService : TextToSpeechService() {
                 currentBuffer.append(char)
             }
         }
-        if (currentBuffer.isNotEmpty()) {
+        if (currentBuffer.isNotEmpty() && !isInterrupted.get()) {
             addToQueue(currentBuffer.toString(), currentLang, sysRate, sysPitch)
         }
     }
 
     private fun addToQueue(text: String, lang: String, sysRate: Int, sysPitch: Int) {
+        // ထပ်ထည့်ခါနီးမှာလည်း စစ်မယ်
+        if (isInterrupted.get()) return
         if (text.isBlank()) return
+
         val engine = when (lang) {
             "SHAN" -> if (isShanReady) shanEngine else englishEngine
             "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
@@ -238,8 +260,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun processQueue() {
-        // Strict Lock: ပြောနေတုန်းဆိုရင် မဝင်နဲ့
+    @Synchronized
+    private fun playNextInQueue() {
+        // Stop လုပ်ထားရင် မဖွင့်နဲ့
+        if (isInterrupted.get()) {
+            releaseWakeLock()
+            return
+        }
+
         if (isSpeaking) return
         
         var chunk: TTSChunk? = null
@@ -258,7 +286,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val text = chunk!!.text
         
         if (engine == null) {
-            processQueue()
+            playNextInQueue()
             return
         }
 
@@ -299,33 +327,34 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
-        // Watchdog Timer (Engine ကြောင်ရင် ဖြတ်ချဖို့)
+        // Watchdog (Engine ကြောင်ရင် ရှင်းဖို့)
         val timeout = (text.length * 200L) + 4000L
         workHandler.postDelayed({
             if (currentUtteranceId == utteranceId && isSpeaking) {
                 isSpeaking = false
-                processQueue()
+                playNextInQueue()
             }
-        }, timeout) 
+        }, timeout)
 
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         
         if (result == TextToSpeech.ERROR) {
              isSpeaking = false
-             processQueue()
+             playNextInQueue()
         }
     }
 
-    private fun forceStopEngines() {
+    private fun stopAllEnginesInternal() {
         try {
-            shanEngine?.stop()
-            burmeseEngine?.stop()
-            englishEngine?.stop()
+            isSpeaking = false 
+            currentUtteranceId = "" 
+            releaseWakeLock()
+            shanEngine?.stop(); burmeseEngine?.stop(); englishEngine?.stop()
         } catch (e: Exception) { }
     }
 
     override fun onDestroy() {
-        forceStopEngines()
+        stopAllEnginesInternal()
         releaseWakeLock()
         workerThread.quitSafely()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
