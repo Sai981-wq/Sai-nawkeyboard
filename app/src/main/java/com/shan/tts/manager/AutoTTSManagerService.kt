@@ -54,9 +54,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile
     private var currentSessionId: Long = 0L
 
-    // *** FIX: Missing Variable Added ***
     private var currentLocale: Locale = Locale.US
-
     private val SAFE_CHAR_LIMIT = 400
 
     override fun onCreate() {
@@ -87,7 +85,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun setupListener(tts: TextToSpeech) {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
-                isEngineBusy = true
+                // အရေးကြီး: Stop လုပ်လိုက်ပြီးသား ID အဟောင်းဆိုရင် Busy မလုပ်ပါနဲ့
+                if (utteranceId == currentUtteranceId) {
+                    isEngineBusy = true
+                }
             }
 
             override fun onDone(utteranceId: String?) {
@@ -114,7 +115,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         })
     }
 
-    // *** FIX: Corrected Initialization Logic ***
     private fun initializeEngine(pkgName: String?, onSuccess: (TextToSpeech) -> Unit) {
         if (pkgName.isNullOrEmpty() || pkgName == packageName) return
         try {
@@ -127,14 +127,22 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
+    // *** FIX: TalkBack Stop ပြဿနာဖြေရှင်းချက် ***
     override fun onStop() {
+        // 1. Session ID ကို ချက်ချင်းပြောင်းလိုက်ပါ (Parsing အဟောင်းတွေ ရပ်သွားအောင်)
         synchronized(queueLock) {
             currentSessionId = System.currentTimeMillis()
             messageQueue.clear()
         }
         
-        workHandler.removeCallbacksAndMessages(null)
+        // 2. လက်ရှိ Utterance ID ကို ရှင်းထုတ်ပါ
+        currentUtteranceId = ""
         isEngineBusy = false
+
+        // 3. Worker Thread မှာ ကျန်နေတဲ့ Parsing Task တွေကို ဖျက်ပါ
+        workHandler.removeCallbacksAndMessages(null)
+        
+        // 4. အသံထွက်နေတာတွေကို ချက်ချင်းရပ်ပါ
         stopEnginesDirectly()
         
         releaseWakeLock()
@@ -145,11 +153,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         val sysRate = request?.speechRate ?: 100
         val sysPitch = request?.pitch ?: 100
 
+        // TalkBack လိုမျိုး Accessibility အတွက် Audio Format
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
         val mySessionId = synchronized(queueLock) { currentSessionId }
 
         workHandler.post {
+            // အကယ်၍ onStop() ဝင်သွားပြီဆိုရင် ဒီအလုပ်ကို မလုပ်ပါနဲ့တော့
             synchronized(queueLock) {
                 if (mySessionId != currentSessionId) {
                     callback?.done()
@@ -244,6 +254,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (text.isBlank()) return
 
         synchronized(queueLock) {
+            // အရေးကြီးဆုံး Check: Session မတူတော့ရင် Queue ထဲ မထည့်ပါနဲ့
             if (sessionId != currentSessionId) return
 
             val engine = when (lang) {
@@ -266,6 +277,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
             
             val candidate = messageQueue.peek()
+            // Session မတူရင် Queue တစ်ခုလုံး ရှင်းပစ်ပါ (Stop လုပ်ပြီးသားမို့)
             if (candidate != null && candidate.sessionId != currentSessionId) {
                 messageQueue.clear()
                 releaseWakeLock()
@@ -278,6 +290,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         if (chunkToPlay == null) return
         
+        // Double Check
         if (chunkToPlay!!.sessionId != currentSessionId) return
 
         val engine = chunkToPlay!!.engine
@@ -328,6 +341,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val timeout = (text.length * 300L) + 4000L 
         
         workHandler.postDelayed({
+             // Timeout ဖြစ်ရင် Force Reset လုပ်ပါ၊ ဒါပေမယ့် ID တူမှ လုပ်ပါ
              if (isEngineBusy && currentUtteranceId == uId) {
                  isEngineBusy = false
                  processQueue()
@@ -339,7 +353,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun stopEnginesDirectly() {
         try {
-            currentUtteranceId = "" 
             shanEngine?.stop()
             burmeseEngine?.stop()
             englishEngine?.stop()
