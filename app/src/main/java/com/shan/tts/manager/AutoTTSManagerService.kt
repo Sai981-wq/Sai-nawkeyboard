@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.PowerManager
+import android.os.Process
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.SynthesisCallback
@@ -13,6 +14,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import java.util.LinkedList
 import java.util.Locale
+import java.util.UUID
 
 data class TTSChunk(
     val text: String, 
@@ -42,12 +44,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile
     private var isSpeaking = false
     
+    @Volatile
+    private var currentUtteranceId: String = ""
+    
     private val MAX_CHAR_LIMIT = 500
 
     override fun onCreate() {
         super.onCreate()
         
-        workerThread = HandlerThread("CherryTTSWorker")
+        // Priority Audio (စက်မလေးအောင်)
+        workerThread = HandlerThread("CherryTTSWorker", Process.THREAD_PRIORITY_AUDIO)
         workerThread.start()
         workHandler = Handler(workerThread.looper)
         
@@ -75,16 +81,21 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) { }
             
             override fun onDone(utteranceId: String?) {
-                workHandler.post {
-                    isSpeaking = false
-                    playNextInQueue()
-                }
+                // အသံမထပ်အောင် 150ms ခြားပေးခြင်း
+                workHandler.postDelayed({
+                    if (utteranceId == currentUtteranceId) {
+                        isSpeaking = false
+                        playNextInQueue()
+                    }
+                }, 150) 
             }
 
             override fun onError(utteranceId: String?) {
                 workHandler.post {
-                    isSpeaking = false
-                    playNextInQueue()
+                    if (utteranceId == currentUtteranceId) {
+                        isSpeaking = false
+                        playNextInQueue()
+                    }
                 }
             }
         })
@@ -107,11 +118,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
-        workHandler.removeCallbacksAndMessages(null)
         workHandler.post {
-            stopAll()
+            // *** အဓိက ပြင်ဆင်ချက် ***
+            // ဒီနေရာမှာ stopAll() ကို ဖြုတ်လိုက်ပါပြီ။
+            // စာအရှည်ကြီးတွေ အပိုင်းလိုက်ဝင်လာရင် မဖြတ်ဘဲ ဆက်ထည့်ပါမယ်။
+            
             acquireWakeLock()
             
+            // ID အသစ်မထုတ်ပါ (Queue ထဲမှာ တစ်ဆက်တည်းသွားစေချင်လို့ပါ)
+            // onStop ခေါ်မှသာ ID Reset ချပါမယ်
+
             if (LanguageUtils.hasShan(text)) {
                 parseShanMode(text, sysRate, sysPitch)
             } else {
@@ -123,15 +139,25 @@ class AutoTTSManagerService : TextToSpeechService() {
         
         callback?.done()
     }
+    
+    // TalkBack က ပွတ်ဆွဲလိုက်ရင် ဒီကောင်ကို System က လှမ်းခေါ်ပါတယ်
+    override fun onStop() {
+        workHandler.removeCallbacksAndMessages(null) // Delay တွေကိုဖျက်
+        workHandler.post {
+            stopAll() // *** ဒီရောက်မှ အကုန်ဖျက်မယ် ***
+        }
+    }
 
     private fun acquireWakeLock() {
-        wakeLock?.acquire(10 * 60 * 1000L)
+        wakeLock?.acquire(60 * 1000L) // 60s Timeout
     }
 
     private fun releaseWakeLock() {
-        if (wakeLock?.isHeld == true) {
-            wakeLock?.release()
-        }
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        } catch (e: Exception) { }
     }
 
     private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int) {
@@ -247,7 +273,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         engine.setSpeechRate(finalRate)
         engine.setPitch(finalPitch)
 
-        val utteranceId = System.nanoTime().toString()
+        val utteranceId = UUID.randomUUID().toString()
+        currentUtteranceId = utteranceId
+
         val params = Bundle()
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
             val audioAttributes = android.media.AudioAttributes.Builder()
@@ -259,6 +287,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
         val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+        
         if (result == TextToSpeech.ERROR) {
              isSpeaking = false
              engine.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceId)
@@ -268,7 +297,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun stopAll() {
         try {
             messageQueue.clear()
+            workHandler.removeCallbacksAndMessages(null) // Clear delays
+            
             isSpeaking = false 
+            currentUtteranceId = "" 
             releaseWakeLock()
             shanEngine?.stop(); burmeseEngine?.stop(); englishEngine?.stop()
         } catch (e: Exception) { }
@@ -280,10 +312,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         workerThread.quitSafely()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
         super.onDestroy()
-    }
-    
-    override fun onStop() { 
-        stopAll() 
     }
 
     override fun onGetVoices(): List<Voice> {
