@@ -13,6 +13,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import java.util.LinkedList
 import java.util.Locale
+import java.util.UUID
 
 data class TTSChunk(val text: String, val engine: TextToSpeech?, val lang: String, val sysRate: Int, val sysPitch: Int)
 
@@ -28,21 +29,30 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val messageQueue = LinkedList<TTSChunk>()
     
+    // *** STRICT LOCK VARIABLES ***
+    // အသံထွက်နေစဉ် လုံးဝအနှောင့်အယှက်မခံရန် Lock
     @Volatile
     private var isSpeaking = false
     
+    // TalkBack ပွတ်ဆွဲတိုင်း ပြောင်းလဲမည့် Session ID
     @Volatile
-    private var stopRequested = false 
+    private var currentSessionId: Long = 0
     
+    // လက်ရှိပြောနေသော စာကြောင်း၏ ID အမှန်
+    @Volatile
+    private var currentUtteranceId: String = ""
+
     private var currentLocale: Locale = Locale.US
     
-    // စာလုံးရေ ၄၀၀ ပြည့်မှ ဖြတ်မယ် (ဒါမှ အသံမပြတ်ဘဲ ဆက်သွားမယ်)
-    private val MAX_CHAR_LIMIT = 400 
+    // Main Thread Handler (UI Thread ပေါ်မှာ Run ဖို့)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    
+    private val SOFT_CHAR_LIMIT = 400 
+    private val HARD_CHAR_LIMIT = 3000
 
     override fun onCreate() {
         super.onCreate()
-        // WakeLock မပါပါ (ဖုန်းမပူအောင်)
-
+        
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
         initializeEngine(prefs.getString("pref_shan_pkg", "com.espeak.ng")) { tts -> 
@@ -62,18 +72,29 @@ class AutoTTSManagerService : TextToSpeechService() {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) { 
                 if (utteranceId == "SILENCE_KILLER") return
-                isSpeaking = true 
+                // ID တူမှသာ Speaking လို့ သတ်မှတ်မယ်
+                if (utteranceId == currentUtteranceId) {
+                    isSpeaking = true
+                }
             }
             
             override fun onDone(utteranceId: String?) { 
-                if (utteranceId == "SILENCE_KILLER") return 
-                isSpeaking = false 
-                Handler(Looper.getMainLooper()).post { playNextInQueue() }
+                if (utteranceId == "SILENCE_KILLER") return
+                
+                // *** NO DELAY LOGIC ***
+                // ID ကိုက်ညီမှသာ Lock ကိုဖြုတ်ပြီး နောက်တစ်ခုကို ချက်ချင်းခေါ်မယ်
+                if (utteranceId == currentUtteranceId) {
+                    isSpeaking = false
+                    // Delay မပါဘဲ ချက်ချင်းအလုပ်လုပ်စေမယ် (Main Thread ပေါ်တင်ပေးရုံသီးသန့်)
+                    mainHandler.post { playNextInQueue() }
+                }
             }
             
             override fun onError(utteranceId: String?) { 
-                isSpeaking = false 
-                Handler(Looper.getMainLooper()).post { playNextInQueue() }
+                if (utteranceId == currentUtteranceId) {
+                    isSpeaking = false
+                    mainHandler.post { playNextInQueue() }
+                }
             }
         })
     }
@@ -95,8 +116,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
+        // ၁။ အဟောင်းတွေ၊ အသံထွက်လက်စတွေကို ချက်ချင်းသတ်မယ်
         stopAll() 
-        stopRequested = false
+        
+        // ၂။ Session အသစ်စမယ်
+        currentSessionId = System.currentTimeMillis()
 
         if (LanguageUtils.hasShan(text)) {
             parseShanMode(text, sysRate, sysPitch)
@@ -104,27 +128,29 @@ class AutoTTSManagerService : TextToSpeechService() {
             parseSmartMode(text, sysRate, sysPitch)
         }
         
+        // ၃။ ပထမဆုံးအလုံးကို စအော်မယ်
         playNextInQueue()
+        
         callback?.done()
     }
 
     private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int) {
         try {
-            // ရှမ်းစာကို Word by Word ခွဲပေမယ့် ချက်ချင်းမဖတ်ဘဲ Buffer ထဲစုမယ်
             val words = text.split(Regex("\\s+"))
             var currentBuffer = StringBuilder()
             var currentLang = ""
 
             for (word in words) {
-                if (stopRequested) return 
-
                 val detectedLang = LanguageUtils.detectLanguage(word)
                 
-                // Buffer 400 ကျော်မှသာ ဖြတ်ပြီး Queue ထဲထည့်မယ်
-                if (currentBuffer.length > MAX_CHAR_LIMIT) {
+                if (currentBuffer.length > HARD_CHAR_LIMIT) {
                     addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
                     currentBuffer = StringBuilder()
                     currentLang = detectedLang 
+                }
+                else if (currentBuffer.length > SOFT_CHAR_LIMIT && currentLang == detectedLang) {
+                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                    currentBuffer = StringBuilder()
                 }
 
                 if (currentLang.isEmpty() || currentLang == detectedLang) {
@@ -136,7 +162,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     currentLang = detectedLang
                 }
             }
-            if (currentBuffer.isNotEmpty() && !stopRequested) {
+            if (currentBuffer.isNotEmpty()) {
                 addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
             }
         } catch (e: Exception) { }
@@ -149,15 +175,15 @@ class AutoTTSManagerService : TextToSpeechService() {
         var currentLang = "" 
 
         for (char in text) {
-            if (stopRequested) return 
-
-            // *** အဓိက ပြင်ဆင်ချက် ***
-            // New Line (\n) တွေ့တိုင်း မဖြတ်တော့ပါ။ 
-            // Buffer ပြည့်ခါနီး (400 char) ဖြစ်ပြီး၊ ဖြတ်လို့ကောင်းတဲ့နေရာ (Space/Newline) ရောက်မှ ဖြတ်ပါမယ်။
+            // New Line ကို ဖြတ်တဲ့ Logic ဖြုတ်ထားသည် (Line by Line မလိုချင်လို့)
             val isSeparator = char.isWhitespace() || ";.!?".contains(char)
-            
-            if (currentBuffer.length >= MAX_CHAR_LIMIT && isSeparator) {
-                 // 400 လုံးပြည့်ပြီ၊ ဒီနေရာမှာ ဖြတ်လိုက်တော့
+            val len = currentBuffer.length
+
+            if (len >= HARD_CHAR_LIMIT) {
+                 addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                 currentBuffer = StringBuilder()
+            }
+            else if (len >= SOFT_CHAR_LIMIT && isSeparator) {
                  addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
                  currentBuffer = StringBuilder()
             }
@@ -184,15 +210,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                 currentBuffer.append(char)
             }
         }
-        if (currentBuffer.isNotEmpty() && !stopRequested) {
+        if (currentBuffer.isNotEmpty()) {
             addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
         }
     }
 
     private fun addToQueue(lang: String, text: String, sysRate: Int, sysPitch: Int) {
         if (text.isBlank()) return
-        if (stopRequested) return 
-
+        
         val engine = when (lang) {
             "SHAN" -> if (isShanReady) shanEngine else englishEngine
             "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
@@ -203,8 +228,12 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     @Synchronized
     private fun playNextInQueue() {
-        if (stopRequested) return
+        // *** CRITICAL CHECK ***
+        // တကယ်လို့ Engine တစ်ခုက ပြောနေတုန်းဆိုရင် (isSpeaking = true)
+        // နောက်တစ်ခုကို လုံးဝ (လုံးဝ) ဝင်ခွင့်မပေးပါနဲ့။ Return ပြန်လုပ်ပါ။
+        // ဒါဟာ Delay မလိုဘဲ အသံမထပ်အောင်တားပေးတဲ့ အဓိက သော့ချက်ပါ။
         if (isSpeaking) return
+        
         if (messageQueue.isEmpty()) return
         
         val chunk = messageQueue.poll() ?: return
@@ -216,6 +245,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
         
+        // စပြောပြီဆိုတာနဲ့ Lock ချလိုက်ပါ
         isSpeaking = true
 
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
@@ -237,13 +267,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        val finalRate = (chunk.sysRate / 100.0f) * userRate
-        val finalPitch = (chunk.sysPitch / 100.0f) * userPitch
+        engine.setSpeechRate((chunk.sysRate / 100.0f) * userRate)
+        engine.setPitch((chunk.sysPitch / 100.0f) * userPitch)
 
-        engine.setSpeechRate(finalRate)
-        engine.setPitch(finalPitch)
+        // Unique ID တစ်ခုဖန်တီးမယ်
+        val newUtteranceId = UUID.randomUUID().toString()
+        currentUtteranceId = newUtteranceId
 
-        val utteranceId = System.nanoTime().toString()
         val params = Bundle()
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
             val audioAttributes = AudioAttributes.Builder()
@@ -254,8 +284,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
-        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, newUtteranceId)
         if (result == TextToSpeech.ERROR) {
+             // Error တက်ခဲ့ရင်တော့ Lock ကိုပြန်ဖြုတ်ပြီး နောက်တစ်ခုဆက်သွား
              isSpeaking = false
              playNextInQueue()
         }
@@ -263,13 +294,19 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun stopAll() {
         try {
-            stopRequested = true 
+            // ID ကို Reset လုပ်လိုက်တာနဲ့ Pending ဖြစ်နေတဲ့ onDone တွေ အကုန်ပျက်ပြယ်သွားမယ်
+            currentSessionId = System.currentTimeMillis()
+            currentUtteranceId = "" 
+            
+            // Queue ကိုရှင်း၊ Lock ကိုဖြုတ်
             synchronized(messageQueue) { messageQueue.clear() }
             isSpeaking = false 
             
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f) 
             
+            // *** SILENT KILLER ***
+            // ဒါက Swipe လုပ်လိုက်တဲ့အချိန် အသံဟောင်းကို ချက်ချင်းဖြတ်ဖို့ မရှိမဖြစ်ပါ
             shanEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "SILENCE_KILLER")
             burmeseEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "SILENCE_KILLER")
             englishEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "SILENCE_KILLER")
@@ -317,6 +354,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 }
 
+// LanguageUtils remains unchanged
 object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
