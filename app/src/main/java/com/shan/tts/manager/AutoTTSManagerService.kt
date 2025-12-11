@@ -15,8 +15,16 @@ import android.speech.tts.Voice
 import java.util.LinkedList
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
-data class TTSChunk(val text: String, val engine: TextToSpeech?, val lang: String, val sysRate: Int, val sysPitch: Int)
+data class TTSChunk(
+    val text: String, 
+    val engine: TextToSpeech?, 
+    val lang: String, 
+    val sysRate: Int, 
+    val sysPitch: Int,
+    val token: Int 
+)
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -35,6 +43,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     @Volatile
     private var currentUtteranceId: String = ""
+    
+    private val generationToken = AtomicInteger(0)
 
     private var currentLocale: Locale = Locale.US
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -75,7 +85,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             
             override fun onDone(utteranceId: String?) { 
                 if (utteranceId == "SILENCE_KILLER") return
-                
                 if (utteranceId == currentUtteranceId) {
                     isSpeaking = false
                     mainHandler.post { playNextInQueue() }
@@ -109,17 +118,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         acquireWakeLock()
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
-        if (!isSpeaking) {
-            stopAll()
-        }
+        val currentToken = generationToken.get()
 
         val safeChunks = recursiveSplit(originalText)
 
         for (chunk in safeChunks) {
+            if (generationToken.get() != currentToken) break 
+
             if (LanguageUtils.hasShan(chunk)) {
-                parseShanMode(chunk, sysRate, sysPitch)
+                parseShanMode(chunk, sysRate, sysPitch, currentToken)
             } else {
-                parseSmartMode(chunk, sysRate, sysPitch)
+                parseSmartMode(chunk, sysRate, sysPitch, currentToken)
             }
         }
         
@@ -143,7 +152,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (text.length <= limit) return text.length
 
         val safeRegion = text.substring(0, limit)
-
         val lastNewLine = safeRegion.lastIndexOf('\n')
         if (lastNewLine > limit / 2) return lastNewLine + 1
 
@@ -159,40 +167,44 @@ class AutoTTSManagerService : TextToSpeechService() {
         return limit
     }
 
-    private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int) {
+    private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int, token: Int) {
         try {
             val words = text.split(Regex("\\s+"))
             var currentBuffer = StringBuilder()
             var currentLang = ""
 
             for (word in words) {
+                if (generationToken.get() != token) return 
+
                 val detectedLang = LanguageUtils.detectLanguage(word)
                 
                 if (currentLang.isEmpty() || currentLang == detectedLang) {
                     currentLang = detectedLang
                     currentBuffer.append("$word ")
                 } else {
-                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, token)
                     currentBuffer = StringBuilder("$word ")
                     currentLang = detectedLang
                 }
             }
             if (currentBuffer.isNotEmpty()) {
-                addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, token)
             }
         } catch (e: Exception) { }
     }
 
-    private fun parseSmartMode(text: String, sysRate: Int, sysPitch: Int) {
+    private fun parseSmartMode(text: String, sysRate: Int, sysPitch: Int, token: Int) {
         if (text.isEmpty()) return
 
         var currentBuffer = StringBuilder()
         var currentLang = "" 
 
         for (char in text) {
+            if (generationToken.get() != token) return 
+
             if (char == '\n') {
                 if (currentBuffer.isNotEmpty()) {
-                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, token)
                     currentBuffer = StringBuilder()
                 }
                 continue
@@ -214,26 +226,27 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (charType == currentLang) {
                 currentBuffer.append(char)
             } else {
-                addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, token)
                 currentLang = charType
                 currentBuffer = StringBuilder()
                 currentBuffer.append(char)
             }
         }
         if (currentBuffer.isNotEmpty()) {
-            addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+            addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, token)
         }
     }
 
-    private fun addToQueue(lang: String, text: String, sysRate: Int, sysPitch: Int) {
+    private fun addToQueue(lang: String, text: String, sysRate: Int, sysPitch: Int, token: Int) {
         if (text.isBlank()) return
+        if (generationToken.get() != token) return
         
         val engine = when (lang) {
             "SHAN" -> if (isShanReady) shanEngine else englishEngine
             "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
             else -> if (isEnglishReady) englishEngine else null
         }
-        messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch))
+        messageQueue.add(TTSChunk(text, engine, lang, sysRate, sysPitch, token))
     }
 
     @Synchronized
@@ -245,9 +258,20 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
         
-        val chunk = messageQueue.poll() ?: return
-        val engine = chunk.engine
-        val text = chunk.text
+        val chunk = messageQueue.peek()
+        
+        // *** TOKEN CHECK ***
+        // Queue ထဲက စာရဲ့ Token က လက်ရှိ Token နဲ့ မတူတော့ရင် (Swipe လုပ်လိုက်ရင်)
+        // အဲဒီစာကို မဖတ်ဘဲ လွှင့်ပစ်မယ်။
+        if (chunk != null && chunk.token != generationToken.get()) {
+             messageQueue.poll() // Remove old chunk
+             playNextInQueue()   // Check next one
+             return
+        }
+
+        val validChunk = messageQueue.poll() ?: return
+        val engine = validChunk.engine
+        val text = validChunk.text
         
         if (engine == null) {
             playNextInQueue()
@@ -260,7 +284,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         var userRate = 1.0f
         var userPitch = 1.0f
 
-        when (chunk.lang) {
+        when (validChunk.lang) {
             "SHAN" -> {
                 userRate = prefs.getInt("rate_shan", 100) / 100.0f
                 userPitch = prefs.getInt("pitch_shan", 100) / 100.0f
@@ -275,8 +299,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        engine.setSpeechRate((chunk.sysRate / 100.0f) * userRate)
-        engine.setPitch((chunk.sysPitch / 100.0f) * userPitch)
+        engine.setSpeechRate((validChunk.sysRate / 100.0f) * userRate)
+        engine.setPitch((validChunk.sysPitch / 100.0f) * userPitch)
 
         val newUtteranceId = UUID.randomUUID().toString()
         currentUtteranceId = newUtteranceId
@@ -300,11 +324,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun stopAll() {
         try {
-            currentUtteranceId = "" 
+            // ၁။ Token ကိုပြောင်းလိုက်တယ် (ဒါဆို Queue ထဲက အဟောင်းတွေ အကုန် Invalid ဖြစ်သွားမယ်)
+            generationToken.incrementAndGet()
             
-            synchronized(messageQueue) { messageQueue.clear() }
+            currentUtteranceId = "" 
             isSpeaking = false 
             
+            // Queue ရှင်း၊ Lock ဖြုတ်
+            synchronized(messageQueue) { messageQueue.clear() }
+            
+            // အသံဟောင်းတွေကို ချက်ချင်းသတ်
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f) 
             
