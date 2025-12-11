@@ -40,7 +40,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
     
-    private val SAFE_CHUNK_SIZE = 2000
+    private val SAFE_CHUNK_SIZE = 1200
 
     override fun onCreate() {
         super.onCreate()
@@ -109,9 +109,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         acquireWakeLock()
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
         
-        // *** FIX: Removed stopAll() from here ***
-        // စာအသစ်ဝင်လာတိုင်း အဟောင်းကို မဖြတ်တော့ပါ။
-        // TalkBack က ပွတ်ဆွဲမှသာ onStop() ခေါ်ပြီး ဖြတ်ပါလိမ့်မယ်။
+        if (!isSpeaking) {
+            stopAll()
+        }
 
         val safeChunks = recursiveSplit(originalText)
 
@@ -334,7 +334,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onDestroy()
     }
     
-    // TalkBack Swipe လုပ်ရင် ဒီကောင်ကို System က လာခေါ်ပါတယ်
     override fun onStop() { 
         stopAll() 
         releaseWakeLock()
