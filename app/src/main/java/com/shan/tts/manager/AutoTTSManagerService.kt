@@ -40,8 +40,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
     
-    private val SOFT_CHAR_LIMIT = 400 
-    private val HARD_CHAR_LIMIT = 2500
+    private val SAFE_CHUNK_SIZE = 3800
 
     override fun onCreate() {
         super.onCreate()
@@ -103,7 +102,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
-        val text = request?.charSequenceText.toString()
+        val originalText = request?.charSequenceText.toString()
         val sysRate = request?.speechRate ?: 100
         val sysPitch = request?.pitch ?: 100
 
@@ -112,14 +111,50 @@ class AutoTTSManagerService : TextToSpeechService() {
         
         stopAll() 
 
-        if (LanguageUtils.hasShan(text)) {
-            parseShanMode(text, sysRate, sysPitch)
-        } else {
-            parseSmartMode(text, sysRate, sysPitch)
+        val safeChunks = recursiveSplit(originalText)
+
+        for (chunk in safeChunks) {
+            if (LanguageUtils.hasShan(chunk)) {
+                parseShanMode(chunk, sysRate, sysPitch)
+            } else {
+                parseSmartMode(chunk, sysRate, sysPitch)
+            }
         }
         
         playNextInQueue()
         callback?.done()
+    }
+
+    private fun recursiveSplit(text: String): List<String> {
+        if (text.length <= SAFE_CHUNK_SIZE) {
+            return listOf(text)
+        }
+
+        val splitPoint = findBestSplitPoint(text, SAFE_CHUNK_SIZE)
+        val firstPart = text.substring(0, splitPoint)
+        val secondPart = text.substring(splitPoint)
+
+        return listOf(firstPart) + recursiveSplit(secondPart)
+    }
+
+    private fun findBestSplitPoint(text: String, limit: Int): Int {
+        if (text.length <= limit) return text.length
+
+        val safeRegion = text.substring(0, limit)
+
+        val lastNewLine = safeRegion.lastIndexOf('\n')
+        if (lastNewLine > limit / 2) return lastNewLine + 1
+
+        val lastPunctuation = safeRegion.indexOfLast { it == '.' || it == '။' || it == '!' || it == '?' }
+        if (lastPunctuation > limit / 2) return lastPunctuation + 1
+
+        val lastComma = safeRegion.indexOfLast { it == ',' || it == '၊' || it == ';' }
+        if (lastComma > limit / 2) return lastComma + 1
+
+        val lastSpace = safeRegion.lastIndexOf(' ')
+        if (lastSpace > limit / 2) return lastSpace + 1
+
+        return limit
     }
 
     private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int) {
@@ -131,16 +166,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             for (word in words) {
                 val detectedLang = LanguageUtils.detectLanguage(word)
                 
-                if (currentBuffer.length > HARD_CHAR_LIMIT) {
-                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
-                    currentBuffer = StringBuilder()
-                    currentLang = detectedLang 
-                }
-                else if (currentBuffer.length > SOFT_CHAR_LIMIT && currentLang == detectedLang) {
-                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
-                    currentBuffer = StringBuilder()
-                }
-
                 if (currentLang.isEmpty() || currentLang == detectedLang) {
                     currentLang = detectedLang
                     currentBuffer.append("$word ")
@@ -163,18 +188,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         var currentLang = "" 
 
         for (char in text) {
-            val isSeparator = char.isWhitespace() || ";.!?".contains(char)
-            val len = currentBuffer.length
-
-            if (len >= HARD_CHAR_LIMIT) {
-                 addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
-                 currentBuffer = StringBuilder()
-            }
-            else if (len >= SOFT_CHAR_LIMIT && isSeparator) {
-                 addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch)
-                 currentBuffer = StringBuilder()
-            }
-
             if (char.isWhitespace()) {
                 currentBuffer.append(char)
                 continue
