@@ -36,17 +36,13 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
 
-    // Pipe Management Map
+    // Pipe Tracker
     private val activePipes = ConcurrentHashMap<String, ParcelFileDescriptor>()
 
     private var currentLocale: Locale = Locale.US
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // Standard Output Rate (TalkBack loves 24kHz or 16kHz)
-    // 24000 is a safe high-quality standard
     private val TARGET_SAMPLE_RATE = 24000
-    
-    // Streaming Buffer Size (4KB = extremely low latency)
     private val STREAM_BUFFER_SIZE = 4096
 
     override fun onCreate() {
@@ -76,7 +72,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) {}
 
             override fun onDone(utteranceId: String?) {
-                // Engine ရေးပြီးတာနဲ့ Pipe ကိုပိတ် (EOF ပို့ရန်)
                 closePipeForUtterance(utteranceId)
             }
 
@@ -93,9 +88,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun closePipeForUtterance(utteranceId: String?) {
         utteranceId?.let {
             val pfd = activePipes.remove(it)
-            try {
-                pfd?.close()
-            } catch (e: Exception) { }
+            try { pfd?.close() } catch (e: Exception) { }
         }
     }
 
@@ -113,7 +106,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped.set(true)
         currentTask?.cancel(true)
         
-        // Close all active pipes to break loops
         activePipes.values.forEach { try { it.close() } catch (e: Exception){} }
         activePipes.clear()
         
@@ -143,17 +135,18 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (isStopped.get()) return@submit
 
                 val chunks = splitByLanguage(text)
-
-                // Always start AudioTrack with fixed Target Rate (e.g., 24kHz)
-                // We will resample everything to match this.
-                callback?.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+                var hasStartedCallback = false
 
                 for (chunkData in chunks) {
                     if (isStopped.get()) break
                     
                     val engine = getEngineForLang(chunkData.lang) ?: continue
                     
-                    streamProcessing(engine, chunkData.text, chunkData.lang, sysRate, sysPitch, callback)
+                    // callback.start() ကို ဒီ function ထဲမှာမှ Header စစ်ပြီး ခေါ်ပါမယ်
+                    val started = processStream(engine, chunkData.text, chunkData.lang, sysRate, sysPitch, callback, hasStartedCallback)
+                    if (started) {
+                        hasStartedCallback = true
+                    }
                 }
 
             } catch (e: Exception) {
@@ -167,17 +160,19 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun streamProcessing(
+    private fun processStream(
         engine: TextToSpeech, 
         text: String, 
         lang: String,
         sysRate: Int, 
         sysPitch: Int, 
-        callback: SynthesisCallback?
-    ) {
+        callback: SynthesisCallback?,
+        alreadyStarted: Boolean
+    ): Boolean {
         var readSide: ParcelFileDescriptor? = null
         var writeSide: ParcelFileDescriptor? = null
         val utteranceId = UUID.randomUUID().toString()
+        var callbackStartedNow = false
         
         try {
             val pipe = ParcelFileDescriptor.createPipe()
@@ -207,52 +202,70 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
-            // Standard Rate Calculation
             val finalRate = (sysRate * userRatePref) / 10000.0f
             val finalPitch = (sysPitch * userPitchPref) / 10000.0f
 
             engine.setSpeechRate(finalRate)
             engine.setPitch(finalPitch)
 
-            // 1. Start Synthesis (Async Write)
+            // Start Engine (Async)
             engine.synthesizeToFile(text, params, writeSide, utteranceId)
 
             val inputStream = FileInputStream(readSide.fileDescriptor)
             
-            // *** STEP 1: READ HEADER FIRST (44 Bytes) ***
+            // *** FIX 2: WAIT FOR DATA (Blocking Read) ***
+            // Header 44 bytes မပြည့်မချင်း စောင့်ဖတ်မယ်
+            // Pipe ထဲ Data မရောက်ခင် Read မိရင် 0 bytes ရမယ်၊ အဲဒါကို Loop ပတ်စောင့်မယ်
             val headerBuffer = ByteArray(44)
             var headerBytesRead = 0
+            var retryCount = 0
             
-            // Loop until we get full header
-            while (headerBytesRead < 44) {
+            while (headerBytesRead < 44 && retryCount < 50) { // 5 seconds timeout approx
                 if (isStopped.get()) break
-                val count = inputStream.read(headerBuffer, headerBytesRead, 44 - headerBytesRead)
-                if (count == -1) break // End of stream
-                headerBytesRead += count
+                
+                if (inputStream.available() > 0) {
+                    val count = inputStream.read(headerBuffer, headerBytesRead, 44 - headerBytesRead)
+                    if (count > 0) {
+                        headerBytesRead += count
+                    } else if (count == -1) {
+                        break // End of stream unexpected
+                    }
+                } else {
+                    // Pipe is empty, wait a bit
+                    Thread.sleep(100)
+                    retryCount++
+                }
             }
             
-            if (headerBytesRead < 44) return // Invalid WAV or stopped
+            if (headerBytesRead < 44) return false // Engine fail or Stop
 
-            // Extract Source Sample Rate
+            // *** FIX 1: LAZY START ***
+            // Header ရပြီ၊ အသံသေချာပြီဆိုမှ Start လုပ်မယ်
+            if (!alreadyStarted) {
+                callback?.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+                callbackStartedNow = true
+            }
+
+            // Determine Source Sample Rate
             val sourceSampleRate = getSampleRateFromWav(headerBuffer)
 
-            // *** STEP 2: STREAMING LOOP ***
+            // Streaming Loop
             val pcmBuffer = ByteArray(STREAM_BUFFER_SIZE)
             var bytesRead: Int
 
-            while (inputStream.read(pcmBuffer).also { bytesRead = it } != -1) {
+            while (true) {
                 if (isStopped.get()) break
+                
+                // Blocking read (Stream will block until data arrives or pipe closes)
+                bytesRead = inputStream.read(pcmBuffer)
+                if (bytesRead == -1) break 
 
-                // Resample this chunk immediately
-                // Note: Header is already stripped because we read it separately above
                 val finalBytes = if (sourceSampleRate != TARGET_SAMPLE_RATE) {
                     AudioResampler.resampleChunk(pcmBuffer, bytesRead, sourceSampleRate, TARGET_SAMPLE_RATE)
                 } else {
-                    // If rate matches, just copy the valid bytes
                     pcmBuffer.copyOfRange(0, bytesRead)
                 }
 
-                // Send to TalkBack immediately
                 if (finalBytes.isNotEmpty()) {
                     callback?.audioAvailable(finalBytes, 0, finalBytes.size)
                 }
@@ -266,10 +279,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                 activePipes.remove(utteranceId)?.close()
             } catch (e: Exception) {}
         }
+        
+        return callbackStartedNow
     }
 
     private fun getSampleRateFromWav(header: ByteArray): Int {
-        // Byte 24-27 is Sample Rate (Little Endian)
+        if (header.size < 28) return 16000
         return (header[24].toInt() and 0xFF) or
                ((header[25].toInt() and 0xFF) shl 8) or
                ((header[26].toInt() and 0xFF) shl 16) or
@@ -323,11 +338,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onGetLanguage(): Array<String> { return arrayOf("eng", "USA", "") }
 }
 
-// *** OBJECTS ***
-
 object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
+    fun hasShan(text: String): Boolean = SHAN_PATTERN.containsMatchIn(text)
     fun detectLanguage(text: CharSequence?): String {
         if (text.isNullOrBlank()) return "ENGLISH"
         val input = text.toString()
@@ -337,29 +351,20 @@ object LanguageUtils {
     }
 }
 
-// *** OPTIMIZED RESAMPLER FOR STREAMING ***
 object AudioResampler {
     fun resampleChunk(input: ByteArray, inputLength: Int, inRate: Int, outRate: Int): ByteArray {
-        if (inRate == outRate) {
-            return input.copyOfRange(0, inputLength)
-        }
-
-        // Convert only valid bytes to Short
+        if (inRate == outRate) return input.copyOfRange(0, inputLength)
         val shortBuffer = ByteBuffer.wrap(input, 0, inputLength).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
         val inputSamples = ShortArray(shortBuffer.remaining())
         shortBuffer.get(inputSamples)
-
         if (inputSamples.isEmpty()) return ByteArray(0)
-
         val ratio = inRate.toDouble() / outRate.toDouble()
         val outputLength = (inputSamples.size / ratio).toInt()
         val outputSamples = ShortArray(outputLength)
-
         for (i in 0 until outputLength) {
             val position = i * ratio
             val index = position.toInt()
             val fraction = position - index
-
             if (index >= inputSamples.size - 1) {
                 outputSamples[i] = inputSamples[inputSamples.size - 1]
             } else {
@@ -369,10 +374,8 @@ object AudioResampler {
                 outputSamples[i] = value.toShort()
             }
         }
-
         val outputBytes = ByteArray(outputSamples.size * 2)
         ByteBuffer.wrap(outputBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outputSamples)
-        
         return outputBytes
     }
 }
