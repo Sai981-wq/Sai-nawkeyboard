@@ -10,21 +10,11 @@ import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
-import java.util.LinkedList
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.atomic.AtomicBoolean
-
-// Data Model
-data class SpeechItem(
-    val text: String,
-    val engine: TextToSpeech?,
-    val lang: String,
-    val rate: Int,
-    val pitch: Int,
-    val sessionId: String
-)
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -36,23 +26,21 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
-    // Thread-Safe Queue
-    private val speechQueue = LinkedBlockingQueue<SpeechItem>()
+    // Single Thread Executor - အလုပ်တစ်ခုပြီးမှ တစ်ခုလုပ်မည့် စနစ် (Lag မဖြစ်ပါ)
+    private val executor = Executors.newSingleThreadExecutor()
     
-    // Global Session Control
+    // Engine Synchronization
+    private val speechLock = ReentrantLock()
+    private val speechFinishedCondition = speechLock.newCondition()
+    
+    // Session Control
     @Volatile private var currentSessionId: String = ""
-    
-    // Worker Thread Logic
-    private var workerThread: Thread? = null
-    private val isRunning = AtomicBoolean(true)
-    private val engineLock = Object()
-    @Volatile private var isEngineSpeaking = false
+    @Volatile private var isInterrupted = false
 
     private var currentLocale: Locale = Locale.US
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // Chunk Size (စာအရှည်ဖတ်ဖို့ အန္တရာယ်ကင်းတဲ့ ပမာဏ)
-    private val SAFE_CHUNK_SIZE = 1200
+    private val SAFE_CHUNK_SIZE = 800
 
     override fun onCreate() {
         super.onCreate()
@@ -74,61 +62,197 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishEngine = tts; isEnglishReady = true; setupListener(tts)
             englishEngine?.language = Locale.US
         }
-
-        // နောက်ကွယ်က အလုပ်လုပ်မယ့် Thread စမယ်
-        startWorker()
     }
 
-    private fun startWorker() {
-        workerThread = Thread {
-            while (isRunning.get()) {
-                try {
-                    // Queue ထဲက စာကိုယူမယ် (စာမရှိရင် ဒီမှာ Block နေမယ်)
-                    val item = speechQueue.take()
+    private fun setupListener(tts: TextToSpeech) {
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
 
-                    // *** STRICT SESSION CHECK ***
-                    // Queue ထဲကစာရဲ့ ID နဲ့ လက်ရှိ ID မတူရင် (TalkBack Swipe လုပ်ထားရင်)
-                    // လုံးဝ မဖတ်ဘဲ လွှင့်ပစ်မယ် (Skip)
-                    if (item.sessionId != currentSessionId) {
-                        continue
-                    }
+            override fun onDone(utteranceId: String?) {
+                signalSpeechFinished()
+            }
 
-                    // စာဖတ်မယ် (Engine ပြီးတဲ့ထိ Block မယ်)
-                    speakAndWait(item)
+            override fun onError(utteranceId: String?) {
+                signalSpeechFinished()
+            }
+            
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                signalSpeechFinished()
+            }
+        })
+    }
+    
+    private fun signalSpeechFinished() {
+        speechLock.lock()
+        try {
+            speechFinishedCondition.signalAll()
+        } finally {
+            speechLock.unlock()
+        }
+    }
 
-                } catch (e: InterruptedException) {
-                    // Thread အနှိုးခံရရင် (onStop) Loop ပြန်ပတ်မယ်
-                    continue
-                } catch (e: Exception) {
-                    e.printStackTrace()
+    private fun initializeEngine(pkgName: String?, onSuccess: (TextToSpeech) -> Unit) {
+        if (pkgName.isNullOrEmpty() || pkgName == packageName) return
+        try {
+            var tempTTS: TextToSpeech? = null
+            tempTTS = TextToSpeech(applicationContext, { status ->
+                if (status == TextToSpeech.SUCCESS) onSuccess(tempTTS!!)
+            }, pkgName)
+        } catch (e: Exception) { }
+    }
+
+    // *** TalkBack SWIPE Action ***
+    override fun onStop() {
+        // ၁. Session ပြောင်း (Loop ထဲက အလုပ်တွေ ရပ်သွားမယ်)
+        currentSessionId = UUID.randomUUID().toString()
+        isInterrupted = true
+        
+        // ၂. Engine တွေကို ချက်ချင်းရပ်
+        stopAllEngines()
+        
+        // ၃. စောင့်နေတဲ့ Thread ကို လှုပ်နှိုး (Deadlock ဖြေရှင်းခြင်း)
+        signalSpeechFinished()
+        
+        releaseWakeLock()
+    }
+
+    override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
+        val text = request?.charSequenceText.toString()
+        val sysRate = request?.speechRate ?: 100
+        val sysPitch = request?.pitch ?: 100
+
+        acquireWakeLock()
+        callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
+
+        // Session အသစ်
+        val mySession = UUID.randomUUID().toString()
+        currentSessionId = mySession
+        isInterrupted = false
+
+        // Background Thread ပေါ်တင်ပေးလိုက်မယ် (Main UI မလေးအောင်)
+        executor.submit {
+            if (currentSessionId != mySession) return@submit
+
+            val safeChunks = recursiveSplit(text)
+            var isFirstChunk = true
+
+            for (chunk in safeChunks) {
+                // Loop ပတ်တိုင်း Stop လုပ်ခံရလား စစ်မယ်
+                if (currentSessionId != mySession || isInterrupted) break
+
+                if (LanguageUtils.hasShan(chunk)) {
+                    processSpeech(chunk, "SHAN", sysRate, sysPitch, mySession, isFirstChunk)
+                } else {
+                    processSpeech(chunk, "SMART", sysRate, sysPitch, mySession, isFirstChunk)
+                }
+                
+                isFirstChunk = false
+            }
+            
+            // အားလုံးပြီးမှ Done (Thread မသေခင် Done မလုပ်ရ)
+            if (currentSessionId == mySession) {
+                callback?.done()
+            }
+            releaseWakeLock()
+        }
+    }
+
+    private fun processSpeech(text: String, mode: String, rate: Int, pitch: Int, sessionId: String, isFirstChunk: Boolean) {
+        if (mode == "SHAN") {
+            val words = text.split(Regex("\\s+"))
+            var currentBuffer = StringBuilder()
+            var currentLang = ""
+            var firstItemInLoop = true
+
+            for (word in words) {
+                if (currentSessionId != sessionId) return
+
+                val detectedLang = LanguageUtils.detectLanguage(word)
+                if (currentLang.isEmpty() || currentLang == detectedLang) {
+                    currentLang = detectedLang
+                    currentBuffer.append("$word ")
+                } else {
+                    val useFlush = isFirstChunk && firstItemInLoop
+                    speakAndWait(currentLang, currentBuffer.toString(), rate, pitch, sessionId, useFlush)
+                    firstItemInLoop = false
+                    currentBuffer = StringBuilder("$word ")
+                    currentLang = detectedLang
                 }
             }
+            if (currentBuffer.isNotEmpty()) {
+                val useFlush = isFirstChunk && firstItemInLoop
+                speakAndWait(currentLang, currentBuffer.toString(), rate, pitch, sessionId, useFlush)
+            }
+        } else {
+            // SMART MODE
+            var currentBuffer = StringBuilder()
+            var currentLang = "" 
+            var firstItemInLoop = true
+
+            for (char in text) {
+                if (currentSessionId != sessionId) return
+
+                if (char == '\n') {
+                    if (currentBuffer.isNotEmpty()) {
+                        val useFlush = isFirstChunk && firstItemInLoop
+                        speakAndWait(currentLang, currentBuffer.toString(), rate, pitch, sessionId, useFlush)
+                        firstItemInLoop = false
+                        currentBuffer = StringBuilder()
+                    }
+                    continue
+                }
+                if (char.isWhitespace()) {
+                    currentBuffer.append(char)
+                    continue
+                }
+                val charType = LanguageUtils.getCharType(char)
+                if (currentBuffer.isEmpty()) {
+                    currentLang = charType
+                    currentBuffer.append(char)
+                    continue
+                }
+                if (charType == currentLang) {
+                    currentBuffer.append(char)
+                } else {
+                    val useFlush = isFirstChunk && firstItemInLoop
+                    speakAndWait(currentLang, currentBuffer.toString(), rate, pitch, sessionId, useFlush)
+                    firstItemInLoop = false
+                    currentLang = charType
+                    currentBuffer = StringBuilder()
+                    currentBuffer.append(char)
+                }
+            }
+            if (currentBuffer.isNotEmpty()) {
+                val useFlush = isFirstChunk && firstItemInLoop
+                speakAndWait(currentLang, currentBuffer.toString(), rate, pitch, sessionId, useFlush)
+            }
         }
-        workerThread?.start()
     }
 
-    private fun speakAndWait(item: SpeechItem) {
-        val engine = item.engine ?: return
+    private fun speakAndWait(lang: String, text: String, rate: Int, pitch: Int, sessionId: String, useFlush: Boolean) {
+        if (text.isBlank() || currentSessionId != sessionId) return
 
-        synchronized(engineLock) {
-            isEngineSpeaking = true
-        }
+        val engine = when (lang) {
+            "SHAN" -> if (isShanReady) shanEngine else englishEngine
+            "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
+            else -> if (isEnglishReady) englishEngine else null
+        } ?: return
 
         val params = Bundle()
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-             val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build()
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
             params.putParcelable("audioAttributes", audioAttributes)
         }
 
+        // Apply User Settings
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         var userRate = 1.0f
         var userPitch = 1.0f
-        
-        when (item.lang) {
+        when (lang) {
             "SHAN" -> {
                 userRate = prefs.getInt("rate_shan", 100) / 100.0f
                 userPitch = prefs.getInt("pitch_shan", 100) / 100.0f
@@ -142,208 +266,44 @@ class AutoTTSManagerService : TextToSpeechService() {
                 userPitch = prefs.getInt("pitch_english", 100) / 100.0f
             }
         }
-        engine.setSpeechRate((item.rate / 100.0f) * userRate)
-        engine.setPitch((item.pitch / 100.0f) * userPitch)
+        engine.setSpeechRate((rate / 100.0f) * userRate)
+        engine.setPitch((pitch / 100.0f) * userPitch)
 
-        val utteranceId = item.sessionId + "_" + System.nanoTime()
+        val utteranceId = "${sessionId}_${System.nanoTime()}"
         
-        // QUEUE_ADD သုံးမှ အသံဆက်စပ်မှု ကောင်းမယ် (Thread Block ကြောင့် Overlap မဖြစ်ပါ)
-        engine.speak(item.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
-
-        // *** BLOCKING WAIT ***
-        // Engine မပြီးမချင်း ဒီမှာ ရပ်စောင့်နေမယ်
-        synchronized(engineLock) {
-            while (isEngineSpeaking) {
-                // စောင့်နေရင်း Session ပြောင်းသွားရင် (Swipe လုပ်ရင်) ချက်ချင်းထွက်
-                if (item.sessionId != currentSessionId) {
-                    engine.stop()
-                    break
-                }
-                try {
-                    engineLock.wait() // onDone လာတဲ့ထိ အိပ်မယ်
-                } catch (e: InterruptedException) {
-                    engine.stop()
-                    break
-                }
-            }
-        }
-    }
-
-    private fun setupListener(tts: TextToSpeech) {
-        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
-
-            override fun onDone(utteranceId: String?) {
-                // Engine ပြီးပြီ၊ Thread ကို နိုးမယ်
-                synchronized(engineLock) {
-                    isEngineSpeaking = false
-                    engineLock.notifyAll()
-                }
-            }
-
-            override fun onError(utteranceId: String?) {
-                synchronized(engineLock) {
-                    isEngineSpeaking = false
-                    engineLock.notifyAll()
-                }
-            }
-            
-            override fun onError(utteranceId: String?, errorCode: Int) {
-                synchronized(engineLock) {
-                    isEngineSpeaking = false
-                    engineLock.notifyAll()
-                }
-            }
-        })
-    }
-
-    private fun initializeEngine(pkgName: String?, onSuccess: (TextToSpeech) -> Unit) {
-        if (pkgName.isNullOrEmpty() || pkgName == packageName) return
+        // *** CRITICAL LOGIC ***
+        // ပထမဆုံး စာသားဆိုရင် QUEUE_FLUSH (အဟောင်းဖျက်)
+        // နောက်စာသားဆိုရင် QUEUE_ADD (ဆက်တိုက်ဖတ်)
+        val queueMode = if (useFlush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        
+        // Lock ကို အရင်ယူမယ်
+        speechLock.lock()
         try {
-            var tempTTS: TextToSpeech? = null
-            tempTTS = TextToSpeech(applicationContext, { status ->
-                if (status == TextToSpeech.SUCCESS) onSuccess(tempTTS!!)
-            }, pkgName)
-        } catch (e: Exception) { }
-    }
-
-    // *** TALKBACK SWIPE HANDLER ***
-    override fun onStop() {
-        // ၁. Session ID ပြောင်း (ဒါဆို Worker Thread က အလိုလို သိသွားမယ်)
-        currentSessionId = UUID.randomUUID().toString()
-        
-        // ၂. Queue ကို ရှင်း (Lag မဖြစ်အောင်)
-        speechQueue.clear()
-        
-        // ၃. Engine တွေကို ချက်ချင်းရပ် (အသံဟောင်း ပျောက်အောင်)
-        shanEngine?.stop()
-        burmeseEngine?.stop()
-        englishEngine?.stop()
-        
-        // ၄. Worker Thread ကို နှိုးပြီး လွှတ်ပေး
-        synchronized(engineLock) {
-            isEngineSpeaking = false
-            engineLock.notifyAll()
-        }
-        workerThread?.interrupt()
-        
-        releaseWakeLock()
-    }
-
-    override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
-        val originalText = request?.charSequenceText.toString()
-        val sysRate = request?.speechRate ?: 100
-        val sysPitch = request?.pitch ?: 100
-
-        acquireWakeLock()
-        callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
-
-        // *** STEP 1: PREPARE BATCH (Batch Processing) ***
-        // စာအားလုံးကို အရင်ဖြတ်ပြီး List တစ်ခုထဲ ထည့်မယ်
-        // ဒီအဆင့်မှာ Queue ထဲ မထည့်သေးဘူး (Safe Zone)
-        
-        val batchList = ArrayList<SpeechItem>()
-        val tempSessionId = UUID.randomUUID().toString() // New ID for this batch
-
-        val safeChunks = recursiveSplit(originalText)
-
-        for (chunk in safeChunks) {
-            if (LanguageUtils.hasShan(chunk)) {
-                parseShanToBatch(chunk, sysRate, sysPitch, tempSessionId, batchList)
-            } else {
-                parseSmartToBatch(chunk, sysRate, sysPitch, tempSessionId, batchList)
-            }
-        }
-
-        // *** STEP 2: ATOMIC SWAP (The Magic) ***
-        // အားလုံး အဆင်သင့်ဖြစ်မှ Queue ထဲကို တခါတည်း သွန်ထည့်မယ်
-        // onStop နဲ့ မတိုက်မိအောင် synchronized သုံးနိုင်ရင် ပိုကောင်းပေမယ့်
-        // Logic အရ ဒီမှာ တန်းထည့်တာက အကောင်းဆုံးပါ
-        
-        currentSessionId = tempSessionId // Activate this session
-        speechQueue.clear() // Clear old junk
-        speechQueue.addAll(batchList) // Push EVERYTHING at once
-
-        // Worker Thread ကို အလုပ်စခိုင်းမယ် (အိပ်နေရင် နိုးမယ်)
-        workerThread?.interrupt() 
-
-        callback?.done()
-    }
-
-    // *** Batch Parsers (Returns List instead of queueing directly) ***
-    
-    private fun parseShanToBatch(text: String, rate: Int, pitch: Int, sessionId: String, list: ArrayList<SpeechItem>) {
-        val words = text.split(Regex("\\s+"))
-        var currentBuffer = StringBuilder()
-        var currentLang = ""
-
-        for (word in words) {
-            val detectedLang = LanguageUtils.detectLanguage(word)
+            val result = engine.speak(text, queueMode, params, utteranceId)
             
-            if (currentLang.isEmpty() || currentLang == detectedLang) {
-                currentLang = detectedLang
-                currentBuffer.append("$word ")
-            } else {
-                addToBatch(currentLang, currentBuffer.toString(), rate, pitch, sessionId, list)
-                currentBuffer = StringBuilder("$word ")
-                currentLang = detectedLang
+            if (result == TextToSpeech.SUCCESS) {
+                // Engine ပြီးတဲ့အထိ ဒီနေရာမှာ ရပ်စောင့်မယ်
+                // 15 Second Timeout ထည့်ထားတယ် (အသံမထွက်ဘဲ ဟန်းနေတာမျိုး မဖြစ်ရအောင်)
+                speechFinishedCondition.await(15, TimeUnit.SECONDS)
             }
-        }
-        if (currentBuffer.isNotEmpty()) {
-            addToBatch(currentLang, currentBuffer.toString(), rate, pitch, sessionId, list)
-        }
-    }
-
-    private fun parseSmartToBatch(text: String, rate: Int, pitch: Int, sessionId: String, list: ArrayList<SpeechItem>) {
-        var currentBuffer = StringBuilder()
-        var currentLang = "" 
-
-        for (char in text) {
-            if (char == '\n') {
-                if (currentBuffer.isNotEmpty()) {
-                    addToBatch(currentLang, currentBuffer.toString(), rate, pitch, sessionId, list)
-                    currentBuffer = StringBuilder()
-                }
-                continue
-            }
-
-            if (char.isWhitespace()) {
-                currentBuffer.append(char)
-                continue
-            }
-
-            val charType = LanguageUtils.getCharType(char)
-
-            if (currentBuffer.isEmpty()) {
-                currentLang = charType
-                currentBuffer.append(char)
-                continue
-            }
-
-            if (charType == currentLang) {
-                currentBuffer.append(char)
-            } else {
-                addToBatch(currentLang, currentBuffer.toString(), rate, pitch, sessionId, list)
-                currentLang = charType
-                currentBuffer = StringBuilder()
-                currentBuffer.append(char)
-            }
-        }
-        if (currentBuffer.isNotEmpty()) {
-            addToBatch(currentLang, currentBuffer.toString(), rate, pitch, sessionId, list)
-        }
-    }
-
-    private fun addToBatch(lang: String, text: String, rate: Int, pitch: Int, sessionId: String, list: ArrayList<SpeechItem>) {
-        if (text.isBlank()) return
-        
-        val engine = when (lang) {
-            "SHAN" -> if (isShanReady) shanEngine else englishEngine
-            "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
-            else -> if (isEnglishReady) englishEngine else null
+        } catch (e: InterruptedException) {
+            // onStop က နိုးလိုက်ရင် ဒီကိုရောက်မယ်
+        } finally {
+            speechLock.unlock()
         }
         
-        list.add(SpeechItem(text, engine, lang, rate, pitch, sessionId))
+        // Engine Switching Safety Gap
+        try { Thread.sleep(20) } catch (e: Exception) {}
+    }
+
+    private fun stopAllEngines() {
+        try {
+            val params = Bundle()
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
+            shanEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
+            burmeseEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
+            englishEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
+        } catch (e: Exception) { }
     }
 
     private fun recursiveSplit(text: String): List<String> {
@@ -377,12 +337,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() {
-        isRunning.set(false)
-        workerThread?.interrupt()
-        shanEngine?.shutdown()
-        burmeseEngine?.shutdown()
-        englishEngine?.shutdown()
+        isInterrupted = true
+        executor.shutdownNow()
+        stopAllEngines()
         releaseWakeLock()
+        shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
         super.onDestroy()
     }
     
