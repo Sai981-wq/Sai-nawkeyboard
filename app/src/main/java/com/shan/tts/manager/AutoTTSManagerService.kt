@@ -28,20 +28,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
-    // Executor for streaming background tasks
     private val executor = Executors.newSingleThreadExecutor()
-    
-    // Stop Flag
     private val isStopped = AtomicBoolean(false)
     
-    // Current active pipe reader (to close on stop)
     @Volatile
     private var currentInputStream: FileInputStream? = null
 
     private var currentLocale: Locale = Locale.US
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // 4KB Buffer for smooth streaming
+    // 4KB Buffer
     private val BUFFER_SIZE = 4096
 
     override fun onCreate() {
@@ -80,13 +76,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         isStopped.set(true)
-        
-        // 1. Close Input Stream (Breaks the read loop immediately)
         try {
             currentInputStream?.close()
         } catch (e: Exception) {}
         
-        // 2. Stop Engines
         shanEngine?.stop()
         burmeseEngine?.stop()
         englishEngine?.stop()
@@ -96,22 +89,21 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        
+        // ၁။ System ကလာတဲ့ Rate/Pitch ကို ရယူခြင်း
         val sysRate = request?.speechRate ?: 100
         val sysPitch = request?.pitch ?: 100
 
-        // Reset Stop Flag
         isStopped.set(false)
         acquireWakeLock()
 
-        // Background Processing
         executor.submit {
             try {
                 if (isStopped.get()) return@submit
 
-                // Simple language splitting
                 val chunks = splitByLanguage(text)
 
-                // Start Audio Stream (16kHz PCM 16bit is standard for TTS)
+                // Start Audio Stream (16kHz PCM)
                 callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
 
                 for (chunkData in chunks) {
@@ -119,14 +111,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val engine = getEngineForLang(chunkData.lang) ?: continue
                     
-                    // Stream this chunk via Pipe
-                    processViaPipe(engine, chunkData.text, sysRate, sysPitch, callback)
+                    // ၂။ User Setting နဲ့ System Setting ကို ပေါင်းစပ်ပြီး ပို့ခြင်း
+                    processViaPipe(engine, chunkData.text, chunkData.lang, sysRate, sysPitch, callback)
                 }
 
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
-                // Only call done if not stopped (avoid callbacks after stop)
                 if (!isStopped.get()) {
                     callback?.done()
                 }
@@ -138,53 +129,68 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun processViaPipe(
         engine: TextToSpeech, 
         text: String, 
-        rate: Int, 
-        pitch: Int, 
+        lang: String,
+        sysRate: Int, 
+        sysPitch: Int, 
         callback: SynthesisCallback?
     ) {
         var readSide: ParcelFileDescriptor? = null
         var writeSide: ParcelFileDescriptor? = null
         
         try {
-            // Create Pipe
             val pipe = ParcelFileDescriptor.createPipe()
             readSide = pipe[0]
             writeSide = pipe[1]
             
-            // Set Params
             val params = Bundle()
+            
+            // *** RATE & PITCH CALCULATION (The Fix) ***
             val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             
-            // Rate/Pitch Adjustments
-            var userRate = 1.0f
-            var userPitch = 1.0f
-            // (You can add your language specific rate logic here if needed)
-            
-            engine.setSpeechRate((rate / 100.0f) * userRate)
-            engine.setPitch((pitch / 100.0f) * userPitch)
+            // User Preference (Default 100)
+            var userRatePref = 100
+            var userPitchPref = 100
+
+            when (lang) {
+                "SHAN" -> {
+                    userRatePref = prefs.getInt("rate_shan", 100)
+                    userPitchPref = prefs.getInt("pitch_shan", 100)
+                }
+                "MYANMAR" -> {
+                    userRatePref = prefs.getInt("rate_burmese", 100)
+                    userPitchPref = prefs.getInt("pitch_burmese", 100)
+                }
+                else -> {
+                    userRatePref = prefs.getInt("rate_english", 100)
+                    userPitchPref = prefs.getInt("pitch_english", 100)
+                }
+            }
+
+            // Formula: (System / 100) * (User / 100)
+            // ဥပမာ: System 100, User 150 (1.5x) => Result 1.5x
+            // ဥပမာ: System 200 (TalkBack fast), User 100 => Result 2.0x
+            val finalRate = (sysRate / 100.0f) * (userRatePref / 100.0f)
+            val finalPitch = (sysPitch / 100.0f) * (userPitchPref / 100.0f)
+
+            engine.setSpeechRate(finalRate)
+            engine.setPitch(finalPitch)
 
             val utteranceId = UUID.randomUUID().toString()
-            
-            // *** STEP 1: Pass Write Side to Engine ***
-            // Engine will write audio data into this pipe
             engine.synthesizeToFile(text, params, writeSide, utteranceId)
 
-            // *** STEP 2: CLOSE OUR WRITE SIDE IMMEDIATELY ***
-            // This is the CRITICAL FIX. 
-            // We must close our handle so that when Engine finishes writing and closes its handle,
-            // the pipe effectively sends EOF (-1) to the reader.
+            // Close write side immediately so read side gets EOF when engine is done
             writeSide.close()
-            writeSide = null // Nullify to avoid double close in finally
+            writeSide = null 
 
-            // *** STEP 3: Read from Read Side ***
             val inputStream = FileInputStream(readSide.fileDescriptor)
-            currentInputStream = inputStream // Save reference for onStop()
+            currentInputStream = inputStream 
             
             val buffer = ByteArray(BUFFER_SIZE)
             var bytesRead: Int
             
-            // WAV Header Skip Logic (Safe Version)
-            var totalBytesRead = 0
+            // *** WAV HEADER SKIPPING FIX ***
+            // Chunk တစ်ခုချင်းစီအတွက် သီးသန့် Reset လုပ်ရမည်
+            var totalBytesForThisChunk = 0
             val headerSize = 44
 
             while (inputStream.read(buffer).also { bytesRead = it } != -1) {
@@ -193,39 +199,36 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var offset = 0
                 var length = bytesRead
 
-                // Skip the first 44 bytes (WAV Header) to avoid "Click" noise
-                if (totalBytesRead < headerSize) {
-                    val remainingHeader = headerSize - totalBytesRead
+                // Skip the first 44 bytes (WAV Header) ONLY for the start of this chunk
+                if (totalBytesForThisChunk < headerSize) {
+                    val remainingHeader = headerSize - totalBytesForThisChunk
                     if (bytesRead > remainingHeader) {
                         offset = remainingHeader
                         length = bytesRead - remainingHeader
-                        totalBytesRead += remainingHeader
+                        totalBytesForThisChunk += headerSize // Header done
                     } else {
-                        totalBytesRead += bytesRead
-                        continue // Skip this entire small chunk
+                        totalBytesForThisChunk += bytesRead
+                        continue // Skip this small buffer entirely
                     }
                 }
 
-                // Send clean PCM bytes to TalkBack
                 if (length > 0) {
                     callback?.audioAvailable(buffer, offset, length)
                 }
             }
 
         } catch (e: IOException) {
-            // Pipe closed or read error (Normal during stop)
+            // Normal during stop
         } finally {
-            // Clean up
             try {
                 currentInputStream?.close()
                 currentInputStream = null
                 readSide?.close()
-                writeSide?.close() // Close if not already closed
+                writeSide?.close()
             } catch (e: Exception) {}
         }
     }
 
-    // Language Splitter
     data class LangChunk(val text: String, val lang: String)
     
     private fun splitByLanguage(text: String): List<LangChunk> {
