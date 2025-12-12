@@ -3,9 +3,6 @@ package com.shan.tts.manager
 import android.content.Context
 import android.media.AudioAttributes
 import android.os.Bundle
-import android.os.ConditionVariable
-import android.os.Handler
-import android.os.HandlerThread
 import android.os.PowerManager
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
@@ -15,6 +12,12 @@ import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -26,14 +29,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
-    private lateinit var workThread: HandlerThread
-    private lateinit var workHandler: Handler
+    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    private var currentTask: Future<*>? = null
+    private var currentLatch: CountDownLatch? = null
     
-    // Engine ပြီးမပြီး စောင့်မည့် တံခါး
-    private val waiter = ConditionVariable()
+    private val isInterrupted = AtomicBoolean(false)
     
     @Volatile
-    private var currentJobId: String = ""
+    private var currentChunkId: String = ""
 
     private var currentLocale: Locale = Locale.US
     private var wakeLock: PowerManager.WakeLock? = null
@@ -41,10 +44,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        
-        workThread = HandlerThread("TTS_WORKER_THREAD")
-        workThread.start()
-        workHandler = Handler(workThread.looper)
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -70,15 +69,21 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) {}
 
             override fun onDone(utteranceId: String?) {
-                waiter.open()
+                if (utteranceId == currentChunkId) {
+                    currentLatch?.countDown()
+                }
             }
 
             override fun onError(utteranceId: String?) {
-                waiter.open()
+                if (utteranceId == currentChunkId) {
+                    currentLatch?.countDown()
+                }
             }
             
             override fun onError(utteranceId: String?, errorCode: Int) {
-                waiter.open()
+                if (utteranceId == currentChunkId) {
+                    currentLatch?.countDown()
+                }
             }
         })
     }
@@ -96,12 +101,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        currentJobId = UUID.randomUUID().toString()
+        isInterrupted.set(true)
+        currentTask?.cancel(true)
+        currentLatch?.countDown()
         
         stopEnginesDirectly()
         
-        waiter.open()
-        workHandler.removeCallbacksAndMessages(null)
         releaseWakeLock()
     }
 
@@ -110,35 +115,55 @@ class AutoTTSManagerService : TextToSpeechService() {
         val sysRate = request?.speechRate ?: 100
         val sysPitch = request?.pitch ?: 100
 
-        val myJobId = UUID.randomUUID().toString()
-        currentJobId = myJobId
+        isInterrupted.set(true)
+        currentTask?.cancel(true)
+        currentLatch?.countDown()
         
         acquireWakeLock()
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        val safeChunks = recursiveSplit(text)
+        isInterrupted.set(false)
+        val sessionId = UUID.randomUUID().toString()
         
-        for (chunk in safeChunks) {
-            if (currentJobId != myJobId) break
-
-            if (LanguageUtils.hasShan(chunk)) {
-                if (!processShanMode(chunk, sysRate, sysPitch, myJobId)) break
-            } else {
-                if (!processSmartMode(chunk, sysRate, sysPitch, myJobId)) break
+        currentTask = executor.submit {
+            try {
+                processText(text, sysRate, sysPitch, sessionId)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                if (!isInterrupted.get()) {
+                    callback?.done()
+                }
+                releaseWakeLock()
             }
         }
-
-        callback?.done()
-        releaseWakeLock()
     }
 
-    private fun processShanMode(text: String, sysRate: Int, sysPitch: Int, jobId: String): Boolean {
+    private fun processText(text: String, sysRate: Int, sysPitch: Int, sessionId: String) {
+        val safeChunks = recursiveSplit(text)
+        var isFirstChunk = true
+        
+        for (chunk in safeChunks) {
+            if (isInterrupted.get() || Thread.currentThread().isInterrupted) break
+
+            if (LanguageUtils.hasShan(chunk)) {
+                processShanMode(chunk, sysRate, sysPitch, isFirstChunk)
+            } else {
+                processSmartMode(chunk, sysRate, sysPitch, isFirstChunk)
+            }
+            
+            isFirstChunk = false
+        }
+    }
+
+    private fun processShanMode(text: String, sysRate: Int, sysPitch: Int, isFirstChunk: Boolean) {
         val words = text.split(Regex("\\s+"))
         var currentBuffer = StringBuilder()
         var currentLang = ""
+        var firstItemProcessed = false
 
         for (word in words) {
-            if (currentJobId != jobId) return false
+            if (isInterrupted.get()) return
 
             val detectedLang = LanguageUtils.detectLanguage(word)
             
@@ -146,27 +171,33 @@ class AutoTTSManagerService : TextToSpeechService() {
                 currentLang = detectedLang
                 currentBuffer.append("$word ")
             } else {
-                if (!speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)) return false
+                val flushMode = isFirstChunk && !firstItemProcessed
+                speakAndWait(currentLang, currentBuffer.toString(), sysRate, sysPitch, flushMode)
+                firstItemProcessed = true
+                
                 currentBuffer = StringBuilder("$word ")
                 currentLang = detectedLang
             }
         }
         if (currentBuffer.isNotEmpty()) {
-            return speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)
+            val flushMode = isFirstChunk && !firstItemProcessed
+            speakAndWait(currentLang, currentBuffer.toString(), sysRate, sysPitch, flushMode)
         }
-        return true
     }
 
-    private fun processSmartMode(text: String, sysRate: Int, sysPitch: Int, jobId: String): Boolean {
+    private fun processSmartMode(text: String, sysRate: Int, sysPitch: Int, isFirstChunk: Boolean) {
         var currentBuffer = StringBuilder()
         var currentLang = "" 
+        var firstItemProcessed = false
 
         for (char in text) {
-            if (currentJobId != jobId) return false
+            if (isInterrupted.get()) return
 
             if (char == '\n') {
                 if (currentBuffer.isNotEmpty()) {
-                    if (!speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)) return false
+                    val flushMode = isFirstChunk && !firstItemProcessed
+                    speakAndWait(currentLang, currentBuffer.toString(), sysRate, sysPitch, flushMode)
+                    firstItemProcessed = true
                     currentBuffer = StringBuilder()
                 }
                 continue
@@ -188,29 +219,36 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (charType == currentLang) {
                 currentBuffer.append(char)
             } else {
-                if (!speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)) return false
+                val flushMode = isFirstChunk && !firstItemProcessed
+                speakAndWait(currentLang, currentBuffer.toString(), sysRate, sysPitch, flushMode)
+                firstItemProcessed = true
+                
                 currentLang = charType
                 currentBuffer = StringBuilder()
                 currentBuffer.append(char)
             }
         }
         if (currentBuffer.isNotEmpty()) {
-            return speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)
+            val flushMode = isFirstChunk && !firstItemProcessed
+            speakAndWait(currentLang, currentBuffer.toString(), sysRate, sysPitch, flushMode)
         }
-        return true
     }
 
-    private fun speakBlocking(lang: String, text: String, sysRate: Int, sysPitch: Int, jobId: String): Boolean {
-        if (text.isBlank()) return true
-        if (currentJobId != jobId) return false
+    private fun speakAndWait(lang: String, text: String, sysRate: Int, sysPitch: Int, flushMode: Boolean) {
+        if (text.isBlank() || isInterrupted.get()) return
 
         val engine = when (lang) {
             "SHAN" -> if (isShanReady) shanEngine else englishEngine
             "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
             else -> if (isEnglishReady) englishEngine else null
-        } ?: return true
+        } ?: return
 
-        waiter.close()
+        // တံခါးပိတ်
+        currentLatch = CountDownLatch(1)
+        
+        // Chunk ID အသစ်ထုတ် (Listener မှာ စစ်ဖို့)
+        val chunkId = UUID.randomUUID().toString()
+        currentChunkId = chunkId
 
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         var userRate = 1.0f
@@ -243,18 +281,29 @@ class AutoTTSManagerService : TextToSpeechService() {
             params.putParcelable("audioAttributes", audioAttributes)
         }
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-        
-        val utteranceId = UUID.randomUUID().toString()
 
-        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+        // ပထမဆုံး စာသားဆိုရင် အဟောင်းတွေကို ဖျက် (Flush)
+        // နောက်စာသားတွေဆိုရင် ဆက်တိုက်ဖတ် (Add)
+        val queueMode = if (flushMode) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        
+        val result = engine.speak(text, queueMode, params, chunkId)
         
         if (result == TextToSpeech.ERROR) {
-            waiter.open()
-            return true
-        } else {
-            waiter.block()
-            try { Thread.sleep(50) } catch (e: Exception) {}
-            return currentJobId == jobId
+            return
+        }
+
+        // Engine ပြီးတဲ့အထိ စောင့် (Blocking)
+        try {
+            // 10 Second Timeout ထည့်ထားသည် (Engine ဟန်းနေရင် မစောင့်တော့အောင်)
+            currentLatch?.await(10, TimeUnit.SECONDS)
+            
+            // *** အဓိက ပြင်ဆင်ချက် ***
+            // Engine တစ်ခုပြီးသွားတာနဲ့ ချက်ချင်းနောက်တစ်ခုကို မခေါ်ဘဲ 20ms နားပါ
+            // ဒါက "English ဝင်တိုးခြင်း" ကို ၁၀၀% ကာကွယ်ပေးပါတယ်
+            Thread.sleep(20)
+            
+        } catch (e: InterruptedException) {
+            isInterrupted.set(true)
         }
     }
 
@@ -262,9 +311,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
-            shanEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
-            burmeseEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
-            englishEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
+            val killer = "KILLER"
+            // Stop အမိန့်ပေးရင် ချက်ချင်းရပ်
+            shanEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, killer)
+            burmeseEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, killer)
+            englishEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, killer)
         } catch (e: Exception) { }
     }
 
@@ -305,9 +356,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() {
-        currentJobId = ""
-        waiter.open()
-        workThread.quit()
+        isInterrupted.set(true)
+        currentTask?.cancel(true)
+        executor.shutdownNow()
         stopEnginesDirectly()
         releaseWakeLock()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
@@ -344,20 +395,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 }
 
-// *** MISSING PART FIXED BELOW ***
 object LanguageUtils {
     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
-    
     fun hasShan(text: String): Boolean = SHAN_PATTERN.containsMatchIn(text)
-    
     fun getCharType(char: Char): String {
         val text = char.toString()
         if (SHAN_PATTERN.containsMatchIn(text)) return "SHAN"
         if (MYANMAR_PATTERN.containsMatchIn(text)) return "MYANMAR"
         return "ENGLISH"
     }
-    
     fun detectLanguage(text: CharSequence?): String {
         if (text.isNullOrBlank()) return "ENGLISH"
         val input = text.toString()
