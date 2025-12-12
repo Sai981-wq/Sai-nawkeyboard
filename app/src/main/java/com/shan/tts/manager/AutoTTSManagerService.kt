@@ -26,27 +26,27 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
-    // Thread & Blocking Mechanism
     private lateinit var workThread: HandlerThread
     private lateinit var workHandler: Handler
     
-    // Engine ပြောပြီးမပြီး စောင့်ဆိုင်းရန် Variable
+    // Engine ပြီးမပြီး စောင့်မည့် တံခါး
     private val waiter = ConditionVariable()
     
+    // လက်ရှိပြောနေတဲ့ စာကြောင်း ID
     @Volatile
-    private var isStopped = false
+    private var currentBlockingId: String = ""
+    
+    @Volatile
+    private var currentJobId: String = ""
 
     private var currentLocale: Locale = Locale.US
     private var wakeLock: PowerManager.WakeLock? = null
-    
-    // Chunk Size (Engine Error မတက်အောင် Safe Size ထားသည်)
     private val SAFE_CHUNK_SIZE = 1200
 
     override fun onCreate() {
         super.onCreate()
         
-        // Background Thread တစ်ခုဆောက်မည် (Main UI မလေးစေရန်)
-        workThread = HandlerThread("TTS_WORKER")
+        workThread = HandlerThread("TTS_WORKER_THREAD")
         workThread.start()
         workHandler = Handler(workThread.looper)
         
@@ -74,17 +74,22 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) {}
 
             override fun onDone(utteranceId: String?) {
-                // ပြောပြီးပြီဆိုရင် Lock ဖွင့်ပေးလိုက် (နောက်တစ်ကြောင်း ဆက်ပြောလို့ရပြီ)
-                waiter.open()
+                // လက်ရှိပြောခိုင်းထားတဲ့ ID ပြီးမှသာ တံခါးဖွင့်မယ်
+                if (utteranceId == currentBlockingId) {
+                    waiter.open()
+                }
             }
 
             override fun onError(utteranceId: String?) {
-                // Error တက်ရင်လည်း Lock ဖွင့်ပေး (မဖွင့်ရင် စက်ဟန်းနေမယ်)
-                waiter.open()
+                if (utteranceId == currentBlockingId) {
+                    waiter.open()
+                }
             }
             
             override fun onError(utteranceId: String?, errorCode: Int) {
-                waiter.open()
+                if (utteranceId == currentBlockingId) {
+                    waiter.open()
+                }
             }
         })
     }
@@ -102,18 +107,15 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        // ၁။ Stop Flag တင်လိုက်မယ်
-        isStopped = true
+        // Job ID ပြောင်းလိုက်တာနဲ့ Loop က ချက်ချင်းရပ်သွားမယ်
+        currentJobId = UUID.randomUUID().toString()
         
-        // ၂။ လက်ရှိပြောနေတဲ့ Engine ကို ရပ်မယ်
         stopEnginesDirectly()
         
-        // ၃။ Waiter ကို အတင်းဖွင့်မယ် (Thread Loop ရပ်သွားအောင်)
+        // Waiter ကိုဖွင့်ပေးလိုက်မှ Thread က ရှေ့ဆက်သွားပြီး Loop ထဲကထွက်နိုင်မယ်
         waiter.open()
         
-        // ၄။ Handler ထဲက Pending Task တွေဖျက်မယ်
         workHandler.removeCallbacksAndMessages(null)
-        
         releaseWakeLock()
     }
 
@@ -122,28 +124,21 @@ class AutoTTSManagerService : TextToSpeechService() {
         val sysRate = request?.speechRate ?: 100
         val sysPitch = request?.pitch ?: 100
 
-        // အသစ်လာတိုင်း Stop Flag ဖြုတ်မယ်
-        isStopped = false
+        val myJobId = UUID.randomUUID().toString()
+        currentJobId = myJobId
         
-        // WakeLock ယူမယ်
         acquireWakeLock()
-        
-        // TalkBack က အသံဖိုင်ကို Streaming လိုချင်တာမို့ Start လုပ်ပေးရမယ်
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        // *** BLOCKING MODE ***
-        // ဒီ Loop က စာတစ်ကြောင်းပြီးမှ တစ်ကြောင်းလုပ်မှာမို့ အသံထပ်ခြင်း မရှိနိုင်ပါ
-        
         val safeChunks = recursiveSplit(text)
         
         for (chunk in safeChunks) {
-            if (isStopped) break // Stop လာရင် Loop ထဲက ထွက်မယ်
+            if (currentJobId != myJobId) break
 
-            // ရှမ်းစာလား၊ ဗမာလား ခွဲမယ်
             if (LanguageUtils.hasShan(chunk)) {
-                processShanMode(chunk, sysRate, sysPitch)
+                if (!processShanMode(chunk, sysRate, sysPitch, myJobId)) break
             } else {
-                processSmartMode(chunk, sysRate, sysPitch)
+                if (!processSmartMode(chunk, sysRate, sysPitch, myJobId)) break
             }
         }
 
@@ -151,15 +146,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         releaseWakeLock()
     }
 
-    // *** SYNCHRONOUS PROCESSORS ***
-    
-    private fun processShanMode(text: String, sysRate: Int, sysPitch: Int) {
+    private fun processShanMode(text: String, sysRate: Int, sysPitch: Int, jobId: String): Boolean {
         val words = text.split(Regex("\\s+"))
         var currentBuffer = StringBuilder()
         var currentLang = ""
 
         for (word in words) {
-            if (isStopped) return
+            if (currentJobId != jobId) return false
 
             val detectedLang = LanguageUtils.detectLanguage(word)
             
@@ -167,28 +160,27 @@ class AutoTTSManagerService : TextToSpeechService() {
                 currentLang = detectedLang
                 currentBuffer.append("$word ")
             } else {
-                // Buffer ထဲက စာကို Speak လုပ်ပြီး ပြီးတဲ့အထိ စောင့်မယ်
-                speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                if (!speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)) return false
                 currentBuffer = StringBuilder("$word ")
                 currentLang = detectedLang
             }
         }
-        if (currentBuffer.isNotEmpty() && !isStopped) {
-            speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+        if (currentBuffer.isNotEmpty()) {
+            return speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)
         }
+        return true
     }
 
-    private fun processSmartMode(text: String, sysRate: Int, sysPitch: Int) {
+    private fun processSmartMode(text: String, sysRate: Int, sysPitch: Int, jobId: String): Boolean {
         var currentBuffer = StringBuilder()
         var currentLang = "" 
 
         for (char in text) {
-            if (isStopped) return
+            if (currentJobId != jobId) return false
 
-            // New Line တွေ့ရင် ချက်ချင်း ဖတ်ပစ်မယ် (Code Reading အတွက်)
             if (char == '\n') {
                 if (currentBuffer.isNotEmpty()) {
-                    speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                    if (!speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)) return false
                     currentBuffer = StringBuilder()
                 }
                 continue
@@ -210,31 +202,35 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (charType == currentLang) {
                 currentBuffer.append(char)
             } else {
-                // Language ပြောင်းသွားရင် ရှိတာ အရင်ဖတ်၊ ပြီးမှဆက်လုပ်
-                speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+                if (!speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)) return false
                 currentLang = charType
                 currentBuffer = StringBuilder()
                 currentBuffer.append(char)
             }
         }
-        if (currentBuffer.isNotEmpty() && !isStopped) {
-            speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch)
+        if (currentBuffer.isNotEmpty()) {
+            return speakBlocking(currentLang, currentBuffer.toString(), sysRate, sysPitch, jobId)
         }
+        return true
     }
 
-    // *** THE MAGIC FUNCTION ***
-    // ဒီ Function က Engine ပြောလို့မပြီးမချင်း ဒီနေရာမှာပဲ ရပ်စောင့်နေမယ် (Block)
-    private fun speakBlocking(lang: String, text: String, sysRate: Int, sysPitch: Int) {
-        if (text.isBlank() || isStopped) return
+    // *** STRICT SERIAL BLOCKING ***
+    private fun speakBlocking(lang: String, text: String, sysRate: Int, sysPitch: Int, jobId: String): Boolean {
+        if (text.isBlank()) return true
+        if (currentJobId != jobId) return false
 
         val engine = when (lang) {
             "SHAN" -> if (isShanReady) shanEngine else englishEngine
             "MYANMAR" -> if (isBurmeseReady) burmeseEngine else englishEngine
             else -> if (isEnglishReady) englishEngine else null
-        } ?: return
+        } ?: return true
 
-        // 1. Waiter ကို ပိတ်လိုက်မယ် (Red Light)
+        // တံခါးပိတ်မည်
         waiter.close()
+        
+        // Blocking ID အသစ်ထုတ်မည်
+        val uniqueID = UUID.randomUUID().toString()
+        currentBlockingId = uniqueID
 
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         var userRate = 1.0f
@@ -267,19 +263,22 @@ class AutoTTSManagerService : TextToSpeechService() {
             params.putParcelable("audioAttributes", audioAttributes)
         }
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-        
-        val utteranceId = UUID.randomUUID().toString()
 
-        // 2. Speak ခိုင်းမယ် (QUEUE_ADD သုံးလည်း ရတယ်၊ ဘာလို့ဆို တစ်ကြောင်းချင်းမို့လို့)
-        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+        // QUEUE_ADD သုံးသော်လည်း waiter.block() ကြောင့် တစ်ခုပြီးမှတစ်ခုသွားမည်
+        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, uniqueID)
         
-        // 3. Error တက်ရင် Waiter ပြန်ဖွင့်၊ မတက်ရင် onDone လာတဲ့ထိ စောင့် (Block)
         if (result == TextToSpeech.ERROR) {
             waiter.open()
+            return true
         } else {
-            // ဒီနေရာမှာ Thread က ရပ်ပြီး Engine ပြီးတဲ့အထိ စောင့်နေပါလိမ့်မယ်
-            // TalkBack က onStop ခေါ်ရင် waiter.open() ဖြစ်ပြီး ဒီကနေ လွတ်ထွက်သွားမယ်
+            // Engine မပြီးမချင်း (onDone မလာမချင်း) ဒီမှာရပ်စောင့်နေမည်
             waiter.block()
+            
+            // Safety Sleep: အသံအမြီးပြတ်ပြီးမှ နောက်တစ်ခုစဖို့ 50ms နားမည်
+            // ဒါက "English ဝင်တိုးခြင်း" ကို ကာကွယ်ပေးသည်
+            try { Thread.sleep(50) } catch (e: Exception) {}
+
+            return currentJobId == jobId
         }
     }
 
@@ -287,10 +286,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
-            // Silent Flush to kill buffers
-            shanEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
-            burmeseEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
-            englishEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
+            // Silent Flush - အသံဟောင်းများကို ချက်ချင်းဖျက်ဆီးခြင်း
+            val killerId = "KILLER"
+            shanEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, killerId)
+            burmeseEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, killerId)
+            englishEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, killerId)
         } catch (e: Exception) { }
     }
 
@@ -331,7 +331,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() {
-        isStopped = true
+        currentJobId = ""
         waiter.open()
         workThread.quit()
         stopEnginesDirectly()
@@ -340,7 +340,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onDestroy()
     }
     
-    // Voices & Language Logic (Same as before)
     override fun onGetVoices(): List<Voice> {
         val voices = ArrayList<Voice>()
         voices.add(Voice("Shan (Myanmar)", Locale("shn", "MM"), Voice.QUALITY_VERY_HIGH, Voice.LATENCY_LOW, false, setOf("male")))
@@ -368,25 +367,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
     override fun onGetLanguage(): Array<String> {
         return try { arrayOf(currentLocale.isO3Language, currentLocale.isO3Country, "") } catch (e: Exception) { arrayOf("eng", "USA", "") }
-    }
-}
-
-object LanguageUtils {
-    private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
-    private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
-    fun hasShan(text: String): Boolean = SHAN_PATTERN.containsMatchIn(text)
-    fun getCharType(char: Char): String {
-        val text = char.toString()
-        if (SHAN_PATTERN.containsMatchIn(text)) return "SHAN"
-        if (MYANMAR_PATTERN.containsMatchIn(text)) return "MYANMAR"
-        return "ENGLISH"
-    }
-    fun detectLanguage(text: CharSequence?): String {
-        if (text.isNullOrBlank()) return "ENGLISH"
-        val input = text.toString()
-        if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
-        if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
-        return "ENGLISH"
     }
 }
 
