@@ -32,10 +32,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     // Engine ပြီးမပြီး စောင့်မည့် တံခါး
     private val waiter = ConditionVariable()
     
-    // လက်ရှိပြောနေတဲ့ စာကြောင်း ID
-    @Volatile
-    private var currentBlockingId: String = ""
-    
     @Volatile
     private var currentJobId: String = ""
 
@@ -74,22 +70,15 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) {}
 
             override fun onDone(utteranceId: String?) {
-                // လက်ရှိပြောခိုင်းထားတဲ့ ID ပြီးမှသာ တံခါးဖွင့်မယ်
-                if (utteranceId == currentBlockingId) {
-                    waiter.open()
-                }
+                waiter.open()
             }
 
             override fun onError(utteranceId: String?) {
-                if (utteranceId == currentBlockingId) {
-                    waiter.open()
-                }
+                waiter.open()
             }
             
             override fun onError(utteranceId: String?, errorCode: Int) {
-                if (utteranceId == currentBlockingId) {
-                    waiter.open()
-                }
+                waiter.open()
             }
         })
     }
@@ -107,14 +96,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        // Job ID ပြောင်းလိုက်တာနဲ့ Loop က ချက်ချင်းရပ်သွားမယ်
         currentJobId = UUID.randomUUID().toString()
         
         stopEnginesDirectly()
         
-        // Waiter ကိုဖွင့်ပေးလိုက်မှ Thread က ရှေ့ဆက်သွားပြီး Loop ထဲကထွက်နိုင်မယ်
         waiter.open()
-        
         workHandler.removeCallbacksAndMessages(null)
         releaseWakeLock()
     }
@@ -214,7 +200,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         return true
     }
 
-    // *** STRICT SERIAL BLOCKING ***
     private fun speakBlocking(lang: String, text: String, sysRate: Int, sysPitch: Int, jobId: String): Boolean {
         if (text.isBlank()) return true
         if (currentJobId != jobId) return false
@@ -225,12 +210,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             else -> if (isEnglishReady) englishEngine else null
         } ?: return true
 
-        // တံခါးပိတ်မည်
         waiter.close()
-        
-        // Blocking ID အသစ်ထုတ်မည်
-        val uniqueID = UUID.randomUUID().toString()
-        currentBlockingId = uniqueID
 
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         var userRate = 1.0f
@@ -263,21 +243,17 @@ class AutoTTSManagerService : TextToSpeechService() {
             params.putParcelable("audioAttributes", audioAttributes)
         }
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+        
+        val utteranceId = UUID.randomUUID().toString()
 
-        // QUEUE_ADD သုံးသော်လည်း waiter.block() ကြောင့် တစ်ခုပြီးမှတစ်ခုသွားမည်
-        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, uniqueID)
+        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         
         if (result == TextToSpeech.ERROR) {
             waiter.open()
             return true
         } else {
-            // Engine မပြီးမချင်း (onDone မလာမချင်း) ဒီမှာရပ်စောင့်နေမည်
             waiter.block()
-            
-            // Safety Sleep: အသံအမြီးပြတ်ပြီးမှ နောက်တစ်ခုစဖို့ 50ms နားမည်
-            // ဒါက "English ဝင်တိုးခြင်း" ကို ကာကွယ်ပေးသည်
             try { Thread.sleep(50) } catch (e: Exception) {}
-
             return currentJobId == jobId
         }
     }
@@ -286,11 +262,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
-            // Silent Flush - အသံဟောင်းများကို ချက်ချင်းဖျက်ဆီးခြင်း
-            val killerId = "KILLER"
-            shanEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, killerId)
-            burmeseEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, killerId)
-            englishEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, killerId)
+            shanEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
+            burmeseEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
+            englishEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, "KILLER")
         } catch (e: Exception) { }
     }
 
@@ -367,6 +341,29 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
     override fun onGetLanguage(): Array<String> {
         return try { arrayOf(currentLocale.isO3Language, currentLocale.isO3Country, "") } catch (e: Exception) { arrayOf("eng", "USA", "") }
+    }
+}
+
+// *** MISSING PART FIXED BELOW ***
+object LanguageUtils {
+    private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
+    private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
+    
+    fun hasShan(text: String): Boolean = SHAN_PATTERN.containsMatchIn(text)
+    
+    fun getCharType(char: Char): String {
+        val text = char.toString()
+        if (SHAN_PATTERN.containsMatchIn(text)) return "SHAN"
+        if (MYANMAR_PATTERN.containsMatchIn(text)) return "MYANMAR"
+        return "ENGLISH"
+    }
+    
+    fun detectLanguage(text: CharSequence?): String {
+        if (text.isNullOrBlank()) return "ENGLISH"
+        val input = text.toString()
+        if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
+        if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
+        return "ENGLISH"
     }
 }
 
