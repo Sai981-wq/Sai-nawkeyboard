@@ -20,7 +20,7 @@ data class TTSChunk(
     val lang: String,
     val sysRate: Int,
     val sysPitch: Int,
-    val sessionId: String
+    val sessionId: String 
 )
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -37,7 +37,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val queueLock = Any()
     
     @Volatile
-    private var currentSessionId: String = ""
+    private var currentSessionId: String = UUID.randomUUID().toString()
     
     @Volatile
     private var isSpeaking = false
@@ -72,22 +72,25 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun setupListener(tts: TextToSpeech) {
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
+                // လက်ရှိ Session နဲ့ ID တူမှသာ Speaking လို့ သတ်မှတ်
                 if (utteranceId?.startsWith(currentSessionId) == true) {
                     isSpeaking = true
                 }
             }
 
             override fun onDone(utteranceId: String?) {
+                // လက်ရှိ Session နဲ့ တူမှသာ နောက်တစ်ခုကို ဆက်ဖတ်
                 if (utteranceId?.startsWith(currentSessionId) == true) {
                     isSpeaking = false
-                    processNextChunk()
+                    processNextQueueItem()
                 }
             }
 
             override fun onError(utteranceId: String?) {
+                // Error တက်ရင်လည်း နောက်တစ်ခု ဆက်သွား
                 if (utteranceId?.startsWith(currentSessionId) == true) {
                     isSpeaking = false
-                    processNextChunk()
+                    processNextQueueItem()
                 }
             }
         })
@@ -104,19 +107,20 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        // ၁။ Session အသစ်ပြောင်း (အဟောင်းတွေ အကုန် Invalid ဖြစ်မယ်)
+        // ၁။ Session အသစ်ပြောင်း (အဟောင်းတွေ အကုန် Invalid ဖြစ်သွားမယ်)
         currentSessionId = UUID.randomUUID().toString()
         
-        // ၂။ Queue ကို ချက်ချင်းရှင်း
+        // ၂။ Queue ကို ရှင်းမယ်
         synchronized(queueLock) {
             messageQueue.clear()
         }
         isSpeaking = false
         
-        // ၃။ Engine ထဲက စာတွေကို အတင်းကန်ထုတ် (Force Flush)
+        // ၃။ Engine တွေကို Silent Flush လုပ်ပြီး အသံဟောင်းတွေကို ချက်ချင်းဖြတ်မယ်
+        // ဒါက TalkBack ပွတ်ဆွဲချိန် အသံထပ်ခြင်းကို ကာကွယ်ပေးတဲ့ အဓိကအချက်
         val params = Bundle()
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
-        val muteId = "SILENCE_" + System.currentTimeMillis()
+        val muteId = "SILENCE_KILLER"
         
         try {
             shanEngine?.speak(" ", TextToSpeech.QUEUE_FLUSH, params, muteId)
@@ -135,7 +139,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         acquireWakeLock()
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        // Session ID အသစ်တစ်ခု ဖန်တီးသည်
+        // Request အသစ်လာတိုင်း Session အသစ်ယူ (onStop နဲ့ မတိုက်မိအောင်)
         val mySession = UUID.randomUUID().toString()
         currentSessionId = mySession
         
@@ -147,7 +151,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         val safeChunks = recursiveSplit(originalText)
 
         for (chunk in safeChunks) {
-            // Loop ပတ်နေတုန်း Stop လုပ်ခံရရင် ချက်ချင်းရပ်
             if (currentSessionId != mySession) break
             
             if (LanguageUtils.hasShan(chunk)) {
@@ -157,31 +160,33 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        // ပထမဆုံးအလုံးကို စဖတ် (isFirstChunk = true)
-        processNextChunk(isFirstChunk = true)
-        
+        processNextQueueItem()
         callback?.done()
     }
 
-    private fun processNextChunk(isFirstChunk: Boolean = false) {
+    private fun processNextQueueItem() {
+        if (isSpeaking) return
+
         var chunkToPlay: TTSChunk? = null
 
         synchronized(queueLock) {
             if (messageQueue.isEmpty()) {
-                if (!isFirstChunk) releaseWakeLock()
+                releaseWakeLock()
                 return
             }
             
-            // Queue ထိပ်ကစာဟာ လက်ရှိ Session ဟုတ်မဟုတ် စစ်ဆေး
             val candidate = messageQueue.peek()
+            
+            // *** Session Check ***
+            // Queue ထဲက စာရဲ့ Session ID က လက်ရှိ ID နဲ့ မတူတော့ရင် (Swipe လုပ်ထားရင်)
+            // လုံးဝ မဖတ်ဘဲ လွှင့်ပစ်မယ် (Overlap မဖြစ်တော့ဘူး)
             if (candidate != null && candidate.sessionId != currentSessionId) {
-                messageQueue.clear() // Session မတူရင် အမှိုက်တွေမို့ ရှင်းပစ်
+                messageQueue.poll() // Remove junk
+                // Recursively clear junk until valid or empty
+                processNextQueueItem() 
                 return
             }
             
-            // Engine မအားရင် ခဏစောင့် (Queue Logic)
-            if (isSpeaking && !isFirstChunk) return
-
             chunkToPlay = messageQueue.poll()
         }
 
@@ -191,7 +196,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val text = chunkToPlay!!.text
 
         if (engine == null) {
-            processNextChunk(false)
+            processNextQueueItem()
             return
         }
         
@@ -229,19 +234,16 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
-        // Session ID နဲ့ တွဲပြီး ID ပေးမယ်
+        // Utterance ID မှာ Session ID ပါ ထည့်ပေးလိုက်တယ် (Listener မှာ စစ်ဖို့)
         val utteranceId = currentSessionId + "_" + UUID.randomUUID().toString()
 
-        // *** အဓိကသော့ချက် ***
-        // ပထမဆုံး Chunk ဆိုရင် QUEUE_FLUSH (အဟောင်းဖျက် အသစ်ဖတ်)
-        // နောက် Chunk တွေဆိုရင် QUEUE_ADD (ဆက်တိုက်ဖတ်)
-        val queueMode = if (isFirstChunk) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-        
-        val result = engine.speak(text, queueMode, params, utteranceId)
+        // onStop() မှာ Flush လုပ်ပြီးသားမို့ ဒီမှာ QUEUE_ADD သုံးမှ အဆင်ပြေမယ်
+        // ဒါမှ စာအရှည်ကြီးတွေ ဆက်တိုက်ထွက်မယ်
+        val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId)
         
         if (result == TextToSpeech.ERROR) {
              isSpeaking = false
-             processNextChunk(false)
+             processNextQueueItem()
         }
     }
 
@@ -372,7 +374,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() {
-        isSpeaking = false
         try {
             shanEngine?.shutdown()
             burmeseEngine?.shutdown()
