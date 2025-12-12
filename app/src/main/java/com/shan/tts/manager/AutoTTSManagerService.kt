@@ -16,6 +16,7 @@ import java.io.IOException
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -29,6 +30,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isEnglishReady = false
 
     private val executor = Executors.newSingleThreadExecutor()
+    private var currentTask: Future<*>? = null
+    
     private val isStopped = AtomicBoolean(false)
     
     @Volatile
@@ -37,7 +40,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentLocale: Locale = Locale.US
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // 4KB Buffer
     private val BUFFER_SIZE = 4096
 
     override fun onCreate() {
@@ -76,8 +78,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         isStopped.set(true)
+        currentTask?.cancel(true)
+        
         try {
             currentInputStream?.close()
+            currentInputStream = null
         } catch (e: Exception) {}
         
         shanEngine?.stop()
@@ -89,36 +94,40 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        
-        // ၁။ System ကလာတဲ့ Rate/Pitch ကို ရယူခြင်း
         val sysRate = request?.speechRate ?: 100
         val sysPitch = request?.pitch ?: 100
+
+        isStopped.set(true)
+        currentTask?.cancel(true)
+        try { currentInputStream?.close() } catch (e: Exception) {}
 
         isStopped.set(false)
         acquireWakeLock()
 
-        executor.submit {
+        currentTask = executor.submit {
             try {
-                if (isStopped.get()) return@submit
+                if (isStopped.get() || Thread.currentThread().isInterrupted) return@submit
 
                 val chunks = splitByLanguage(text)
 
-                // Start Audio Stream (16kHz PCM)
-                callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
+                // Note: We delay callback.start() until we read the first WAV header
+                // to know the correct Sample Rate.
+                var isFirstChunk = true
 
                 for (chunkData in chunks) {
-                    if (isStopped.get()) break
+                    if (isStopped.get() || Thread.currentThread().isInterrupted) break
                     
                     val engine = getEngineForLang(chunkData.lang) ?: continue
                     
-                    // ၂။ User Setting နဲ့ System Setting ကို ပေါင်းစပ်ပြီး ပို့ခြင်း
-                    processViaPipe(engine, chunkData.text, chunkData.lang, sysRate, sysPitch, callback)
+                    processViaPipe(engine, chunkData.text, chunkData.lang, sysRate, sysPitch, callback, isFirstChunk)
+                    
+                    isFirstChunk = false
                 }
 
             } catch (e: Exception) {
-                e.printStackTrace()
+                // Ignore interruption errors
             } finally {
-                if (!isStopped.get()) {
+                if (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                     callback?.done()
                 }
                 releaseWakeLock()
@@ -132,7 +141,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         lang: String,
         sysRate: Int, 
         sysPitch: Int, 
-        callback: SynthesisCallback?
+        callback: SynthesisCallback?,
+        isFirstChunk: Boolean
     ) {
         var readSide: ParcelFileDescriptor? = null
         var writeSide: ParcelFileDescriptor? = null
@@ -143,11 +153,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             writeSide = pipe[1]
             
             val params = Bundle()
-            
-            // *** RATE & PITCH CALCULATION (The Fix) ***
             val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             
-            // User Preference (Default 100)
             var userRatePref = 100
             var userPitchPref = 100
 
@@ -166,11 +173,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
-            // Formula: (System / 100) * (User / 100)
-            // ဥပမာ: System 100, User 150 (1.5x) => Result 1.5x
-            // ဥပမာ: System 200 (TalkBack fast), User 100 => Result 2.0x
-            val finalRate = (sysRate / 100.0f) * (userRatePref / 100.0f)
-            val finalPitch = (sysPitch / 100.0f) * (userPitchPref / 100.0f)
+            val finalRate = (sysRate * userRatePref) / 10000.0f
+            val finalPitch = (sysPitch * userPitchPref) / 10000.0f
 
             engine.setSpeechRate(finalRate)
             engine.setPitch(finalPitch)
@@ -178,7 +182,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             val utteranceId = UUID.randomUUID().toString()
             engine.synthesizeToFile(text, params, writeSide, utteranceId)
 
-            // Close write side immediately so read side gets EOF when engine is done
             writeSide.close()
             writeSide = null 
 
@@ -188,27 +191,47 @@ class AutoTTSManagerService : TextToSpeechService() {
             val buffer = ByteArray(BUFFER_SIZE)
             var bytesRead: Int
             
-            // *** WAV HEADER SKIPPING FIX ***
-            // Chunk တစ်ခုချင်းစီအတွက် သီးသန့် Reset လုပ်ရမည်
             var totalBytesForThisChunk = 0
             val headerSize = 44
+            
+            // *** DYNAMIC SAMPLE RATE FIX ***
+            var sampleRate = 16000 // Default fallback
 
             while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                if (isStopped.get()) break
+                if (isStopped.get() || Thread.currentThread().isInterrupted) break
 
                 var offset = 0
                 var length = bytesRead
 
-                // Skip the first 44 bytes (WAV Header) ONLY for the start of this chunk
                 if (totalBytesForThisChunk < headerSize) {
+                    // *** EXTRACT SAMPLE RATE FROM WAV HEADER ***
+                    // WAV Header starts at byte 0. Sample Rate is at byte 24 (4 bytes, Little Endian)
+                    if (totalBytesForThisChunk == 0 && bytesRead >= 28) {
+                        // Byte 24, 25, 26, 27 contain sample rate
+                        val sr = (buffer[24].toInt() and 0xFF) or
+                                ((buffer[25].toInt() and 0xFF) shl 8) or
+                                ((buffer[26].toInt() and 0xFF) shl 16) or
+                                ((buffer[27].toInt() and 0xFF) shl 24)
+                        
+                        if (sr > 8000 && sr < 48000) {
+                            sampleRate = sr
+                        }
+                        
+                        // If this is the VERY FIRST chunk of the request, start the callback now
+                        // with the CORRECT sample rate.
+                        if (isFirstChunk) {
+                            callback?.start(sampleRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+                        }
+                    }
+
                     val remainingHeader = headerSize - totalBytesForThisChunk
                     if (bytesRead > remainingHeader) {
                         offset = remainingHeader
                         length = bytesRead - remainingHeader
-                        totalBytesForThisChunk += headerSize // Header done
+                        totalBytesForThisChunk += headerSize
                     } else {
                         totalBytesForThisChunk += bytesRead
-                        continue // Skip this small buffer entirely
+                        continue 
                     }
                 }
 
@@ -218,7 +241,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
         } catch (e: IOException) {
-            // Normal during stop
         } finally {
             try {
                 currentInputStream?.close()
@@ -273,6 +295,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onDestroy() {
         isStopped.set(true)
+        currentTask?.cancel(true)
         executor.shutdownNow()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
         releaseWakeLock()
