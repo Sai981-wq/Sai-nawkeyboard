@@ -11,18 +11,17 @@ import android.speech.tts.SynthesisRequest
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import java.util.Locale
-import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 
+// Data Model
 data class SpeechItem(
     val text: String,
     val engine: TextToSpeech?,
     val lang: String,
     val rate: Int,
     val pitch: Int,
-    val sessionId: String
+    val sessionId: Long // ID ပါမှ အဟောင်း/အသစ် ခွဲလို့ရမယ်
 )
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -35,27 +34,24 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var isBurmeseReady = false
     private var isEnglishReady = false
 
-    // Blocking Queue
+    // Queue (Thread Safe)
     private val speechQueue = LinkedBlockingQueue<SpeechItem>()
+    
+    // Session Manager (Atomic for thread safety)
+    private val currentSessionId = AtomicLong(0)
     
     // Worker Thread
     private var workerThread: Thread? = null
+    @Volatile private var isWorkerRunning = true
     
-    // Thread Control
-    private val isRunning = AtomicBoolean(true)
-    
-    // Session ID ကို Thread-Safe ဖြစ်အောင် AtomicReference သုံးမည်
-    private val currentSessionId = AtomicReference<String>("")
-    
-    // Waiting Lock
+    // Blocking Logic
     private val engineLock = Object()
-    
-    @Volatile
-    private var isEngineSpeaking = false
+    @Volatile private var isEngineBusy = false
 
     private var currentLocale: Locale = Locale.US
     private var wakeLock: PowerManager.WakeLock? = null
     
+    // Chunk Size (Engine Error မတက်အောင် လျှော့ထားသည်)
     private val SAFE_CHUNK_SIZE = 800
 
     override fun onCreate() {
@@ -79,54 +75,53 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishEngine?.language = Locale.US
         }
 
-        startWorker()
+        // နောက်ကွယ်ကနေ အလုပ်လုပ်မယ့် Thread စမယ်
+        startWorkerThread()
     }
 
-    private fun startWorker() {
+    private fun startWorkerThread() {
         workerThread = Thread {
-            while (isRunning.get()) {
+            while (isWorkerRunning) {
                 try {
-                    // Queue ထဲမှာ စာမရှိရင် ဒီမှာ Block နေမယ် (CPU မစားဘူး)
-                    // onStop() က interrupt() လုပ်ရင် ဒီနေရာမှာ Exception တက်ပြီး အောက်ရောက်သွားမယ်
+                    // Queue ထဲ စာရောက်လာတဲ့အထိ စောင့်မယ် (CPU မစားဘူး)
                     val item = speechQueue.take()
 
-                    // Session မတူရင် (Swipe လုပ်ထားရင်) လုံးဝ မဖတ်ဘူး
+                    // *** အဓိကသော့ချက် ***
+                    // Queue ထဲကစာရဲ့ ID နဲ့ လက်ရှိ ID မတူရင် (Swipe လုပ်ထားရင်) လွှင့်ပစ်မယ်
                     if (item.sessionId != currentSessionId.get()) {
                         continue
                     }
 
-                    // Speak and Wait
-                    speakAndWait(item)
+                    // စာဖတ်မယ် (Block လုပ်ပြီး စောင့်မယ်)
+                    processSpeechItem(item)
 
                 } catch (e: InterruptedException) {
-                    // onStop() က interrupt လုပ်လိုက်ရင် ဒီကိုရောက်လာမယ်
-                    // Loop အစကို ပြန်သွားပြီး Check မယ်
-                    continue 
+                    // Thread ကို ရပ်ခိုင်းရင် ထွက်မယ်
+                    break
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
             }
-        }
-        workerThread?.start()
+        }.apply { start() }
     }
 
-    private fun speakAndWait(item: SpeechItem) {
+    private fun processSpeechItem(item: SpeechItem) {
         val engine = item.engine ?: return
 
-        synchronized(engineLock) {
-            isEngineSpeaking = true
-        }
+        // Speaking Flag တင်မယ်
+        synchronized(engineLock) { isEngineBusy = true }
 
         val params = Bundle()
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-             val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build()
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
             params.putParcelable("audioAttributes", audioAttributes)
         }
 
+        // User Settings
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         var userRate = 1.0f
         var userPitch = 1.0f
@@ -148,28 +143,31 @@ class AutoTTSManagerService : TextToSpeechService() {
         engine.setSpeechRate((item.rate / 100.0f) * userRate)
         engine.setPitch((item.pitch / 100.0f) * userPitch)
 
-        val utteranceId = item.sessionId + "_" + System.nanoTime()
+        // *** Speak ***
+        // QUEUE_ADD သုံးပေမယ့် thread က wait နေမှာမို့ တစ်ခုပြီးမှတစ်ခုထွက်မယ်
+        val utteranceId = "${item.sessionId}_${System.nanoTime()}"
         engine.speak(item.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
 
-        // *** BLOCKING WAIT ***
+        // *** Blocking Wait ***
+        // Engine ပြီးတဲ့အထိ (သို့) Swipe လုပ်တဲ့အထိ စောင့်မယ်
         synchronized(engineLock) {
-            while (isEngineSpeaking) {
-                try {
-                    // Session ပြောင်းသွားရင် (Swipe) ချက်ချင်းထွက်
-                    if (item.sessionId != currentSessionId.get()) {
-                        engine.stop()
-                        break
-                    }
-                    engineLock.wait() // onDone မလာမချင်း စောင့်မယ်
-                } catch (e: InterruptedException) {
-                    // *** CRITICAL FIX ***
-                    // onStop() က interrupt လုပ်လိုက်ရင် ဒီနေရာမှာ Exception တက်မယ်
-                    // ဒါဆိုရင် Engine ကိုရပ်၊ Function ကနေ ချက်ချင်းထွက်
+            while (isEngineBusy) {
+                // စောင့်နေရင်း Session ပြောင်းသွားရင် (Swipe လုပ်ရင်) ချက်ချင်း ရပ်ပြီး ထွက်မယ်
+                if (item.sessionId != currentSessionId.get()) {
                     engine.stop()
-                    return // Exit immediately
+                    isEngineBusy = false
+                    break
+                }
+                try {
+                    engineLock.wait() // onDone လာတဲ့ထိ စောင့်
+                } catch (e: InterruptedException) {
+                    break
                 }
             }
         }
+        
+        // Safety Gap (အသံထပ်ခြင်း ကာကွယ်ရန် အနည်းငယ်နားသည်)
+        try { Thread.sleep(15) } catch (e: Exception) {}
     }
 
     private fun setupListener(tts: TextToSpeech) {
@@ -177,22 +175,23 @@ class AutoTTSManagerService : TextToSpeechService() {
             override fun onStart(utteranceId: String?) {}
 
             override fun onDone(utteranceId: String?) {
+                // Engine ပြီးပြီဆိုရင် Worker Thread ကို နိုးလိုက်မယ်
                 synchronized(engineLock) {
-                    isEngineSpeaking = false
-                    engineLock.notifyAll() // Worker thread ကို နိုးမယ်
+                    isEngineBusy = false
+                    engineLock.notifyAll()
                 }
             }
 
             override fun onError(utteranceId: String?) {
                 synchronized(engineLock) {
-                    isEngineSpeaking = false
+                    isEngineBusy = false
                     engineLock.notifyAll()
                 }
             }
             
             override fun onError(utteranceId: String?, errorCode: Int) {
                 synchronized(engineLock) {
-                    isEngineSpeaking = false
+                    isEngineBusy = false
                     engineLock.notifyAll()
                 }
             }
@@ -209,26 +208,19 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
-    // *** TalkBack SWIPE Handling ***
+    // *** TalkBack SWIPE Event ***
     override fun onStop() {
-        // ၁. Session ID ပြောင်း (Queue ထဲကဟာတွေ Invalid ဖြစ်မယ်)
-        currentSessionId.set(UUID.randomUUID().toString())
+        // ၁. Session ID တိုးလိုက်မယ် (ဒါဆို Queue ထဲက အဟောင်းတွေ အကုန် Invalid ဖြစ်သွားမယ်)
+        currentSessionId.incrementAndGet()
         
-        // ၂. Queue ကို ရှင်းထုတ်
-        speechQueue.clear()
-        
-        // ၃. လက်ရှိ Run နေတဲ့ Thread ကို အတင်းနှိုးပြီး ရပ်ခိုင်း (Interrupt)
-        // ဒါက စောင့်နေတဲ့ wait() ကို ဖောက်ထွက်စေတယ်
-        workerThread?.interrupt()
-        
-        // ၄. Engine အားလုံးကို Stop
+        // ၂. Engine တွေကို ချက်ချင်းရပ်ခိုင်းမယ် (Buffer ထဲက အသံတွေ ပျောက်သွားမယ်)
         shanEngine?.stop()
         burmeseEngine?.stop()
         englishEngine?.stop()
         
-        // ၅. Lock တွေရှင်း
+        // ၃. စောင့်နေတဲ့ Thread ကို လှုပ်နှိုးပြီး လွှတ်ပေးမယ်
         synchronized(engineLock) {
-            isEngineSpeaking = false
+            isEngineBusy = false
             engineLock.notifyAll()
         }
         
@@ -243,19 +235,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         acquireWakeLock()
         callback?.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        // Session အသစ်
-        val mySession = UUID.randomUUID().toString()
-        currentSessionId.set(mySession)
+        // Session အသစ် တစ်ခု စမယ်
+        // onStop နဲ့ ပြိုင်မတိုးအောင် အသစ်ထပ်ယူလိုက်တာ
+        val mySession = currentSessionId.incrementAndGet()
         
-        // Queue ရှင်း
-        speechQueue.clear()
-        
-        // အဟောင်းတွေ ရပ် (Just in case)
-        workerThread?.interrupt() 
+        // **မှတ်ချက်** : Queue ကို clear() မလုပ်ပါဘူး။ Session ID နဲ့ပဲ စစ်ထုတ်ပါမယ်။
+        // ဒါမှ စာအသစ်တွေ မှားအဖျက်ခံရတာမျိုး မဖြစ်တော့မှာပါ။
 
         val safeChunks = recursiveSplit(originalText)
 
         for (chunk in safeChunks) {
+            // Loop ပတ်နေတုန်း Stop လာရင် ရပ်
             if (currentSessionId.get() != mySession) break
             
             if (LanguageUtils.hasShan(chunk)) {
@@ -268,7 +258,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         callback?.done()
     }
 
-    private fun parseShanMode(text: String, sysRate: Int, sysPitch: Int, sessionId: String) {
+    private fun parseShanMode(text: String, rate: Int, pitch: Int, sessionId: Long) {
         val words = text.split(Regex("\\s+"))
         var currentBuffer = StringBuilder()
         var currentLang = ""
@@ -282,17 +272,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                 currentLang = detectedLang
                 currentBuffer.append("$word ")
             } else {
-                addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, sessionId)
+                addToQueue(currentLang, currentBuffer.toString(), rate, pitch, sessionId)
                 currentBuffer = StringBuilder("$word ")
                 currentLang = detectedLang
             }
         }
         if (currentBuffer.isNotEmpty()) {
-            addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, sessionId)
+            addToQueue(currentLang, currentBuffer.toString(), rate, pitch, sessionId)
         }
     }
 
-    private fun parseSmartMode(text: String, sysRate: Int, sysPitch: Int, sessionId: String) {
+    private fun parseSmartMode(text: String, rate: Int, pitch: Int, sessionId: Long) {
         var currentBuffer = StringBuilder()
         var currentLang = "" 
 
@@ -301,7 +291,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             if (char == '\n') {
                 if (currentBuffer.isNotEmpty()) {
-                    addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, sessionId)
+                    addToQueue(currentLang, currentBuffer.toString(), rate, pitch, sessionId)
                     currentBuffer = StringBuilder()
                 }
                 continue
@@ -323,18 +313,18 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (charType == currentLang) {
                 currentBuffer.append(char)
             } else {
-                addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, sessionId)
+                addToQueue(currentLang, currentBuffer.toString(), rate, pitch, sessionId)
                 currentLang = charType
                 currentBuffer = StringBuilder()
                 currentBuffer.append(char)
             }
         }
         if (currentBuffer.isNotEmpty()) {
-            addToQueue(currentLang, currentBuffer.toString(), sysRate, sysPitch, sessionId)
+            addToQueue(currentLang, currentBuffer.toString(), rate, pitch, sessionId)
         }
     }
 
-    private fun addToQueue(lang: String, text: String, rate: Int, pitch: Int, sessionId: String) {
+    private fun addToQueue(lang: String, text: String, rate: Int, pitch: Int, sessionId: Long) {
         if (text.isBlank()) return
         
         val engine = when (lang) {
@@ -343,8 +333,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             else -> if (isEnglishReady) englishEngine else null
         }
         
+        // Queue ထဲကို ထည့်ရုံပဲထည့်တယ် (Worker Thread က ID စစ်ပြီးမှ ဖတ်မယ်)
         try {
-            // Queue ထဲထည့် (Blocking Queue is thread safe)
             speechQueue.put(SpeechItem(text, engine, lang, rate, pitch, sessionId))
         } catch (e: InterruptedException) { }
     }
@@ -380,7 +370,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() {
-        isRunning.set(false)
+        isWorkerRunning = false
         workerThread?.interrupt()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
