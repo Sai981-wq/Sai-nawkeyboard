@@ -30,7 +30,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
-        super.onCreate()
+        super.onCreate() // Service ရဲ့ onCreate (Valid)
         AppLogger.log("Service", "Service Created")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -86,7 +86,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentTask = executor.submit {
             try {
                 AppLogger.log("Worker", "Processing started...")
-                val chunks = splitByLanguage(text) // Assume this helper exists from previous code
+                val chunks = splitByLanguage(text) 
                 var hasStartedCallback = false
 
                 for (chunk in chunks) {
@@ -126,12 +126,11 @@ class AutoTTSManagerService : TextToSpeechService() {
             writeSide = pipe[1]
 
             val params = Bundle()
-            // Set params if needed...
 
             AppLogger.log("Pipe", "Calling synthesizeToFile...")
             val result = engine.synthesizeToFile(text, params, writeSide, uuid)
             
-            // Important: Close write side immediately
+            // Close write side immediately so read side gets EOF when engine is done
             writeSide.close()
             writeSide = null 
 
@@ -155,24 +154,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             if (headerBytes > 0) {
                  if (!alreadyStarted) {
-                     // Check Sample Rate
-                     // val rate = ... (Use your helper)
                      callback?.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
                      didStart = true
                      AppLogger.log("Callback", "start() called with 24000")
                  }
-                 
-                 // Pass header first if valid pcm? usually header is skipped, but let's pass data
-                 // Actually for raw PCM we might skip 44 bytes. 
-                 // For now, let's just loop the rest.
                  
                  while (true) {
                      if (isStopped.get()) break
                      val count = inputStream.read(buffer)
                      if (count == -1) break
                      
-                     // Resampling logic here if needed...
-                     // For debugging, pass direct
                      if (count > 0) {
                          callback?.audioAvailable(buffer, 0, count)
                          totalRead += count
@@ -190,26 +181,39 @@ class AutoTTSManagerService : TextToSpeechService() {
         return didStart
     }
     
-    // --- Helpers (Copy from previous code) ---
+    // --- Helpers ---
     private fun getEngine(lang: String): TextToSpeech? {
-        // Your logic
-        return englishEngine // Placeholder
+        return when (lang) {
+            "SHAN" -> if (shanEngine != null) shanEngine else englishEngine
+            "MYANMAR" -> if (burmeseEngine != null) burmeseEngine else englishEngine
+            else -> englishEngine
+        }
     }
     
     private fun splitByLanguage(text: String): List<LangChunk> {
-        // Your logic
-        return listOf(LangChunk(text, "ENGLISH")) // Placeholder
+         return LanguageUtils.splitHelper(text)
     }
     
     data class LangChunk(val text: String, val lang: String)
 
+    // *** FIX: Removed super.onStop() ***
     override fun onStop() {
         AppLogger.log("Service", "onStop called")
         isStopped.set(true)
-        super.onStop()
+        // super.onStop()  <-- ဒီလိုင်းကို ဖြုတ်ထားပါတယ် (Abstract method error ဖြေရှင်းချက်)
     }
     
-    // Talkback Required Overrides...
+    override fun onDestroy() {
+        AppLogger.log("Service", "onDestroy called")
+        isStopped.set(true)
+        executor.shutdownNow()
+        shanEngine?.shutdown()
+        burmeseEngine?.shutdown()
+        englishEngine?.shutdown()
+        if (wakeLock?.isHeld == true) wakeLock?.release()
+        super.onDestroy() // Service ရဲ့ onDestroy (Valid)
+    }
+
     override fun onGetVoices(): List<Voice> { return listOf() }
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
