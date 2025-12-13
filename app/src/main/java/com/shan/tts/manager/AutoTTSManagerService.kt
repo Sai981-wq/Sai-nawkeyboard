@@ -20,6 +20,7 @@ import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+// Helper classes
 data class LangChunk(val text: String, val lang: String)
 data class WavInfo(val sampleRate: Int, val channels: Int)
 
@@ -34,13 +35,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // Session တစ်ခုအတွက် အသံ Rate ကို မှတ်သားရန်
     private var currentSessionRate = 0
     private var currentSessionChannels = 1
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS Service Started (Stable Mode)")
+        AppLogger.log("Service", "Cherry TTS Service Started (Stable)")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -75,19 +75,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }, pkg)
         } catch (e: Exception) {
-            AppLogger.log("InitError", "Crash on $name: ${e.message}")
+            AppLogger.log("InitError", "Crash on $name: ${e.toString()}")
         }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
-        // Stop Old Tasks
         isStopped.set(true)
         currentTask?.cancel(true)
         isStopped.set(false)
         
-        // Reset Session
         currentSessionRate = 0 
         
         if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
@@ -96,7 +94,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             try {
                 val chunks = LanguageUtils.splitHelper(text) 
                 
-                // Handle Empty/Spaces immediately
                 if (chunks.isEmpty()) {
                     callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
                     callback?.done()
@@ -110,23 +107,18 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (isStopped.get()) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
-                    
-                    // Apply Settings
                     val params = applyRateAndPitch(engine, chunk.lang, request)
-                    
-                    // Process Audio
                     val success = processWithFile(engine, chunk.text, params, callback, hasStartedCallback)
                     
                     if (success) hasStartedCallback = true
                 }
                 
-                // Fallback start if nothing played
                 if (!hasStartedCallback) {
                      callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
             } catch (e: Exception) {
-                AppLogger.log("WorkerError", "Error: ${e.message}")
+                AppLogger.log("WorkerError", "Error: ${e.toString()}")
             } finally {
                 if (!isStopped.get()) callback?.done()
                 if (wakeLock?.isHeld == true) wakeLock?.release()
@@ -169,22 +161,27 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun processWithFile(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean): Boolean {
+        if (callback == null) return alreadyStarted
+
         var didStart = alreadyStarted
         val uuid = UUID.randomUUID().toString()
         val tempFile = File.createTempFile("tts_", ".wav", cacheDir)
         val latch = CountDownLatch(1)
-        var success = false
-
+        
         try {
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) { if (utteranceId == uuid) latch.countDown() }
-                override fun onError(utteranceId: String?) { if (utteranceId == uuid) latch.countDown() }
+                override fun onDone(utteranceId: String?) { 
+                    if (utteranceId == uuid) latch.countDown() 
+                }
+                override fun onError(utteranceId: String?) { 
+                    if (utteranceId == uuid) latch.countDown() 
+                }
             })
 
             params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
             
-            // *** FIXED: Using (text, bundle, file, id) signature ***
+            // Call Synthesize (Correct API for Bundle)
             val result = engine.synthesizeToFile(text, params, tempFile, uuid)
             
             if (result == TextToSpeech.SUCCESS) {
@@ -193,42 +190,47 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (tempFile.exists() && tempFile.length() > 44) {
                     val fis = FileInputStream(tempFile)
                     val header = ByteArray(44)
-                    fis.read(header)
+                    val headerRead = fis.read(header)
                     
-                    val wavInfo = getWavInfo(header)
-                    
-                    // Dynamic Start: Use the rate from the FIRST chunk
-                    if (!didStart) {
-                        currentSessionRate = wavInfo.sampleRate
-                        currentSessionChannels = wavInfo.channels
-                        AppLogger.log("AudioConfig", "Start: ${currentSessionRate}Hz")
-                        callback?.start(currentSessionRate, AudioFormat.ENCODING_PCM_16BIT, currentSessionChannels)
-                        didStart = true
-                    }
-                    
-                    val buffer = ByteArray(4096)
-                    var bytesRead: Int
-                    
-                    while (fis.read(buffer).also { bytesRead = it } != -1) {
-                         if (isStopped.get()) break
-                         
-                         // Only resample if subsequent chunks differ from the start rate
-                         val outputBytes = if (wavInfo.sampleRate != currentSessionRate) {
-                             AudioResampler.resampleChunk(buffer, bytesRead, wavInfo.sampleRate, currentSessionRate)
-                         } else {
-                             buffer.copyOfRange(0, bytesRead)
-                         }
-                         
-                         if (outputBytes.isNotEmpty()) {
-                             callback?.audioAvailable(outputBytes, 0, outputBytes.size)
-                         }
+                    if (headerRead == 44) {
+                        val wavInfo = getWavInfo(header)
+                        
+                        // Dynamic Start logic
+                        if (!didStart) {
+                            currentSessionRate = wavInfo.sampleRate
+                            currentSessionChannels = wavInfo.channels
+                            AppLogger.log("AudioConfig", "Start: ${currentSessionRate}Hz")
+                            callback.start(currentSessionRate, AudioFormat.ENCODING_PCM_16BIT, currentSessionChannels)
+                            didStart = true
+                        }
+                        
+                        val buffer = ByteArray(4096)
+                        var bytesRead: Int
+                        
+                        while (fis.read(buffer).also { bytesRead = it } != -1) {
+                             if (isStopped.get()) break
+                             
+                             val outputBytes = if (wavInfo.sampleRate != currentSessionRate) {
+                                 AudioResampler.resampleChunk(buffer, bytesRead, wavInfo.sampleRate, currentSessionRate)
+                             } else {
+                                 buffer.copyOfRange(0, bytesRead)
+                             }
+                             
+                             if (outputBytes.isNotEmpty()) {
+                                 callback.audioAvailable(outputBytes, 0, outputBytes.size)
+                             }
+                        }
+                    } else {
+                        AppLogger.log("FileError", "Invalid WAV Header Size")
                     }
                     fis.close()
-                    success = true
                 }
+            } else {
+                AppLogger.log("FileError", "Engine returned FAIL")
             }
         } catch (e: Exception) {
-            AppLogger.log("FileError", "Err: ${e.message}")
+            // Using e.toString() avoids NullPointerException if message is null
+            AppLogger.log("FileError", "Ex: ${e.toString()}")
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
         }
