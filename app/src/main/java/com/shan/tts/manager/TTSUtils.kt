@@ -1,12 +1,8 @@
 package com.shan.tts.manager
 
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-
 object LanguageUtils {
      private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
      private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
-     // Latency လျှော့ချရန် ပုဒ်ဖြတ်ပုဒ်ရပ်များတွင် ဖြတ်မည်
      private val PUNCTUATION = Regex("[။،,!?\\n]") 
 
      fun detectLanguage(text: CharSequence?): String {
@@ -17,7 +13,6 @@ object LanguageUtils {
         return "ENGLISH"
     }
 
-    // Smart Splitter: စာရှည်ကြီးတွေကို စောင့်စရာမလိုအောင် ခွဲပေးမည်
     fun splitHelper(text: String): List<LangChunk> {
         val list = ArrayList<LangChunk>()
         if (text.isBlank()) return list
@@ -32,10 +27,8 @@ object LanguageUtils {
                 currentBuffer.append(word)
                 continue
             }
-            
             val detected = detectLanguage(trimmed)
             val langChanged = currentLang.isNotEmpty() && currentLang != detected
-            // စာလုံးရေ ၅၀ ကျော်ပြီး ပုဒ်ဖြတ်ပုဒ်ရပ်တွေ့ရင် ဖြတ်မည် (Latency Fix)
             val isLongBuffer = currentBuffer.length > 50 && PUNCTUATION.containsMatchIn(word)
             
             if (currentLang.isEmpty()) {
@@ -59,50 +52,54 @@ object LanguageUtils {
 }
 
 object AudioResampler {
-    // Professional Linear Interpolation Resampling
+    // ETI Compatible Manual Bit-Shifting Resampler
     fun resampleChunk(input: ByteArray, length: Int, inRate: Int, outRate: Int): ByteArray {
         if (inRate == outRate) return input.copyOfRange(0, length)
-        
+
         try {
-            // Convert bytes to 16-bit samples
-            val shortBuffer = ByteBuffer.wrap(input, 0, length).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-            val inputSamples = ShortArray(shortBuffer.remaining())
-            shortBuffer.get(inputSamples)
+            val shortArrayLength = length / 2
+            val inputShorts = ShortArray(shortArrayLength)
             
-            if (inputSamples.isEmpty()) return ByteArray(0)
-            
-            // Calculate ratio (e.g. 16k -> 24k = 1.5)
+            // Byte to Short (Manual Little Endian)
+            for (i in 0 until shortArrayLength) {
+                val low = input[i * 2].toInt() and 0xff
+                val high = input[i * 2 + 1].toInt() shl 8
+                inputShorts[i] = (low or high).toShort()
+            }
+
             val ratio = inRate.toDouble() / outRate.toDouble()
-            val outputLength = (inputSamples.size / ratio).toInt()
+            val outputLength = (shortArrayLength / ratio).toInt()
             
-            if(outputLength <= 0) return ByteArray(0) 
+            if (outputLength <= 0) return ByteArray(0)
             
-            val outputSamples = ShortArray(outputLength)
-            
-            for (i in 0 until outputLength) {
-                // Exact position in input array
-                val position = i * ratio
-                val index = position.toInt()
-                val fraction = position - index
+            val outputShorts = ShortArray(outputLength)
+
+            for (outIndex in 0 until outputLength) {
+                val inIndexDouble = outIndex * ratio
+                val inIndex = inIndexDouble.toInt()
                 
-                if (index >= inputSamples.size - 1) {
-                    // Last sample
-                    outputSamples[i] = inputSamples[inputSamples.size - 1]
+                if (inIndex < shortArrayLength - 1) {
+                    val frac = inIndexDouble - inIndex
+                    val val1 = inputShorts[inIndex].toInt()
+                    val val2 = inputShorts[inIndex + 1].toInt()
+                    // Linear Interpolation
+                    outputShorts[outIndex] = (val1 + frac * (val2 - val1)).toInt().toShort()
                 } else {
-                    // Interpolate between two samples to create smoother audio
-                    val s1 = inputSamples[index]
-                    val s2 = inputSamples[index + 1]
-                    val value = s1 + (fraction * (s2 - s1)).toInt()
-                    outputSamples[i] = value.toShort()
+                    outputShorts[outIndex] = inputShorts[shortArrayLength - 1]
                 }
             }
-            
-            // Convert back to bytes
-            val outputBytes = ByteArray(outputSamples.size * 2)
-            ByteBuffer.wrap(outputBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outputSamples)
+
+            // Short to Byte
+            val outputBytes = ByteArray(outputLength * 2)
+            for (i in 0 until outputLength) {
+                val sVal = outputShorts[i].toInt()
+                outputBytes[i * 2] = (sVal and 0xff).toByte()
+                outputBytes[i * 2 + 1] = ((sVal shr 8) and 0xff).toByte()
+            }
+
             return outputBytes
-        } catch (e: Exception) { 
-            return ByteArray(0) 
+        } catch (e: Exception) {
+            return ByteArray(0)
         }
     }
 }

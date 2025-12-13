@@ -3,6 +3,7 @@ package com.shan.tts.manager
 import android.content.Context
 import android.media.AudioFormat
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
@@ -10,14 +11,11 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
-import java.io.File
 import java.io.FileInputStream
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 // Helper classes
@@ -30,19 +28,18 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
     
-    private val executor = Executors.newSingleThreadExecutor()
+    // Thread Pool (Pipe အတွက် Read/Write ပြိုင်တူလုပ်ဖို့ Thread များများလိုသည်)
+    private val executor = Executors.newCachedThreadPool()
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // *** INDUSTRY STANDARD TARGET: 24000Hz ***
-    // 16k Engine များကို 24k သို့ Upsample လုပ်မည်။
-    // 24k Engine များကို Direct Play မည်။
+    // Target Rate: 24kHz (Standard High Quality)
     private val TARGET_SAMPLE_RATE = 24000 
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: Pro Architecture (24kHz)")
+        AppLogger.log("Service", "Cherry TTS: Pipe Mode (Low Latency)")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -69,6 +66,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (status == TextToSpeech.SUCCESS) {
                     AppLogger.log("Init", "$name initialized SUCCESS")
                     onSuccess(tempTTS!!)
+                    // Listener မရှိရင် Pipe က EOF ကို မသိဘဲ ဖြစ်တတ်လို့ ထည့်ထားရမယ်
                     tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener(){
                         override fun onStart(id: String?) {}
                         override fun onDone(id: String?) {}
@@ -84,15 +82,18 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
+        // Stop previous tasks
         isStopped.set(true)
-        currentTask?.cancel(true)
+        // Note: Pipe mode မှာ IO Block ဖြစ်တတ်လို့ cancel လုပ်ရင် သတိထားရမယ်
+        currentTask?.cancel(true) 
         isStopped.set(false)
         
         if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
 
+        // Main Sequencing Task
         currentTask = executor.submit {
             try {
-                // New Splitter: Cuts long sentences to reduce wait time
+                // Splitter (Latency လျှော့ချရန်)
                 val chunks = LanguageUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
@@ -101,7 +102,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
 
-                // AppLogger.log("Split", "Processing ${chunks.size} chunks")
                 var hasStartedCallback = false
 
                 for ((index, chunk) in chunks.withIndex()) {
@@ -110,7 +110,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val engine = getEngine(chunk.lang) ?: continue
                     val params = applyRateAndPitch(engine, chunk.lang, request)
                     
-                    val success = processWithFile(engine, chunk.text, params, callback, hasStartedCallback)
+                    // *** PIPE PROCESS CALL ***
+                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback)
                     
                     if (success) hasStartedCallback = true
                 }
@@ -164,44 +165,47 @@ class AutoTTSManagerService : TextToSpeechService() {
         return params
     }
 
-    private fun processWithFile(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean): Boolean {
+    // *** THE CRITICAL PIPE METHOD ***
+    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean): Boolean {
         if (callback == null) return alreadyStarted
 
         var didStart = alreadyStarted
         val uuid = UUID.randomUUID().toString()
-        val tempFile = File.createTempFile("tts_", ".wav", cacheDir)
-        val latch = CountDownLatch(1)
-        
-        try {
-            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) { 
-                    if (utteranceId == uuid) latch.countDown() 
-                }
-                override fun onError(utteranceId: String?) { 
-                    if (utteranceId == uuid) latch.countDown() 
-                }
-            })
+        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
-            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
-            
-            val result = engine.synthesizeToFile(text, params, tempFile, uuid)
-            
-            if (result == TextToSpeech.SUCCESS) {
-                // Latency Fix: Wait max 2.5s per chunk (Faster UI response)
-                latch.await(2500, TimeUnit.MILLISECONDS)
-                
-                if (tempFile.exists() && tempFile.length() > 44) {
-                    val fis = FileInputStream(tempFile)
+        var readFd: ParcelFileDescriptor? = null
+        var writeFd: ParcelFileDescriptor? = null
+
+        try {
+            // 1. Create Pipe
+            val pipe = ParcelFileDescriptor.createPipe()
+            readFd = pipe[0]
+            writeFd = pipe[1]
+
+            // 2. Launch READER Thread (Consumer)
+            // ဒါကို Background မှာ အရင် run ထားမှ Pipe မပိတ် (Block မဖြစ်) မှာပါ
+            val readerFuture = executor.submit {
+                try {
+                    val fis = FileInputStream(readFd.fileDescriptor)
                     val header = ByteArray(44)
-                    val headerRead = fis.read(header)
+                    var totalRead = 0
                     
-                    if (headerRead == 44) {
+                    // WAV Header Reading Logic
+                    // Header အပြည့်မရောက်မချင်း စောင့်ဖတ်မယ်
+                    while (totalRead < 44) {
+                         val c = fis.read(header, totalRead, 44 - totalRead)
+                         if (c == -1) break
+                         totalRead += c
+                    }
+
+                    if (totalRead == 44) {
                         val wavInfo = getWavInfo(header)
                         
-                        // *** ALWAYS START WITH 24000Hz (High Quality) ***
+                        // Start Audio Output
                         if (!didStart) {
-                            callback.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+                            synchronized(callback) {
+                                callback.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+                            }
                             didStart = true
                         }
                         
@@ -209,11 +213,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                         var bytesRead: Int
                         
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
-                             if (isStopped.get() || Thread.currentThread().isInterrupted) break
+                             if (isStopped.get()) break
                              
-                             // *** MAGIC HAPPENS HERE ***
-                             // 16kHz (eSpeak) -> 24kHz (Resample UP)
-                             // 24kHz (Google) -> 24kHz (Pass Through)
+                             // Manual Resampling (ETI Compatible)
                              val outputBytes = if (wavInfo.sampleRate != TARGET_SAMPLE_RATE) {
                                  AudioResampler.resampleChunk(buffer, bytesRead, wavInfo.sampleRate, TARGET_SAMPLE_RATE)
                              } else {
@@ -221,19 +223,36 @@ class AutoTTSManagerService : TextToSpeechService() {
                              }
                              
                              if (outputBytes.isNotEmpty()) {
-                                 callback.audioAvailable(outputBytes, 0, outputBytes.size)
+                                 synchronized(callback) {
+                                     callback.audioAvailable(outputBytes, 0, outputBytes.size)
+                                 }
                              }
                         }
-                    } 
+                    }
                     fis.close()
+                } catch (e: Exception) {
+                    AppLogger.log("PipeRead", "Err: ${e.message}")
                 }
-            } 
-        } catch (e: Exception) {
-            if (e !is InterruptedException) {
-                // AppLogger.log("FileError", "Ex: ${e.toString()}")
             }
+
+            // 3. Perform WRITING (Producer) on Current Thread
+            // synthesizeToFile က Blocking Call ဖြစ်လို့ သူပြီးမှ အောက်က code ဆက်လုပ်မယ်
+            // ဒါပေမဲ့ Reader က Thread ခွဲထားလို့ ပြဿနာမရှိဘူး
+            engine.synthesizeToFile(text, params, writeFd, uuid)
+            
+            // Write ပြီးတာနဲ့ Write End ကို ပိတ်လိုက်မှ Reader က EOF သိပြီး ရပ်မှာ
+            writeFd.close()
+            writeFd = null 
+
+            // 4. Wait for Reader to finish processing
+            readerFuture.get() // Wait for reader thread
+
+        } catch (e: Exception) {
+            AppLogger.log("PipeError", "Ex: ${e.message}")
         } finally {
-            try { tempFile.delete() } catch (e: Exception) {}
+            // Cleanup
+            try { readFd?.close() } catch (e: Exception) {}
+            try { writeFd?.close() } catch (e: Exception) {}
         }
         return didStart
     }
@@ -241,7 +260,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun getWavInfo(header: ByteArray): WavInfo {
         if (header.size < 44) return WavInfo(16000, 1)
         val rate = (header[24].toInt() and 0xFF) or ((header[25].toInt() and 0xFF) shl 8) or ((header[26].toInt() and 0xFF) shl 16) or ((header[27].toInt() and 0xFF) shl 24)
-        // Safety check to prevent divide by zero in resampler
         val safeRate = if (rate > 0) rate else 16000
         return WavInfo(safeRate, 1)
     }
@@ -254,8 +272,21 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    override fun onStop() { isStopped.set(true); currentTask?.cancel(true) }
-    override fun onDestroy() { isStopped.set(true); executor.shutdownNow(); shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown(); if (wakeLock?.isHeld == true) wakeLock?.release(); super.onDestroy() }
+    override fun onStop() { 
+        isStopped.set(true)
+        currentTask?.cancel(true)
+    }
+    
+    override fun onDestroy() { 
+        isStopped.set(true)
+        executor.shutdownNow()
+        shanEngine?.shutdown()
+        burmeseEngine?.shutdown()
+        englishEngine?.shutdown()
+        if (wakeLock?.isHeld == true) wakeLock?.release()
+        super.onDestroy()
+    }
+
     override fun onGetVoices(): List<Voice> { return listOf() }
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
