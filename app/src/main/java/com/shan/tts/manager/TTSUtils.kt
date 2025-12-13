@@ -3,6 +3,7 @@ package com.shan.tts.manager
 object LanguageUtils {
      private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
      private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
+     // စာအရှည်ကြီးမဖြစ်အောင် ပုဒ်ဖြတ်တွေမှာ ဖြတ်မယ်
      private val PUNCTUATION = Regex("[။،,!?\\n]") 
 
      fun detectLanguage(text: CharSequence?): String {
@@ -29,7 +30,8 @@ object LanguageUtils {
             }
             val detected = detectLanguage(trimmed)
             val langChanged = currentLang.isNotEmpty() && currentLang != detected
-            val isLongBuffer = currentBuffer.length > 50 && PUNCTUATION.containsMatchIn(word)
+            // Chunk Size ကြီးရင် Latency ဖြစ်လို့ ဖြတ်မယ်
+            val isLongBuffer = currentBuffer.length > 80 && PUNCTUATION.containsMatchIn(word)
             
             if (currentLang.isEmpty()) {
                 currentLang = detected
@@ -52,55 +54,66 @@ object LanguageUtils {
 }
 
 object AudioResampler {
-    // ETI Compatible Manual Bit-Shifting Resampler
+    /**
+     * High-Precision Linear Interpolation Resampler
+     * 16kHz -> 24kHz ပြောင်းရာတွင် အသံမကြောင်စေရန် အထူးပြုလုပ်ထားသည်။
+     */
     fun resampleChunk(input: ByteArray, length: Int, inRate: Int, outRate: Int): ByteArray {
         if (inRate == outRate) return input.copyOfRange(0, length)
 
-        try {
-            val shortArrayLength = length / 2
-            val inputShorts = ShortArray(shortArrayLength)
+        val inputSampleCount = length / 2
+        // Output Size တွက်ချက်ခြင်း
+        val outputSampleCount = ((inputSampleCount.toLong() * outRate) / inRate).toInt()
+        
+        if (outputSampleCount <= 0) return ByteArray(0)
+
+        val outputBytes = ByteArray(outputSampleCount * 2)
+        
+        // Step size (ရွေ့လျားနှုန်း)
+        val step = inRate.toDouble() / outRate.toDouble()
+        var phase = 0.0
+
+        for (outIndex in 0 until outputSampleCount) {
+            val index = phase.toInt()
+            val frac = phase - index
+
+            // Input Sample နှစ်ခုကို ယူမယ် (Current & Next)
+            val idx1 = index * 2
             
-            // Byte to Short (Manual Little Endian)
-            for (i in 0 until shortArrayLength) {
-                val low = input[i * 2].toInt() and 0xff
-                val high = input[i * 2 + 1].toInt() shl 8
-                inputShorts[i] = (low or high).toShort()
+            // Check Bounds
+            if (idx1 + 1 >= length) break
+
+            // Byte -> Short (Manual Little Endian Conversion)
+            val s1Low = input[idx1].toInt() and 0xFF
+            val s1High = input[idx1 + 1].toInt() shl 8
+            val sample1 = (s1Low or s1High).toShort()
+
+            var finalSample: Short
+
+            // Next Sample ရှိရင် Interpolate လုပ်မယ်
+            if (idx1 + 3 < length) {
+                val s2Low = input[idx1 + 2].toInt() and 0xFF
+                val s2High = input[idx1 + 3].toInt() shl 8
+                val sample2 = (s2Low or s2High).toShort()
+
+                // FORMULA: y = y1 + (y2 - y1) * fraction
+                // ဒီ Formula က အသံလှိုင်းကို ချောမွေ့စေတယ်
+                val interpolated = (sample1 + (sample2 - sample1) * frac).toInt()
+                finalSample = interpolated.toShort()
+            } else {
+                finalSample = sample1
             }
 
-            val ratio = inRate.toDouble() / outRate.toDouble()
-            val outputLength = (shortArrayLength / ratio).toInt()
-            
-            if (outputLength <= 0) return ByteArray(0)
-            
-            val outputShorts = ShortArray(outputLength)
+            // Write back to Bytes
+            val outIdx = outIndex * 2
+            outputBytes[outIdx] = (finalSample.toInt() and 0xFF).toByte()
+            outputBytes[outIdx + 1] = ((finalSample.toInt() shr 8) and 0xFF).toByte()
 
-            for (outIndex in 0 until outputLength) {
-                val inIndexDouble = outIndex * ratio
-                val inIndex = inIndexDouble.toInt()
-                
-                if (inIndex < shortArrayLength - 1) {
-                    val frac = inIndexDouble - inIndex
-                    val val1 = inputShorts[inIndex].toInt()
-                    val val2 = inputShorts[inIndex + 1].toInt()
-                    // Linear Interpolation
-                    outputShorts[outIndex] = (val1 + frac * (val2 - val1)).toInt().toShort()
-                } else {
-                    outputShorts[outIndex] = inputShorts[shortArrayLength - 1]
-                }
-            }
-
-            // Short to Byte
-            val outputBytes = ByteArray(outputLength * 2)
-            for (i in 0 until outputLength) {
-                val sVal = outputShorts[i].toInt()
-                outputBytes[i * 2] = (sVal and 0xff).toByte()
-                outputBytes[i * 2 + 1] = ((sVal shr 8) and 0xff).toByte()
-            }
-
-            return outputBytes
-        } catch (e: Exception) {
-            return ByteArray(0)
+            // Move phase
+            phase += step
         }
+
+        return outputBytes
     }
 }
 

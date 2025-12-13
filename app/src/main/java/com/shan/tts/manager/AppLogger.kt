@@ -8,19 +8,17 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 object AppLogger {
     private val logs = CopyOnWriteArrayList<String>()
-    private val dateFormat = SimpleDateFormat("mm:ss.SSS", Locale.US) // မိနစ်:စက္ကန့်.မီလီစက္ကန့်
+    private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     fun log(tag: String, message: String) {
-        // Thread Name ပါထည့်မှတ်မယ် (Debugging တွက်အရေးကြီးတယ်)
         val threadName = Thread.currentThread().name
         val timestamp = dateFormat.format(Date())
-        val entry = "$timestamp [$threadName] [$tag] $message"
+        val fullLog = "$timestamp [$threadName] [$tag] $message"
         
-        Log.d("CherryTTS_$tag", message)
-        logs.add(0, entry)
+        Log.d("CherryTTS", "[$tag] $message") // Logcat တွင်ကြည့်ရန်
+        logs.add(0, fullLog)
         
-        // Memory မပွအောင် Log 500 ထိပဲထားမယ်
-        if (logs.size > 500) logs.removeAt(logs.size - 1)
+        if (logs.size > 1000) logs.removeAt(logs.size - 1)
     }
 
     fun getAllLogs(): String = logs.joinToString("\n")
