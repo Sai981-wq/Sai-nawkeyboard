@@ -35,12 +35,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
     
-    private var currentSessionRate = 0
-    private var currentSessionChannels = 1
-
+    // *** INDUSTRY STANDARD TARGET: 24000Hz ***
+    // 16k Engine များကို 24k သို့ Upsample လုပ်မည်။
+    // 24k Engine များကို Direct Play မည်။
+    private val TARGET_SAMPLE_RATE = 24000 
+    
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS Service Started (Stable)")
+        AppLogger.log("Service", "Cherry TTS: Pro Architecture (24kHz)")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -75,7 +77,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }, pkg)
         } catch (e: Exception) {
-            AppLogger.log("InitError", "Crash on $name: ${e.toString()}")
+            AppLogger.log("InitError", "Crash on $name: ${e.message}")
         }
     }
 
@@ -86,39 +88,41 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentTask?.cancel(true)
         isStopped.set(false)
         
-        currentSessionRate = 0 
-        
         if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
 
         currentTask = executor.submit {
             try {
+                // New Splitter: Cuts long sentences to reduce wait time
                 val chunks = LanguageUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
-                    callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback?.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                     callback?.done()
                     return@submit
                 }
 
-                AppLogger.log("Split", "Processing ${chunks.size} chunks")
+                // AppLogger.log("Split", "Processing ${chunks.size} chunks")
                 var hasStartedCallback = false
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    if (isStopped.get()) break
+                    if (isStopped.get() || Thread.currentThread().isInterrupted) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     val params = applyRateAndPitch(engine, chunk.lang, request)
+                    
                     val success = processWithFile(engine, chunk.text, params, callback, hasStartedCallback)
                     
                     if (success) hasStartedCallback = true
                 }
                 
                 if (!hasStartedCallback) {
-                     callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
+                     callback?.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
             } catch (e: Exception) {
-                AppLogger.log("WorkerError", "Error: ${e.toString()}")
+                 if (e !is InterruptedException) {
+                    AppLogger.log("WorkerError", "Error: ${e.toString()}")
+                }
             } finally {
                 if (!isStopped.get()) callback?.done()
                 if (wakeLock?.isHeld == true) wakeLock?.release()
@@ -181,11 +185,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
             
-            // Call Synthesize (Correct API for Bundle)
             val result = engine.synthesizeToFile(text, params, tempFile, uuid)
             
             if (result == TextToSpeech.SUCCESS) {
-                latch.await(5, TimeUnit.SECONDS)
+                // Latency Fix: Wait max 2.5s per chunk (Faster UI response)
+                latch.await(2500, TimeUnit.MILLISECONDS)
                 
                 if (tempFile.exists() && tempFile.length() > 44) {
                     val fis = FileInputStream(tempFile)
@@ -195,12 +199,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (headerRead == 44) {
                         val wavInfo = getWavInfo(header)
                         
-                        // Dynamic Start logic
+                        // *** ALWAYS START WITH 24000Hz (High Quality) ***
                         if (!didStart) {
-                            currentSessionRate = wavInfo.sampleRate
-                            currentSessionChannels = wavInfo.channels
-                            AppLogger.log("AudioConfig", "Start: ${currentSessionRate}Hz")
-                            callback.start(currentSessionRate, AudioFormat.ENCODING_PCM_16BIT, currentSessionChannels)
+                            callback.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                             didStart = true
                         }
                         
@@ -208,10 +209,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                         var bytesRead: Int
                         
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
-                             if (isStopped.get()) break
+                             if (isStopped.get() || Thread.currentThread().isInterrupted) break
                              
-                             val outputBytes = if (wavInfo.sampleRate != currentSessionRate) {
-                                 AudioResampler.resampleChunk(buffer, bytesRead, wavInfo.sampleRate, currentSessionRate)
+                             // *** MAGIC HAPPENS HERE ***
+                             // 16kHz (eSpeak) -> 24kHz (Resample UP)
+                             // 24kHz (Google) -> 24kHz (Pass Through)
+                             val outputBytes = if (wavInfo.sampleRate != TARGET_SAMPLE_RATE) {
+                                 AudioResampler.resampleChunk(buffer, bytesRead, wavInfo.sampleRate, TARGET_SAMPLE_RATE)
                              } else {
                                  buffer.copyOfRange(0, bytesRead)
                              }
@@ -220,17 +224,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                                  callback.audioAvailable(outputBytes, 0, outputBytes.size)
                              }
                         }
-                    } else {
-                        AppLogger.log("FileError", "Invalid WAV Header Size")
-                    }
+                    } 
                     fis.close()
                 }
-            } else {
-                AppLogger.log("FileError", "Engine returned FAIL")
-            }
+            } 
         } catch (e: Exception) {
-            // Using e.toString() avoids NullPointerException if message is null
-            AppLogger.log("FileError", "Ex: ${e.toString()}")
+            if (e !is InterruptedException) {
+                // AppLogger.log("FileError", "Ex: ${e.toString()}")
+            }
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
         }
@@ -239,18 +240,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private fun getWavInfo(header: ByteArray): WavInfo {
         if (header.size < 44) return WavInfo(16000, 1)
-        
-        val rate = (header[24].toInt() and 0xFF) or
-               ((header[25].toInt() and 0xFF) shl 8) or
-               ((header[26].toInt() and 0xFF) shl 16) or
-               ((header[27].toInt() and 0xFF) shl 24)
-               
-        val channels = (header[22].toInt() and 0xFF) or
-               ((header[23].toInt() and 0xFF) shl 8)
-               
+        val rate = (header[24].toInt() and 0xFF) or ((header[25].toInt() and 0xFF) shl 8) or ((header[26].toInt() and 0xFF) shl 16) or ((header[27].toInt() and 0xFF) shl 24)
+        // Safety check to prevent divide by zero in resampler
         val safeRate = if (rate > 0) rate else 16000
-        val safeChannels = if (channels > 0) channels else 1
-        return WavInfo(safeRate, safeChannels)
+        return WavInfo(safeRate, 1)
     }
     
     private fun getEngine(lang: String): TextToSpeech? {
@@ -261,21 +254,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    override fun onStop() {
-        isStopped.set(true)
-        currentTask?.cancel(true)
-    }
-    
-    override fun onDestroy() {
-        isStopped.set(true)
-        executor.shutdownNow()
-        shanEngine?.shutdown()
-        burmeseEngine?.shutdown()
-        englishEngine?.shutdown()
-        if (wakeLock?.isHeld == true) wakeLock?.release()
-        super.onDestroy()
-    }
-
+    override fun onStop() { isStopped.set(true); currentTask?.cancel(true) }
+    override fun onDestroy() { isStopped.set(true); executor.shutdownNow(); shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown(); if (wakeLock?.isHeld == true) wakeLock?.release(); super.onDestroy() }
     override fun onGetVoices(): List<Voice> { return listOf() }
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
