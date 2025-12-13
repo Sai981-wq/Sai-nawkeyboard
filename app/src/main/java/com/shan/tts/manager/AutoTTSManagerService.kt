@@ -18,8 +18,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
-// *** FIX: LangChunk ကို ဒီနား (Class အပြင်ဘက်) မှာ ထားလိုက်ပါ ***
-// ဒါမှ Service ရော Utils ရော ၂ မျိုးလုံးက လှမ်းသုံးလို့ရမှာပါ
+// Data class MUST be outside (Top Level)
 data class LangChunk(val text: String, val lang: String)
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -85,7 +84,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         currentTask = executor.submit {
             try {
-                // Now LanguageUtils can return List<LangChunk> without error
                 val chunks = LanguageUtils.splitHelper(text) 
                 var hasStartedCallback = false
 
@@ -139,7 +137,11 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (headerBytesRead >= 44) {
                  val detectedRate = getSampleRateFromWav(headerBuffer)
                  
+                 // *** FIX: Log rate to ensure it's not 0 ***
+                 // AppLogger.log("Pipe", "Rate: $detectedRate Hz")
+
                  if (!didStart) {
+                     // *** IMPORTANT: detectedRate cannot be 0 ***
                      callback?.start(detectedRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                      didStart = true
                  }
@@ -167,10 +169,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private fun getSampleRateFromWav(header: ByteArray): Int {
         if (header.size < 28) return 16000 
-        return (header[24].toInt() and 0xFF) or
+        
+        // Read 4 bytes as Little Endian Int
+        val rate = (header[24].toInt() and 0xFF) or
                ((header[25].toInt() and 0xFF) shl 8) or
                ((header[26].toInt() and 0xFF) shl 16) or
                ((header[27].toInt() and 0xFF) shl 24)
+               
+        // *** CRITICAL FIX: If rate is 0 or negative (invalid), force a safe default ***
+        // This prevents the "divide by zero" crash in callback.start()
+        return if (rate > 0) rate else 16000 
     }
 
     private fun getEngine(lang: String): TextToSpeech? {
@@ -230,7 +238,6 @@ object LanguageUtils {
         return "ENGLISH"
     }
 
-    // *** FIX: Now returns the top-level LangChunk, so no error ***
     fun splitHelper(text: String): List<LangChunk> {
         val list = ArrayList<LangChunk>()
         val words = text.split(Regex("\\s+")) 
