@@ -18,7 +18,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
-// Helper classes
 data class LangChunk(val text: String, val lang: String)
 data class WavInfo(val sampleRate: Int, val channels: Int)
 
@@ -28,18 +27,17 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
     
-    // Thread Pool (Pipe အတွက် Read/Write ပြိုင်တူလုပ်ဖို့ Thread များများလိုသည်)
-    private val executor = Executors.newCachedThreadPool()
+    // CPU သက်သာအောင် Thread 4 ခုပဲ ပေးသုံးမယ်
+    private val executor = Executors.newFixedThreadPool(4)
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // Target Rate: 24kHz (Standard High Quality)
     private val TARGET_SAMPLE_RATE = 24000 
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: Pipe Mode (Low Latency)")
+        AppLogger.log("Service", "Cherry TTS Service Created (Debug Mode)")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -59,19 +57,23 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun initEngine(name: String, pkg: String?, onSuccess: (TextToSpeech) -> Unit) {
-        if (pkg.isNullOrEmpty()) return
+        if (pkg.isNullOrEmpty()) {
+            AppLogger.log("Init", "$name skipped (No Package)")
+            return
+        }
         try {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     AppLogger.log("Init", "$name initialized SUCCESS")
                     onSuccess(tempTTS!!)
-                    // Listener မရှိရင် Pipe က EOF ကို မသိဘဲ ဖြစ်တတ်လို့ ထည့်ထားရမယ်
                     tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener(){
                         override fun onStart(id: String?) {}
                         override fun onDone(id: String?) {}
                         override fun onError(id: String?) {}
                     })
+                } else {
+                    AppLogger.log("Init", "$name Failed to Init")
                 }
             }, pkg)
         } catch (e: Exception) {
@@ -81,22 +83,23 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        val reqId = System.currentTimeMillis() % 1000 // Short ID for logging
         
-        // Stop previous tasks
+        AppLogger.log("Synth", "[$reqId] Request received. Length: ${text.length}")
+
         isStopped.set(true)
-        // Note: Pipe mode မှာ IO Block ဖြစ်တတ်လို့ cancel လုပ်ရင် သတိထားရမယ်
-        currentTask?.cancel(true) 
+        currentTask?.cancel(true)
         isStopped.set(false)
         
         if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
 
-        // Main Sequencing Task
         currentTask = executor.submit {
             try {
-                // Splitter (Latency လျှော့ချရန်)
                 val chunks = LanguageUtils.splitHelper(text) 
-                
+                AppLogger.log("Split", "[$reqId] Text split into ${chunks.size} chunks")
+
                 if (chunks.isEmpty()) {
+                    AppLogger.log("Synth", "[$reqId] Empty chunks, sending silence")
                     callback?.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                     callback?.done()
                     return@submit
@@ -105,32 +108,46 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var hasStartedCallback = false
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    if (isStopped.get() || Thread.currentThread().isInterrupted) break
+                    if (isStopped.get() || Thread.currentThread().isInterrupted) {
+                        AppLogger.log("Synth", "[$reqId] Process interrupted/stopped")
+                        break
+                    }
                     
-                    val engine = getEngine(chunk.lang) ?: continue
+                    val engine = getEngine(chunk.lang)
+                    if (engine == null) {
+                        AppLogger.log("Engine", "[$reqId] Engine for ${chunk.lang} is NULL")
+                        continue
+                    }
+
                     val params = applyRateAndPitch(engine, chunk.lang, request)
                     
-                    // *** PIPE PROCESS CALL ***
-                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback)
+                    AppLogger.log("Process", "[$reqId] Chunk $index [${chunk.lang}]: '${chunk.text.take(10)}...'")
+                    
+                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index)
                     
                     if (success) hasStartedCallback = true
                 }
                 
                 if (!hasStartedCallback) {
+                     AppLogger.log("Synth", "[$reqId] Fallback Start (No audio produced)")
                      callback?.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
             } catch (e: Exception) {
                  if (e !is InterruptedException) {
-                    AppLogger.log("WorkerError", "Error: ${e.toString()}")
+                    AppLogger.log("WorkerError", "[$reqId] CRITICAL: ${e.stackTraceToString()}")
                 }
             } finally {
-                if (!isStopped.get()) callback?.done()
+                if (!isStopped.get()) {
+                    AppLogger.log("Synth", "[$reqId] Done called")
+                    callback?.done()
+                }
                 if (wakeLock?.isHeld == true) wakeLock?.release()
             }
         }
     }
     
+    // ... applyRateAndPitch function remains the same ...
     private fun applyRateAndPitch(engine: TextToSpeech, lang: String, request: SynthesisRequest?): Bundle {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         val sysRate = request?.speechRate ?: 100
@@ -165,8 +182,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         return params
     }
 
-    // *** THE CRITICAL PIPE METHOD ***
-    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean): Boolean {
+
+    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int): Boolean {
         if (callback == null) return alreadyStarted
 
         var didStart = alreadyStarted
@@ -177,21 +194,20 @@ class AutoTTSManagerService : TextToSpeechService() {
         var writeFd: ParcelFileDescriptor? = null
 
         try {
-            // 1. Create Pipe
             val pipe = ParcelFileDescriptor.createPipe()
             readFd = pipe[0]
             writeFd = pipe[1]
+            
+            AppLogger.log("Pipe", "[$reqId-$chunkIdx] Pipe Created")
 
-            // 2. Launch READER Thread (Consumer)
-            // ဒါကို Background မှာ အရင် run ထားမှ Pipe မပိတ် (Block မဖြစ်) မှာပါ
+            // READER TASK
             val readerFuture = executor.submit {
                 try {
                     val fis = FileInputStream(readFd.fileDescriptor)
                     val header = ByteArray(44)
                     var totalRead = 0
                     
-                    // WAV Header Reading Logic
-                    // Header အပြည့်မရောက်မချင်း စောင့်ဖတ်မယ်
+                    // Wait for header
                     while (totalRead < 44) {
                          val c = fis.read(header, totalRead, 44 - totalRead)
                          if (c == -1) break
@@ -200,8 +216,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     if (totalRead == 44) {
                         val wavInfo = getWavInfo(header)
+                        AppLogger.log("Audio", "[$reqId-$chunkIdx] Header: ${wavInfo.sampleRate}Hz")
                         
-                        // Start Audio Output
                         if (!didStart) {
                             synchronized(callback) {
                                 callback.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -211,11 +227,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         val buffer = ByteArray(4096)
                         var bytesRead: Int
+                        var totalBytesProcessed = 0
                         
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
                              if (isStopped.get()) break
                              
-                             // Manual Resampling (ETI Compatible)
                              val outputBytes = if (wavInfo.sampleRate != TARGET_SAMPLE_RATE) {
                                  AudioResampler.resampleChunk(buffer, bytesRead, wavInfo.sampleRate, TARGET_SAMPLE_RATE)
                              } else {
@@ -226,31 +242,39 @@ class AutoTTSManagerService : TextToSpeechService() {
                                  synchronized(callback) {
                                      callback.audioAvailable(outputBytes, 0, outputBytes.size)
                                  }
+                                 totalBytesProcessed += outputBytes.size
                              }
                         }
+                        AppLogger.log("Audio", "[$reqId-$chunkIdx] Processed ${totalBytesProcessed} bytes")
+                    } else {
+                        AppLogger.log("PipeError", "[$reqId-$chunkIdx] Incomplete Header: $totalRead bytes")
                     }
                     fis.close()
                 } catch (e: Exception) {
-                    AppLogger.log("PipeRead", "Err: ${e.message}")
+                    AppLogger.log("PipeReadErr", "[$reqId-$chunkIdx] ${e.message}")
                 }
             }
 
-            // 3. Perform WRITING (Producer) on Current Thread
-            // synthesizeToFile က Blocking Call ဖြစ်လို့ သူပြီးမှ အောက်က code ဆက်လုပ်မယ်
-            // ဒါပေမဲ့ Reader က Thread ခွဲထားလို့ ပြဿနာမရှိဘူး
-            engine.synthesizeToFile(text, params, writeFd, uuid)
+            // WRITER TASK (Main Thread)
+            AppLogger.log("Writer", "[$reqId-$chunkIdx] Start SynthesizeToFile")
+            val result = engine.synthesizeToFile(text, params, writeFd, uuid)
             
-            // Write ပြီးတာနဲ့ Write End ကို ပိတ်လိုက်မှ Reader က EOF သိပြီး ရပ်မှာ
+            if (result != TextToSpeech.SUCCESS) {
+                AppLogger.log("Writer", "[$reqId-$chunkIdx] Engine Error: $result")
+            }
+
+            // Close write end to signal EOF
             writeFd.close()
             writeFd = null 
+            AppLogger.log("Writer", "[$reqId-$chunkIdx] Write Closed, Waiting for Reader...")
 
-            // 4. Wait for Reader to finish processing
-            readerFuture.get() // Wait for reader thread
+            // Wait for Reader
+            readerFuture.get() 
+            AppLogger.log("Pipe", "[$reqId-$chunkIdx] Finished")
 
         } catch (e: Exception) {
-            AppLogger.log("PipeError", "Ex: ${e.message}")
+            AppLogger.log("PipeMainErr", "[$reqId-$chunkIdx] ${e.message}")
         } finally {
-            // Cleanup
             try { readFd?.close() } catch (e: Exception) {}
             try { writeFd?.close() } catch (e: Exception) {}
         }
@@ -273,11 +297,13 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() { 
+        AppLogger.log("Service", "onStop Called")
         isStopped.set(true)
         currentTask?.cancel(true)
     }
     
     override fun onDestroy() { 
+        AppLogger.log("Service", "onDestroy Called")
         isStopped.set(true)
         executor.shutdownNow()
         shanEngine?.shutdown()
@@ -286,7 +312,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (wakeLock?.isHeld == true) wakeLock?.release()
         super.onDestroy()
     }
-
+    
     override fun onGetVoices(): List<Voice> { return listOf() }
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
