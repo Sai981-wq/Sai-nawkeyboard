@@ -18,6 +18,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
+// *** FIX: LangChunk ကို ဒီနား (Class အပြင်ဘက်) မှာ ထားလိုက်ပါ ***
+// ဒါမှ Service ရော Utils ရော ၂ မျိုးလုံးက လှမ်းသုံးလို့ရမှာပါ
+data class LangChunk(val text: String, val lang: String)
+
 class AutoTTSManagerService : TextToSpeechService() {
 
     private var shanEngine: TextToSpeech? = null
@@ -39,7 +43,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
-        // Initialize Engines
         initEngine("Shan", prefs.getString("pref_shan_pkg", "com.espeak.ng")) { shanEngine = it }
         initEngine("Burmese", prefs.getString("pref_burmese_pkg", "com.google.android.tts")) { 
             burmeseEngine = it
@@ -59,7 +62,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (status == TextToSpeech.SUCCESS) {
                     AppLogger.log("Init", "$name initialized SUCCESS")
                     onSuccess(tempTTS!!)
-                    // We don't need complex listeners here as we use synthesizeToFile
                     tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener(){
                         override fun onStart(id: String?) {}
                         override fun onDone(id: String?) {}
@@ -74,7 +76,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        // AppLogger.log("Synth", "Request: ${text.take(20)}...") 
 
         isStopped.set(true)
         currentTask?.cancel(true)
@@ -84,6 +85,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         currentTask = executor.submit {
             try {
+                // Now LanguageUtils can return List<LangChunk> without error
                 val chunks = LanguageUtils.splitHelper(text) 
                 var hasStartedCallback = false
 
@@ -92,7 +94,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val engine = getEngine(chunk.lang) ?: continue
 
-                    // *** MAIN PROCESSING ***
                     val success = processStream(engine, chunk.text, callback, hasStartedCallback)
                     if (success) hasStartedCallback = true
                 }
@@ -113,17 +114,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         var writeSide: ParcelFileDescriptor? = null
 
         try {
-            // 1. Create Pipe
             val pipe = ParcelFileDescriptor.createPipe()
             readSide = pipe[0]
             writeSide = pipe[1]
 
             val params = Bundle()
-            
-            // 2. Start Synthesis to Pipe
             val result = engine.synthesizeToFile(text, params, writeSide, uuid)
             
-            // 3. CRITICAL: Close write side immediately so read side gets EOF when done
             writeSide.close()
             writeSide = null 
 
@@ -133,7 +130,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             val headerBuffer = ByteArray(44)
             var headerBytesRead = 0
             
-            // 4. Read WAV Header (Blocking wait)
             while (headerBytesRead < 44) {
                  val c = inputStream.read(headerBuffer, headerBytesRead, 44 - headerBytesRead)
                  if (c == -1) break
@@ -141,16 +137,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
             if (headerBytesRead >= 44) {
-                 // 5. Detect Sample Rate directly from Engine Output
                  val detectedRate = getSampleRateFromWav(headerBuffer)
                  
-                 // 6. Start Callback (Only once per request sequence)
                  if (!didStart) {
                      callback?.start(detectedRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                      didStart = true
                  }
                  
-                 // 7. Stream Raw Audio (No Resampling - Direct Pass)
                  val pcmBuffer = ByteArray(4096)
                  while (true) {
                      if (isStopped.get()) break
@@ -173,7 +166,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
     
     private fun getSampleRateFromWav(header: ByteArray): Int {
-        // Extract Sample Rate from WAV Header (Bytes 24-27)
         if (header.size < 28) return 16000 
         return (header[24].toInt() and 0xFF) or
                ((header[25].toInt() and 0xFF) shl 8) or
@@ -238,8 +230,9 @@ object LanguageUtils {
         return "ENGLISH"
     }
 
-    fun splitHelper(text: String): List<AutoTTSManagerService.LangChunk> {
-        val list = ArrayList<AutoTTSManagerService.LangChunk>()
+    // *** FIX: Now returns the top-level LangChunk, so no error ***
+    fun splitHelper(text: String): List<LangChunk> {
+        val list = ArrayList<LangChunk>()
         val words = text.split(Regex("\\s+")) 
         var currentBuffer = StringBuilder()
         var currentLang = ""
@@ -249,12 +242,12 @@ object LanguageUtils {
                 currentLang = detected
                 currentBuffer.append("$word ")
             } else {
-                list.add(AutoTTSManagerService.LangChunk(currentBuffer.toString(), currentLang))
+                list.add(LangChunk(currentBuffer.toString(), currentLang))
                 currentBuffer = StringBuilder("$word ")
                 currentLang = detected
             }
         }
-        if (currentBuffer.isNotEmpty()) list.add(AutoTTSManagerService.LangChunk(currentBuffer.toString(), currentLang))
+        if (currentBuffer.isNotEmpty()) list.add(LangChunk(currentBuffer.toString(), currentLang))
         return list
     }
 }
