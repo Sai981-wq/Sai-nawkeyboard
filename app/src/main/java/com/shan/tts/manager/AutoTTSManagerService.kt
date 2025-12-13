@@ -12,13 +12,15 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
-// Data class MUST be outside (Top Level)
+// Data class (Top Level)
 data class LangChunk(val text: String, val lang: String)
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -31,6 +33,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
+    
+    // *** CONSTANT OUTPUT RATE ***
+    // အားလုံးကို 24000Hz နဲ့ပဲ ထွက်စေမယ် (Resampling သုံးမယ်)
+    private val TARGET_SAMPLE_RATE = 24000
 
     override fun onCreate() {
         super.onCreate()
@@ -75,6 +81,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        // AppLogger.log("Synth", "Request: ${text.take(20)}...")
 
         isStopped.set(true)
         currentTask?.cancel(true)
@@ -92,6 +99,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val engine = getEngine(chunk.lang) ?: continue
 
+                    // *** Rate & Pitch Logic ***
+                    // စာမဖတ်ခင် Setting အရင်ချိန်မယ်
+                    applyRateAndPitch(engine, chunk.lang, request)
+
                     val success = processStream(engine, chunk.text, callback, hasStartedCallback)
                     if (success) hasStartedCallback = true
                 }
@@ -103,6 +114,42 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (wakeLock?.isHeld == true) wakeLock?.release()
             }
         }
+    }
+    
+    // *** NEW: Rate & Pitch Implementation ***
+    private fun applyRateAndPitch(engine: TextToSpeech, lang: String, request: SynthesisRequest?) {
+        val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        
+        // Default System Rate/Pitch (from TalkBack or System)
+        val sysRate = request?.speechRate ?: 100
+        val sysPitch = request?.pitch ?: 100
+        
+        // User Preference from our App
+        var userRate = 100
+        var userPitch = 100
+        
+        when(lang) {
+            "SHAN" -> {
+                userRate = prefs.getInt("rate_shan", 100)
+                userPitch = prefs.getInt("pitch_shan", 100)
+            }
+            "MYANMAR" -> {
+                userRate = prefs.getInt("rate_burmese", 100)
+                userPitch = prefs.getInt("pitch_burmese", 100)
+            }
+            else -> {
+                userRate = prefs.getInt("rate_english", 100)
+                userPitch = prefs.getInt("pitch_english", 100)
+            }
+        }
+
+        // Calculation: (System * User) / 10000 -> Normalize to Float 1.0
+        // Example: Sys(100) * User(50) = 5000 / 10000 = 0.5 (Slow)
+        val finalRate = (sysRate * userRate) / 10000.0f
+        val finalPitch = (sysPitch * userPitch) / 10000.0f
+        
+        engine.setSpeechRate(finalRate)
+        engine.setPitch(finalPitch)
     }
 
     private fun processStream(engine: TextToSpeech, text: String, callback: SynthesisCallback?, alreadyStarted: Boolean): Boolean {
@@ -135,17 +182,16 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
             if (headerBytesRead >= 44) {
-                 val detectedRate = getSampleRateFromWav(headerBuffer)
+                 // 1. Detect Source Rate
+                 val sourceRate = getSampleRateFromWav(headerBuffer)
                  
-                 // *** FIX: Log rate to ensure it's not 0 ***
-                 // AppLogger.log("Pipe", "Rate: $detectedRate Hz")
-
+                 // 2. Start Callback (Always use TARGET_SAMPLE_RATE = 24000)
                  if (!didStart) {
-                     // *** IMPORTANT: detectedRate cannot be 0 ***
-                     callback?.start(detectedRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+                     callback?.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                      didStart = true
                  }
                  
+                 // 3. Read & Resample Loop
                  val pcmBuffer = ByteArray(4096)
                  while (true) {
                      if (isStopped.get()) break
@@ -153,7 +199,18 @@ class AutoTTSManagerService : TextToSpeechService() {
                      if (bytesRead == -1) break
                      
                      if (bytesRead > 0) {
-                         callback?.audioAvailable(pcmBuffer, 0, bytesRead)
+                         // *** RESAMPLING MAGIC ***
+                         // Source Rate မတူရင် Resample လုပ်မယ်၊ တူရင် ဒီအတိုင်းလွှတ်မယ်
+                         val outputBytes = if (sourceRate != TARGET_SAMPLE_RATE) {
+                             AudioResampler.resampleChunk(pcmBuffer, bytesRead, sourceRate, TARGET_SAMPLE_RATE)
+                         } else {
+                             // Copy only valid bytes
+                             pcmBuffer.copyOfRange(0, bytesRead)
+                         }
+
+                         if (outputBytes.isNotEmpty()) {
+                             callback?.audioAvailable(outputBytes, 0, outputBytes.size)
+                         }
                      }
                  }
             }
@@ -169,15 +226,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private fun getSampleRateFromWav(header: ByteArray): Int {
         if (header.size < 28) return 16000 
-        
-        // Read 4 bytes as Little Endian Int
         val rate = (header[24].toInt() and 0xFF) or
                ((header[25].toInt() and 0xFF) shl 8) or
                ((header[26].toInt() and 0xFF) shl 16) or
                ((header[27].toInt() and 0xFF) shl 24)
-               
-        // *** CRITICAL FIX: If rate is 0 or negative (invalid), force a safe default ***
-        // This prevents the "divide by zero" crash in callback.start()
         return if (rate > 0) rate else 16000 
     }
 
@@ -256,6 +308,55 @@ object LanguageUtils {
         }
         if (currentBuffer.isNotEmpty()) list.add(LangChunk(currentBuffer.toString(), currentLang))
         return list
+    }
+}
+
+// *** NEW: Audio Resampler (Linear Interpolation) ***
+object AudioResampler {
+    fun resampleChunk(input: ByteArray, inputLength: Int, inRate: Int, outRate: Int): ByteArray {
+        if (inRate == outRate) return input.copyOfRange(0, inputLength)
+        
+        try {
+            // Convert byte[] to short[] (16-bit PCM)
+            val shortBuffer = ByteBuffer.wrap(input, 0, inputLength).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+            val inputSamples = ShortArray(shortBuffer.remaining())
+            shortBuffer.get(inputSamples)
+            
+            if (inputSamples.isEmpty()) return ByteArray(0)
+            
+            // Calculate Ratio
+            val ratio = inRate.toDouble() / outRate.toDouble()
+            val outputLength = (inputSamples.size / ratio).toInt()
+            
+            if(outputLength <= 0) return ByteArray(0) 
+            
+            val outputSamples = ShortArray(outputLength)
+            
+            // Linear Interpolation Loop
+             for (i in 0 until outputLength) {
+                val position = i * ratio
+                val index = position.toInt()
+                val fraction = position - index
+                
+                if (index >= inputSamples.size - 1) {
+                    outputSamples[i] = inputSamples[inputSamples.size - 1]
+                } else {
+                    val s1 = inputSamples[index]
+                    val s2 = inputSamples[index + 1]
+                    // s1 + (s2 - s1) * fraction
+                    val value = s1 + (fraction * (s2 - s1)).toInt()
+                    outputSamples[i] = value.toShort()
+                }
+            }
+            
+            // Convert back to byte[]
+            val outputBytes = ByteArray(outputSamples.size * 2)
+            ByteBuffer.wrap(outputBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(outputSamples)
+            return outputBytes
+            
+        } catch (e: Exception) { 
+            return ByteArray(0) 
+        }
     }
 }
 
