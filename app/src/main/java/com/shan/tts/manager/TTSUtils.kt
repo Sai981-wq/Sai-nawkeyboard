@@ -19,6 +19,7 @@ object LanguageUtils {
         val list = ArrayList<LangChunk>()
         if (text.isBlank()) return list
         val words = text.split(Regex("(?<=\\s)")) 
+        
         var currentBuffer = StringBuilder()
         var currentLang = ""
         
@@ -49,7 +50,6 @@ object LanguageUtils {
 }
 
 object AudioResampler {
-    // Input Rate နဲ့ Output Rate တူရင် ဘာမှမလုပ်ဘဲ မူရင်းအတိုင်းပြန်ပေးမယ့် Logic
     fun resampleChunk(input: ByteArray, length: Int, inRate: Int, outRate: Int): ByteArray {
         if (inRate == outRate) return input.copyOfRange(0, length)
         
