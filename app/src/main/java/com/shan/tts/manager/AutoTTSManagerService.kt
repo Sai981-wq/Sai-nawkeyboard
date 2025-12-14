@@ -12,18 +12,14 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import java.io.FileInputStream
-import java.io.IOException
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
 import kotlin.math.min
+
+data class LangChunk(val text: String, val lang: String)
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -45,7 +41,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
+    private val TARGET_RATE = 24000 
     private val MAX_AUDIO_CHUNK_SIZE = 4096 
+    private val rateCache = HashMap<String, Int>()
     
     override fun onCreate() {
         super.onCreate()
@@ -87,45 +85,34 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }, pkg)
         } catch (e: Exception) { 
-             AppLogger.log("CHERRY_DEBUG", "Init Error $name: ${e.message}")
         }
     }
 
     override fun onStop() { 
         isStopped.set(true)
         currentTask?.cancel(true)
-        closePipeSafely()
-        AudioProcessor.flush()
-    }
-    
-    private fun closePipeSafely() {
         try { activeReadFd?.close() } catch (e: Exception) {}
         try { activeWriteFd?.close() } catch (e: Exception) {}
         activeReadFd = null
         activeWriteFd = null
+        AudioProcessor.flush()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         val reqId = System.currentTimeMillis() % 1000
         
-        onStop()
+        onStop() 
         isStopped.set(false)
         
         if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
 
         currentTask = controllerExecutor.submit {
             try {
-                if (englishEngine == null && burmeseEngine == null) {
-                    Thread.sleep(500)
-                }
-                
-                // Note: Assuming your utility file is named TTSUtils based on your error log
-                // If the class name is actually LanguageUtils, please rename it here.
-                val chunks = TTSUtils.splitHelper(text) 
+                val chunks = LanguageUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
-                    callback?.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                     callback?.done()
                     return@submit
                 }
@@ -154,12 +141,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
                 
                 if (!hasStartedCallback && !isStopped.get()) {
-                     callback?.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
-                     callback?.done()
+                     callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
             } catch (e: Exception) {
-                AppLogger.log("CHERRY_DEBUG", "Critical Error [$reqId]: ${e.message}")
             } finally {
                 if (!isStopped.get()) callback?.done()
                 if (wakeLock?.isHeld == true) wakeLock?.release()
@@ -169,6 +154,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        
         val sysRate = (request?.speechRate ?: 100) / 100.0f
         val sysPitch = (request?.pitch ?: 100) / 100.0f
         
@@ -191,10 +177,10 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
         
         var userRateMultiplier = rateSeekbar / 50.0f
-        if (userRateMultiplier < 0.4f) userRateMultiplier = 0.4f 
+        if (userRateMultiplier < 0.4f) userRateMultiplier = 0.4f
 
         var userPitchMultiplier = pitchSeekbar / 50.0f
-        if (userPitchMultiplier < 0.4f) userPitchMultiplier = 0.4f 
+        if (userPitchMultiplier < 0.4f) userPitchMultiplier = 0.4f
 
         var finalRate = sysRate * userRateMultiplier
         val finalPitch = sysPitch * userPitchMultiplier
@@ -212,31 +198,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
-        val synthesisLatch = CountDownLatch(1)
-
-        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) { }
-
-            override fun onDone(utteranceId: String?) {
-                if (utteranceId == uuid) {
-                    try { activeWriteFd?.close(); activeWriteFd = null } catch (e: Exception) {}
-                    synthesisLatch.countDown()
-                }
-            }
-
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                if (utteranceId == uuid) {
-                    try { activeWriteFd?.close(); activeWriteFd = null } catch (e: Exception) {}
-                    synthesisLatch.countDown()
-                }
-            }
-            
-            override fun onError(utteranceId: String?, errorCode: Int) {
-                onError(utteranceId)
-            }
-        })
-
         try {
             val pipe = ParcelFileDescriptor.createPipe()
             activeReadFd = pipe[0]
@@ -247,122 +208,66 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
                     
-                    val headerBuffer = ByteArray(44)
-                    var totalHeaderRead = 0
-                    while (totalHeaderRead < 44) {
-                        val count = fis.read(headerBuffer, totalHeaderRead, 44 - totalHeaderRead)
-                        if (count == -1) break
-                        totalHeaderRead += count
+                    var engineRate = rateCache[enginePkgName] ?: 0
+                    if (engineRate == 0) {
+                        engineRate = TTSUtils.detectEngineSampleRate(engine, applicationContext)
+                        rateCache[enginePkgName] = engineRate
                     }
-
-                    var detectedRate = 24000 
-                    var hasValidHeader = false
-
-                    if (totalHeaderRead == 44 && InternalWavUtils.isValidWav(headerBuffer)) {
-                        detectedRate = InternalWavUtils.getSampleRate(headerBuffer)
-                        hasValidHeader = true
-                    } else {
-                        if (enginePkgName.lowercase(Locale.ROOT).contains("google")) detectedRate = 24000 else detectedRate = 16000
-                    }
-
-                    // Direct Mode Logic
-                    val isNormalSpeed = abs(speed - 1.0f) < 0.05f
-                    val isNormalPitch = abs(pitch - 1.0f) < 0.05f
-                    val useDirectMode = isNormalSpeed && isNormalPitch
-
-                    if (!useDirectMode) {
-                        AudioProcessor.initSonic(detectedRate, 1)
-                        AudioProcessor.setConfig(speed, pitch, 1.0f)
-                    }
+                    
+                    AudioProcessor.initSonic(engineRate, 1)
+                    AudioProcessor.setConfig(speed, pitch, 1.0f) 
                     
                     if (!didStart) {
                         synchronized(callback) {
-                            // Use detected rate to ensure correct pitch/speed in playback
-                            callback.start(detectedRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+                            callback.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                         }
                         didStart = true
                     }
                     
-                    if (!hasValidHeader && totalHeaderRead > 0) {
-                         if (useDirectMode) {
-                             writeToCallback(headerBuffer, totalHeaderRead, callback)
-                         } else {
-                             val processed = AudioProcessor.processAudio(headerBuffer, totalHeaderRead)
-                             writeToCallback(processed, processed.size, callback)
-                         }
-                    }
-
                     val buffer = ByteArray(4096)
                     var bytesRead: Int
                     
                     while (fis.read(buffer).also { bytesRead = it } != -1) {
                          if (isStopped.get()) break
                          
-                         if (useDirectMode) {
-                             writeToCallback(buffer, bytesRead, callback)
-                         } else {
-                             val sonicOutput = AudioProcessor.processAudio(buffer, bytesRead)
-                             if (sonicOutput.isNotEmpty()) {
-                                 writeToCallback(sonicOutput, sonicOutput.size, callback)
+                         val processedAudio = AudioProcessor.processAudio(buffer, bytesRead)
+                         
+                         if (processedAudio.isNotEmpty()) {
+                             var offset = 0
+                             while (offset < processedAudio.size) {
+                                 if (isStopped.get()) break
+                                 
+                                 val chunkLength = min(MAX_AUDIO_CHUNK_SIZE, processedAudio.size - offset)
+                                 
+                                 synchronized(callback) {
+                                     try {
+                                         callback.audioAvailable(processedAudio, offset, chunkLength)
+                                     } catch (e: Exception) {}
+                                 }
+                                 offset += chunkLength
                              }
                          }
                     }
                     fis.close()
-                } catch (e: IOException) { 
-                    val msg = e.message ?: ""
-                    if (!isStopped.get() && !msg.contains("EBADF") && !msg.contains("interrupted") && !msg.contains("Bad file descriptor")) {
-                         AppLogger.log("CHERRY_DEBUG", "Pipe Read Error: $msg")
-                    }
-                } catch (e: Exception) {
-                    if (!isStopped.get()) AppLogger.log("CHERRY_DEBUG", "Pipe Error: ${e.message}")
-                }
+                } catch (e: Exception) {}
             }
 
             val targetFd = activeWriteFd
             if (targetFd != null) {
-                val result = engine.synthesizeToFile(text, params, targetFd, uuid)
-                if (result == TextToSpeech.ERROR) {
-                    try { activeWriteFd?.close() } catch(e:Exception){}
-                    synthesisLatch.countDown()
-                }
-            }
-
-            while (!isStopped.get() && synthesisLatch.count > 0) {
                 try {
-                    synthesisLatch.await(500, TimeUnit.MILLISECONDS)
-                } catch (e: InterruptedException) { }
+                    engine.synthesizeToFile(text, params, targetFd, uuid)
+                } catch (e: Exception) {}
             }
+            try { activeWriteFd?.close(); activeWriteFd = null } catch(e:Exception){}
 
             readerFuture.get() 
 
         } catch (e: Exception) {
-             AppLogger.log("CHERRY_DEBUG", "Process Exception: ${e.message}")
         } finally {
-            closePipeSafely()
+            try { activeReadFd?.close() } catch (e: Exception) {}
+            try { activeWriteFd?.close() } catch (e: Exception) {}
         }
         return didStart
-    }
-    
-    private fun writeToCallback(buffer: ByteArray, size: Int, callback: SynthesisCallback) {
-        if (size <= 0) return
-        var offset = 0
-        while (offset < size) {
-             if (isStopped.get()) break
-             val chunkLength = min(MAX_AUDIO_CHUNK_SIZE, size - offset)
-             synchronized(callback) {
-                 try {
-                     val tempBuffer: ByteArray
-                     if (offset == 0 && size == buffer.size) {
-                         tempBuffer = buffer 
-                     } else {
-                         tempBuffer = ByteArray(chunkLength)
-                         System.arraycopy(buffer, offset, tempBuffer, 0, chunkLength)
-                     }
-                     callback.audioAvailable(tempBuffer, 0, chunkLength)
-                 } catch (e: Exception) {}
-             }
-             offset += chunkLength
-        }
     }
     
     private fun getEngine(lang: String): TextToSpeech? {
@@ -387,20 +292,4 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
     override fun onGetLanguage(): Array<String> { return arrayOf("eng", "USA", "") }
-}
-
-object InternalWavUtils {
-    fun isValidWav(header: ByteArray): Boolean {
-        if (header.size < 44) return false
-        val riff = String(header, 0, 4)
-        val wave = String(header, 8, 4)
-        return riff == "RIFF" && wave == "WAVE"
-    }
-
-    fun getSampleRate(header: ByteArray): Int {
-        if (header.size < 44) return 24000
-        return ByteBuffer.wrap(header, 24, 4)
-            .order(ByteOrder.LITTLE_ENDIAN)
-            .int
-    }
 }

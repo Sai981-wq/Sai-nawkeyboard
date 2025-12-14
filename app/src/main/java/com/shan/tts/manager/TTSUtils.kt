@@ -1,5 +1,10 @@
 package com.shan.tts.manager
 
+import android.content.Context
+import android.speech.tts.TextToSpeech
+import java.io.File
+import java.io.RandomAccessFile
+
 object LanguageUtils {
      private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
      private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
@@ -51,46 +56,45 @@ object LanguageUtils {
     }
 }
 
-object AudioResampler {
-    // ဝင်လာတဲ့ Rate ကို 24000Hz ဖြစ်အောင် ပြောင်းပေးမည့် Function
-    fun resample(input: ByteArray, length: Int, inRate: Int, outRate: Int): ByteArray {
-        if (inRate == outRate) return input.copyOfRange(0, length)
+object TTSUtils {
+    fun detectEngineSampleRate(tts: TextToSpeech, context: Context): Int {
+        val tempFile = File(context.cacheDir, "probe_rate.wav")
+        val params = android.os.Bundle()
+        val uuid = "probe_${System.currentTimeMillis()}"
+        
+        try { tempFile.delete() } catch(e: Exception){}
+
+        val result = tts.synthesizeToFile("a", params, tempFile, uuid)
+        
+        if (result == TextToSpeech.SUCCESS) {
+            var waitCount = 0
+            while (!tempFile.exists() || tempFile.length() < 44) {
+                try { Thread.sleep(10) } catch (e: Exception) {}
+                waitCount++
+                if (waitCount > 100) return 16000
+            }
+            return readWavSampleRate(tempFile)
+        }
+        return 16000
+    }
+
+    private fun readWavSampleRate(file: File): Int {
         try {
-            val shortLen = length / 2
-            val inputShorts = ShortArray(shortLen)
-            for (i in 0 until shortLen) {
-                val low = input[i * 2].toInt() and 0xff
-                val high = input[i * 2 + 1].toInt() shl 8
-                inputShorts[i] = (low or high).toShort()
+            RandomAccessFile(file, "r").use { raf ->
+                raf.seek(24)
+                val byte1 = raf.read()
+                val byte2 = raf.read()
+                val byte3 = raf.read()
+                val byte4 = raf.read()
+                
+                return (byte1 and 0xFF) or 
+                       ((byte2 and 0xFF) shl 8) or 
+                       ((byte3 and 0xFF) shl 16) or 
+                       ((byte4 and 0xFF) shl 24)
             }
-            
-            val outputLen = ((shortLen.toLong() * outRate) / inRate).toInt()
-            val outputShorts = ShortArray(outputLen)
-            val step = (inRate.toLong() shl 16) / outRate
-            var pos = 0L
-
-            for (i in 0 until outputLen) {
-                val idx = (pos shr 16).toInt()
-                if (idx >= shortLen - 1) {
-                    outputShorts[i] = inputShorts[shortLen - 1]
-                } else {
-                    val v1 = inputShorts[idx].toInt()
-                    val v2 = inputShorts[idx + 1].toInt()
-                    val frac = (pos and 0xFFFFL).toInt()
-                    val res = v1 + ((v2 - v1) * frac shr 16)
-                    outputShorts[i] = res.toShort()
-                }
-                pos += step
-            }
-
-            val outputBytes = ByteArray(outputLen * 2)
-            for (i in 0 until outputLen) {
-                val sVal = outputShorts[i].toInt()
-                outputBytes[i * 2] = (sVal and 0xff).toByte()
-                outputBytes[i * 2 + 1] = ((sVal shr 8) and 0xff).toByte()
-            }
-            return outputBytes
-        } catch (e: Exception) { return ByteArray(0) }
+        } catch (e: Exception) {
+            return 16000
+        }
     }
 }
 
