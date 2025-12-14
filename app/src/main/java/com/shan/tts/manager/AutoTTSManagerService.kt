@@ -38,12 +38,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
-    // *** TARGET RATE IS ALWAYS 24000Hz ***
+    // Master Output Rate (TalkBack will receive this)
     private val TARGET_RATE = 24000 
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: Universal Resampling Mode")
+        AppLogger.log("Service", "Cherry TTS: Log Monitor Active")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -121,7 +121,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     engine.setSpeechRate(1.0f)
                     engine.setPitch(1.0f) 
                     
-                    // Always process, result will be resampled to 24000
                     val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index, rate, pitch)
                     
                     if (success) hasStartedCallback = true
@@ -186,13 +185,21 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     if (totalRead == 44) {
                         val wavInfo = getWavInfo(header)
+                        val enginePkg = engine.packageName ?: "Unknown"
+
+                        // *** LOGGING AREA ***
+                        val isRiff = header[0] == 'R'.toByte() && header[1] == 'I'.toByte()
+                        val headerType = if (isRiff) "WAV Header" else "RAW (No Header)"
+                        
+                        // ဒီစာကြောင်းက Logcat မှာ ပေါ်လာမယ့် အဖြေပါ
+                        AppLogger.log("HZ_CHECK", "Pkg: $enginePkg | Type: $headerType | Rate: ${wavInfo.sampleRate}")
+                        // ********************
+
                         val engineRate = wavInfo.sampleRate
                         
-                        // C++ Sonic Setup (Input Rate)
                         AudioProcessor.initSonic(engineRate, 1)
                         AudioProcessor.setConfig(speed, pitch, 1.0f) 
                         
-                        // *** IMPORTANT: Callback ALWAYS starts at 24000Hz ***
                         if (!didStart) {
                             synchronized(callback) {
                                 callback.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -206,22 +213,26 @@ class AutoTTSManagerService : TextToSpeechService() {
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
                              if (isStopped.get()) break
                              
-                             // 1. Process with Sonic (Output is still at engineRate)
                              val sonicOutput = AudioProcessor.processAudio(buffer, bytesRead)
                              
                              if (sonicOutput.isNotEmpty()) {
-                                 // 2. Resample to 24000Hz
+                                 // Resample from DETECTED rate to 24000
                                  val finalOutput = AudioResampler.resample(sonicOutput, sonicOutput.size, engineRate, TARGET_RATE)
                                  
-                                 // 3. Send to Callback
-                                 synchronized(callback) {
-                                     callback.audioAvailable(finalOutput, 0, finalOutput.size)
+                                 if (finalOutput.isNotEmpty()) {
+                                     synchronized(callback) {
+                                         callback.audioAvailable(finalOutput, 0, finalOutput.size)
+                                     }
                                  }
                              }
                         }
+                    } else {
+                        AppLogger.log("HZ_CHECK", "Failed to read header. Read $totalRead bytes")
                     }
                     fis.close()
-                } catch (e: Exception) { }
+                } catch (e: Exception) { 
+                    AppLogger.log("HZ_CHECK", "Pipe Error: ${e.message}")
+                }
             }
 
             val targetFd = activeWriteFd
@@ -243,14 +254,15 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
     
     private fun getWavInfo(header: ByteArray): WavInfo {
-        // Fallback to 16000 if header is broken (ETI usually 16k or 11k)
         if (header.size < 44) return WavInfo(16000, 1)
-        val rate = (header[24].toInt() and 0xFF) or ((header[25].toInt() and 0xFF) shl 8) or ((header[26].toInt() and 0xFF) shl 16) or ((header[27].toInt() and 0xFF) shl 24)
-        val safeRate = if (rate > 4000) rate else 16000 
+        val rate = (header[24].toInt() and 0xFF) or 
+                   ((header[25].toInt() and 0xFF) shl 8) or 
+                   ((header[26].toInt() and 0xFF) shl 16) or 
+                   ((header[27].toInt() and 0xFF) shl 24)
+        val safeRate = if (rate in 4000..48000) rate else 16000 
         return WavInfo(safeRate, 1)
     }
     
-    // ... getEngine, onDestroy ... (Same as before)
     private fun getEngine(lang: String): TextToSpeech? {
         return when (lang) {
             "SHAN" -> if (shanEngine != null) shanEngine else englishEngine
