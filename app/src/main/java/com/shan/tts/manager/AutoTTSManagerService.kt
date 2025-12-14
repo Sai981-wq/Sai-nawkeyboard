@@ -33,7 +33,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private val controllerExecutor = Executors.newSingleThreadExecutor()
     private val pipeExecutor = Executors.newCachedThreadPool()
-    private val probeExecutor = Executors.newSingleThreadExecutor()
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
@@ -44,6 +43,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private val TARGET_RATE = 24000 
     private val MAX_AUDIO_CHUNK_SIZE = 4096 
+    
+    // Cache map to store detected rates
     private val rateCache = HashMap<String, Int>()
     
     override fun onCreate() {
@@ -56,32 +57,18 @@ class AutoTTSManagerService : TextToSpeechService() {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
         shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
-        initEngine("Shan", shanPkgName) { 
-            shanEngine = it
-            triggerProbe(it, shanPkgName)
-        }
+        initEngine("Shan", shanPkgName) { shanEngine = it }
         
         burmesePkgName = prefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
         initEngine("Burmese", burmesePkgName) { 
             burmeseEngine = it
             it.language = Locale("my", "MM")
-            triggerProbe(it, burmesePkgName)
         }
         
         englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
         initEngine("English", englishPkgName) { 
             englishEngine = it
             it.language = Locale.US
-            triggerProbe(it, englishPkgName)
-        }
-    }
-    
-    private fun triggerProbe(tts: TextToSpeech, pkg: String) {
-        probeExecutor.submit {
-            val rate = TTSUtils.detectEngineSampleRate(tts, applicationContext, pkg)
-            synchronized(rateCache) {
-                rateCache[pkg] = rate
-            }
         }
     }
 
@@ -92,6 +79,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     onSuccess(tempTTS!!)
+                    // Set listener to avoid default logs
                     tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener(){
                         override fun onStart(id: String?) {}
                         override fun onDone(id: String?) {}
@@ -147,6 +135,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     
+                    // Force Engine to Normal so Sonic handles everything
                     engine.setSpeechRate(1.0f)
                     engine.setPitch(1.0f) 
                     
@@ -155,6 +144,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (success) hasStartedCallback = true
                 }
                 
+                // If nothing was played, silent frame to satisfy system
                 if (!hasStartedCallback && !isStopped.get()) {
                      callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
@@ -170,9 +160,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
+        // 1. TalkBack System Values
         val sysRate = (request?.speechRate ?: 100) / 100.0f
         val sysPitch = (request?.pitch ?: 100) / 100.0f
         
+        // 2. User Seekbar Values (Defaults to 50)
         var rateSeekbar = 50
         var pitchSeekbar = 50
         
@@ -191,16 +183,19 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
         
+        // 50 is Normal (1.0x)
         var userRateMultiplier = rateSeekbar / 50.0f
-        if (userRateMultiplier < 0.4f) userRateMultiplier = 0.4f
+        // Limit minimum speed/pitch to avoid crash/silence
+        if (userRateMultiplier < 0.2f) userRateMultiplier = 0.2f
 
         var userPitchMultiplier = pitchSeekbar / 50.0f
-        if (userPitchMultiplier < 0.4f) userPitchMultiplier = 0.4f
+        if (userPitchMultiplier < 0.2f) userPitchMultiplier = 0.2f
 
         var finalRate = sysRate * userRateMultiplier
         val finalPitch = sysPitch * userPitchMultiplier
         
-        if (finalRate > 3.5f) finalRate = 3.5f
+        // Safety Clamps
+        if (finalRate > 4.0f) finalRate = 4.0f
         if (finalRate < 0.1f) finalRate = 0.1f
 
         return Pair(finalRate, finalPitch)
@@ -223,17 +218,28 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
                     
+                    // --- CRITICAL FIX START ---
+                    // Check Cache first
                     var engineRate = 0
                     synchronized(rateCache) {
                         engineRate = rateCache[enginePkgName] ?: 0
                     }
                     
-                    // Fallback immediately if cache not ready (No Blocking!)
+                    // If not in cache, DETECT IT NOW (Blocking)
+                    // This runs in background thread, so UI won't freeze.
+                    // But we wait until we get the Real Rate.
                     if (engineRate == 0) {
-                        engineRate = TTSUtils.getFallbackRate(enginePkgName)
+                        engineRate = TTSUtils.detectEngineSampleRate(engine, applicationContext, enginePkgName)
+                        synchronized(rateCache) {
+                            rateCache[enginePkgName] = engineRate
+                        }
                     }
+                    // --- CRITICAL FIX END ---
                     
+                    // Init Sonic with Correct Rate
                     AudioProcessor.initSonic(engineRate, 1)
+                    
+                    // Apply Seekbar settings
                     AudioProcessor.setConfig(speed, pitch, 1.0f) 
                     
                     if (!didStart) {
@@ -249,6 +255,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     while (fis.read(buffer).also { bytesRead = it } != -1) {
                          if (isStopped.get()) break
                          
+                         // Process with C++ (Resample included)
                          val processedAudio = AudioProcessor.processAudio(buffer, bytesRead)
                          
                          if (processedAudio.isNotEmpty()) {
@@ -274,12 +281,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             val targetFd = activeWriteFd
             if (targetFd != null) {
                 try {
+                    // Engine writes to Pipe
                     engine.synthesizeToFile(text, params, targetFd, uuid)
                 } catch (e: Exception) {}
             }
             try { activeWriteFd?.close(); activeWriteFd = null } catch(e:Exception){}
 
-            readerFuture.get() 
+            readerFuture.get() // Wait for processing to finish
 
         } catch (e: Exception) {
         } finally {
@@ -301,7 +309,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped.set(true)
         controllerExecutor.shutdownNow()
         pipeExecutor.shutdownNow()
-        probeExecutor.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
