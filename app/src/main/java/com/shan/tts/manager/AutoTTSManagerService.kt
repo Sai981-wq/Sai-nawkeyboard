@@ -28,7 +28,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
     
-    // Executor
     private val controllerExecutor = Executors.newSingleThreadExecutor()
     private val pipeExecutor = Executors.newCachedThreadPool()
     
@@ -36,8 +35,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // *** KILL SWITCH VARIABLES (Global References) ***
-    // onStop ဝင်လာရင် ဒီကောင်တွေကို လှမ်းပိတ်မှ Thread တွေ ချက်ချင်းရပ်မှာပါ
+    // Global Kill Switch Variables
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
@@ -45,7 +43,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: Traffic Jam Fix (Aggressive Stop)")
+        AppLogger.log("Service", "Cherry TTS: Traffic Jam Fix (Compiled)")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -84,36 +82,29 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    // *** THE FIX IS HERE (onStop) ***
     override fun onStop() { 
-        // 1. Flag တင်မယ်
         isStopped.set(true)
-        
-        // 2. Task ကို Cancel လုပ်မယ်
         currentTask?.cancel(true)
         
-        // 3. *** AGGRESSIVE KILL *** (ပိုက်ကို ရိုက်ချိုးလိုက်မယ်)
-        // ဒါမှ Read/Write လုပ်နေတဲ့ Thread တွေက IOException တက်ပြီး ချက်ချင်းရပ်သွားမှာ
+        // Aggressive Kill
         try { activeReadFd?.close() } catch (e: Exception) {}
         try { activeWriteFd?.close() } catch (e: Exception) {}
         
         activeReadFd = null
         activeWriteFd = null
         
-        AppLogger.log("Flow", "STOP COMMAND: Queue Flushed & Pipes Broken")
+        AppLogger.log("Flow", "STOP COMMAND Executed")
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        val reqId = System.currentTimeMillis() % 1000
         
-        // 1. အရင်အလုပ်ဟောင်းတွေကို အရင်ရှင်းမယ်
+        // Flush Queue
         onStop() 
-        isStopped.set(false) // ပြန်ဖွင့်
+        isStopped.set(false)
         
         if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
 
-        // 2. Task အသစ် စမယ်
         currentTask = controllerExecutor.submit {
             try {
                 val chunks = LanguageUtils.splitHelper(text) 
@@ -127,13 +118,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var hasStartedCallback = false
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    // Check if stopped
                     if (isStopped.get() || Thread.currentThread().isInterrupted) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     val params = applyRateAndPitch(engine, chunk.lang, request)
                     
-                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index)
+                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback)
                     
                     if (success) hasStartedCallback = true
                 }
@@ -143,7 +133,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
 
             } catch (e: Exception) {
-                // Ignore errors (mostly interruptions)
+                // Ignore
             } finally {
                 if (!isStopped.get()) callback?.done()
                 if (wakeLock?.isHeld == true) wakeLock?.release()
@@ -185,7 +175,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         return params
     }
 
-    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int): Boolean {
+    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean): Boolean {
         if (callback == null) return alreadyStarted
 
         var didStart = alreadyStarted
@@ -194,22 +184,19 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         try {
             val pipe = ParcelFileDescriptor.createPipe()
-            
-            // *** Assign to Global Variables for Killing ***
             activeReadFd = pipe[0]
             activeWriteFd = pipe[1]
 
             // *** READER TASK ***
             val readerFuture = pipeExecutor.submit {
                 try {
-                    // Local reference to avoid null issues if global is cleared
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
                     val header = ByteArray(44)
                     var totalRead = 0
                     
                     while (totalRead < 44) {
-                         if (isStopped.get()) throw IOException("Stopped") // Fast Exit
+                         if (isStopped.get()) throw IOException("Stopped")
                          val c = fis.read(header, totalRead, 44 - totalRead)
                          if (c == -1) break
                          totalRead += c
@@ -231,7 +218,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
                              if (isStopped.get()) break
                              
-                             // *** Force Resample Logic ***
                              val outputBytes = if (wavInfo.sampleRate != TARGET_SAMPLE_RATE) {
                                  AudioResampler.simpleResample(buffer, bytesRead, wavInfo.sampleRate, TARGET_SAMPLE_RATE)
                              } else {
@@ -251,14 +237,16 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
-            // *** WRITER TASK ***
-            try {
-                engine.synthesizeToFile(text, params, activeWriteFd, uuid)
-            } catch (e: Exception) {
-                // Ignore write errors if pipe is closed
+            // *** WRITER TASK (FIXED) ***
+            val targetFd = activeWriteFd
+            if (targetFd != null) {
+                try {
+                    engine.synthesizeToFile(text, params, targetFd, uuid)
+                } catch (e: Exception) {
+                    // Ignore
+                }
             }
             
-            // Close Writer
             try { activeWriteFd?.close(); activeWriteFd = null } catch(e:Exception){}
 
             readerFuture.get() 
@@ -266,7 +254,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) {
              // Ignore
         } finally {
-            // Cleanup just in case
             try { activeReadFd?.close() } catch (e: Exception) {}
             try { activeWriteFd?.close() } catch (e: Exception) {}
         }
