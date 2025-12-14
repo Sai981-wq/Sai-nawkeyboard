@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -14,10 +15,9 @@ class LogViewerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // UI ကို Code နဲ့ပဲ ရေးလိုက်ပါမယ် (XML မလိုအောင်)
         val scrollView = ScrollView(this)
-        val layout = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
         }
         
@@ -54,3 +54,4 @@ class LogViewerActivity : AppCompatActivity() {
         refresh()
     }
 }
+

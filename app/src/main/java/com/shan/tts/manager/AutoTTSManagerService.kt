@@ -35,13 +35,15 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // Kill Switch
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
+    // *** TARGET RATE IS ALWAYS 24000Hz ***
+    private val TARGET_RATE = 24000 
+    
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: C++ Dynamic Rate")
+        AppLogger.log("Service", "Cherry TTS: Universal Resampling Mode")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -66,7 +68,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    AppLogger.log("Init", "$name initialized")
                     onSuccess(tempTTS!!)
                     tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener(){
                         override fun onStart(id: String?) {}
@@ -102,8 +103,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val chunks = LanguageUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
-                    // Default fallback (16k is standard safe)
-                    callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                     callback?.done()
                     return@submit
                 }
@@ -115,20 +115,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     val (rate, pitch) = getRateAndPitch(chunk.lang, request)
-                    
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     
                     engine.setSpeechRate(1.0f)
                     engine.setPitch(1.0f) 
                     
+                    // Always process, result will be resampled to 24000
                     val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index, rate, pitch)
                     
                     if (success) hasStartedCallback = true
                 }
                 
                 if (!hasStartedCallback && !isStopped.get()) {
-                     callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
+                     callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
             } catch (e: Exception) {
@@ -186,16 +186,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     if (totalRead == 44) {
                         val wavInfo = getWavInfo(header)
-                        val engineRate = wavInfo.sampleRate // *** DYNAMIC RATE ***
+                        val engineRate = wavInfo.sampleRate
                         
-                        // C++ Config (Sonic will handle this rate)
+                        // C++ Sonic Setup (Input Rate)
                         AudioProcessor.initSonic(engineRate, 1)
                         AudioProcessor.setConfig(speed, pitch, 1.0f) 
                         
+                        // *** IMPORTANT: Callback ALWAYS starts at 24000Hz ***
                         if (!didStart) {
                             synchronized(callback) {
-                                // *** Start TalkBack with ACTUAL Engine Rate ***
-                                callback.start(engineRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+                                callback.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                             }
                             didStart = true
                         }
@@ -206,12 +206,16 @@ class AutoTTSManagerService : TextToSpeechService() {
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
                              if (isStopped.get()) break
                              
-                             // C++ Process
-                             val processedBytes = AudioProcessor.processAudio(buffer, bytesRead)
+                             // 1. Process with Sonic (Output is still at engineRate)
+                             val sonicOutput = AudioProcessor.processAudio(buffer, bytesRead)
                              
-                             if (processedBytes.isNotEmpty()) {
+                             if (sonicOutput.isNotEmpty()) {
+                                 // 2. Resample to 24000Hz
+                                 val finalOutput = AudioResampler.resample(sonicOutput, sonicOutput.size, engineRate, TARGET_RATE)
+                                 
+                                 // 3. Send to Callback
                                  synchronized(callback) {
-                                     callback.audioAvailable(processedBytes, 0, processedBytes.size)
+                                     callback.audioAvailable(finalOutput, 0, finalOutput.size)
                                  }
                              }
                         }
@@ -239,13 +243,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
     
     private fun getWavInfo(header: ByteArray): WavInfo {
+        // Fallback to 16000 if header is broken (ETI usually 16k or 11k)
         if (header.size < 44) return WavInfo(16000, 1)
         val rate = (header[24].toInt() and 0xFF) or ((header[25].toInt() and 0xFF) shl 8) or ((header[26].toInt() and 0xFF) shl 16) or ((header[27].toInt() and 0xFF) shl 24)
-        val safeRate = if (rate > 0) rate else 16000
+        val safeRate = if (rate > 4000) rate else 16000 
         return WavInfo(safeRate, 1)
     }
     
-    // ... getEngine, onDestroy, etc. (Same as before) ...
+    // ... getEngine, onDestroy ... (Same as before)
     private fun getEngine(lang: String): TextToSpeech? {
         return when (lang) {
             "SHAN" -> if (shanEngine != null) shanEngine else englishEngine

@@ -29,28 +29,23 @@ class MainActivity : AppCompatActivity() {
         setupEngineUI(R.id.spinnerBurmese, "pref_burmese_pkg", "com.google.android.tts", R.id.seekBurmeseRate, "rate_burmese", R.id.seekBurmesePitch, "pitch_burmese")
         setupEngineUI(R.id.spinnerEnglish, "pref_english_pkg", "com.google.android.tts", R.id.seekEnglishRate, "rate_english", R.id.seekEnglishPitch, "pitch_english")
 
-        // *** DONATION LOGIC ***
         setupDonation(R.id.btnKpay, "09750091817", "KBZ Pay Number Copied")
         setupDonation(R.id.btnWave, "09750091817", "Wave Pay Number Copied")
 
-        // *** LOG VIEWER TRIGGER ***
         setupLogTrigger()
     }
 
-    // Log ကြည့်ရန် ခလုတ် သို့မဟုတ် Shortcut သတ်မှတ်ခြင်း
     private fun setupLogTrigger() {
-        // နည်းလမ်း (၁) - XML မှာ id = btnLogs ဆိုပြီး ခလုတ်ထည့်ထားရင် အလုပ်လုပ်မယ်
         val btnLogs = findViewById<View>(resources.getIdentifier("btnLogs", "id", packageName))
         btnLogs?.setOnClickListener {
             openLogViewer()
         }
 
-        // နည်းလမ်း (၂) - XML ပြင်စရာမလိုပါ (KBZ Pay ခလုတ်ကို ဖိထားရင် Log ပွင့်မယ်)
         val btnKpay = findViewById<View>(R.id.btnKpay)
         btnKpay?.setOnLongClickListener {
             Toast.makeText(this, "Opening Debug Logs...", Toast.LENGTH_SHORT).show()
             openLogViewer()
-            true // Consume the long click
+            true
         }
     }
 
@@ -76,24 +71,19 @@ class MainActivity : AppCompatActivity() {
         val seekRate = findViewById<SeekBar>(rateId)
         val seekPitch = findViewById<SeekBar>(pitchId)
 
-        // Load saved values
         seekRate.progress = prefs.getInt(rateKey, 100)
         seekPitch.progress = prefs.getInt(pitchKey, 100)
 
-        // Listeners
         seekRate.setOnSeekBarChangeListener(getSeekListener(rateKey))
         seekPitch.setOnSeekBarChangeListener(getSeekListener(pitchKey))
 
-        // Spinner Setup
         val savedPkg = prefs.getString(pkgKey, defPkg)
         val idx = enginePackages.indexOf(savedPkg)
         
-        // Only set selection if list is not empty and index is valid
         if (enginePackages.isNotEmpty()) {
              if (idx >= 0) {
                  spinner.setSelection(idx)
              } else {
-                 // Try to select default if saved one is gone
                  val defIdx = enginePackages.indexOf(defPkg)
                  if (defIdx >= 0) spinner.setSelection(defIdx)
              }
@@ -126,7 +116,6 @@ class MainActivity : AppCompatActivity() {
 
         for (info in resolveInfos) {
             val pkg = info.serviceInfo.packageName
-            // Exclude ourselves to prevent recursion if we are in the list
             if (pkg != packageName) {
                 val label = info.serviceInfo.loadLabel(packageManager).toString()
                 engineNames.add(label)
@@ -141,7 +130,6 @@ class MainActivity : AppCompatActivity() {
 
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, engineNames)
         
-        // Apply adapter to all spinners
         findViewById<Spinner>(R.id.spinnerShan)?.adapter = adapter
         findViewById<Spinner>(R.id.spinnerBurmese)?.adapter = adapter
         findViewById<Spinner>(R.id.spinnerEnglish)?.adapter = adapter
