@@ -28,6 +28,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
     
+    // Executor ၂ ခုခွဲသုံးခြင်း (Pipe Deadlock ကာကွယ်ရန်)
     private val controllerExecutor = Executors.newSingleThreadExecutor()
     private val pipeExecutor = Executors.newCachedThreadPool()
     
@@ -35,15 +36,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // Global Kill Switch Variables
+    // Global Kill Switch Variables (Volatile for thread visibility)
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
+    // Target: 24000Hz (Strict)
     private val TARGET_SAMPLE_RATE = 24000 
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: Traffic Jam Fix (Compiled)")
+        AppLogger.log("Service", "Cherry TTS: Traffic Fix + Logs Started")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -86,7 +88,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped.set(true)
         currentTask?.cancel(true)
         
-        // Aggressive Kill
+        // Aggressive Kill (Close Pipes Immediately)
         try { activeReadFd?.close() } catch (e: Exception) {}
         try { activeWriteFd?.close() } catch (e: Exception) {}
         
@@ -98,15 +100,19 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        val reqId = System.currentTimeMillis() % 1000
+        val startTime = System.currentTimeMillis()
         
-        // Flush Queue
+        // 1. Flush Queue
         onStop() 
         isStopped.set(false)
         
         if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
 
+        // 2. Start New Task
         currentTask = controllerExecutor.submit {
             try {
+                AppLogger.log("Flow", "[$reqId] START REQUEST (Len: ${text.length})")
                 val chunks = LanguageUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
@@ -123,7 +129,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val engine = getEngine(chunk.lang) ?: continue
                     val params = applyRateAndPitch(engine, chunk.lang, request)
                     
-                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback)
+                    // Log processing start
+                    AppLogger.log("Process", "[$reqId-$index] Engine: ${chunk.lang} Text: ${chunk.text.take(10)}...")
+                    
+                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index, startTime)
                     
                     if (success) hasStartedCallback = true
                 }
@@ -133,9 +142,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
 
             } catch (e: Exception) {
-                // Ignore
+                if (e !is InterruptedException) AppLogger.log("Error", "[$reqId] ${e.message}")
             } finally {
-                if (!isStopped.get()) callback?.done()
+                if (!isStopped.get()) {
+                    callback?.done()
+                    val totalTime = System.currentTimeMillis() - startTime
+                    AppLogger.log("Flow", "[$reqId] DONE in ${totalTime}ms")
+                }
                 if (wakeLock?.isHeld == true) wakeLock?.release()
             }
         }
@@ -175,7 +188,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         return params
     }
 
-    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean): Boolean {
+    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int, startTime: Long): Boolean {
         if (callback == null) return alreadyStarted
 
         var didStart = alreadyStarted
@@ -184,6 +197,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         try {
             val pipe = ParcelFileDescriptor.createPipe()
+            // Global Assign
             activeReadFd = pipe[0]
             activeWriteFd = pipe[1]
 
@@ -204,8 +218,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     if (totalRead == 44) {
                         val wavInfo = getWavInfo(header)
+                        val engineRate = wavInfo.sampleRate
                         
+                        // Debug Hz
+                        if (engineRate != TARGET_SAMPLE_RATE) {
+                            AppLogger.log("Hz", "[$reqId] Resample: $engineRate -> $TARGET_SAMPLE_RATE")
+                        }
+
                         if (!didStart) {
+                            val latency = System.currentTimeMillis() - startTime
+                            AppLogger.log("Latency", "[$reqId] Audio Start in ${latency}ms")
                             synchronized(callback) {
                                 callback.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                             }
@@ -218,6 +240,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
                              if (isStopped.get()) break
                              
+                             // Force Resample to 24k
                              val outputBytes = if (wavInfo.sampleRate != TARGET_SAMPLE_RATE) {
                                  AudioResampler.simpleResample(buffer, bytesRead, wavInfo.sampleRate, TARGET_SAMPLE_RATE)
                              } else {
@@ -233,11 +256,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                     fis.close()
                 } catch (e: Exception) {
-                    // Expected during stop
+                    // Ignore expected errors
                 }
             }
 
-            // *** WRITER TASK (FIXED) ***
+            // *** WRITER TASK (Fixed Smart Cast) ***
             val targetFd = activeWriteFd
             if (targetFd != null) {
                 try {
@@ -247,12 +270,16 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
             
-            try { activeWriteFd?.close(); activeWriteFd = null } catch(e:Exception){}
+            // Close Writer
+            try { 
+                activeWriteFd?.close()
+                activeWriteFd = null 
+            } catch(e:Exception){}
 
             readerFuture.get() 
 
         } catch (e: Exception) {
-             // Ignore
+             if (!isStopped.get()) AppLogger.log("PipeErr", "[$reqId] ${e.message}")
         } finally {
             try { activeReadFd?.close() } catch (e: Exception) {}
             try { activeWriteFd?.close() } catch (e: Exception) {}
