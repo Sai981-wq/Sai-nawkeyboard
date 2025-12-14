@@ -16,7 +16,6 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.min
 
 data class LangChunk(val text: String, val lang: String)
 
@@ -94,9 +93,12 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         currentTask = controllerExecutor.submit {
             try {
+                // Callback null ဖြစ်နေရင် ရှေ့ဆက်မလုပ်တော့ပါ (Fix for Type Mismatch)
+                if (callback == null) return@submit
+
                 val chunks = LanguageUtils.splitHelper(text) 
                 if (chunks.isEmpty()) {
-                    callback?.done()
+                    callback.done()
                     return@submit
                 }
 
@@ -108,18 +110,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (engine === shanEngine) activePkg = shanPkgName
                     else if (engine === burmeseEngine) activePkg = burmesePkgName
                     
-                    // 1. Get Settings
                     val (rateMultiplier, pitchMultiplier) = getRateAndPitch(chunk.lang, request)
                     
-                    // 2. Apply Native Settings directly to Engine
-                    // This fixes the "Tape Recorder" and "Radio" issues
                     engine.setSpeechRate(rateMultiplier)
                     engine.setPitch(pitchMultiplier)
                     
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     
-                    // 3. Process Direct Stream
+                    // ယခုအခါ callback သည် non-null ဖြစ်ကြောင်းသေချာသွားပါပြီ
                     processDirectPipe(engine, activePkg, chunk.text, params, callback)
                 }
             } catch (e: Exception) {
@@ -153,8 +152,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
         
-        // Standard Android TTS Formula: 50 = 1.0x
-        // 0 -> 0.5x, 100 -> 2.0x
         val userRate = 0.5f + (rateSeekbar / 100.0f) * 1.5f
         val userPitch = 0.5f + (pitchSeekbar / 100.0f) * 1.5f
         
@@ -175,16 +172,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
                     
-                    // 1. Detect Real Sample Rate of the Engine
-                    // We must tell the system the TRUTH about what the engine is sending
                     var engineRate = rateCache[pkgName] ?: 0
                     if (engineRate == 0) {
                         engineRate = TTSUtils.detectEngineSampleRate(engine, applicationContext, pkgName)
                         rateCache[pkgName] = engineRate
                     }
 
-                    // 2. Start Callback with REAL rate (No Resampling)
-                    // 16bit PCM, Mono (1 channel) is standard
                     synchronized(callback) {
                         callback.start(engineRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                     }
@@ -192,11 +185,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val buffer = ByteArray(4096)
                     var bytesRead: Int
                     
-                    // 3. Direct Passthrough Loop
                     while (fis.read(buffer).also { bytesRead = it } != -1) {
                          if (isStopped.get()) break
                          
-                         // Just pass the bytes directly. No C++. No Math. No Error.
                          if (bytesRead > 0) {
                              synchronized(callback) {
                                  try {
