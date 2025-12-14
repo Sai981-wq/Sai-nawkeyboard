@@ -19,8 +19,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
+// Chunk Helper (Keep existing logic or use this)
 data class LangChunk(val text: String, val lang: String)
-data class WavInfo(val sampleRate: Int, val channels: Int)
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -28,7 +28,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
     
-    // Executor ၂ ခုခွဲသုံးခြင်း (Pipe Deadlock ကာကွယ်ရန်)
     private val controllerExecutor = Executors.newSingleThreadExecutor()
     private val pipeExecutor = Executors.newCachedThreadPool()
     
@@ -36,16 +35,18 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private var wakeLock: PowerManager.WakeLock? = null
     
-    // Global Kill Switch Variables (Volatile for thread visibility)
+    // Kill Switch
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
-    // Target: 24000Hz (Strict)
-    private val TARGET_SAMPLE_RATE = 24000 
+    // *** C++ SONIC TARGET ***
+    // Sonic က Pitch ညှိပြီးရင် 24000Hz ထွက်အောင် ကျွန်တော်တို့ Set လုပ်လို့ရတယ်
+    // ဒါပေမဲ့ Input Rate အတိုင်းထွက်တာ ပိုကောင်းတယ်
+    private var currentSampleRate = 16000 
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: Traffic Fix + Logs Started")
+        AppLogger.log("Service", "Cherry TTS: C++ Sonic Mode")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -70,7 +71,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    AppLogger.log("Init", "$name initialized SUCCESS")
+                    AppLogger.log("Init", "$name initialized")
                     onSuccess(tempTTS!!)
                     tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener(){
                         override fun onStart(id: String?) {}
@@ -79,44 +80,36 @@ class AutoTTSManagerService : TextToSpeechService() {
                     })
                 }
             }, pkg)
-        } catch (e: Exception) {
-            AppLogger.log("InitError", "Crash on $name: ${e.message}")
-        }
+        } catch (e: Exception) { }
     }
 
     override fun onStop() { 
         isStopped.set(true)
         currentTask?.cancel(true)
-        
-        // Aggressive Kill (Close Pipes Immediately)
         try { activeReadFd?.close() } catch (e: Exception) {}
         try { activeWriteFd?.close() } catch (e: Exception) {}
-        
         activeReadFd = null
         activeWriteFd = null
-        
-        AppLogger.log("Flow", "STOP COMMAND Executed")
+        // C++ Flush
+        AudioProcessor.flush()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         val reqId = System.currentTimeMillis() % 1000
-        val startTime = System.currentTimeMillis()
         
-        // 1. Flush Queue
         onStop() 
         isStopped.set(false)
         
         if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
 
-        // 2. Start New Task
         currentTask = controllerExecutor.submit {
             try {
-                AppLogger.log("Flow", "[$reqId] START REQUEST (Len: ${text.length})")
-                val chunks = LanguageUtils.splitHelper(text) 
+                // Using simple splitter for now, ensure LanguageUtils.splitHelper exists
+                val chunks = splitText(text) 
                 
                 if (chunks.isEmpty()) {
-                    callback?.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
                     callback?.done()
                     return@submit
                 }
@@ -124,71 +117,68 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var hasStartedCallback = false
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    if (isStopped.get() || Thread.currentThread().isInterrupted) break
+                    if (isStopped.get()) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
-                    val params = applyRateAndPitch(engine, chunk.lang, request)
                     
-                    // Log processing start
-                    AppLogger.log("Process", "[$reqId-$index] Engine: ${chunk.lang} Text: ${chunk.text.take(10)}...")
+                    // *** Step 1: Calculate Pitch/Speed for C++ ***
+                    val (rate, pitch) = getRateAndPitch(chunk.lang, request)
                     
-                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index, startTime)
+                    // We tell the engine to speak normally (1.0), but handle manipulation in C++
+                    val params = Bundle()
+                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                    
+                    // Set Engine to 1.0 (Neutral) so we get raw audio
+                    engine.setSpeechRate(1.0f)
+                    engine.setPitch(1.0f) 
+                    
+                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index, rate, pitch)
                     
                     if (success) hasStartedCallback = true
                 }
                 
                 if (!hasStartedCallback && !isStopped.get()) {
-                     callback?.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+                     callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
             } catch (e: Exception) {
-                if (e !is InterruptedException) AppLogger.log("Error", "[$reqId] ${e.message}")
+                AppLogger.log("Error", "[$reqId] ${e.message}")
             } finally {
-                if (!isStopped.get()) {
-                    callback?.done()
-                    val totalTime = System.currentTimeMillis() - startTime
-                    AppLogger.log("Flow", "[$reqId] DONE in ${totalTime}ms")
-                }
+                if (!isStopped.get()) callback?.done()
                 if (wakeLock?.isHeld == true) wakeLock?.release()
             }
         }
     }
     
-    private fun applyRateAndPitch(engine: TextToSpeech, lang: String, request: SynthesisRequest?): Bundle {
+    // Helper to get user settings
+    private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-        val sysRate = request?.speechRate ?: 100
-        val sysPitch = request?.pitch ?: 100
+        val sysRate = (request?.speechRate ?: 100) / 100.0f
+        val sysPitch = (request?.pitch ?: 100) / 100.0f
         
-        var userRate = 100
-        var userPitch = 100
+        var userRate = 1.0f
+        var userPitch = 1.0f
         
         when(lang) {
             "SHAN" -> {
-                userRate = prefs.getInt("rate_shan", 100)
-                userPitch = prefs.getInt("pitch_shan", 100)
+                userRate = prefs.getInt("rate_shan", 100) / 100.0f
+                userPitch = prefs.getInt("pitch_shan", 100) / 100.0f
             }
             "MYANMAR" -> {
-                userRate = prefs.getInt("rate_burmese", 100)
-                userPitch = prefs.getInt("pitch_burmese", 100)
+                userRate = prefs.getInt("rate_burmese", 100) / 100.0f
+                userPitch = prefs.getInt("pitch_burmese", 100) / 100.0f
             }
             else -> {
-                userRate = prefs.getInt("rate_english", 100)
-                userPitch = prefs.getInt("pitch_english", 100)
+                userRate = prefs.getInt("rate_english", 100) / 100.0f
+                userPitch = prefs.getInt("pitch_english", 100) / 100.0f
             }
         }
-
-        val finalRate = (sysRate * userRate) / 10000.0f
-        val finalPitch = (sysPitch * userPitch) / 10000.0f
         
-        engine.setSpeechRate(finalRate)
-        engine.setPitch(finalPitch)
-
-        val params = Bundle()
-        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f) 
-        return params
+        // Combine System Settings + User Settings
+        return Pair(sysRate * userRate, sysPitch * userPitch)
     }
 
-    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int, startTime: Long): Boolean {
+    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int, speed: Float, pitch: Float): Boolean {
         if (callback == null) return alreadyStarted
 
         var didStart = alreadyStarted
@@ -197,11 +187,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         try {
             val pipe = ParcelFileDescriptor.createPipe()
-            // Global Assign
             activeReadFd = pipe[0]
             activeWriteFd = pipe[1]
 
-            // *** READER TASK ***
+            // *** READER TASK (C++ Processing) ***
             val readerFuture = pipeExecutor.submit {
                 try {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
@@ -218,18 +207,17 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     if (totalRead == 44) {
                         val wavInfo = getWavInfo(header)
-                        val engineRate = wavInfo.sampleRate
                         
-                        // Debug Hz
-                        if (engineRate != TARGET_SAMPLE_RATE) {
-                            AppLogger.log("Hz", "[$reqId] Resample: $engineRate -> $TARGET_SAMPLE_RATE")
-                        }
-
+                        // *** C++ INIT ***
+                        // 1. Initialize Sonic with Input Rate
+                        AudioProcessor.initSonic(wavInfo.sampleRate, 1)
+                        // 2. Set Pitch & Speed
+                        AudioProcessor.setConfig(speed, pitch, 1.0f) 
+                        
+                        // Always output at Input Rate (Sonic handles the stretching)
                         if (!didStart) {
-                            val latency = System.currentTimeMillis() - startTime
-                            AppLogger.log("Latency", "[$reqId] Audio Start in ${latency}ms")
                             synchronized(callback) {
-                                callback.start(TARGET_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+                                callback.start(wavInfo.sampleRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                             }
                             didStart = true
                         }
@@ -240,46 +228,32 @@ class AutoTTSManagerService : TextToSpeechService() {
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
                              if (isStopped.get()) break
                              
-                             // Force Resample to 24k
-                             val outputBytes = if (wavInfo.sampleRate != TARGET_SAMPLE_RATE) {
-                                 AudioResampler.simpleResample(buffer, bytesRead, wavInfo.sampleRate, TARGET_SAMPLE_RATE)
-                             } else {
-                                 buffer.copyOfRange(0, bytesRead)
-                             }
+                             // *** C++ PROCESS ***
+                             val processedBytes = AudioProcessor.processAudio(buffer, bytesRead)
                              
-                             if (outputBytes.isNotEmpty()) {
+                             if (processedBytes.isNotEmpty()) {
                                  synchronized(callback) {
-                                     callback.audioAvailable(outputBytes, 0, outputBytes.size)
+                                     callback.audioAvailable(processedBytes, 0, processedBytes.size)
                                  }
                              }
                         }
                     }
                     fis.close()
-                } catch (e: Exception) {
-                    // Ignore expected errors
-                }
+                } catch (e: Exception) { }
             }
 
-            // *** WRITER TASK (Fixed Smart Cast) ***
+            // *** WRITER TASK ***
             val targetFd = activeWriteFd
             if (targetFd != null) {
                 try {
                     engine.synthesizeToFile(text, params, targetFd, uuid)
-                } catch (e: Exception) {
-                    // Ignore
-                }
+                } catch (e: Exception) {}
             }
-            
-            // Close Writer
-            try { 
-                activeWriteFd?.close()
-                activeWriteFd = null 
-            } catch(e:Exception){}
+            try { activeWriteFd?.close(); activeWriteFd = null } catch(e:Exception){}
 
             readerFuture.get() 
 
         } catch (e: Exception) {
-             if (!isStopped.get()) AppLogger.log("PipeErr", "[$reqId] ${e.message}")
         } finally {
             try { activeReadFd?.close() } catch (e: Exception) {}
             try { activeWriteFd?.close() } catch (e: Exception) {}
@@ -300,6 +274,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             "MYANMAR" -> if (burmeseEngine != null) burmeseEngine else englishEngine
             else -> englishEngine
         }
+    }
+    
+    // Simple splitter needed for this class context
+    private fun splitText(text: String): List<LangChunk> {
+        // Reuse your existing LanguageUtils.splitHelper logic here
+        // Or simply call LanguageUtils.splitHelper(text) if LanguageUtils is available
+        return LanguageUtils.splitHelper(text)
     }
 
     override fun onDestroy() { 
