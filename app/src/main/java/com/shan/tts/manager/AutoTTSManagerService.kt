@@ -14,8 +14,10 @@ import android.speech.tts.Voice
 import java.io.FileInputStream
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
@@ -46,7 +48,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("CHERRY_DEBUG", "=== Service Started ===")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -92,24 +93,32 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onStop() { 
         isStopped.set(true)
         currentTask?.cancel(true)
+        closePipeSafely()
+        AudioProcessor.flush()
+    }
+    
+    private fun closePipeSafely() {
         try { activeReadFd?.close() } catch (e: Exception) {}
         try { activeWriteFd?.close() } catch (e: Exception) {}
         activeReadFd = null
         activeWriteFd = null
-        AudioProcessor.flush()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         val reqId = System.currentTimeMillis() % 1000
         
-        onStop() 
+        onStop()
         isStopped.set(false)
         
         if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
 
         currentTask = controllerExecutor.submit {
             try {
+                if (englishEngine == null && burmeseEngine == null) {
+                    Thread.sleep(500)
+                }
+
                 val chunks = LanguageUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
@@ -156,12 +165,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-        
-        // 1. TalkBack System Values
         val sysRate = (request?.speechRate ?: 100) / 100.0f
         val sysPitch = (request?.pitch ?: 100) / 100.0f
         
-        // 2. User Seekbar Values
         var rateSeekbar = 50
         var pitchSeekbar = 50
         
@@ -180,38 +186,19 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
         
-        // *** FORMULA FIX (Direct Proportional) ***
-        // 50 = 1.0x (Normal), 100 = 2.0x (Fast/High), 25 = 0.5x (Slow/Low)
-        
         var userRateMultiplier = rateSeekbar / 50.0f
-        if (userRateMultiplier < 0.4f) userRateMultiplier = 0.4f // အရမ်းမနှေးစေရန်
+        if (userRateMultiplier < 0.4f) userRateMultiplier = 0.4f 
 
         var userPitchMultiplier = pitchSeekbar / 50.0f
-        if (userPitchMultiplier < 0.4f) userPitchMultiplier = 0.4f // အရမ်းမနိမ့်စေရန်
+        if (userPitchMultiplier < 0.4f) userPitchMultiplier = 0.4f 
 
-        // Final Calculation
         var finalRate = sysRate * userRateMultiplier
         val finalPitch = sysPitch * userPitchMultiplier
         
-        // Speed Limit (3.5x ထက် မကျော်စေရ)
         if (finalRate > 3.5f) finalRate = 3.5f
         if (finalRate < 0.1f) finalRate = 0.1f
 
         return Pair(finalRate, finalPitch)
-    }
-
-    private fun getEngineConfig(packageName: String): Int {
-        val lowerPkg = packageName.toLowerCase(Locale.ROOT)
-        if (lowerPkg.contains("google")) return 24000
-        if (lowerPkg.contains("eloquence") || lowerPkg.contains("eti")) return 11025
-        if (lowerPkg.contains("shan") || 
-            lowerPkg.contains("saomai") || 
-            lowerPkg.contains("myanmartts") || 
-            lowerPkg.contains("espeak")) {
-            return 22050
-        }
-        if (lowerPkg.contains("vocalizer")) return 22050
-        return 16000
     }
 
     private fun processWithPipe(engine: TextToSpeech, enginePkgName: String, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int, speed: Float, pitch: Float): Boolean {
@@ -220,6 +207,31 @@ class AutoTTSManagerService : TextToSpeechService() {
         var didStart = alreadyStarted
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
+
+        val synthesisLatch = CountDownLatch(1)
+
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) { }
+
+            override fun onDone(utteranceId: String?) {
+                if (utteranceId == uuid) {
+                    try { activeWriteFd?.close(); activeWriteFd = null } catch (e: Exception) {}
+                    synthesisLatch.countDown()
+                }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                if (utteranceId == uuid) {
+                    try { activeWriteFd?.close(); activeWriteFd = null } catch (e: Exception) {}
+                    synthesisLatch.countDown()
+                }
+            }
+            
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                onError(utteranceId)
+            }
+        })
 
         try {
             val pipe = ParcelFileDescriptor.createPipe()
@@ -231,11 +243,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
                     
-                    val engineRate = getEngineConfig(enginePkgName)
-                    
-                    AppLogger.log("CHERRY_DEBUG", "Processing: $enginePkgName @ $engineRate Hz")
-                    
-                    AudioProcessor.initSonic(engineRate, 1)
+                    val headerBuffer = ByteArray(44)
+                    var bytesRead = fis.read(headerBuffer)
+
+                    var detectedRate = 24000 
+                    var hasHeader = false
+
+                    if (bytesRead == 44 && WavUtils.isValidWav(headerBuffer)) {
+                        detectedRate = WavUtils.getSampleRate(headerBuffer)
+                        hasHeader = true
+                    } else if (bytesRead > 0) {
+                        if (enginePkgName.lowercase(Locale.ROOT).contains("google")) detectedRate = 24000 else detectedRate = 16000
+                    }
+
+                    AudioProcessor.initSonic(detectedRate, 1)
                     AudioProcessor.setConfig(speed, pitch, 1.0f) 
                     
                     if (!didStart) {
@@ -245,61 +266,68 @@ class AutoTTSManagerService : TextToSpeechService() {
                         didStart = true
                     }
                     
+                    if (!hasHeader && bytesRead > 0) {
+                         val initialChunk = AudioProcessor.processAudio(headerBuffer, bytesRead)
+                         writeToCallback(initialChunk, detectedRate, callback)
+                    }
+
                     val buffer = ByteArray(4096)
-                    var bytesRead: Int
                     
                     while (fis.read(buffer).also { bytesRead = it } != -1) {
                          if (isStopped.get()) break
                          
                          val sonicOutput = AudioProcessor.processAudio(buffer, bytesRead)
-                         
-                         if (sonicOutput.isNotEmpty()) {
-                             val finalOutput = AudioResampler.resample(sonicOutput, sonicOutput.size, engineRate, TARGET_RATE)
-                             
-                             if (finalOutput.isNotEmpty()) {
-                                 var offset = 0
-                                 while (offset < finalOutput.size) {
-                                     if (isStopped.get()) break
-                                     
-                                     val chunkLength = min(MAX_AUDIO_CHUNK_SIZE, finalOutput.size - offset)
-                                     
-                                     synchronized(callback) {
-                                         try {
-                                             callback.audioAvailable(finalOutput, offset, chunkLength)
-                                         } catch (e: Exception) {
-                                             AppLogger.log("CHERRY_DEBUG", "Audio Write Fail: ${e.message}")
-                                         }
-                                     }
-                                     offset += chunkLength
-                                 }
-                             }
-                         }
+                         writeToCallback(sonicOutput, detectedRate, callback)
                     }
                     fis.close()
                 } catch (e: Exception) { 
-                    if (!isStopped.get()) {
-                        AppLogger.log("CHERRY_DEBUG", "Pipe Error: ${e.message}")
-                    }
+                    if (!isStopped.get()) AppLogger.log("CHERRY_DEBUG", "Pipe Read Error: ${e.message}")
                 }
             }
 
             val targetFd = activeWriteFd
             if (targetFd != null) {
-                try {
-                    engine.synthesizeToFile(text, params, targetFd, uuid)
-                } catch (e: Exception) {}
+                val result = engine.synthesizeToFile(text, params, targetFd, uuid)
+                if (result == TextToSpeech.ERROR) {
+                    try { activeWriteFd?.close() } catch(e:Exception){}
+                    synthesisLatch.countDown()
+                }
             }
-            try { activeWriteFd?.close(); activeWriteFd = null } catch(e:Exception){}
+
+            try {
+                synthesisLatch.await(10, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) { }
 
             readerFuture.get() 
 
         } catch (e: Exception) {
-             // Main process exception logging
+             AppLogger.log("CHERRY_DEBUG", "Process Exception: ${e.message}")
         } finally {
-            try { activeReadFd?.close() } catch (e: Exception) {}
-            try { activeWriteFd?.close() } catch (e: Exception) {}
+            closePipeSafely()
         }
         return didStart
+    }
+    
+    private fun writeToCallback(sonicOutput: ByteArray, inputRate: Int, callback: SynthesisCallback) {
+         if (sonicOutput.isNotEmpty()) {
+             val finalOutput = AudioResampler.resample(sonicOutput, sonicOutput.size, inputRate, TARGET_RATE)
+             
+             if (finalOutput.isNotEmpty()) {
+                 var offset = 0
+                 while (offset < finalOutput.size) {
+                     if (isStopped.get()) break
+                     
+                     val chunkLength = min(MAX_AUDIO_CHUNK_SIZE, finalOutput.size - offset)
+                     
+                     synchronized(callback) {
+                         try {
+                             callback.audioAvailable(finalOutput, offset, chunkLength)
+                         } catch (e: Exception) {}
+                     }
+                     offset += chunkLength
+                 }
+             }
+         }
     }
     
     private fun getEngine(lang: String): TextToSpeech? {
@@ -325,4 +353,3 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
     override fun onGetLanguage(): Array<String> { return arrayOf("eng", "USA", "") }
 }
-
