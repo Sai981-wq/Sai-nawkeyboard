@@ -43,8 +43,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private val TARGET_RATE = 24000 
     private val MAX_AUDIO_CHUNK_SIZE = 4096 
-    
-    // Cache map to store detected rates
     private val rateCache = HashMap<String, Int>()
     
     override fun onCreate() {
@@ -79,7 +77,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     onSuccess(tempTTS!!)
-                    // Set listener to avoid default logs
                     tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener(){
                         override fun onStart(id: String?) {}
                         override fun onDone(id: String?) {}
@@ -135,7 +132,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     
-                    // Force Engine to Normal so Sonic handles everything
+                    // Reset engine default
                     engine.setSpeechRate(1.0f)
                     engine.setPitch(1.0f) 
                     
@@ -144,7 +141,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (success) hasStartedCallback = true
                 }
                 
-                // If nothing was played, silent frame to satisfy system
                 if (!hasStartedCallback && !isStopped.get()) {
                      callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
@@ -160,11 +156,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
-        // 1. TalkBack System Values
         val sysRate = (request?.speechRate ?: 100) / 100.0f
         val sysPitch = (request?.pitch ?: 100) / 100.0f
         
-        // 2. User Seekbar Values (Defaults to 50)
         var rateSeekbar = 50
         var pitchSeekbar = 50
         
@@ -183,21 +177,29 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
         
-        // 50 is Normal (1.0x)
-        var userRateMultiplier = rateSeekbar / 50.0f
-        // Limit minimum speed/pitch to avoid crash/silence
-        if (userRateMultiplier < 0.2f) userRateMultiplier = 0.2f
+        // --- Improved Natural Formula ---
+        
+        // Rate: 0 -> 0.4x, 50 -> 1.0x, 100 -> 2.5x
+        var userRateMultiplier = if (rateSeekbar <= 50) {
+            0.4f + (rateSeekbar / 50.0f) * 0.6f 
+        } else {
+            1.0f + ((rateSeekbar - 50) / 50.0f) * 1.5f
+        }
 
-        var userPitchMultiplier = pitchSeekbar / 50.0f
-        if (userPitchMultiplier < 0.2f) userPitchMultiplier = 0.2f
+        // Pitch: 0 -> 0.6x, 50 -> 1.0x, 100 -> 1.6x (Typical TTS Range)
+        var userPitchMultiplier = if (pitchSeekbar <= 50) {
+            0.6f + (pitchSeekbar / 50.0f) * 0.4f
+        } else {
+            1.0f + ((pitchSeekbar - 50) / 50.0f) * 0.6f
+        }
 
         var finalRate = sysRate * userRateMultiplier
         val finalPitch = sysPitch * userPitchMultiplier
         
-        // Safety Clamps
-        if (finalRate > 4.0f) finalRate = 4.0f
-        if (finalRate < 0.1f) finalRate = 0.1f
-
+        // Safety Limit
+        if (finalRate > 3.5f) finalRate = 3.5f
+        if (finalRate < 0.2f) finalRate = 0.2f
+        
         return Pair(finalRate, finalPitch)
     }
 
@@ -218,29 +220,22 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
                     
-                    // --- CRITICAL FIX START ---
-                    // Check Cache first
                     var engineRate = 0
                     synchronized(rateCache) {
                         engineRate = rateCache[enginePkgName] ?: 0
                     }
                     
-                    // If not in cache, DETECT IT NOW (Blocking)
-                    // This runs in background thread, so UI won't freeze.
-                    // But we wait until we get the Real Rate.
                     if (engineRate == 0) {
                         engineRate = TTSUtils.detectEngineSampleRate(engine, applicationContext, enginePkgName)
                         synchronized(rateCache) {
                             rateCache[enginePkgName] = engineRate
                         }
                     }
-                    // --- CRITICAL FIX END ---
                     
-                    // Init Sonic with Correct Rate
                     AudioProcessor.initSonic(engineRate, 1)
                     
-                    // Apply Seekbar settings
-                    AudioProcessor.setConfig(speed, pitch, 1.0f) 
+                    // NEW: Pass only speed and pitch. Rate is hardcoded to 1.0 in C++ to prevent linking.
+                    AudioProcessor.setConfig(speed, pitch) 
                     
                     if (!didStart) {
                         synchronized(callback) {
@@ -255,7 +250,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     while (fis.read(buffer).also { bytesRead = it } != -1) {
                          if (isStopped.get()) break
                          
-                         // Process with C++ (Resample included)
                          val processedAudio = AudioProcessor.processAudio(buffer, bytesRead)
                          
                          if (processedAudio.isNotEmpty()) {
@@ -281,13 +275,12 @@ class AutoTTSManagerService : TextToSpeechService() {
             val targetFd = activeWriteFd
             if (targetFd != null) {
                 try {
-                    // Engine writes to Pipe
                     engine.synthesizeToFile(text, params, targetFd, uuid)
                 } catch (e: Exception) {}
             }
             try { activeWriteFd?.close(); activeWriteFd = null } catch(e:Exception){}
 
-            readerFuture.get() // Wait for processing to finish
+            readerFuture.get() 
 
         } catch (e: Exception) {
         } finally {
