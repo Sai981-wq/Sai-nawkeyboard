@@ -25,9 +25,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.min
 
-// =======================
-// Main Service Class
-// =======================
 class AutoTTSManagerService : TextToSpeechService() {
 
     private var shanEngine: TextToSpeech? = null
@@ -53,7 +50,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onCreate() {
         super.onCreate()
         
-        // WakeLock for preventing sleep during long reading
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
         wakeLock?.setReferenceCounted(false)
@@ -123,8 +119,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (englishEngine == null && burmeseEngine == null) {
                     Thread.sleep(500)
                 }
-
-                val chunks = LanguageUtils.splitHelper(text) 
+                
+                // Note: Assuming your utility file is named TTSUtils based on your error log
+                // If the class name is actually LanguageUtils, please rename it here.
+                val chunks = TTSUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
                     callback?.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -155,7 +153,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (success) hasStartedCallback = true
                 }
                 
-                // If nothing played, just finish to satisfy system
                 if (!hasStartedCallback && !isStopped.get()) {
                      callback?.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
                      callback?.done()
@@ -250,7 +247,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
                     
-                    // 1. Read WAV Header loop to ensure full 44 bytes
                     val headerBuffer = ByteArray(44)
                     var totalHeaderRead = 0
                     while (totalHeaderRead < 44) {
@@ -259,39 +255,34 @@ class AutoTTSManagerService : TextToSpeechService() {
                         totalHeaderRead += count
                     }
 
-                    var detectedRate = 24000 // Default fallback
+                    var detectedRate = 24000 
                     var hasValidHeader = false
 
                     if (totalHeaderRead == 44 && InternalWavUtils.isValidWav(headerBuffer)) {
                         detectedRate = InternalWavUtils.getSampleRate(headerBuffer)
                         hasValidHeader = true
                     } else {
-                        // Header ဖတ်မရရင် Google ဆို 24k, တခြားဆို 16k မှန်းမယ်
                         if (enginePkgName.lowercase(Locale.ROOT).contains("google")) detectedRate = 24000 else detectedRate = 16000
                     }
 
-                    // 2. Direct Sound Mode (Killer Fix for "Original Sound")
-                    // If speed/pitch normal, bypass everything and write direct
+                    // Direct Mode Logic
                     val isNormalSpeed = abs(speed - 1.0f) < 0.05f
                     val isNormalPitch = abs(pitch - 1.0f) < 0.05f
                     val useDirectMode = isNormalSpeed && isNormalPitch
 
                     if (!useDirectMode) {
-                        // Configure Sonic only if we need to change speed/pitch
                         AudioProcessor.initSonic(detectedRate, 1)
                         AudioProcessor.setConfig(speed, pitch, 1.0f)
                     }
                     
                     if (!didStart) {
                         synchronized(callback) {
-                            // Important: Start callback with the ACTUAL detected rate
-                            // This prevents "chipmunk" voice and removes need for Resampling
+                            // Use detected rate to ensure correct pitch/speed in playback
                             callback.start(detectedRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                         }
                         didStart = true
                     }
                     
-                    // Process the header/initial bytes if they weren't a valid header
                     if (!hasValidHeader && totalHeaderRead > 0) {
                          if (useDirectMode) {
                              writeToCallback(headerBuffer, totalHeaderRead, callback)
@@ -301,7 +292,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
 
-                    // 3. Main Audio Loop
                     val buffer = ByteArray(4096)
                     var bytesRead: Int
                     
@@ -309,10 +299,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                          if (isStopped.get()) break
                          
                          if (useDirectMode) {
-                             // DIRECT PASS-THROUGH (Best Quality)
                              writeToCallback(buffer, bytesRead, callback)
                          } else {
-                             // SONIC PROCESSING
                              val sonicOutput = AudioProcessor.processAudio(buffer, bytesRead)
                              if (sonicOutput.isNotEmpty()) {
                                  writeToCallback(sonicOutput, sonicOutput.size, callback)
@@ -321,7 +309,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                     fis.close()
                 } catch (e: IOException) { 
-                    // Suppress EBADF / Interrupted logs when stopping
                     val msg = e.message ?: ""
                     if (!isStopped.get() && !msg.contains("EBADF") && !msg.contains("interrupted") && !msg.contains("Bad file descriptor")) {
                          AppLogger.log("CHERRY_DEBUG", "Pipe Read Error: $msg")
@@ -340,7 +327,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
-            // Wait for engine to finish writing
             while (!isStopped.get() && synthesisLatch.count > 0) {
                 try {
                     synthesisLatch.await(500, TimeUnit.MILLISECONDS)
@@ -357,7 +343,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         return didStart
     }
     
-    // Simple writer helper (No Resampling needed anymore because we use dynamic callback.start)
     private fun writeToCallback(buffer: ByteArray, size: Int, callback: SynthesisCallback) {
         if (size <= 0) return
         var offset = 0
@@ -366,11 +351,9 @@ class AutoTTSManagerService : TextToSpeechService() {
              val chunkLength = min(MAX_AUDIO_CHUNK_SIZE, size - offset)
              synchronized(callback) {
                  try {
-                     // Pass 'buffer' with offset and length
-                     // If buffer is bigger than size, this logic handles it
                      val tempBuffer: ByteArray
                      if (offset == 0 && size == buffer.size) {
-                         tempBuffer = buffer // Optimization
+                         tempBuffer = buffer 
                      } else {
                          tempBuffer = ByteArray(chunkLength)
                          System.arraycopy(buffer, offset, tempBuffer, 0, chunkLength)
@@ -406,9 +389,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onGetLanguage(): Array<String> { return arrayOf("eng", "USA", "") }
 }
 
-// =======================
-// Internal Helper Object
-// =======================
 object InternalWavUtils {
     fun isValidWav(header: ByteArray): Boolean {
         if (header.size < 44) return false
