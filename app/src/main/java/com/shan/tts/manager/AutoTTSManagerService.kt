@@ -19,7 +19,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
-// *** ဒီအကြောင်း ၂ ကြောင်း ကျန်ခဲ့လို့ Error တက်တာပါ ***
 data class WavInfo(val sampleRate: Int, val channels: Int)
 data class LangChunk(val text: String, val lang: String)
 
@@ -40,11 +39,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
-    private var currentSampleRate = 16000 
-    
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: C++ Sonic Mode")
+        AppLogger.log("Service", "Cherry TTS: Pitch Control Fixed")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -88,7 +85,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         try { activeWriteFd?.close() } catch (e: Exception) {}
         activeReadFd = null
         activeWriteFd = null
-        // C++ Flush
         AudioProcessor.flush()
     }
 
@@ -103,7 +99,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         currentTask = controllerExecutor.submit {
             try {
-                // Use LanguageUtils if available, else simple logic
                 val chunks = LanguageUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
@@ -119,16 +114,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     
-                    // *** Step 1: Calculate Pitch/Speed for C++ ***
+                    // *** PITCH CALCULATION FIX ***
                     val (rate, pitch) = getRateAndPitch(chunk.lang, request)
                     
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     
-                    // Set Engine to 1.0 (Neutral) so we get raw audio
+                    // Engine ကို မူရင်းအတိုင်းထားမယ် (1.0)
                     engine.setSpeechRate(1.0f)
                     engine.setPitch(1.0f) 
                     
+                    // C++ Sonic ကိုတော့ User လိုချင်တဲ့ Pitch ပို့ပေးမယ်
                     val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index, rate, pitch)
                     
                     if (success) hasStartedCallback = true
@@ -147,30 +143,37 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
+    // *** ဒီအပိုင်းက အဓိက ပြင်ဆင်ချက်ပါ ***
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        
+        // TalkBack Gesture ကနေလာတဲ့ Rate/Pitch (ပုံမှန် 100 = 1.0)
         val sysRate = (request?.speechRate ?: 100) / 100.0f
         val sysPitch = (request?.pitch ?: 100) / 100.0f
         
-        var userRate = 1.0f
-        var userPitch = 1.0f
+        // User Seekbar တန်ဖိုး (0 ကနေ 100 လို့ ယူဆသည်)
+        // Default ကို 50 (အလယ်) ထားသည်
+        var seekbarValue = 50 
         
         when(lang) {
-            "SHAN" -> {
-                userRate = prefs.getInt("rate_shan", 100) / 100.0f
-                userPitch = prefs.getInt("pitch_shan", 100) / 100.0f
-            }
-            "MYANMAR" -> {
-                userRate = prefs.getInt("rate_burmese", 100) / 100.0f
-                userPitch = prefs.getInt("pitch_burmese", 100) / 100.0f
-            }
-            else -> {
-                userRate = prefs.getInt("rate_english", 100) / 100.0f
-                userPitch = prefs.getInt("pitch_english", 100) / 100.0f
-            }
+            "SHAN" -> seekbarValue = prefs.getInt("pitch_shan", 50)
+            "MYANMAR" -> seekbarValue = prefs.getInt("pitch_burmese", 50)
+            else -> seekbarValue = prefs.getInt("pitch_english", 50)
         }
         
-        return Pair(sysRate * userRate, sysPitch * userPitch)
+        // *** FORMULA ***
+        // 50 (အလယ်) = 1.0 (Normal)
+        // 0 (အောက်ဆုံး) = 0.0 (Very Deep) -> Clamp to 0.4
+        // 100 (အပေါ်ဆုံး) = 2.0 (High)
+        var userPitchMultiplier = seekbarValue / 50.0f
+        
+        // အရမ်းနိမ့်ရင် အသံပျက်တတ်လို့ 0.4 အောက် မဆင်းအောင် တားမယ်
+        if (userPitchMultiplier < 0.4f) userPitchMultiplier = 0.4f 
+        
+        // Final Pitch = System Pitch * User Adjustment
+        val finalPitch = sysPitch * userPitchMultiplier
+        
+        return Pair(sysRate, finalPitch)
     }
 
     private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int, speed: Float, pitch: Float): Boolean {
@@ -185,7 +188,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             activeReadFd = pipe[0]
             activeWriteFd = pipe[1]
 
-            // *** READER TASK (C++ Processing) ***
             val readerFuture = pipeExecutor.submit {
                 try {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
@@ -203,7 +205,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (totalRead == 44) {
                         val wavInfo = getWavInfo(header)
                         
-                        // *** C++ INIT ***
+                        // C++ Config
                         AudioProcessor.initSonic(wavInfo.sampleRate, 1)
                         AudioProcessor.setConfig(speed, pitch, 1.0f) 
                         
@@ -220,7 +222,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
                              if (isStopped.get()) break
                              
-                             // *** C++ PROCESS ***
                              val processedBytes = AudioProcessor.processAudio(buffer, bytesRead)
                              
                              if (processedBytes.isNotEmpty()) {
@@ -234,7 +235,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 } catch (e: Exception) { }
             }
 
-            // *** WRITER TASK ***
             val targetFd = activeWriteFd
             if (targetFd != null) {
                 try {
