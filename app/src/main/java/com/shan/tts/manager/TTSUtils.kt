@@ -59,7 +59,6 @@ object LanguageUtils {
 
 object TTSUtils {
     
-    // Safety Fallback if probe fails
     fun getFallbackRate(pkg: String): Int {
         val lower = pkg.lowercase(Locale.ROOT)
         if (lower.contains("google")) return 24000
@@ -79,11 +78,10 @@ object TTSUtils {
         
         if (result == TextToSpeech.SUCCESS) {
             var waitCount = 0
-            // Wait max 1.5 seconds
             while (!tempFile.exists() || tempFile.length() < 44) {
                 try { Thread.sleep(50) } catch (e: Exception) {}
                 waitCount++
-                if (waitCount > 30) return getFallbackRate(pkgName)
+                if (waitCount > 40) return getFallbackRate(pkgName)
             }
             return readWavSampleRate(tempFile)
         }

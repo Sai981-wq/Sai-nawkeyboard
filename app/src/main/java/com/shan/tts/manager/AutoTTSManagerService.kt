@@ -42,7 +42,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
     private val TARGET_RATE = 24000 
-    private val MAX_AUDIO_CHUNK_SIZE = 4096 
+    private val MAX_AUDIO_CHUNK_SIZE = 8192 
     private val rateCache = HashMap<String, Int>()
     
     override fun onCreate() {
@@ -100,7 +100,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        val reqId = System.currentTimeMillis() % 1000
         
         onStop() 
         isStopped.set(false)
@@ -132,11 +131,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     
-                    // Reset engine default
                     engine.setSpeechRate(1.0f)
                     engine.setPitch(1.0f) 
                     
-                    val success = processWithPipe(engine, activePkg, chunk.text, params, callback, hasStartedCallback, reqId, index, rate, pitch)
+                    val success = processWithPipe(engine, activePkg, chunk.text, params, callback, hasStartedCallback)
                     
                     if (success) hasStartedCallback = true
                 }
@@ -177,33 +175,23 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
         
-        // --- Improved Natural Formula ---
+        // Simple Linear Formula: 50 = 1.0x (Original)
+        val userRateMultiplier = rateSeekbar / 50.0f
+        val userPitchMultiplier = pitchSeekbar / 50.0f
         
-        // Rate: 0 -> 0.4x, 50 -> 1.0x, 100 -> 2.5x
-        var userRateMultiplier = if (rateSeekbar <= 50) {
-            0.4f + (rateSeekbar / 50.0f) * 0.6f 
-        } else {
-            1.0f + ((rateSeekbar - 50) / 50.0f) * 1.5f
-        }
-
-        // Pitch: 0 -> 0.6x, 50 -> 1.0x, 100 -> 1.6x (Typical TTS Range)
-        var userPitchMultiplier = if (pitchSeekbar <= 50) {
-            0.6f + (pitchSeekbar / 50.0f) * 0.4f
-        } else {
-            1.0f + ((pitchSeekbar - 50) / 50.0f) * 0.6f
-        }
-
         var finalRate = sysRate * userRateMultiplier
-        val finalPitch = sysPitch * userPitchMultiplier
+        var finalPitch = sysPitch * userPitchMultiplier
         
-        // Safety Limit
-        if (finalRate > 3.5f) finalRate = 3.5f
-        if (finalRate < 0.2f) finalRate = 0.2f
+        // Prevent silence or crash with extreme values
+        if (finalRate < 0.1f) finalRate = 0.1f
+        if (finalPitch < 0.1f) finalPitch = 0.1f
+        if (finalRate > 4.0f) finalRate = 4.0f
+        if (finalPitch > 2.0f) finalPitch = 2.0f
         
         return Pair(finalRate, finalPitch)
     }
 
-    private fun processWithPipe(engine: TextToSpeech, enginePkgName: String, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int, speed: Float, pitch: Float): Boolean {
+    private fun processWithPipe(engine: TextToSpeech, enginePkgName: String, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean): Boolean {
         if (callback == null) return alreadyStarted
 
         var didStart = alreadyStarted
@@ -232,9 +220,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                     
+                    // Init with found rate
                     AudioProcessor.initSonic(engineRate, 1)
                     
-                    // NEW: Pass only speed and pitch. Rate is hardcoded to 1.0 in C++ to prevent linking.
+                    // Apply config: Speed & Pitch are from getRateAndPitch
+                    // Rate is always 1.0 handled in C++
+                    val (speed, pitch) = getRateAndPitch(LanguageUtils.detectLanguage(text), null)
                     AudioProcessor.setConfig(speed, pitch) 
                     
                     if (!didStart) {
@@ -244,7 +235,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         didStart = true
                     }
                     
-                    val buffer = ByteArray(4096)
+                    val buffer = ByteArray(8192) 
                     var bytesRead: Int
                     
                     while (fis.read(buffer).also { bytesRead = it } != -1) {

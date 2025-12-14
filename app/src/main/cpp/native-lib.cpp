@@ -8,7 +8,6 @@ static sonicStream stream = NULL;
 static int currentSampleRate = 16000;
 static int TARGET_RATE = 24000;
 
-// High-Precision Linear Resampler to fix cracking audio
 short* resample(short* input, int inputSamples, int inRate, int outRate, int* outSamples) {
     if (inRate <= 0 || outRate <= 0 || inputSamples <= 0) { 
         *outSamples = 0;
@@ -29,7 +28,6 @@ short* resample(short* input, int inputSamples, int inRate, int outRate, int* ou
 
     short* output = new short[*outSamples];
     
-    // Using double for better precision to avoid "cracking" artifacts
     double ratio = (double)(inRate) / outRate;
     
     for (int i = 0; i < *outSamples; i++) {
@@ -38,18 +36,14 @@ short* resample(short* input, int inputSamples, int inRate, int outRate, int* ou
         int index2 = index1 + 1;
         double frac = exactPos - index1;
 
-        if (index1 >= inputSamples) {
-            output[i] = 0; // Silence if out of bounds
-        } else if (index2 >= inputSamples) {
-            output[i] = input[index1]; // Edge case
-        } else {
-            // Linear Interpolation
-            double val = (1.0 - frac) * input[index1] + frac * input[index2];
-            // Clamp value to short range to prevent overflow distortion
-            if (val > 32767) val = 32767;
-            if (val < -32768) val = -32768;
-            output[i] = (short)val;
-        }
+        short val1 = (index1 < inputSamples) ? input[index1] : 0;
+        short val2 = (index2 < inputSamples) ? input[index2] : val1; 
+
+        double val = (1.0 - frac) * val1 + frac * val2;
+        
+        if (val > 32767) val = 32767;
+        if (val < -32768) val = -32768;
+        output[i] = (short)val;
     }
     return output;
 }
@@ -59,17 +53,16 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint sa
     if (stream != NULL) sonicDestroyStream(stream);
     currentSampleRate = (sampleRate > 0) ? sampleRate : 16000;
     stream = sonicCreateStream(currentSampleRate, channels);
-    sonicSetQuality(stream, 1); // Enable High Quality
+    sonicSetQuality(stream, 1);
+    sonicSetVolume(stream, 1.0f);
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat speed, jfloat pitch) {
     if (stream != NULL) {
-        // Explicitly set Rate to 1.0 to prevent Pitch/Speed linking
-        sonicSetRate(stream, 1.0f);
+        sonicSetRate(stream, 1.0f); 
         sonicSetSpeed(stream, speed);
         sonicSetPitch(stream, pitch);
-        sonicSetVolume(stream, 1.0f);
     }
 }
 
@@ -80,11 +73,10 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
     jbyte* bufferPtr = env->GetByteArrayElements(input, NULL);
     if (bufferPtr == NULL) return env->NewByteArray(0);
     
-    // Write to Sonic
-    sonicWriteShortToStream(stream, (short*)bufferPtr, len / 2);
+    int safeLen = len & ~1; 
+    sonicWriteShortToStream(stream, (short*)bufferPtr, safeLen / 2);
     env->ReleaseByteArrayElements(input, bufferPtr, 0);
 
-    // Read from Sonic
     int available = sonicSamplesAvailable(stream);
     if (available <= 0) return env->NewByteArray(0);
 
@@ -92,7 +84,6 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
     int readSamples = sonicReadShortFromStream(stream, sonicBuffer, available);
 
     if (readSamples > 0) {
-        // Resample
         int resampledCount = 0;
         short* resampledBuffer = resample(sonicBuffer, readSamples, currentSampleRate, TARGET_RATE, &resampledCount);
 

@@ -10,7 +10,6 @@ object AudioProcessor {
     }
 
     external fun initSonic(sampleRate: Int, channels: Int)
-    // Rate parameter removed
     external fun setConfig(speed: Float, pitch: Float)
     external fun processAudio(input: ByteArray, length: Int): ByteArray
     external fun flush()
