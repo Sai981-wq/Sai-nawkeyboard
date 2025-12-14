@@ -27,6 +27,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var shanEngine: TextToSpeech? = null
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
+
+    // Package Names ကို သိမ်းထားရန်
+    private var shanPkgName: String = ""
+    private var burmesePkgName: String = ""
+    private var englishPkgName: String = ""
     
     private val controllerExecutor = Executors.newSingleThreadExecutor()
     private val pipeExecutor = Executors.newCachedThreadPool()
@@ -38,7 +43,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
-    // Master Output Rate (TalkBack will receive this)
     private val TARGET_RATE = 24000 
     
     override fun onCreate() {
@@ -51,12 +55,18 @@ class AutoTTSManagerService : TextToSpeechService() {
         
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
-        initEngine("Shan", prefs.getString("pref_shan_pkg", "com.espeak.ng")) { shanEngine = it }
-        initEngine("Burmese", prefs.getString("pref_burmese_pkg", "com.google.android.tts")) { 
+        // Package Name တွေကို အရင်ယူမယ်၊ ပြီးမှ Init လုပ်မယ်
+        shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
+        initEngine("Shan", shanPkgName) { shanEngine = it }
+        
+        burmesePkgName = prefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
+        initEngine("Burmese", burmesePkgName) { 
             burmeseEngine = it
             it.language = Locale("my", "MM")
         }
-        initEngine("English", prefs.getString("pref_english_pkg", "com.google.android.tts")) { 
+        
+        englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
+        initEngine("English", englishPkgName) { 
             englishEngine = it
             it.language = Locale.US
         }
@@ -114,6 +124,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (isStopped.get()) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
+                    
+                    // Engine ပေါ်မူတည်ပြီး Package Name ကို ရွေးထုတ်မယ်
+                    var activePkg = englishPkgName
+                    if (engine === shanEngine) activePkg = shanPkgName
+                    else if (engine === burmeseEngine) activePkg = burmesePkgName
+                    
                     val (rate, pitch) = getRateAndPitch(chunk.lang, request)
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
@@ -121,7 +137,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                     engine.setSpeechRate(1.0f)
                     engine.setPitch(1.0f) 
                     
-                    val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index, rate, pitch)
+                    // activePkg (Package Name) ကို ထည့်ပေးလိုက်မယ်
+                    val success = processWithPipe(engine, activePkg, chunk.text, params, callback, hasStartedCallback, reqId, index, rate, pitch)
                     
                     if (success) hasStartedCallback = true
                 }
@@ -153,11 +170,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         
         val userPitchMultiplier = 0.5f + (seekbarValue / 100.0f)
         val finalPitch = sysPitch * userPitchMultiplier
-        
         return Pair(sysRate, finalPitch)
     }
 
-    private fun processWithPipe(engine: TextToSpeech, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int, speed: Float, pitch: Float): Boolean {
+    // Function Signature မှာ enginePkgName: String ကို ထည့်လိုက်တယ်
+    private fun processWithPipe(engine: TextToSpeech, enginePkgName: String, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int, speed: Float, pitch: Float): Boolean {
         if (callback == null) return alreadyStarted
 
         var didStart = alreadyStarted
@@ -185,14 +202,13 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     if (totalRead == 44) {
                         val wavInfo = getWavInfo(header)
-                        val enginePkg = engine.packageName ?: "Unknown"
 
                         // *** LOGGING AREA ***
                         val isRiff = header[0] == 'R'.toByte() && header[1] == 'I'.toByte()
                         val headerType = if (isRiff) "WAV Header" else "RAW (No Header)"
                         
-                        // ဒီစာကြောင်းက Logcat မှာ ပေါ်လာမယ့် အဖြေပါ
-                        AppLogger.log("HZ_CHECK", "Pkg: $enginePkg | Type: $headerType | Rate: ${wavInfo.sampleRate}")
+                        // အခု enginePkgName က အလုပ်လုပ်ပါပြီ
+                        AppLogger.log("HZ_CHECK", "Pkg: $enginePkgName | Type: $headerType | Rate: ${wavInfo.sampleRate}")
                         // ********************
 
                         val engineRate = wavInfo.sampleRate
@@ -216,7 +232,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                              val sonicOutput = AudioProcessor.processAudio(buffer, bytesRead)
                              
                              if (sonicOutput.isNotEmpty()) {
-                                 // Resample from DETECTED rate to 24000
                                  val finalOutput = AudioResampler.resample(sonicOutput, sonicOutput.size, engineRate, TARGET_RATE)
                                  
                                  if (finalOutput.isNotEmpty()) {
