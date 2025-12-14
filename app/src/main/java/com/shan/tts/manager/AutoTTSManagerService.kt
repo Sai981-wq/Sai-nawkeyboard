@@ -41,7 +41,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: Pitch Control Fixed")
+        AppLogger.log("Service", "Cherry TTS: C++ Dynamic Rate")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -102,6 +102,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val chunks = LanguageUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
+                    // Default fallback (16k is standard safe)
                     callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
                     callback?.done()
                     return@submit
@@ -113,18 +114,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (isStopped.get()) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
-                    
-                    // *** PITCH CALCULATION FIX ***
                     val (rate, pitch) = getRateAndPitch(chunk.lang, request)
                     
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     
-                    // Engine ကို မူရင်းအတိုင်းထားမယ် (1.0)
                     engine.setSpeechRate(1.0f)
                     engine.setPitch(1.0f) 
                     
-                    // C++ Sonic ကိုတော့ User လိုချင်တဲ့ Pitch ပို့ပေးမယ်
                     val success = processWithPipe(engine, chunk.text, params, callback, hasStartedCallback, reqId, index, rate, pitch)
                     
                     if (success) hasStartedCallback = true
@@ -143,34 +140,19 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // *** ဒီအပိုင်းက အဓိက ပြင်ဆင်ချက်ပါ ***
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-        
-        // TalkBack Gesture ကနေလာတဲ့ Rate/Pitch (ပုံမှန် 100 = 1.0)
         val sysRate = (request?.speechRate ?: 100) / 100.0f
         val sysPitch = (request?.pitch ?: 100) / 100.0f
         
-        // User Seekbar တန်ဖိုး (0 ကနေ 100 လို့ ယူဆသည်)
-        // Default ကို 50 (အလယ်) ထားသည်
         var seekbarValue = 50 
-        
         when(lang) {
             "SHAN" -> seekbarValue = prefs.getInt("pitch_shan", 50)
             "MYANMAR" -> seekbarValue = prefs.getInt("pitch_burmese", 50)
             else -> seekbarValue = prefs.getInt("pitch_english", 50)
         }
         
-        // *** FORMULA ***
-        // 50 (အလယ်) = 1.0 (Normal)
-        // 0 (အောက်ဆုံး) = 0.0 (Very Deep) -> Clamp to 0.4
-        // 100 (အပေါ်ဆုံး) = 2.0 (High)
-        var userPitchMultiplier = seekbarValue / 50.0f
-        
-        // အရမ်းနိမ့်ရင် အသံပျက်တတ်လို့ 0.4 အောက် မဆင်းအောင် တားမယ်
-        if (userPitchMultiplier < 0.4f) userPitchMultiplier = 0.4f 
-        
-        // Final Pitch = System Pitch * User Adjustment
+        val userPitchMultiplier = 0.5f + (seekbarValue / 100.0f)
         val finalPitch = sysPitch * userPitchMultiplier
         
         return Pair(sysRate, finalPitch)
@@ -204,14 +186,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     if (totalRead == 44) {
                         val wavInfo = getWavInfo(header)
+                        val engineRate = wavInfo.sampleRate // *** DYNAMIC RATE ***
                         
-                        // C++ Config
-                        AudioProcessor.initSonic(wavInfo.sampleRate, 1)
+                        // C++ Config (Sonic will handle this rate)
+                        AudioProcessor.initSonic(engineRate, 1)
                         AudioProcessor.setConfig(speed, pitch, 1.0f) 
                         
                         if (!didStart) {
                             synchronized(callback) {
-                                callback.start(wavInfo.sampleRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+                                // *** Start TalkBack with ACTUAL Engine Rate ***
+                                callback.start(engineRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                             }
                             didStart = true
                         }
@@ -222,6 +206,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         while (fis.read(buffer).also { bytesRead = it } != -1) {
                              if (isStopped.get()) break
                              
+                             // C++ Process
                              val processedBytes = AudioProcessor.processAudio(buffer, bytesRead)
                              
                              if (processedBytes.isNotEmpty()) {
@@ -260,6 +245,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         return WavInfo(safeRate, 1)
     }
     
+    // ... getEngine, onDestroy, etc. (Same as before) ...
     private fun getEngine(lang: String): TextToSpeech? {
         return when (lang) {
             "SHAN" -> if (shanEngine != null) shanEngine else englishEngine
