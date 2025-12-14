@@ -12,12 +12,12 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import java.io.FileInputStream
-import java.io.IOException
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.min
 
 data class LangChunk(val text: String, val lang: String)
 
@@ -42,11 +42,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
     private val TARGET_RATE = 24000 
+    private val MAX_AUDIO_CHUNK_SIZE = 4096 
     
     override fun onCreate() {
         super.onCreate()
-        // LOG: Service စတင်ကြောင်း မှတ်တမ်း
-        AppLogger.log("CHERRY_DEBUG", "=== Service Started: Logging Enabled ===")
+        AppLogger.log("CHERRY_DEBUG", "=== Service Started ===")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -71,21 +71,17 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun initEngine(name: String, pkg: String?, onSuccess: (TextToSpeech) -> Unit) {
-        AppLogger.log("CHERRY_DEBUG", "Init Engine: $name ($pkg)")
         if (pkg.isNullOrEmpty()) return
         try {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     onSuccess(tempTTS!!)
-                    AppLogger.log("CHERRY_DEBUG", "$name Engine Initialized Successfully")
                     tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener(){
                         override fun onStart(id: String?) {}
                         override fun onDone(id: String?) {}
                         override fun onError(id: String?) {}
                     })
-                } else {
-                    AppLogger.log("CHERRY_DEBUG", "Failed to Init $name")
                 }
             }, pkg)
         } catch (e: Exception) { 
@@ -107,9 +103,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         val text = request?.charSequenceText.toString()
         val reqId = System.currentTimeMillis() % 1000
         
-        // LOG: စာစဖတ်ပြီ
-        AppLogger.log("CHERRY_DEBUG", "[$reqId] Request Received: '${text.take(20)}...'")
-        
         onStop() 
         isStopped.set(false)
         
@@ -118,7 +111,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentTask = controllerExecutor.submit {
             try {
                 val chunks = LanguageUtils.splitHelper(text) 
-                AppLogger.log("CHERRY_DEBUG", "[$reqId] Split into ${chunks.size} chunks")
                 
                 if (chunks.isEmpty()) {
                     callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -133,13 +125,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     
-                    // Engine ရွေးချယ်မှု Log
                     var activePkg = englishPkgName
                     if (engine === shanEngine) activePkg = shanPkgName
                     else if (engine === burmeseEngine) activePkg = burmesePkgName
                     
-                    AppLogger.log("CHERRY_DEBUG", "[$reqId] Chunk $index (${chunk.lang}) -> Using Pkg: $activePkg")
-
                     val (rate, pitch) = getRateAndPitch(chunk.lang, request)
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
@@ -161,48 +150,67 @@ class AutoTTSManagerService : TextToSpeechService() {
             } finally {
                 if (!isStopped.get()) callback?.done()
                 if (wakeLock?.isHeld == true) wakeLock?.release()
-                AppLogger.log("CHERRY_DEBUG", "[$reqId] Finished.")
             }
         }
     }
     
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        
+        // 1. TalkBack System Values
         val sysRate = (request?.speechRate ?: 100) / 100.0f
         val sysPitch = (request?.pitch ?: 100) / 100.0f
         
-        var seekbarValue = 50 
+        // 2. User Seekbar Values
+        var rateSeekbar = 50
+        var pitchSeekbar = 50
+        
         when(lang) {
-            "SHAN" -> seekbarValue = prefs.getInt("pitch_shan", 50)
-            "MYANMAR" -> seekbarValue = prefs.getInt("pitch_burmese", 50)
-            else -> seekbarValue = prefs.getInt("pitch_english", 50)
+            "SHAN" -> {
+                rateSeekbar = prefs.getInt("rate_shan", 50)
+                pitchSeekbar = prefs.getInt("pitch_shan", 50)
+            }
+            "MYANMAR" -> {
+                rateSeekbar = prefs.getInt("rate_burmese", 50)
+                pitchSeekbar = prefs.getInt("pitch_burmese", 50)
+            }
+            else -> {
+                rateSeekbar = prefs.getInt("rate_english", 50)
+                pitchSeekbar = prefs.getInt("pitch_english", 50)
+            }
         }
         
-        val userPitchMultiplier = 0.5f + (seekbarValue / 100.0f)
+        // *** FORMULA FIX (Direct Proportional) ***
+        // 50 = 1.0x (Normal), 100 = 2.0x (Fast/High), 25 = 0.5x (Slow/Low)
+        
+        var userRateMultiplier = rateSeekbar / 50.0f
+        if (userRateMultiplier < 0.4f) userRateMultiplier = 0.4f // အရမ်းမနှေးစေရန်
+
+        var userPitchMultiplier = pitchSeekbar / 50.0f
+        if (userPitchMultiplier < 0.4f) userPitchMultiplier = 0.4f // အရမ်းမနိမ့်စေရန်
+
+        // Final Calculation
+        var finalRate = sysRate * userRateMultiplier
         val finalPitch = sysPitch * userPitchMultiplier
-        return Pair(sysRate, finalPitch)
+        
+        // Speed Limit (3.5x ထက် မကျော်စေရ)
+        if (finalRate > 3.5f) finalRate = 3.5f
+        if (finalRate < 0.1f) finalRate = 0.1f
+
+        return Pair(finalRate, finalPitch)
     }
 
     private fun getEngineConfig(packageName: String): Int {
         val lowerPkg = packageName.toLowerCase(Locale.ROOT)
-        
-        // 1. Google = 24000
         if (lowerPkg.contains("google")) return 24000
-        
-        // 2. ETI = 11025
         if (lowerPkg.contains("eloquence") || lowerPkg.contains("eti")) return 11025
-        
-        // 3. Shan/Saomai/eSpeak = 22050
         if (lowerPkg.contains("shan") || 
             lowerPkg.contains("saomai") || 
             lowerPkg.contains("myanmartts") || 
             lowerPkg.contains("espeak")) {
             return 22050
         }
-        
-        // 4. Vocalizer = 22050
         if (lowerPkg.contains("vocalizer")) return 22050
-        
         return 16000
     }
 
@@ -225,8 +233,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val engineRate = getEngineConfig(enginePkgName)
                     
-                    // LOG: Hz ဆုံးဖြတ်ချက်
-                    AppLogger.log("CHERRY_DEBUG", "CONFIG: Package '$enginePkgName' detected as $engineRate Hz")
+                    AppLogger.log("CHERRY_DEBUG", "Processing: $enginePkgName @ $engineRate Hz")
                     
                     AudioProcessor.initSonic(engineRate, 1)
                     AudioProcessor.setConfig(speed, pitch, 1.0f) 
@@ -240,7 +247,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val buffer = ByteArray(4096)
                     var bytesRead: Int
-                    var totalProcessed = 0
                     
                     while (fis.read(buffer).also { bytesRead = it } != -1) {
                          if (isStopped.get()) break
@@ -251,19 +257,29 @@ class AutoTTSManagerService : TextToSpeechService() {
                              val finalOutput = AudioResampler.resample(sonicOutput, sonicOutput.size, engineRate, TARGET_RATE)
                              
                              if (finalOutput.isNotEmpty()) {
-                                 synchronized(callback) {
-                                     callback.audioAvailable(finalOutput, 0, finalOutput.size)
+                                 var offset = 0
+                                 while (offset < finalOutput.size) {
+                                     if (isStopped.get()) break
+                                     
+                                     val chunkLength = min(MAX_AUDIO_CHUNK_SIZE, finalOutput.size - offset)
+                                     
+                                     synchronized(callback) {
+                                         try {
+                                             callback.audioAvailable(finalOutput, offset, chunkLength)
+                                         } catch (e: Exception) {
+                                             AppLogger.log("CHERRY_DEBUG", "Audio Write Fail: ${e.message}")
+                                         }
+                                     }
+                                     offset += chunkLength
                                  }
-                                 totalProcessed += finalOutput.size
                              }
                          }
                     }
-                    // LOG: ပြီးဆုံးမှု အခြေအနေ
-                    AppLogger.log("CHERRY_DEBUG", "Stream Finished. Total Output: $totalProcessed bytes sent to TalkBack.")
-                    
                     fis.close()
                 } catch (e: Exception) { 
-                    AppLogger.log("CHERRY_DEBUG", "Pipe Error: ${e.message}")
+                    if (!isStopped.get()) {
+                        AppLogger.log("CHERRY_DEBUG", "Pipe Error: ${e.message}")
+                    }
                 }
             }
 
@@ -278,7 +294,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             readerFuture.get() 
 
         } catch (e: Exception) {
-            AppLogger.log("CHERRY_DEBUG", "Process Exception: ${e.message}")
+             // Main process exception logging
         } finally {
             try { activeReadFd?.close() } catch (e: Exception) {}
             try { activeWriteFd?.close() } catch (e: Exception) {}
