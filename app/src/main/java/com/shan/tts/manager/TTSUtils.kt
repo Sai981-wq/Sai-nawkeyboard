@@ -4,6 +4,7 @@ import android.content.Context
 import android.speech.tts.TextToSpeech
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.Locale
 
 object LanguageUtils {
      private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
@@ -57,25 +58,36 @@ object LanguageUtils {
 }
 
 object TTSUtils {
-    fun detectEngineSampleRate(tts: TextToSpeech, context: Context): Int {
-        val tempFile = File(context.cacheDir, "probe_rate.wav")
+    
+    // Safety Fallback if probe fails
+    fun getFallbackRate(pkg: String): Int {
+        val lower = pkg.lowercase(Locale.ROOT)
+        if (lower.contains("google")) return 24000
+        if (lower.contains("espeak") || lower.contains("shan") || lower.contains("myanmar")) return 22050
+        if (lower.contains("vocalizer")) return 22050
+        return 16000
+    }
+
+    fun detectEngineSampleRate(tts: TextToSpeech, context: Context, pkgName: String): Int {
+        val tempFile = File(context.cacheDir, "probe_${pkgName.hashCode()}.wav")
         val params = android.os.Bundle()
         val uuid = "probe_${System.currentTimeMillis()}"
         
-        try { tempFile.delete() } catch(e: Exception){}
+        try { if(tempFile.exists()) tempFile.delete() } catch(e: Exception){}
 
         val result = tts.synthesizeToFile("a", params, tempFile, uuid)
         
         if (result == TextToSpeech.SUCCESS) {
             var waitCount = 0
+            // Wait max 1.5 seconds
             while (!tempFile.exists() || tempFile.length() < 44) {
-                try { Thread.sleep(10) } catch (e: Exception) {}
+                try { Thread.sleep(50) } catch (e: Exception) {}
                 waitCount++
-                if (waitCount > 100) return 16000
+                if (waitCount > 30) return getFallbackRate(pkgName)
             }
             return readWavSampleRate(tempFile)
         }
-        return 16000
+        return getFallbackRate(pkgName)
     }
 
     private fun readWavSampleRate(file: File): Int {

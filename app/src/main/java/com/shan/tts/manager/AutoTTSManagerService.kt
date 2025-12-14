@@ -33,6 +33,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private val controllerExecutor = Executors.newSingleThreadExecutor()
     private val pipeExecutor = Executors.newCachedThreadPool()
+    private val probeExecutor = Executors.newSingleThreadExecutor()
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
@@ -55,18 +56,32 @@ class AutoTTSManagerService : TextToSpeechService() {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
         shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
-        initEngine("Shan", shanPkgName) { shanEngine = it }
+        initEngine("Shan", shanPkgName) { 
+            shanEngine = it
+            triggerProbe(it, shanPkgName)
+        }
         
         burmesePkgName = prefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
         initEngine("Burmese", burmesePkgName) { 
             burmeseEngine = it
             it.language = Locale("my", "MM")
+            triggerProbe(it, burmesePkgName)
         }
         
         englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
         initEngine("English", englishPkgName) { 
             englishEngine = it
             it.language = Locale.US
+            triggerProbe(it, englishPkgName)
+        }
+    }
+    
+    private fun triggerProbe(tts: TextToSpeech, pkg: String) {
+        probeExecutor.submit {
+            val rate = TTSUtils.detectEngineSampleRate(tts, applicationContext, pkg)
+            synchronized(rateCache) {
+                rateCache[pkg] = rate
+            }
         }
     }
 
@@ -208,10 +223,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
                     
-                    var engineRate = rateCache[enginePkgName] ?: 0
+                    var engineRate = 0
+                    synchronized(rateCache) {
+                        engineRate = rateCache[enginePkgName] ?: 0
+                    }
+                    
+                    // Fallback immediately if cache not ready (No Blocking!)
                     if (engineRate == 0) {
-                        engineRate = TTSUtils.detectEngineSampleRate(engine, applicationContext)
-                        rateCache[enginePkgName] = engineRate
+                        engineRate = TTSUtils.getFallbackRate(enginePkgName)
                     }
                     
                     AudioProcessor.initSonic(engineRate, 1)
@@ -282,6 +301,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped.set(true)
         controllerExecutor.shutdownNow()
         pipeExecutor.shutdownNow()
+        probeExecutor.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
@@ -293,3 +313,4 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int { return TextToSpeech.LANG_COUNTRY_AVAILABLE }
     override fun onGetLanguage(): Array<String> { return arrayOf("eng", "USA", "") }
 }
+

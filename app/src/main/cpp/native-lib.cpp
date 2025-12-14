@@ -8,6 +8,11 @@ static int currentSampleRate = 16000;
 static int TARGET_RATE = 24000;
 
 short* resample(short* input, int inputSamples, int inRate, int outRate, int* outSamples) {
+    if (inRate <= 0 || outRate <= 0) { 
+        *outSamples = 0;
+        return NULL;
+    }
+    
     if (inRate == outRate) {
         *outSamples = inputSamples;
         short* copy = new short[inputSamples];
@@ -16,6 +21,8 @@ short* resample(short* input, int inputSamples, int inRate, int outRate, int* ou
     }
 
     *outSamples = (int)((long long)inputSamples * outRate / inRate);
+    if (*outSamples <= 0) return NULL;
+
     short* output = new short[*outSamples];
     double ratio = (double)inRate / outRate;
     
@@ -26,7 +33,8 @@ short* resample(short* input, int inputSamples, int inRate, int outRate, int* ou
         double frac = index - leftIndex;
 
         if (rightIndex >= inputSamples) {
-            output[i] = input[leftIndex];
+            if (leftIndex < inputSamples) output[i] = input[leftIndex];
+            else output[i] = 0;
         } else {
             short val = (short)((1.0 - frac) * input[leftIndex] + frac * input[rightIndex]);
             output[i] = val;
@@ -38,8 +46,8 @@ short* resample(short* input, int inputSamples, int inRate, int outRate, int* ou
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint sampleRate, jint channels) {
     if (stream != NULL) sonicDestroyStream(stream);
-    currentSampleRate = sampleRate;
-    stream = sonicCreateStream(sampleRate, channels);
+    currentSampleRate = (sampleRate > 0) ? sampleRate : 16000;
+    stream = sonicCreateStream(currentSampleRate, channels);
     sonicSetQuality(stream, 1);
 }
 
@@ -54,9 +62,11 @@ Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat 
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray input, jint len) {
-    if (stream == NULL) return env->NewByteArray(0);
+    if (stream == NULL || len <= 0) return env->NewByteArray(0);
 
     jbyte* bufferPtr = env->GetByteArrayElements(input, NULL);
+    if (bufferPtr == NULL) return env->NewByteArray(0);
+    
     sonicWriteShortToStream(stream, (short*)bufferPtr, len / 2);
     env->ReleaseByteArrayElements(input, bufferPtr, 0);
 
@@ -70,12 +80,15 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
         int resampledCount = 0;
         short* resampledBuffer = resample(sonicBuffer, readSamples, currentSampleRate, TARGET_RATE, &resampledCount);
 
-        jbyteArray result = env->NewByteArray(resampledCount * 2);
-        env->SetByteArrayRegion(result, 0, resampledCount * 2, (jbyte*)resampledBuffer);
-        
-        delete[] sonicBuffer;
-        delete[] resampledBuffer;
-        return result;
+        if (resampledBuffer != NULL && resampledCount > 0) {
+            jbyteArray result = env->NewByteArray(resampledCount * 2);
+            env->SetByteArrayRegion(result, 0, resampledCount * 2, (jbyte*)resampledBuffer);
+            
+            delete[] sonicBuffer;
+            delete[] resampledBuffer;
+            return result;
+        }
+        if (resampledBuffer != NULL) delete[] resampledBuffer;
     }
     
     delete[] sonicBuffer;
