@@ -19,7 +19,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
-data class WavInfo(val sampleRate: Int, val channels: Int)
 data class LangChunk(val text: String, val lang: String)
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -28,7 +27,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
 
-    // Package Names ကို သိမ်းထားရန်
     private var shanPkgName: String = ""
     private var burmesePkgName: String = ""
     private var englishPkgName: String = ""
@@ -47,7 +45,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service", "Cherry TTS: Log Monitor Active")
+        // LOG: Service စတင်ကြောင်း မှတ်တမ်း
+        AppLogger.log("CHERRY_DEBUG", "=== Service Started: Logging Enabled ===")
         
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
@@ -55,7 +54,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
-        // Package Name တွေကို အရင်ယူမယ်၊ ပြီးမှ Init လုပ်မယ်
         shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
         initEngine("Shan", shanPkgName) { shanEngine = it }
         
@@ -73,20 +71,26 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun initEngine(name: String, pkg: String?, onSuccess: (TextToSpeech) -> Unit) {
+        AppLogger.log("CHERRY_DEBUG", "Init Engine: $name ($pkg)")
         if (pkg.isNullOrEmpty()) return
         try {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     onSuccess(tempTTS!!)
+                    AppLogger.log("CHERRY_DEBUG", "$name Engine Initialized Successfully")
                     tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener(){
                         override fun onStart(id: String?) {}
                         override fun onDone(id: String?) {}
                         override fun onError(id: String?) {}
                     })
+                } else {
+                    AppLogger.log("CHERRY_DEBUG", "Failed to Init $name")
                 }
             }, pkg)
-        } catch (e: Exception) { }
+        } catch (e: Exception) { 
+             AppLogger.log("CHERRY_DEBUG", "Exception Init $name: ${e.message}")
+        }
     }
 
     override fun onStop() { 
@@ -103,6 +107,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         val text = request?.charSequenceText.toString()
         val reqId = System.currentTimeMillis() % 1000
         
+        // LOG: စာစဖတ်ပြီ
+        AppLogger.log("CHERRY_DEBUG", "[$reqId] Request Received: '${text.take(20)}...'")
+        
         onStop() 
         isStopped.set(false)
         
@@ -111,6 +118,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentTask = controllerExecutor.submit {
             try {
                 val chunks = LanguageUtils.splitHelper(text) 
+                AppLogger.log("CHERRY_DEBUG", "[$reqId] Split into ${chunks.size} chunks")
                 
                 if (chunks.isEmpty()) {
                     callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -125,11 +133,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     
-                    // Engine ပေါ်မူတည်ပြီး Package Name ကို ရွေးထုတ်မယ်
+                    // Engine ရွေးချယ်မှု Log
                     var activePkg = englishPkgName
                     if (engine === shanEngine) activePkg = shanPkgName
                     else if (engine === burmeseEngine) activePkg = burmesePkgName
                     
+                    AppLogger.log("CHERRY_DEBUG", "[$reqId] Chunk $index (${chunk.lang}) -> Using Pkg: $activePkg")
+
                     val (rate, pitch) = getRateAndPitch(chunk.lang, request)
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
@@ -137,7 +147,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     engine.setSpeechRate(1.0f)
                     engine.setPitch(1.0f) 
                     
-                    // activePkg (Package Name) ကို ထည့်ပေးလိုက်မယ်
                     val success = processWithPipe(engine, activePkg, chunk.text, params, callback, hasStartedCallback, reqId, index, rate, pitch)
                     
                     if (success) hasStartedCallback = true
@@ -148,10 +157,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
 
             } catch (e: Exception) {
-                AppLogger.log("Error", "[$reqId] ${e.message}")
+                AppLogger.log("CHERRY_DEBUG", "Error [$reqId]: ${e.message}")
             } finally {
                 if (!isStopped.get()) callback?.done()
                 if (wakeLock?.isHeld == true) wakeLock?.release()
+                AppLogger.log("CHERRY_DEBUG", "[$reqId] Finished.")
             }
         }
     }
@@ -173,7 +183,29 @@ class AutoTTSManagerService : TextToSpeechService() {
         return Pair(sysRate, finalPitch)
     }
 
-    // Function Signature မှာ enginePkgName: String ကို ထည့်လိုက်တယ်
+    private fun getEngineConfig(packageName: String): Int {
+        val lowerPkg = packageName.toLowerCase(Locale.ROOT)
+        
+        // 1. Google = 24000
+        if (lowerPkg.contains("google")) return 24000
+        
+        // 2. ETI = 11025
+        if (lowerPkg.contains("eloquence") || lowerPkg.contains("eti")) return 11025
+        
+        // 3. Shan/Saomai/eSpeak = 22050
+        if (lowerPkg.contains("shan") || 
+            lowerPkg.contains("saomai") || 
+            lowerPkg.contains("myanmartts") || 
+            lowerPkg.contains("espeak")) {
+            return 22050
+        }
+        
+        // 4. Vocalizer = 22050
+        if (lowerPkg.contains("vocalizer")) return 22050
+        
+        return 16000
+    }
+
     private fun processWithPipe(engine: TextToSpeech, enginePkgName: String, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean, reqId: Long, chunkIdx: Int, speed: Float, pitch: Float): Boolean {
         if (callback == null) return alreadyStarted
 
@@ -190,63 +222,48 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
-                    val header = ByteArray(44)
-                    var totalRead = 0
                     
-                    while (totalRead < 44) {
-                         if (isStopped.get()) throw IOException("Stopped")
-                         val c = fis.read(header, totalRead, 44 - totalRead)
-                         if (c == -1) break
-                         totalRead += c
-                    }
-
-                    if (totalRead == 44) {
-                        val wavInfo = getWavInfo(header)
-
-                        // *** LOGGING AREA ***
-                        val isRiff = header[0] == 'R'.toByte() && header[1] == 'I'.toByte()
-                        val headerType = if (isRiff) "WAV Header" else "RAW (No Header)"
-                        
-                        // အခု enginePkgName က အလုပ်လုပ်ပါပြီ
-                        AppLogger.log("HZ_CHECK", "Pkg: $enginePkgName | Type: $headerType | Rate: ${wavInfo.sampleRate}")
-                        // ********************
-
-                        val engineRate = wavInfo.sampleRate
-                        
-                        AudioProcessor.initSonic(engineRate, 1)
-                        AudioProcessor.setConfig(speed, pitch, 1.0f) 
-                        
-                        if (!didStart) {
-                            synchronized(callback) {
-                                callback.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
-                            }
-                            didStart = true
+                    val engineRate = getEngineConfig(enginePkgName)
+                    
+                    // LOG: Hz ဆုံးဖြတ်ချက်
+                    AppLogger.log("CHERRY_DEBUG", "CONFIG: Package '$enginePkgName' detected as $engineRate Hz")
+                    
+                    AudioProcessor.initSonic(engineRate, 1)
+                    AudioProcessor.setConfig(speed, pitch, 1.0f) 
+                    
+                    if (!didStart) {
+                        synchronized(callback) {
+                            callback.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                         }
-                        
-                        val buffer = ByteArray(4096)
-                        var bytesRead: Int
-                        
-                        while (fis.read(buffer).also { bytesRead = it } != -1) {
-                             if (isStopped.get()) break
+                        didStart = true
+                    }
+                    
+                    val buffer = ByteArray(4096)
+                    var bytesRead: Int
+                    var totalProcessed = 0
+                    
+                    while (fis.read(buffer).also { bytesRead = it } != -1) {
+                         if (isStopped.get()) break
+                         
+                         val sonicOutput = AudioProcessor.processAudio(buffer, bytesRead)
+                         
+                         if (sonicOutput.isNotEmpty()) {
+                             val finalOutput = AudioResampler.resample(sonicOutput, sonicOutput.size, engineRate, TARGET_RATE)
                              
-                             val sonicOutput = AudioProcessor.processAudio(buffer, bytesRead)
-                             
-                             if (sonicOutput.isNotEmpty()) {
-                                 val finalOutput = AudioResampler.resample(sonicOutput, sonicOutput.size, engineRate, TARGET_RATE)
-                                 
-                                 if (finalOutput.isNotEmpty()) {
-                                     synchronized(callback) {
-                                         callback.audioAvailable(finalOutput, 0, finalOutput.size)
-                                     }
+                             if (finalOutput.isNotEmpty()) {
+                                 synchronized(callback) {
+                                     callback.audioAvailable(finalOutput, 0, finalOutput.size)
                                  }
+                                 totalProcessed += finalOutput.size
                              }
-                        }
-                    } else {
-                        AppLogger.log("HZ_CHECK", "Failed to read header. Read $totalRead bytes")
+                         }
                     }
+                    // LOG: ပြီးဆုံးမှု အခြေအနေ
+                    AppLogger.log("CHERRY_DEBUG", "Stream Finished. Total Output: $totalProcessed bytes sent to TalkBack.")
+                    
                     fis.close()
                 } catch (e: Exception) { 
-                    AppLogger.log("HZ_CHECK", "Pipe Error: ${e.message}")
+                    AppLogger.log("CHERRY_DEBUG", "Pipe Error: ${e.message}")
                 }
             }
 
@@ -261,21 +278,12 @@ class AutoTTSManagerService : TextToSpeechService() {
             readerFuture.get() 
 
         } catch (e: Exception) {
+            AppLogger.log("CHERRY_DEBUG", "Process Exception: ${e.message}")
         } finally {
             try { activeReadFd?.close() } catch (e: Exception) {}
             try { activeWriteFd?.close() } catch (e: Exception) {}
         }
         return didStart
-    }
-    
-    private fun getWavInfo(header: ByteArray): WavInfo {
-        if (header.size < 44) return WavInfo(16000, 1)
-        val rate = (header[24].toInt() and 0xFF) or 
-                   ((header[25].toInt() and 0xFF) shl 8) or 
-                   ((header[26].toInt() and 0xFF) shl 16) or 
-                   ((header[27].toInt() and 0xFF) shl 24)
-        val safeRate = if (rate in 4000..48000) rate else 16000 
-        return WavInfo(safeRate, 1)
     }
     
     private fun getEngine(lang: String): TextToSpeech? {
