@@ -9,8 +9,7 @@ import java.util.Locale
 object LanguageUtils {
      private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
      private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
-     private val PUNCTUATION = Regex("[။،,!?\\n]") 
-
+     
      fun detectLanguage(text: CharSequence?): String {
         if (text.isNullOrBlank()) return "ENGLISH"
         val input = text.toString()
@@ -23,29 +22,38 @@ object LanguageUtils {
         val list = ArrayList<LangChunk>()
         if (text.isBlank()) return list
         
-        val words = text.split(Regex("(?<=\\s)")) 
+        // Context-aware splitting to keep numbers/punctuations with correct language
+        val rawParts = text.split(Regex("(?<=[\\s\\p{Punct}])|(?=[\\s\\p{Punct}])"))
         var currentBuffer = StringBuilder()
         var currentLang = ""
         
-        for (word in words) {
-            val trimmed = word.trim()
-            if (trimmed.isEmpty()) {
-                currentBuffer.append(word)
+        for (part in rawParts) {
+            if (part.isBlank()) {
+                currentBuffer.append(part)
                 continue
             }
-            val detected = detectLanguage(trimmed)
-            val langChanged = currentLang.isNotEmpty() && currentLang != detected
-            val isLongBuffer = currentBuffer.length > 400 && PUNCTUATION.containsMatchIn(word)
             
+            var detected = detectLanguage(part)
+            
+            // Numbers and Punctuation stick to the current language context
+            if (detected == "ENGLISH" && !part.any { it.isLetter() }) {
+                detected = if (currentLang.isNotEmpty()) currentLang else "ENGLISH"
+            }
+
             if (currentLang.isEmpty()) {
                 currentLang = detected
-                currentBuffer.append(word)
-            } else if (!langChanged && !isLongBuffer) {
-                currentBuffer.append(word)
+                currentBuffer.append(part)
+            } else if (currentLang == detected) {
+                currentBuffer.append(part)
             } else {
-                list.add(LangChunk(currentBuffer.toString(), currentLang))
-                currentBuffer = StringBuilder(word)
-                currentLang = detected
+                // Prevent jitter for very short English words mixed in
+                if (detected == "ENGLISH" && part.length < 3 && currentLang != "ENGLISH") {
+                     currentBuffer.append(part)
+                } else {
+                    list.add(LangChunk(currentBuffer.toString(), currentLang))
+                    currentBuffer = StringBuilder(part)
+                    currentLang = detected
+                }
             }
         }
         
@@ -62,9 +70,8 @@ object TTSUtils {
     fun getFallbackRate(pkg: String): Int {
         val lower = pkg.lowercase(Locale.ROOT)
         if (lower.contains("google")) return 24000
-        if (lower.contains("espeak") || lower.contains("shan") || lower.contains("myanmar")) return 22050
-        if (lower.contains("vocalizer")) return 22050
-        return 16000
+        if (lower.contains("espeak") || lower.contains("shan")) return 22050
+        return 24000
     }
 
     fun detectEngineSampleRate(tts: TextToSpeech, context: Context, pkgName: String): Int {
@@ -79,9 +86,9 @@ object TTSUtils {
         if (result == TextToSpeech.SUCCESS) {
             var waitCount = 0
             while (!tempFile.exists() || tempFile.length() < 44) {
-                try { Thread.sleep(50) } catch (e: Exception) {}
+                try { Thread.sleep(20) } catch (e: Exception) {}
                 waitCount++
-                if (waitCount > 30) return getFallbackRate(pkgName)
+                if (waitCount > 25) return getFallbackRate(pkgName)
             }
             return readWavSampleRate(tempFile)
         }
@@ -96,15 +103,59 @@ object TTSUtils {
                 val byte2 = raf.read()
                 val byte3 = raf.read()
                 val byte4 = raf.read()
-                
-                return (byte1 and 0xFF) or 
-                       ((byte2 and 0xFF) shl 8) or 
-                       ((byte3 and 0xFF) shl 16) or 
-                       ((byte4 and 0xFF) shl 24)
+                return (byte1 and 0xFF) or ((byte2 and 0xFF) shl 8) or 
+                       ((byte3 and 0xFF) shl 16) or ((byte4 and 0xFF) shl 24)
             }
-        } catch (e: Exception) {
-            return 16000
+        } catch (e: Exception) { return 24000 }
+    }
+
+    // High Quality Linear Resampler (Safe for 16k -> 24k)
+    fun resample(input: ByteArray, inputLength: Int, inRate: Int, outRate: Int): ByteArray {
+        if (inRate == outRate) return input.copyOfRange(0, inputLength)
+        
+        // Convert Bytes to Shorts (16-bit audio)
+        val shortCount = inputLength / 2
+        val inputShorts = ShortArray(shortCount)
+        for (i in 0 until shortCount) {
+            val b1 = input[i * 2].toInt() and 0xFF
+            val b2 = input[i * 2 + 1].toInt() shl 8
+            inputShorts[i] = (b1 or b2).toShort()
         }
+
+        // Calculate Output Size
+        // Using Long to prevent overflow during calculation
+        val outputLen = (shortCount.toLong() * outRate / inRate).toInt()
+        val outputShorts = ShortArray(outputLen)
+        
+        // Linear Interpolation Loop
+        val ratio = inRate.toDouble() / outRate.toDouble()
+        
+        for (i in 0 until outputLen) {
+            val exactPos = i * ratio
+            val index1 = exactPos.toInt()
+            val index2 = index1 + 1
+            val fraction = exactPos - index1
+
+            if (index2 < shortCount) {
+                // Smoothly blend between two samples
+                val val1 = inputShorts[index1]
+                val val2 = inputShorts[index2]
+                val mixed = val1 + fraction * (val2 - val1)
+                outputShorts[i] = mixed.toInt().toShort()
+            } else if (index1 < shortCount) {
+                // End of buffer case
+                outputShorts[i] = inputShorts[index1]
+            }
+        }
+
+        // Convert Shorts back to Bytes
+        val outputBytes = ByteArray(outputLen * 2)
+        for (i in 0 until outputLen) {
+            val s = outputShorts[i].toInt()
+            outputBytes[i * 2] = (s and 0xFF).toByte()
+            outputBytes[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
+        }
+        return outputBytes
     }
 }
 

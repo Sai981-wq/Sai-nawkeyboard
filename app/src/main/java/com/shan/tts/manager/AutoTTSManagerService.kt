@@ -40,6 +40,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private val rateCache = HashMap<String, Int>()
     
+    // MASTER RATE (All audio will be converted to this)
+    private val MASTER_SAMPLE_RATE = 24000
+    
     override fun onCreate() {
         super.onCreate()
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
@@ -93,7 +96,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         currentTask = controllerExecutor.submit {
             try {
-                // Callback null ဖြစ်နေရင် ရှေ့ဆက်မလုပ်တော့ပါ (Fix for Type Mismatch)
                 if (callback == null) return@submit
 
                 val chunks = LanguageUtils.splitHelper(text) 
@@ -101,6 +103,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                     callback.done()
                     return@submit
                 }
+                
+                // Start ONE session with Master Rate
+                synchronized(callback) {
+                    callback.start(MASTER_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+                }
+
+                var lastEngine: TextToSpeech? = null
+                var lastRate = -1.0f
+                var lastPitch = -1.0f
 
                 for ((index, chunk) in chunks.withIndex()) {
                     if (isStopped.get()) break
@@ -112,13 +123,19 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val (rateMultiplier, pitchMultiplier) = getRateAndPitch(chunk.lang, request)
                     
-                    engine.setSpeechRate(rateMultiplier)
-                    engine.setPitch(pitchMultiplier)
+                    if (engine !== lastEngine || rateMultiplier != lastRate || pitchMultiplier != lastPitch) {
+                        engine.setSpeechRate(rateMultiplier)
+                        engine.setPitch(pitchMultiplier)
+                        lastEngine = engine
+                        lastRate = rateMultiplier
+                        lastPitch = pitchMultiplier
+                        try { Thread.sleep(10) } catch(e:Exception){}
+                    }
                     
                     val params = Bundle()
-                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                    val balanceVolume = getVolumeCorrection(activePkg)
+                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, balanceVolume)
                     
-                    // ယခုအခါ callback သည် non-null ဖြစ်ကြောင်းသေချာသွားပါပြီ
                     processDirectPipe(engine, activePkg, chunk.text, params, callback)
                 }
             } catch (e: Exception) {
@@ -126,6 +143,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (!isStopped.get()) callback?.done()
             }
         }
+    }
+    
+    private fun getVolumeCorrection(pkgName: String): Float {
+        val lower = pkgName.lowercase(Locale.ROOT)
+        if (lower.contains("espeak") || lower.contains("shan")) return 0.6f 
+        if (lower.contains("vocalizer")) return 0.85f
+        return 1.0f 
     }
     
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
@@ -152,8 +176,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
         
-        val userRate = 0.5f + (rateSeekbar / 100.0f) * 1.5f
-        val userPitch = 0.5f + (pitchSeekbar / 100.0f) * 1.5f
+        var userRate = rateSeekbar / 50.0f
+        var userPitch = pitchSeekbar / 50.0f
+        
+        if (userRate < 0.2f) userRate = 0.2f
+        if (userRate > 3.0f) userRate = 3.0f
+        if (userPitch < 0.3f) userPitch = 0.3f
+        if (userPitch > 2.0f) userPitch = 2.0f
         
         return Pair(sysRate * userRate, sysPitch * userPitch)
     }
@@ -178,10 +207,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         rateCache[pkgName] = engineRate
                     }
 
-                    synchronized(callback) {
-                        callback.start(engineRate, AudioFormat.ENCODING_PCM_16BIT, 1)
-                    }
-
                     val buffer = ByteArray(4096)
                     var bytesRead: Int
                     
@@ -189,10 +214,16 @@ class AutoTTSManagerService : TextToSpeechService() {
                          if (isStopped.get()) break
                          
                          if (bytesRead > 0) {
-                             synchronized(callback) {
-                                 try {
-                                     callback.audioAvailable(buffer, 0, bytesRead)
-                                 } catch (e: Exception) {}
+                             // HERE IS THE MAGIC FIX: Resample everything to MASTER_SAMPLE_RATE (24000)
+                             // This prevents "freaking out" when mixing 22k and 24k engines
+                             val resampledAudio = TTSUtils.resample(buffer, bytesRead, engineRate, MASTER_SAMPLE_RATE)
+                             
+                             if (resampledAudio.isNotEmpty()) {
+                                 synchronized(callback) {
+                                     try {
+                                         callback.audioAvailable(resampledAudio, 0, resampledAudio.size)
+                                     } catch (e: Exception) {}
+                                 }
                              }
                          }
                     }
