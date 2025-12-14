@@ -19,7 +19,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
-// Chunk Helper (Keep existing logic or use this)
+// *** ဒီအကြောင်း ၂ ကြောင်း ကျန်ခဲ့လို့ Error တက်တာပါ ***
+data class WavInfo(val sampleRate: Int, val channels: Int)
 data class LangChunk(val text: String, val lang: String)
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -39,9 +40,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
-    // *** C++ SONIC TARGET ***
-    // Sonic က Pitch ညှိပြီးရင် 24000Hz ထွက်အောင် ကျွန်တော်တို့ Set လုပ်လို့ရတယ်
-    // ဒါပေမဲ့ Input Rate အတိုင်းထွက်တာ ပိုကောင်းတယ်
     private var currentSampleRate = 16000 
     
     override fun onCreate() {
@@ -105,8 +103,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         currentTask = controllerExecutor.submit {
             try {
-                // Using simple splitter for now, ensure LanguageUtils.splitHelper exists
-                val chunks = splitText(text) 
+                // Use LanguageUtils if available, else simple logic
+                val chunks = LanguageUtils.splitHelper(text) 
                 
                 if (chunks.isEmpty()) {
                     callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -124,7 +122,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     // *** Step 1: Calculate Pitch/Speed for C++ ***
                     val (rate, pitch) = getRateAndPitch(chunk.lang, request)
                     
-                    // We tell the engine to speak normally (1.0), but handle manipulation in C++
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     
@@ -150,7 +147,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // Helper to get user settings
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         val sysRate = (request?.speechRate ?: 100) / 100.0f
@@ -174,7 +170,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
         
-        // Combine System Settings + User Settings
         return Pair(sysRate * userRate, sysPitch * userPitch)
     }
 
@@ -209,12 +204,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                         val wavInfo = getWavInfo(header)
                         
                         // *** C++ INIT ***
-                        // 1. Initialize Sonic with Input Rate
                         AudioProcessor.initSonic(wavInfo.sampleRate, 1)
-                        // 2. Set Pitch & Speed
                         AudioProcessor.setConfig(speed, pitch, 1.0f) 
                         
-                        // Always output at Input Rate (Sonic handles the stretching)
                         if (!didStart) {
                             synchronized(callback) {
                                 callback.start(wavInfo.sampleRate, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -274,13 +266,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             "MYANMAR" -> if (burmeseEngine != null) burmeseEngine else englishEngine
             else -> englishEngine
         }
-    }
-    
-    // Simple splitter needed for this class context
-    private fun splitText(text: String): List<LangChunk> {
-        // Reuse your existing LanguageUtils.splitHelper logic here
-        // Or simply call LanguageUtils.splitHelper(text) if LanguageUtils is available
-        return LanguageUtils.splitHelper(text)
     }
 
     override fun onDestroy() { 
