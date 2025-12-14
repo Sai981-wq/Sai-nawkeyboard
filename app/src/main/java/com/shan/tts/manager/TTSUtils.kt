@@ -81,7 +81,7 @@ object TTSUtils {
             while (!tempFile.exists() || tempFile.length() < 44) {
                 try { Thread.sleep(50) } catch (e: Exception) {}
                 waitCount++
-                if (waitCount > 40) return getFallbackRate(pkgName)
+                if (waitCount > 30) return getFallbackRate(pkgName)
             }
             return readWavSampleRate(tempFile)
         }

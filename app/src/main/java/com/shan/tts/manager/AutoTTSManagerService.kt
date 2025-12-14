@@ -4,7 +4,6 @@ import android.content.Context
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.PowerManager
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -36,41 +35,33 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
-    private var wakeLock: PowerManager.WakeLock? = null
     
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
-    private val TARGET_RATE = 24000 
-    private val MAX_AUDIO_CHUNK_SIZE = 8192 
     private val rateCache = HashMap<String, Int>()
     
     override fun onCreate() {
         super.onCreate()
-        
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherryTTS:WakeLock")
-        wakeLock?.setReferenceCounted(false)
-        
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
         
         shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
-        initEngine("Shan", shanPkgName) { shanEngine = it }
+        initEngine(shanPkgName) { shanEngine = it }
         
         burmesePkgName = prefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
-        initEngine("Burmese", burmesePkgName) { 
+        initEngine(burmesePkgName) { 
             burmeseEngine = it
             it.language = Locale("my", "MM")
         }
         
         englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
-        initEngine("English", englishPkgName) { 
+        initEngine(englishPkgName) { 
             englishEngine = it
             it.language = Locale.US
         }
     }
 
-    private fun initEngine(name: String, pkg: String?, onSuccess: (TextToSpeech) -> Unit) {
+    private fun initEngine(pkg: String?, onSuccess: (TextToSpeech) -> Unit) {
         if (pkg.isNullOrEmpty()) return
         try {
             var tempTTS: TextToSpeech? = null
@@ -84,8 +75,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     })
                 }
             }, pkg)
-        } catch (e: Exception) { 
-        }
+        } catch (e: Exception) { }
     }
 
     override fun onStop() { 
@@ -95,58 +85,46 @@ class AutoTTSManagerService : TextToSpeechService() {
         try { activeWriteFd?.close() } catch (e: Exception) {}
         activeReadFd = null
         activeWriteFd = null
-        AudioProcessor.flush()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        
         onStop() 
         isStopped.set(false)
-        
-        if (wakeLock?.isHeld == false) wakeLock?.acquire(60000)
 
         currentTask = controllerExecutor.submit {
             try {
                 val chunks = LanguageUtils.splitHelper(text) 
-                
                 if (chunks.isEmpty()) {
-                    callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
                     callback?.done()
                     return@submit
                 }
-
-                var hasStartedCallback = false
 
                 for ((index, chunk) in chunks.withIndex()) {
                     if (isStopped.get()) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
-                    
                     var activePkg = englishPkgName
                     if (engine === shanEngine) activePkg = shanPkgName
                     else if (engine === burmeseEngine) activePkg = burmesePkgName
                     
-                    val (rate, pitch) = getRateAndPitch(chunk.lang, request)
+                    // 1. Get Settings
+                    val (rateMultiplier, pitchMultiplier) = getRateAndPitch(chunk.lang, request)
+                    
+                    // 2. Apply Native Settings directly to Engine
+                    // This fixes the "Tape Recorder" and "Radio" issues
+                    engine.setSpeechRate(rateMultiplier)
+                    engine.setPitch(pitchMultiplier)
+                    
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     
-                    engine.setSpeechRate(1.0f)
-                    engine.setPitch(1.0f) 
-                    
-                    val success = processWithPipe(engine, activePkg, chunk.text, params, callback, hasStartedCallback)
-                    
-                    if (success) hasStartedCallback = true
+                    // 3. Process Direct Stream
+                    processDirectPipe(engine, activePkg, chunk.text, params, callback)
                 }
-                
-                if (!hasStartedCallback && !isStopped.get()) {
-                     callback?.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
-                }
-
             } catch (e: Exception) {
             } finally {
                 if (!isStopped.get()) callback?.done()
-                if (wakeLock?.isHeld == true) wakeLock?.release()
             }
         }
     }
@@ -175,26 +153,15 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
         
-        // Simple Linear Formula: 50 = 1.0x (Original)
-        val userRateMultiplier = rateSeekbar / 50.0f
-        val userPitchMultiplier = pitchSeekbar / 50.0f
+        // Standard Android TTS Formula: 50 = 1.0x
+        // 0 -> 0.5x, 100 -> 2.0x
+        val userRate = 0.5f + (rateSeekbar / 100.0f) * 1.5f
+        val userPitch = 0.5f + (pitchSeekbar / 100.0f) * 1.5f
         
-        var finalRate = sysRate * userRateMultiplier
-        var finalPitch = sysPitch * userPitchMultiplier
-        
-        // Prevent silence or crash with extreme values
-        if (finalRate < 0.1f) finalRate = 0.1f
-        if (finalPitch < 0.1f) finalPitch = 0.1f
-        if (finalRate > 4.0f) finalRate = 4.0f
-        if (finalPitch > 2.0f) finalPitch = 2.0f
-        
-        return Pair(finalRate, finalPitch)
+        return Pair(sysRate * userRate, sysPitch * userPitch)
     }
 
-    private fun processWithPipe(engine: TextToSpeech, enginePkgName: String, text: String, params: Bundle, callback: SynthesisCallback?, alreadyStarted: Boolean): Boolean {
-        if (callback == null) return alreadyStarted
-
-        var didStart = alreadyStarted
+    private fun processDirectPipe(engine: TextToSpeech, pkgName: String, text: String, params: Bundle, callback: SynthesisCallback) {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -208,54 +175,33 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
                     
-                    var engineRate = 0
-                    synchronized(rateCache) {
-                        engineRate = rateCache[enginePkgName] ?: 0
-                    }
-                    
+                    // 1. Detect Real Sample Rate of the Engine
+                    // We must tell the system the TRUTH about what the engine is sending
+                    var engineRate = rateCache[pkgName] ?: 0
                     if (engineRate == 0) {
-                        engineRate = TTSUtils.detectEngineSampleRate(engine, applicationContext, enginePkgName)
-                        synchronized(rateCache) {
-                            rateCache[enginePkgName] = engineRate
-                        }
+                        engineRate = TTSUtils.detectEngineSampleRate(engine, applicationContext, pkgName)
+                        rateCache[pkgName] = engineRate
                     }
-                    
-                    // Init with found rate
-                    AudioProcessor.initSonic(engineRate, 1)
-                    
-                    // Apply config: Speed & Pitch are from getRateAndPitch
-                    // Rate is always 1.0 handled in C++
-                    val (speed, pitch) = getRateAndPitch(LanguageUtils.detectLanguage(text), null)
-                    AudioProcessor.setConfig(speed, pitch) 
-                    
-                    if (!didStart) {
-                        synchronized(callback) {
-                            callback.start(TARGET_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
-                        }
-                        didStart = true
+
+                    // 2. Start Callback with REAL rate (No Resampling)
+                    // 16bit PCM, Mono (1 channel) is standard
+                    synchronized(callback) {
+                        callback.start(engineRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                     }
-                    
-                    val buffer = ByteArray(8192) 
+
+                    val buffer = ByteArray(4096)
                     var bytesRead: Int
                     
+                    // 3. Direct Passthrough Loop
                     while (fis.read(buffer).also { bytesRead = it } != -1) {
                          if (isStopped.get()) break
                          
-                         val processedAudio = AudioProcessor.processAudio(buffer, bytesRead)
-                         
-                         if (processedAudio.isNotEmpty()) {
-                             var offset = 0
-                             while (offset < processedAudio.size) {
-                                 if (isStopped.get()) break
-                                 
-                                 val chunkLength = min(MAX_AUDIO_CHUNK_SIZE, processedAudio.size - offset)
-                                 
-                                 synchronized(callback) {
-                                     try {
-                                         callback.audioAvailable(processedAudio, offset, chunkLength)
-                                     } catch (e: Exception) {}
-                                 }
-                                 offset += chunkLength
+                         // Just pass the bytes directly. No C++. No Math. No Error.
+                         if (bytesRead > 0) {
+                             synchronized(callback) {
+                                 try {
+                                     callback.audioAvailable(buffer, 0, bytesRead)
+                                 } catch (e: Exception) {}
                              }
                          }
                     }
@@ -265,9 +211,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             val targetFd = activeWriteFd
             if (targetFd != null) {
-                try {
-                    engine.synthesizeToFile(text, params, targetFd, uuid)
-                } catch (e: Exception) {}
+                engine.synthesizeToFile(text, params, targetFd, uuid)
             }
             try { activeWriteFd?.close(); activeWriteFd = null } catch(e:Exception){}
 
@@ -278,7 +222,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             try { activeReadFd?.close() } catch (e: Exception) {}
             try { activeWriteFd?.close() } catch (e: Exception) {}
         }
-        return didStart
     }
     
     private fun getEngine(lang: String): TextToSpeech? {
