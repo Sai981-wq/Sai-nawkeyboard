@@ -1,63 +1,52 @@
 package com.shan.tts.manager
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.os.Bundle
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
+import android.util.Log
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-class LogViewerActivity : AppCompatActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+object AppLogger {
+    private const val TAG = "CherryTTS_Monitor"
+    private val logBuilder = StringBuilder()
+    private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
-        // Programmatic UI (No XML needed)
-        val scrollView = ScrollView(this)
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
+    fun log(message: String) {
+        val timestamp = dateFormat.format(Date())
+        val finalMsg = "$timestamp : $message"
+        Log.d(TAG, message)
+        appendBuffer(finalMsg)
+    }
+
+    fun error(message: String, e: Exception? = null) {
+        val timestamp = dateFormat.format(Date())
+        val finalMsg = if (e != null) {
+            "$timestamp [ERROR] : $message \n${Log.getStackTraceString(e)}"
+        } else {
+            "$timestamp [ERROR] : $message"
         }
-        
-        val btnRefresh = Button(this).apply { text = "Refresh Log" }
-        val btnCopy = Button(this).apply { text = "Copy All Logs" }
-        val btnClear = Button(this).apply { text = "Clear Logs" }
-        val tvLogs = TextView(this).apply { 
-            textSize = 14f 
-            setTextIsSelectable(true)
+        Log.e(TAG, message)
+        appendBuffer(finalMsg)
+    }
+
+    private fun appendBuffer(msg: String) {
+        synchronized(this) {
+            logBuilder.append(msg).append("\n\n")
+            if (logBuilder.length > 100000) {
+                logBuilder.delete(0, logBuilder.length - 80000)
+            }
         }
+    }
 
-        layout.addView(btnRefresh)
-        layout.addView(btnCopy)
-        layout.addView(btnClear)
-        layout.addView(tvLogs)
-        scrollView.addView(layout)
-        setContentView(scrollView)
-
-        fun refresh() {
-            tvLogs.text = AppLogger.getAllLogs()
-            // Auto scroll to bottom
-            scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
+    fun getAllLogs(): String {
+        synchronized(this) {
+            return logBuilder.toString()
         }
+    }
 
-        btnRefresh.setOnClickListener { refresh() }
-        
-        btnCopy.setOnClickListener {
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val clip = ClipData.newPlainText("TTS Logs", tvLogs.text)
-            clipboard.setPrimaryClip(clip)
-            Toast.makeText(this, "Copied to clipboard!", Toast.LENGTH_SHORT).show()
+    fun clear() {
+        synchronized(this) {
+            logBuilder.setLength(0)
         }
-
-        btnClear.setOnClickListener {
-            AppLogger.clear()
-            refresh()
-        }
-
-        refresh()
     }
 }
 

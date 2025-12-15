@@ -12,13 +12,14 @@ object EngineScanner {
     fun scanAllEngines(context: Context, onProgress: (String) -> Unit, onComplete: () -> Unit) {
         AppLogger.log("Starting Engine Scan...")
         
-        // --- FIX: Correct Intent Action ---
         val intent = Intent("android.intent.action.TTS_SERVICE")
-        
         val resolveInfos = context.packageManager.queryIntentServices(intent, 0)
-        val engines = resolveInfos.map { it.serviceInfo.packageName }
         
-        AppLogger.log("Found ${engines.size} engines: $engines")
+        // Filter out our own package to prevent self-binding loop
+        val engines = resolveInfos.map { it.serviceInfo.packageName }
+            .filter { it != context.packageName }
+        
+        AppLogger.log("Found ${engines.size} external engines: $engines")
 
         if (engines.isEmpty()) {
             onComplete()
@@ -50,7 +51,6 @@ object EngineScanner {
         try {
             tts = TextToSpeech(context, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    AppLogger.log("Bound to $pkgName. Detecting rate...")
                     detectAndSaveRate(context, tts!!, pkgName)
                     onNext()
                 } else {
@@ -79,7 +79,8 @@ object EngineScanner {
                 override fun onError(utteranceId: String?) {}
             })
 
-            val result = tts.synthesizeToFile("a", null, tempFile, uuid)
+            // Synthesize a slightly longer text to ensure valid header
+            val result = tts.synthesizeToFile("Hello", null, tempFile, uuid)
             
             if (result == TextToSpeech.SUCCESS) {
                 var waits = 0
@@ -94,14 +95,17 @@ object EngineScanner {
                 }
                 
                 val rate = readWavSampleRate(tempFile)
-                AppLogger.log("Detected Rate for $pkgName: $rate Hz")
-                saveRate(context, pkgName, rate)
+                if (rate > 0) {
+                    AppLogger.log("Detected Rate for $pkgName: $rate Hz")
+                    saveRate(context, pkgName, rate)
+                } else {
+                    AppLogger.log("Invalid Rate (0Hz) for $pkgName")
+                    saveFallback(context, pkgName)
+                }
             } else {
-                AppLogger.log("Synthesis failed for $pkgName")
                 saveFallback(context, pkgName)
             }
         } catch (e: Exception) {
-            AppLogger.error("Error detecting rate for $pkgName", e)
             saveFallback(context, pkgName)
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
@@ -123,7 +127,8 @@ object EngineScanner {
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
-        val validRate = if (rate < 8000) 24000 else rate
+        // Enforce valid range. Eloquence 11k is valid, but 0 is not.
+        val validRate = if (rate < 4000) 24000 else rate
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit()
             .putInt("RATE_$pkg", validRate)
@@ -131,7 +136,14 @@ object EngineScanner {
     }
 
     private fun saveFallback(context: Context, pkg: String) {
-        val rate = if (pkg.contains("espeak") || pkg.contains("shan")) 22050 else 24000
+        // Fallback Logic based on known engines
+        var rate = 24000 // Default safe bet
+        
+        val lower = pkg.toLowerCase()
+        if (lower.contains("espeak") || lower.contains("shan")) rate = 22050
+        if (lower.contains("eloquence")) rate = 11025 // Eloquence usually 11k
+        if (lower.contains("nirenr")) rate = 16000 // Talkman often 16k
+        
         AppLogger.log("Using fallback rate $rate Hz for $pkg")
         saveRate(context, pkg, rate)
     }
