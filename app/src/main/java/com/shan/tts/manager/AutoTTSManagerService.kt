@@ -36,6 +36,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
     
+    // --- ဒီစာကြောင်း (၂) ကြောင်း မပါရင် Error တက်ပါမယ် ---
+    @Volatile private var activeReadFd: ParcelFileDescriptor? = null
+    @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
+    
     private lateinit var configPrefs: SharedPreferences
     
     override fun onCreate() {
@@ -262,7 +266,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
                     fis.close()
-                    // AppLogger.log("Pipe Stream Finished: Read $totalBytes bytes")
                 } catch (e: Exception) {
                     AppLogger.error("Pipe Reader Error", e)
                 }
