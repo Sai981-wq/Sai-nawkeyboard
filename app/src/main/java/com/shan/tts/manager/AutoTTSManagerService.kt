@@ -37,7 +37,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
     
-    // We keep track of FDs but we DO NOT close them in onStop anymore to prevent EBADF
+    // We keep track of FDs but we DO NOT close them in onStop to prevent EBADF
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
@@ -88,8 +88,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() { 
-        // CRITICAL FIX: Just flag it. Do NOT close FDs here.
-        // Closing FDs here causes "EBADF" (Bad File Descriptor) crashes in the reader thread.
         isStopped.set(true)
         currentTask?.cancel(true)
         AppLogger.log("Service Stopped")
@@ -97,9 +95,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        // AppLogger.log(">>> NEW REQUEST: ${text.take(30)}...")
         
-        onStop() // Ensure previous task is cancelled
+        onStop() 
         isStopped.set(false)
 
         currentTask = controllerExecutor.submit {
@@ -112,23 +109,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
-                // Determine Session Master Rate
+                // --- Master Rate Detection (Only for callback.start) ---
                 val firstLang = chunks[0].lang
                 val firstPkg = getPkgName(firstLang)
                 
                 var sessionRate = configPrefs.getInt("RATE_$firstPkg", 0)
                 
-                // Safety fix for Saomai or Unknown engines
+                // Fallback if 0 (Needed because callback.start throws exception on 0)
                 if (sessionRate < 8000) {
                      val lowerPkg = firstPkg.lowercase(Locale.ROOT)
                      sessionRate = when {
                          lowerPkg.contains("espeak") -> 22050
                          lowerPkg.contains("shan") -> 22050
                          lowerPkg.contains("eloquence") -> 11025
-                         lowerPkg.contains("myanmar") -> 24000 // Saomai usually 24k
+                         lowerPkg.contains("myanmar") -> 24000
                          else -> 24000
                      }
-                     AppLogger.log("Master rate fallback to $sessionRate Hz for $firstPkg")
+                     AppLogger.log("Callback started with fallback rate: $sessionRate Hz")
                 }
 
                 synchronized(callback) {
@@ -160,25 +157,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val balanceVolume = getVolumeCorrection(activePkg)
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, balanceVolume)
                     
-                    var engineRate = configPrefs.getInt("RATE_$activePkg", 0)
-                    if (engineRate < 8000) {
-                        val lowerPkg = activePkg.lowercase(Locale.ROOT)
-                        engineRate = when {
-                             lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
-                             lowerPkg.contains("eloquence") -> 11025
-                             else -> 24000
-                        }
-                    }
-                    
-                    // AppLogger.log("Processing Chunk $index: [${chunk.lang}] Rate: ${engineRate}Hz -> Master: ${sessionRate}Hz")
-                    processDirectPipe(engine, engineRate, params, chunk.text, callback, sessionRate)
+                    // No Resampling: Just process raw audio
+                    processDirectPipe(engine, params, chunk.text, callback)
                 }
             } catch (e: Exception) {
                 AppLogger.error("Synthesis Critical Error", e)
             } finally {
                 if (!isStopped.get()) {
                     callback?.done()
-                    // AppLogger.log("<<< REQUEST DONE")
                 }
             }
         }
@@ -235,7 +221,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         return Pair(sysRate * userRate, sysPitch * userPitch)
     }
 
-    private fun processDirectPipe(engine: TextToSpeech, engineRate: Int, params: Bundle, text: String, callback: SynthesisCallback, sessionRate: Int) {
+    // REMOVED: engineRate and sessionRate parameters (Resampling Logic Removed)
+    private fun processDirectPipe(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback) {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -247,7 +234,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             localReadFd = pipe[0]
             localWriteFd = pipe[1]
             
-            // Assign to globals for reference, but don't depend on them for logic
             activeReadFd = localReadFd
             activeWriteFd = localWriteFd
 
@@ -259,29 +245,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val buffer = ByteArray(4096)
                     var bytesRead: Int
                     
-                    // Loop check isStopped.get() to exit cleanly
                     while (!isStopped.get()) {
                         bytesRead = fis.read(buffer)
                         if (bytesRead == -1) break
                         
                         if (bytesRead > 0) {
-                             val finalAudio = if (engineRate != sessionRate) {
-                                 TTSUtils.resample(buffer, bytesRead, engineRate, sessionRate)
-                             } else {
-                                 buffer.copyOfRange(0, bytesRead)
-                             }
-                             
+                             // --- NO RESAMPLING: DIRECT PASS ---
                              synchronized(callback) {
                                  try {
-                                     callback.audioAvailable(finalAudio, 0, finalAudio.size)
-                                 } catch (e: Exception) {
-                                     // callback might be closed, normal during stop
-                                 }
+                                     callback.audioAvailable(buffer, 0, bytesRead)
+                                 } catch (e: Exception) { }
                              }
                         }
                     }
                 } catch (e: IOException) {
-                    // Ignore "Bad file descriptor" during stop, it's expected
                     if (!isStopped.get()) {
                         AppLogger.error("Pipe Read Error", e)
                     }
@@ -293,25 +270,19 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
-            // Write side
             if (localWriteFd != null) {
                 engine.synthesizeToFile(text, params, localWriteFd, uuid)
             }
             
-            // Close write end to signal EOF to reader
             try { localWriteFd?.close() } catch(e:Exception){}
             
-            // Wait for reader to finish
             try {
                 readerFuture.get()
-            } catch (e: Exception) {
-                // Interrupted during stop is normal
-            }
+            } catch (e: Exception) { }
 
         } catch (e: Exception) {
             AppLogger.error("Pipe Setup Exception", e)
         } finally {
-            // Ensure FDs are closed if something went wrong
             try { localReadFd?.close() } catch (e: Exception) {}
             try { localWriteFd?.close() } catch (e: Exception) {}
         }
