@@ -10,41 +10,46 @@ import java.io.RandomAccessFile
 object EngineScanner {
 
     fun scanAllEngines(context: Context, onProgress: (String) -> Unit, onComplete: () -> Unit) {
-        AppLogger.log("Starting Engine Scan...")
+        AppLogger.log("=== STARTING FULL SYSTEM SCAN ===")
         
         val intent = Intent("android.intent.action.TTS_SERVICE")
         val resolveInfos = context.packageManager.queryIntentServices(intent, 0)
         
-        // Filter out our own package to prevent self-binding loop
+        // ကိုယ့် App ကလွဲရင် ကျန်တာအကုန်ယူမယ်
         val engines = resolveInfos.map { it.serviceInfo.packageName }
             .filter { it != context.packageName }
         
-        AppLogger.log("Found ${engines.size} external engines: $engines")
+        AppLogger.log("Detected ${engines.size} engines: $engines")
 
         if (engines.isEmpty()) {
             onComplete()
             return
         }
 
+        // တစ်ခုပြီးမှ တစ်ခု စစ်ဆေးမည့် Recursive Function
         scanRecursive(context, engines, 0, onProgress, onComplete)
     }
 
     private fun scanRecursive(context: Context, engines: List<String>, index: Int, onProgress: (String) -> Unit, onComplete: () -> Unit) {
         if (index >= engines.size) {
-            AppLogger.log("Scan Finished.")
+            AppLogger.log("=== SCAN COMPLETED SUCCESSFULLY ===")
             onComplete()
             return
         }
 
         val pkgName = engines[index]
-        val msg = "Scanning ($index/${engines.size}): $pkgName"
-        onProgress(msg)
-        AppLogger.log(msg)
+        val displayMsg = "Analyzing Engine (${index + 1}/${engines.size}):\n$pkgName"
+        
+        onProgress(displayMsg)
+        AppLogger.log("Scanning: $pkgName")
 
         var tts: TextToSpeech? = null
         
+        // နောက်တစ်ခု ဆက်သွားမည့် Function
         val onNext = {
             try { tts?.shutdown() } catch(e: Exception){}
+            // နည်းနည်းအနားပေးမယ် (Crash မဖြစ်အောင်)
+            try { Thread.sleep(200) } catch(e:Exception){}
             scanRecursive(context, engines, index + 1, onProgress, onComplete)
         }
 
@@ -54,41 +59,42 @@ object EngineScanner {
                     detectAndSaveRate(context, tts!!, pkgName)
                     onNext()
                 } else {
-                    AppLogger.error("Failed to bind to $pkgName")
+                    AppLogger.error("Failed to bind: $pkgName")
                     saveFallback(context, pkgName)
                     onNext()
                 }
             }, pkgName)
         } catch (e: Exception) {
-            AppLogger.error("Exception binding to $pkgName", e)
+            AppLogger.error("Crash binding: $pkgName", e)
             saveFallback(context, pkgName)
             onNext()
         }
     }
 
     private fun detectAndSaveRate(context: Context, tts: TextToSpeech, pkgName: String) {
-        val tempFile = File(context.cacheDir, "scan_${pkgName.hashCode()}.wav")
-        val uuid = "scan_${System.currentTimeMillis()}"
+        val tempFile = File(context.cacheDir, "probe.wav")
+        val uuid = "probe_${System.currentTimeMillis()}"
         
         try {
             if (tempFile.exists()) tempFile.delete()
             
             tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) {}
-                override fun onError(utteranceId: String?) {}
+                override fun onStart(id: String?) {}
+                override fun onDone(id: String?) {}
+                override fun onError(id: String?) {}
             })
 
-            // Synthesize a slightly longer text to ensure valid header
+            // Hello လို့ အသံထွက်ခိုင်းပြီး Rate စစ်မယ်
             val result = tts.synthesizeToFile("Hello", null, tempFile, uuid)
             
             if (result == TextToSpeech.SUCCESS) {
                 var waits = 0
+                // 3 စက္ကန့်လောက်ထိ စောင့်ကြည့်မယ်
                 while (!tempFile.exists() || tempFile.length() < 44) {
                     try { Thread.sleep(50) } catch (e: Exception) {}
                     waits++
-                    if (waits > 40) { 
-                        AppLogger.log("Timeout waiting for audio from $pkgName")
+                    if (waits > 60) { 
+                        AppLogger.log("Timeout: No audio from $pkgName")
                         saveFallback(context, pkgName)
                         return
                     }
@@ -96,10 +102,10 @@ object EngineScanner {
                 
                 val rate = readWavSampleRate(tempFile)
                 if (rate > 0) {
-                    AppLogger.log("Detected Rate for $pkgName: $rate Hz")
+                    AppLogger.log("SUCCESS: $pkgName -> $rate Hz")
                     saveRate(context, pkgName, rate)
                 } else {
-                    AppLogger.log("Invalid Rate (0Hz) for $pkgName")
+                    AppLogger.log("FAILED: 0Hz from $pkgName")
                     saveFallback(context, pkgName)
                 }
             } else {
@@ -127,7 +133,7 @@ object EngineScanner {
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
-        // Enforce valid range. Eloquence 11k is valid, but 0 is not.
+        // 4000Hz အောက်ဆိုရင် အမှားလို့သတ်မှတ်ပြီး 24000 ပေးမယ်
         val validRate = if (rate < 4000) 24000 else rate
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit()
@@ -136,15 +142,13 @@ object EngineScanner {
     }
 
     private fun saveFallback(context: Context, pkg: String) {
-        // Fallback Logic based on known engines
-        var rate = 24000 // Default safe bet
-        
+        var rate = 24000 
         val lower = pkg.toLowerCase()
         if (lower.contains("espeak") || lower.contains("shan")) rate = 22050
-        if (lower.contains("eloquence")) rate = 11025 // Eloquence usually 11k
-        if (lower.contains("nirenr")) rate = 16000 // Talkman often 16k
+        if (lower.contains("eloquence")) rate = 11025
+        if (lower.contains("nirenr")) rate = 16000 
         
-        AppLogger.log("Using fallback rate $rate Hz for $pkg")
+        AppLogger.log("Fallback: $pkg -> $rate Hz")
         saveRate(context, pkg, rate)
     }
 }

@@ -24,59 +24,58 @@ class MainActivity : AppCompatActivity() {
 
         prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
 
-        loadInstalledEngines()
-
+        // UI Setup
         setupEngineUI(R.id.spinnerShan, "pref_shan_pkg", "com.espeak.ng", R.id.seekShanRate, "rate_shan", R.id.seekShanPitch, "pitch_shan")
         setupEngineUI(R.id.spinnerBurmese, "pref_burmese_pkg", "com.google.android.tts", R.id.seekBurmeseRate, "rate_burmese", R.id.seekBurmesePitch, "pitch_burmese")
         setupEngineUI(R.id.spinnerEnglish, "pref_english_pkg", "com.google.android.tts", R.id.seekEnglishRate, "rate_english", R.id.seekEnglishPitch, "pitch_english")
-
+        
         setupDonation(R.id.btnKpay, "09750091817", "KBZ Pay Number Copied")
         setupDonation(R.id.btnWave, "09750091817", "Wave Pay Number Copied")
 
-        // Auto Scan on startup
-        performEngineScan()
+        // အက်ပ်စဖွင့်တာနဲ့ Scan ဖတ်မယ် (မပြီးမချင်း မလွှတ်ပေးပါ)
+        performFullSystemScan()
     }
 
-    private fun performEngineScan() {
+    private fun performFullSystemScan() {
+        // User ကို ပိတ်ထားမယ့် Dialog (ပယ်ဖျက်လို့မရ)
         val progress = ProgressDialog(this)
-        progress.setMessage("Scanning TTS Engines...")
-        progress.setCancelable(false)
+        progress.setTitle("System Preparation")
+        progress.setMessage("Initializing all TTS Engines...\nPlease wait, this may take a while.")
+        progress.setCancelable(false) // Back နှိပ်လို့မရအောင် ပိတ်ထားသည်
         progress.show()
 
         EngineScanner.scanAllEngines(this, 
             onProgress = { msg ->
-                runOnUiThread { progress.setMessage(msg) }
+                runOnUiThread { 
+                    progress.setMessage(msg) 
+                }
             },
             onComplete = {
                 runOnUiThread {
                     progress.dismiss()
-                    Toast.makeText(this, "Scan Complete", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "All Engines Ready!", Toast.LENGTH_SHORT).show()
+                    // Scan ပြီးမှ Engine List ကို UI မှာ ပြန်တင်မယ်
+                    loadInstalledEngines() 
                 }
             }
         )
     }
     
+    // ... (UI Logic ကျန်တာ အတူတူပါပဲ) ...
+
     private fun setupDonation(viewId: Int, number: String, msg: String) {
         val btn = findViewById<View>(viewId)
-        
-        // Single Click to Copy
         btn?.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText("Donation Number", number)
             clipboard.setPrimaryClip(clip)
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
-
-        // Long Click to Open Logs (KBZ Pay Only or both)
         if (viewId == R.id.btnKpay) {
             btn?.setOnLongClickListener {
                 try {
-                    val intent = Intent(this, LogViewerActivity::class.java)
-                    startActivity(intent)
-                    Toast.makeText(this, "Opening Logs...", Toast.LENGTH_SHORT).show()
-                } catch (e: Exception) {
-                    Toast.makeText(this, "Error opening logs: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
+                    startActivity(Intent(this, LogViewerActivity::class.java))
+                } catch (e: Exception) {}
                 true
             }
         }
@@ -94,25 +93,7 @@ class MainActivity : AppCompatActivity() {
         seekPitch.setOnSeekBarChangeListener(getSeekListener(pitchKey))
 
         val savedPkg = prefs.getString(pkgKey, defPkg)
-        val idx = enginePackages.indexOf(savedPkg)
-        
-        if (enginePackages.isNotEmpty()) {
-             if (idx >= 0) {
-                 spinner.setSelection(idx)
-             } else {
-                 val defIdx = enginePackages.indexOf(defPkg)
-                 if (defIdx >= 0) spinner.setSelection(defIdx)
-             }
-        }
-
-        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                if (enginePackages.isNotEmpty() && pos >= 0 && pos < enginePackages.size) {
-                    prefs.edit().putString(pkgKey, enginePackages[pos]).apply()
-                }
-            }
-            override fun onNothingSelected(p: AdapterView<*>?) {}
-        }
+        // Note: Spinner selection happens after loadInstalledEngines
     }
 
     private fun getSeekListener(key: String): SeekBar.OnSeekBarChangeListener {
@@ -132,6 +113,7 @@ class MainActivity : AppCompatActivity() {
 
         for (info in resolveInfos) {
             val pkg = info.serviceInfo.packageName
+            // Filter out own app
             if (pkg != packageName) {
                 val label = info.serviceInfo.loadLabel(packageManager).toString()
                 engineNames.add(label)
@@ -146,9 +128,33 @@ class MainActivity : AppCompatActivity() {
 
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, engineNames)
         
-        findViewById<Spinner>(R.id.spinnerShan)?.adapter = adapter
-        findViewById<Spinner>(R.id.spinnerBurmese)?.adapter = adapter
-        findViewById<Spinner>(R.id.spinnerEnglish)?.adapter = adapter
+        val spShan = findViewById<Spinner>(R.id.spinnerShan)
+        val spBur = findViewById<Spinner>(R.id.spinnerBurmese)
+        val spEng = findViewById<Spinner>(R.id.spinnerEnglish)
+
+        spShan?.adapter = adapter
+        spBur?.adapter = adapter
+        spEng?.adapter = adapter
+
+        // Restore selections
+        setSpinnerSelection(spShan, "pref_shan_pkg", "com.espeak.ng")
+        setSpinnerSelection(spBur, "pref_burmese_pkg", "com.google.android.tts")
+        setSpinnerSelection(spEng, "pref_english_pkg", "com.google.android.tts")
+    }
+
+    private fun setSpinnerSelection(spinner: Spinner?, key: String, def: String) {
+        val saved = prefs.getString(key, def)
+        val idx = enginePackages.indexOf(saved)
+        if (idx >= 0) spinner?.setSelection(idx)
+        
+        spinner?.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (enginePackages.isNotEmpty() && pos >= 0) {
+                    prefs.edit().putString(key, enginePackages[pos]).apply()
+                }
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
     }
 }
 
