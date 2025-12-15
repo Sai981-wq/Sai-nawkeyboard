@@ -36,7 +36,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
-    private val stateLock = Any() // Thread Safety အတွက် Lock
+    private val stateLock = Any()
     
     private lateinit var configPrefs: SharedPreferences
     private lateinit var settingsPrefs: SharedPreferences
@@ -89,21 +89,18 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        // System က တကယ်ရပ်ခိုင်းမှသာ ဒီကောင်အလုပ်လုပ်မယ်
         synchronized(stateLock) {
             isStopped.set(true)
             currentTask?.cancel(true)
         }
-        AppLogger.log("Service Stopped (System Request)")
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
-        // Internal Reset: Don't call onStop() here to avoid log spam and confusion
         synchronized(stateLock) {
-            currentTask?.cancel(true) // Cancel previous task quietly
-            isStopped.set(false)      // Reset flag for new task
+            isStopped.set(false)
+            currentTask?.cancel(true)
         }
 
         currentTask = controllerExecutor.submit {
@@ -116,21 +113,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
-                val firstLang = chunks[0].lang
-                val firstPkg = getPkgName(firstLang)
-                
-                var sessionRate = configPrefs.getInt("RATE_$firstPkg", 0)
-                if (sessionRate < 8000) {
-                     val lowerPkg = firstPkg.lowercase(Locale.ROOT)
-                     sessionRate = when {
-                         lowerPkg.contains("espeak") -> 22050
-                         lowerPkg.contains("shan") -> 22050
-                         lowerPkg.contains("eloquence") -> 11025
-                         lowerPkg.contains("myanmar") -> 16000
-                         else -> 24000
-                     }
-                     AppLogger.log("Fallback Master Rate: $sessionRate Hz")
-                }
+                val sessionRate = 24000 
+                AppLogger.log("Processing ${chunks.size} chunks at Fixed Rate: $sessionRate Hz")
 
                 synchronized(callback) {
                     callback.start(sessionRate, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -175,7 +159,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
 
-                    // Resample Logic ကို ပြန်သုံးထားသည်
+                    AppLogger.log("Chunk $index [${chunk.lang}]: Resampling $engineRate Hz -> $sessionRate Hz")
                     processPipeWithResample(engine, engineRate, sessionRate, params, chunk.text, callback)
                 }
             } catch (e: Exception) {
@@ -264,7 +248,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         if (bytesRead == -1) break
                         
                         if (bytesRead > 0) {
-                             // --- RESAMPLING LOGIC HERE ---
                              val finalAudio = if (engineRate != sessionRate) {
                                  TTSUtils.resample(buffer, bytesRead, engineRate, sessionRate)
                              } else {
@@ -274,7 +257,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                              synchronized(callback) {
                                  try {
                                      callback.audioAvailable(finalAudio, 0, finalAudio.size)
-                                 } catch (e: Exception) { }
+                                 } catch (e: Exception) { 
+                                 }
                              }
                         }
                     }
@@ -288,10 +272,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
             if (localWriteFd != null) {
-                val result = engine.synthesizeToFile(text, params, localWriteFd, uuid)
-                if (result != TextToSpeech.SUCCESS) {
-                    AppLogger.log("synthesizeToFile failed")
-                }
+                engine.synthesizeToFile(text, params, localWriteFd, uuid)
             }
             
             try { localWriteFd?.close() } catch(e:Exception){}

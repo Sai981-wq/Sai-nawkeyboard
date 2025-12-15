@@ -48,7 +48,7 @@ object EngineScanner {
         var tts: TextToSpeech? = null
         
         val onNext = {
-            try { tts?.shutdown() } catch(e: Exception){ AppLogger.error("Shutdown error for $pkgName", e) }
+            try { tts?.shutdown() } catch(e: Exception){}
             try { Thread.sleep(100) } catch(e:Exception){}
             scanRecursive(context, engines, index + 1, onProgress, onComplete)
         }
@@ -59,7 +59,7 @@ object EngineScanner {
                     detectAndSaveRate(context, tts!!, pkgName)
                     onNext()
                 } else {
-                    AppLogger.error("Failed to bind: $pkgName (Status: $status)")
+                    AppLogger.error("Failed to bind: $pkgName")
                     saveFallback(context, pkgName)
                     onNext()
                 }
@@ -121,11 +121,9 @@ object EngineScanner {
                     saveFallback(context, pkgName)
                 }
             } else {
-                AppLogger.log("Synthesis command failed for $pkgName")
                 saveFallback(context, pkgName)
             }
         } catch (e: Exception) {
-            AppLogger.error("Error during probe for $pkgName", e)
             saveFallback(context, pkgName)
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
@@ -144,10 +142,7 @@ object EngineScanner {
                 return (byte1 and 0xFF) or ((byte2 and 0xFF) shl 8) or 
                        ((byte3 and 0xFF) shl 16) or ((byte4 and 0xFF) shl 24)
             }
-        } catch (e: Exception) { 
-            AppLogger.error("WAV read error", e)
-            return 0 
-        }
+        } catch (e: Exception) { return 0 }
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {

@@ -54,7 +54,6 @@ object LanguageUtils {
 }
 
 object TTSUtils {
-    // Hz ညှိပေးမည့် Function (Linear Interpolation)
     fun resample(input: ByteArray, inputLength: Int, inRate: Int, outRate: Int): ByteArray {
         if (inRate == outRate) return input.copyOfRange(0, inputLength)
         
