@@ -113,8 +113,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
+                // Fixed Master Rate 24000 Hz for stability
                 val sessionRate = 24000 
-                AppLogger.log("Processing ${chunks.size} chunks at Fixed Rate: $sessionRate Hz")
+                AppLogger.log("Processing ${chunks.size} chunks at $sessionRate Hz")
 
                 synchronized(callback) {
                     callback.start(sessionRate, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -141,7 +142,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         lastEngine = engine
                         lastRate = rateMultiplier
                         lastPitch = pitchMultiplier
-                        try { Thread.sleep(5) } catch(e:Exception){}
+                        // REMOVED: Thread.sleep here caused latency/skipping
                     }
                     
                     val params = Bundle()
@@ -159,7 +160,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
 
-                    AppLogger.log("Chunk $index [${chunk.lang}]: Resampling $engineRate Hz -> $sessionRate Hz")
+                    // AppLogger.log("Chunk $index: $engineRate Hz -> $sessionRate Hz")
                     processPipeWithResample(engine, engineRate, sessionRate, params, chunk.text, callback)
                 }
             } catch (e: Exception) {
@@ -240,7 +241,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try {
                     val fd = finalReadFd.fileDescriptor
                     fis = FileInputStream(fd)
-                    val buffer = ByteArray(4096)
+                    // INCREASED BUFFER SIZE (4096 -> 8192) for smoother playback
+                    val buffer = ByteArray(8192)
                     var bytesRead: Int
                     
                     while (!isStopped.get()) {
@@ -258,6 +260,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                                  try {
                                      callback.audioAvailable(finalAudio, 0, finalAudio.size)
                                  } catch (e: Exception) { 
+                                     // Callback closed is normal
                                  }
                              }
                         }
@@ -278,6 +281,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             try { localWriteFd?.close() } catch(e:Exception){}
             
             try {
+                // Wait for audio processing to finish before moving to next chunk
                 readerFuture.get()
             } catch (e: Exception) { }
 
