@@ -36,14 +36,13 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
-    private val stateLock = Any()
     
     private lateinit var configPrefs: SharedPreferences
     private lateinit var settingsPrefs: SharedPreferences
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created.")
+        AppLogger.log("Service Created (Smart Mode).")
         
         try {
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
@@ -89,19 +88,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        synchronized(stateLock) {
-            isStopped.set(true)
-            currentTask?.cancel(true)
-        }
+        // Direct Stop Logic
+        isStopped.set(true)
+        currentTask?.cancel(true)
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
-        synchronized(stateLock) {
-            isStopped.set(false)
-            currentTask?.cancel(true)
-        }
+        isStopped.set(false)
+        currentTask?.cancel(true)
 
         currentTask = controllerExecutor.submit {
             try {
@@ -113,10 +109,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
-                // Fixed Master Rate 24000 Hz
+                // Fixed Rate 24000 Hz
                 val sessionRate = 24000 
-                AppLogger.log("Processing ${chunks.size} chunks at $sessionRate Hz")
-
+                
                 synchronized(callback) {
                     callback.start(sessionRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
@@ -126,7 +121,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var lastPitch = -1.0f
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    if (isStopped.get()) break
+                    if (isStopped.get() || Thread.currentThread().isInterrupted) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
@@ -159,8 +154,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
 
-                    processPipeWithResample(engine, engineRate, sessionRate, params, chunk.text, callback)
+                    // Using Smart Detection Logic
+                    processPipeWithSmartScanner(engine, engineRate, sessionRate, params, chunk.text, callback)
                 }
+            } catch (e: InterruptedException) {
             } catch (e: Exception) {
                 AppLogger.error("Synthesis Loop Error", e)
             } finally {
@@ -220,7 +217,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         return 1.0f 
     }
     
-    private fun processPipeWithResample(engine: TextToSpeech, engineRate: Int, sessionRate: Int, params: Bundle, text: String, callback: SynthesisCallback) {
+    // --- SMART SCANNER: Header ပါမှ ဖြတ်မည်၊ မပါရင် မဖြတ်ပါ ---
+    private fun processPipeWithSmartScanner(engine: TextToSpeech, engineRate: Int, sessionRate: Int, params: Bundle, text: String, callback: SynthesisCallback) {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -240,22 +238,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = finalReadFd.fileDescriptor
                     fis = FileInputStream(fd)
                     
-                    // --- STEP 1: SKIP WAV HEADER (44 BYTES) ---
-                    // This is the key fix for the crackling noise!
-                    val headerBuffer = ByteArray(44)
-                    var bytesSkipped = 0
-                    while (bytesSkipped < 44 && !isStopped.get()) {
-                        val count = fis.read(headerBuffer, 0, 44 - bytesSkipped)
-                        if (count == -1) break
-                        bytesSkipped += count
-                    }
-                    
-                    // --- STEP 2: PROCESS RAW PCM ---
                     val buffer = ByteArray(8192)
                     var leftoverByte: Byte? = null
-                    var bytesRead: Int
+                    var isHeaderProcessed = false
+                    var skipBytes = 0
                     
-                    while (!isStopped.get()) {
+                    while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
+                        
                         var offset = 0
                         if (leftoverByte != null) {
                             buffer[0] = leftoverByte!!
@@ -268,17 +257,72 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         var totalBytes = readAmount + offset
                         
-                        if (totalBytes > 0) {
-                            if (totalBytes % 2 != 0) {
-                                leftoverByte = buffer[totalBytes - 1]
-                                totalBytes -= 1
+                        // --- SMART HEADER DETECTION ---
+                        if (!isHeaderProcessed && totalBytes > 12) {
+                            // RIFF Header ပါမပါ စစ်ဆေးခြင်း
+                            val isWav = buffer[0] == 'R'.toByte() && 
+                                        buffer[1] == 'I'.toByte() && 
+                                        buffer[2] == 'F'.toByte() && 
+                                        buffer[3] == 'F'.toByte()
+                            
+                            if (isWav) {
+                                // RIFF တွေ့လျှင် "data" စာသားကို ရှာပြီး Header ဖြတ်မည်
+                                var foundData = -1
+                                for (i in 0 until (totalBytes - 4)) {
+                                    if (buffer[i] == 'd'.toByte() && 
+                                        buffer[i+1] == 'a'.toByte() && 
+                                        buffer[i+2] == 't'.toByte() && 
+                                        buffer[i+3] == 'a'.toByte()) {
+                                        foundData = i
+                                        break
+                                    }
+                                }
+                                
+                                if (foundData != -1) {
+                                    skipBytes = foundData + 8
+                                    AppLogger.log("SmartScanner: Header FOUND and SKIPPED ($skipBytes bytes)")
+                                } else {
+                                    // RIFF ပါပြီး data မတွေ့ရင် အနည်းဆုံး 44 တော့ ဖြတ်လိုက်တာ စိတ်ချရတယ်
+                                    skipBytes = 44 
+                                }
+                            } else {
+                                // RIFF မတွေ့ရင် Raw Audio မို့လို့ လုံးဝမဖြတ်ပါ
+                                skipBytes = 0
+                                // AppLogger.log("SmartScanner: Raw Audio Detected (NO SKIP)")
                             }
+                            isHeaderProcessed = true
+                        }
+                        
+                        // Skipping Logic
+                        var startIndex = 0
+                        if (skipBytes > 0) {
+                            if (totalBytes >= skipBytes) {
+                                startIndex = skipBytes
+                                skipBytes = 0 
+                            } else {
+                                skipBytes -= totalBytes
+                                startIndex = totalBytes 
+                            }
+                        }
+                        
+                        val validLength = totalBytes - startIndex
+                        
+                        if (validLength > 0) {
+                             // Byte Alignment
+                             if (validLength % 2 != 0) {
+                                 leftoverByte = buffer[startIndex + validLength - 1]
+                             }
+                             
+                             val processLen = if (validLength % 2 != 0) validLength - 1 else validLength
+                             
+                             if (processLen > 0) {
+                                 val pcmData = ByteArray(processLen)
+                                 System.arraycopy(buffer, startIndex, pcmData, 0, processLen)
 
-                            if (totalBytes > 0) {
                                  val finalAudio = if (engineRate != sessionRate) {
-                                     TTSUtils.resample(buffer, totalBytes, engineRate, sessionRate)
+                                     TTSUtils.resample(pcmData, processLen, engineRate, sessionRate)
                                  } else {
-                                     buffer.copyOfRange(0, totalBytes)
+                                     pcmData
                                  }
                                  
                                  synchronized(callback) {
@@ -286,7 +330,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                                          callback.audioAvailable(finalAudio, 0, finalAudio.size)
                                      } catch (e: Exception) { }
                                  }
-                            }
+                             }
                         }
                     }
                 } catch (e: IOException) {
