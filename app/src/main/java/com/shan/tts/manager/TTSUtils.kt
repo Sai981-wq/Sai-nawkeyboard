@@ -56,6 +56,16 @@ object LanguageUtils {
 }
 
 object TTSUtils {
+    // Debug အတွက် Hex String ပြောင်းပေးမည့် Function
+    fun bytesToHex(bytes: ByteArray, length: Int): String {
+        val sb = StringBuilder()
+        val limit = if (length > 64) 64 else length // ပထမ ၆၄ လုံးပဲပြမယ်
+        for (i in 0 until limit) {
+            sb.append(String.format("%02X ", bytes[i]))
+        }
+        return sb.toString()
+    }
+
     fun resample(input: ByteArray, inputLength: Int, inRate: Int, outRate: Int): ByteArray {
         if (inRate == outRate) return input.copyOfRange(0, inputLength)
         
@@ -82,10 +92,8 @@ object TTSUtils {
                 val val1 = inputShorts[index1].toInt()
                 val val2 = inputShorts[index2].toInt()
                 
-                // Linear Interpolation
                 var mixed = (val1 + fraction * (val2 - val1)).roundToInt()
                 
-                // --- CLAMPING TO PREVENT CRACKLING ---
                 if (mixed > 32767) mixed = 32767
                 if (mixed < -32768) mixed = -32768
                 

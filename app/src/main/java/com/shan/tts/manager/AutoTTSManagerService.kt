@@ -42,7 +42,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created (Smart Mode).")
+        AppLogger.log("Service Created (DEBUG MODE).")
         
         try {
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
@@ -88,13 +88,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        // Direct Stop Logic
+        AppLogger.log(">>> onStop() CALLED - Stopping synthesis")
         isStopped.set(true)
         currentTask?.cancel(true)
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        AppLogger.log(">>> NEW REQUEST: '${text.take(20)}...'")
         
         isStopped.set(false)
         currentTask?.cancel(true)
@@ -109,7 +110,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
-                // Fixed Rate 24000 Hz
                 val sessionRate = 24000 
                 
                 synchronized(callback) {
@@ -121,7 +121,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var lastPitch = -1.0f
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    if (isStopped.get() || Thread.currentThread().isInterrupted) break
+                    if (isStopped.get()) {
+                        AppLogger.log("ABORTING Chunk $index: Service Stopped")
+                        break
+                    }
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
@@ -133,7 +136,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                             engine.setSpeechRate(rateMultiplier)
                             engine.setPitch(pitchMultiplier)
                         } catch (e: Exception) {}
-                        
                         lastEngine = engine
                         lastRate = rateMultiplier
                         lastPitch = pitchMultiplier
@@ -144,25 +146,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, balanceVolume)
 
                     var engineRate = configPrefs.getInt("RATE_$activePkg", 0)
-                    if (engineRate < 8000) {
-                         val lowerPkg = activePkg.lowercase(Locale.ROOT)
-                         engineRate = when {
-                             lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
-                             lowerPkg.contains("eloquence") -> 11025
-                             lowerPkg.contains("myanmar") -> 16000
-                             else -> 24000
-                         }
-                    }
+                    if (engineRate < 8000) engineRate = 24000 // Fallback
 
-                    // Using Smart Detection Logic
-                    processPipeWithSmartScanner(engine, engineRate, sessionRate, params, chunk.text, callback)
+                    AppLogger.log("Synthesizing Chunk $index [${chunk.lang}]: Pkg=$activePkg Rate=$engineRate")
+                    processPipeWithDebug(engine, engineRate, sessionRate, params, chunk.text, callback)
                 }
-            } catch (e: InterruptedException) {
             } catch (e: Exception) {
                 AppLogger.error("Synthesis Loop Error", e)
             } finally {
                 if (!isStopped.get()) {
                     callback?.done()
+                    AppLogger.log("<<< REQUEST FINISHED")
                 }
             }
         }
@@ -217,8 +211,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         return 1.0f 
     }
     
-    // --- SMART SCANNER: Header ပါမှ ဖြတ်မည်၊ မပါရင် မဖြတ်ပါ ---
-    private fun processPipeWithSmartScanner(engine: TextToSpeech, engineRate: Int, sessionRate: Int, params: Bundle, text: String, callback: SynthesisCallback) {
+    private fun processPipeWithDebug(engine: TextToSpeech, engineRate: Int, sessionRate: Int, params: Bundle, text: String, callback: SynthesisCallback) {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -240,8 +233,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val buffer = ByteArray(8192)
                     var leftoverByte: Byte? = null
-                    var isHeaderProcessed = false
-                    var skipBytes = 0
+                    var isFirstRead = true
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         
@@ -253,74 +245,35 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         val readAmount = fis.read(buffer, offset, buffer.size - offset)
-                        if (readAmount == -1) break
+                        if (readAmount == -1) {
+                            AppLogger.log("Pipe: EOF reached")
+                            break
+                        }
                         
                         var totalBytes = readAmount + offset
                         
-                        // --- SMART HEADER DETECTION ---
-                        if (!isHeaderProcessed && totalBytes > 12) {
-                            // RIFF Header ပါမပါ စစ်ဆေးခြင်း
-                            val isWav = buffer[0] == 'R'.toByte() && 
-                                        buffer[1] == 'I'.toByte() && 
-                                        buffer[2] == 'F'.toByte() && 
-                                        buffer[3] == 'F'.toByte()
-                            
-                            if (isWav) {
-                                // RIFF တွေ့လျှင် "data" စာသားကို ရှာပြီး Header ဖြတ်မည်
-                                var foundData = -1
-                                for (i in 0 until (totalBytes - 4)) {
-                                    if (buffer[i] == 'd'.toByte() && 
-                                        buffer[i+1] == 'a'.toByte() && 
-                                        buffer[i+2] == 't'.toByte() && 
-                                        buffer[i+3] == 'a'.toByte()) {
-                                        foundData = i
-                                        break
-                                    }
-                                }
-                                
-                                if (foundData != -1) {
-                                    skipBytes = foundData + 8
-                                    AppLogger.log("SmartScanner: Header FOUND and SKIPPED ($skipBytes bytes)")
-                                } else {
-                                    // RIFF ပါပြီး data မတွေ့ရင် အနည်းဆုံး 44 တော့ ဖြတ်လိုက်တာ စိတ်ချရတယ်
-                                    skipBytes = 44 
-                                }
-                            } else {
-                                // RIFF မတွေ့ရင် Raw Audio မို့လို့ လုံးဝမဖြတ်ပါ
-                                skipBytes = 0
-                                // AppLogger.log("SmartScanner: Raw Audio Detected (NO SKIP)")
-                            }
-                            isHeaderProcessed = true
+                        // --- DEBUG LOGGING ---
+                        if (isFirstRead && totalBytes > 0) {
+                            val hexDump = TTSUtils.bytesToHex(buffer, totalBytes)
+                            AppLogger.log("PIPE FIRST READ ($totalBytes bytes): $hexDump")
+                            // 52 49 46 46 = RIFF
+                            // 64 61 74 61 = data
+                            isFirstRead = false
                         }
+                        // ---------------------
                         
-                        // Skipping Logic
-                        var startIndex = 0
-                        if (skipBytes > 0) {
-                            if (totalBytes >= skipBytes) {
-                                startIndex = skipBytes
-                                skipBytes = 0 
-                            } else {
-                                skipBytes -= totalBytes
-                                startIndex = totalBytes 
-                            }
-                        }
-                        
-                        val validLength = totalBytes - startIndex
-                        
-                        if (validLength > 0) {
-                             // Byte Alignment
-                             if (validLength % 2 != 0) {
-                                 leftoverByte = buffer[startIndex + validLength - 1]
+                        if (totalBytes > 0) {
+                             if (totalBytes % 2 != 0) {
+                                 leftoverByte = buffer[totalBytes - 1]
+                                 totalBytes -= 1
                              }
                              
-                             val processLen = if (validLength % 2 != 0) validLength - 1 else validLength
-                             
-                             if (processLen > 0) {
-                                 val pcmData = ByteArray(processLen)
-                                 System.arraycopy(buffer, startIndex, pcmData, 0, processLen)
+                             if (totalBytes > 0) {
+                                 val pcmData = ByteArray(totalBytes)
+                                 System.arraycopy(buffer, 0, pcmData, 0, totalBytes)
 
                                  val finalAudio = if (engineRate != sessionRate) {
-                                     TTSUtils.resample(pcmData, processLen, engineRate, sessionRate)
+                                     TTSUtils.resample(pcmData, totalBytes, engineRate, sessionRate)
                                  } else {
                                      pcmData
                                  }
@@ -343,7 +296,10 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
             if (localWriteFd != null) {
-                engine.synthesizeToFile(text, params, localWriteFd, uuid)
+                val res = engine.synthesizeToFile(text, params, localWriteFd, uuid)
+                if (res != TextToSpeech.SUCCESS) {
+                    AppLogger.error("synthesizeToFile FAILED for text: $text")
+                }
             }
             
             try { localWriteFd?.close() } catch(e:Exception){}
