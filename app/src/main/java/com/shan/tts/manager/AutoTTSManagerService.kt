@@ -113,7 +113,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
-                // Fixed Master Rate 24000 Hz for stability
+                // Fixed Master Rate 24000 Hz
                 val sessionRate = 24000 
                 AppLogger.log("Processing ${chunks.size} chunks at $sessionRate Hz")
 
@@ -142,7 +142,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         lastEngine = engine
                         lastRate = rateMultiplier
                         lastPitch = pitchMultiplier
-                        // REMOVED: Thread.sleep here caused latency/skipping
                     }
                     
                     val params = Bundle()
@@ -160,7 +159,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
 
-                    // AppLogger.log("Chunk $index: $engineRate Hz -> $sessionRate Hz")
                     processPipeWithResample(engine, engineRate, sessionRate, params, chunk.text, callback)
                 }
             } catch (e: Exception) {
@@ -241,28 +239,48 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try {
                     val fd = finalReadFd.fileDescriptor
                     fis = FileInputStream(fd)
-                    // INCREASED BUFFER SIZE (4096 -> 8192) for smoother playback
-                    val buffer = ByteArray(8192)
+                    val buffer = ByteArray(8192) // Increased buffer size
                     var bytesRead: Int
                     
+                    // --- CRITICAL FIX: BYTE ALIGNMENT STORAGE ---
+                    var leftoverByte: Byte? = null
+                    
                     while (!isStopped.get()) {
-                        bytesRead = fis.read(buffer)
-                        if (bytesRead == -1) break
+                        // Check if we have a leftover byte from previous loop
+                        var offset = 0
+                        if (leftoverByte != null) {
+                            buffer[0] = leftoverByte!!
+                            leftoverByte = null
+                            offset = 1
+                        }
+
+                        // Read into buffer starting from offset
+                        val readAmount = fis.read(buffer, offset, buffer.size - offset)
+                        if (readAmount == -1) break
                         
-                        if (bytesRead > 0) {
-                             val finalAudio = if (engineRate != sessionRate) {
-                                 TTSUtils.resample(buffer, bytesRead, engineRate, sessionRate)
-                             } else {
-                                 buffer.copyOfRange(0, bytesRead)
-                             }
-                             
-                             synchronized(callback) {
-                                 try {
-                                     callback.audioAvailable(finalAudio, 0, finalAudio.size)
-                                 } catch (e: Exception) { 
-                                     // Callback closed is normal
+                        var totalBytes = readAmount + offset
+                        
+                        // Check if total bytes is Odd (Bad for PCM-16)
+                        if (totalBytes > 0) {
+                            if (totalBytes % 2 != 0) {
+                                // Save the last byte for next time
+                                leftoverByte = buffer[totalBytes - 1]
+                                totalBytes -= 1
+                            }
+
+                            if (totalBytes > 0) {
+                                 val finalAudio = if (engineRate != sessionRate) {
+                                     TTSUtils.resample(buffer, totalBytes, engineRate, sessionRate)
+                                 } else {
+                                     buffer.copyOfRange(0, totalBytes)
                                  }
-                             }
+                                 
+                                 synchronized(callback) {
+                                     try {
+                                         callback.audioAvailable(finalAudio, 0, finalAudio.size)
+                                     } catch (e: Exception) { }
+                                 }
+                            }
                         }
                     }
                 } catch (e: IOException) {
@@ -281,7 +299,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             try { localWriteFd?.close() } catch(e:Exception){}
             
             try {
-                // Wait for audio processing to finish before moving to next chunk
                 readerFuture.get()
             } catch (e: Exception) { }
 

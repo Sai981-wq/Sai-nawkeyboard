@@ -56,13 +56,12 @@ object LanguageUtils {
 }
 
 object TTSUtils {
-    // Fixed Resampler with Anti-Crackling Logic (Clamping)
     fun resample(input: ByteArray, inputLength: Int, inRate: Int, outRate: Int): ByteArray {
         if (inRate == outRate) return input.copyOfRange(0, inputLength)
         
         val shortCount = inputLength / 2
         val inputShorts = ShortArray(shortCount)
-        // Convert Bytes to Shorts
+        
         for (i in 0 until shortCount) {
             val b1 = input[i * 2].toInt() and 0xFF
             val b2 = input[i * 2 + 1].toInt() shl 8
@@ -82,11 +81,11 @@ object TTSUtils {
             if (index2 < shortCount) {
                 val val1 = inputShorts[index1].toInt()
                 val val2 = inputShorts[index2].toInt()
+                
                 // Linear Interpolation
                 var mixed = (val1 + fraction * (val2 - val1)).roundToInt()
                 
-                // --- CRITICAL FIX: CLAMPING ---
-                // Prevents integer overflow which causes "Crackling" noise
+                // --- CLAMPING TO PREVENT CRACKLING ---
                 if (mixed > 32767) mixed = 32767
                 if (mixed < -32768) mixed = -32768
                 
@@ -96,7 +95,6 @@ object TTSUtils {
             }
         }
 
-        // Convert Shorts back to Bytes
         val outputBytes = ByteArray(outputLen * 2)
         for (i in 0 until outputLen) {
             val s = outputShorts[i].toInt()
