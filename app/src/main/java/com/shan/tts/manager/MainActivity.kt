@@ -33,8 +33,7 @@ class MainActivity : AppCompatActivity() {
         setupDonation(R.id.btnKpay, "09750091817", "KBZ Pay Number Copied")
         setupDonation(R.id.btnWave, "09750091817", "Wave Pay Number Copied")
 
-        setupLogTrigger()
-        
+        // Auto Scan on startup
         performEngineScan()
     }
 
@@ -51,40 +50,35 @@ class MainActivity : AppCompatActivity() {
             onComplete = {
                 runOnUiThread {
                     progress.dismiss()
-                    Toast.makeText(this, "Engine Scan Complete", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Scan Complete", Toast.LENGTH_SHORT).show()
                 }
             }
         )
     }
-
-    private fun setupLogTrigger() {
-        val btnLogs = findViewById<View>(resources.getIdentifier("btnLogs", "id", packageName))
-        btnLogs?.setOnClickListener {
-            openLogViewer()
-        }
-
-        val btnKpay = findViewById<View>(R.id.btnKpay)
-        btnKpay?.setOnLongClickListener {
-            Toast.makeText(this, "Opening Debug Logs...", Toast.LENGTH_SHORT).show()
-            openLogViewer()
-            true
-        }
-    }
-
-    private fun openLogViewer() {
-        try {
-            startActivity(Intent(this, LogViewerActivity::class.java))
-        } catch (e: Exception) {
-            Toast.makeText(this, "Log Activity not found!", Toast.LENGTH_SHORT).show()
-        }
-    }
     
     private fun setupDonation(viewId: Int, number: String, msg: String) {
-        findViewById<View>(viewId).setOnClickListener {
+        val btn = findViewById<View>(viewId)
+        
+        // Single Click to Copy
+        btn?.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText("Donation Number", number)
             clipboard.setPrimaryClip(clip)
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+
+        // Long Click to Open Logs (KBZ Pay Only or both)
+        if (viewId == R.id.btnKpay) {
+            btn?.setOnLongClickListener {
+                try {
+                    val intent = Intent(this, LogViewerActivity::class.java)
+                    startActivity(intent)
+                    Toast.makeText(this, "Opening Logs...", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Error opening logs: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+                true
+            }
         }
     }
 

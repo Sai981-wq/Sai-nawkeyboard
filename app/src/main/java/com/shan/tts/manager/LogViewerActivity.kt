@@ -15,6 +15,7 @@ class LogViewerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Programmatic UI (No XML needed)
         val scrollView = ScrollView(this)
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -24,7 +25,10 @@ class LogViewerActivity : AppCompatActivity() {
         val btnRefresh = Button(this).apply { text = "Refresh Log" }
         val btnCopy = Button(this).apply { text = "Copy All Logs" }
         val btnClear = Button(this).apply { text = "Clear Logs" }
-        val tvLogs = TextView(this).apply { textSize = 14f }
+        val tvLogs = TextView(this).apply { 
+            textSize = 14f 
+            setTextIsSelectable(true)
+        }
 
         layout.addView(btnRefresh)
         layout.addView(btnCopy)
@@ -35,6 +39,8 @@ class LogViewerActivity : AppCompatActivity() {
 
         fun refresh() {
             tvLogs.text = AppLogger.getAllLogs()
+            // Auto scroll to bottom
+            scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
         }
 
         btnRefresh.setOnClickListener { refresh() }
