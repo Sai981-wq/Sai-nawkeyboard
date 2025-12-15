@@ -10,9 +10,16 @@ import java.io.RandomAccessFile
 object EngineScanner {
 
     fun scanAllEngines(context: Context, onProgress: (String) -> Unit, onComplete: () -> Unit) {
-        val intent = Intent(TextToSpeech.Engine.Service.Intent.INTENT_ACTION_TTS_SERVICE)
-        val engines = context.packageManager.queryIntentServices(intent, 0).map { it.serviceInfo.packageName }
+        AppLogger.log("Starting Engine Scan...")
         
+        // --- FIX: Correct Intent Action ---
+        val intent = Intent("android.intent.action.TTS_SERVICE")
+        
+        val resolveInfos = context.packageManager.queryIntentServices(intent, 0)
+        val engines = resolveInfos.map { it.serviceInfo.packageName }
+        
+        AppLogger.log("Found ${engines.size} engines: $engines")
+
         if (engines.isEmpty()) {
             onComplete()
             return
@@ -23,31 +30,37 @@ object EngineScanner {
 
     private fun scanRecursive(context: Context, engines: List<String>, index: Int, onProgress: (String) -> Unit, onComplete: () -> Unit) {
         if (index >= engines.size) {
+            AppLogger.log("Scan Finished.")
             onComplete()
             return
         }
 
         val pkgName = engines[index]
-        onProgress("Scanning: $pkgName")
+        val msg = "Scanning ($index/${engines.size}): $pkgName"
+        onProgress(msg)
+        AppLogger.log(msg)
 
         var tts: TextToSpeech? = null
         
         val onNext = {
-            tts?.shutdown()
+            try { tts?.shutdown() } catch(e: Exception){}
             scanRecursive(context, engines, index + 1, onProgress, onComplete)
         }
 
         try {
             tts = TextToSpeech(context, { status ->
                 if (status == TextToSpeech.SUCCESS) {
+                    AppLogger.log("Bound to $pkgName. Detecting rate...")
                     detectAndSaveRate(context, tts!!, pkgName)
                     onNext()
                 } else {
+                    AppLogger.error("Failed to bind to $pkgName")
                     saveFallback(context, pkgName)
                     onNext()
                 }
             }, pkgName)
         } catch (e: Exception) {
+            AppLogger.error("Exception binding to $pkgName", e)
             saveFallback(context, pkgName)
             onNext()
         }
@@ -73,18 +86,22 @@ object EngineScanner {
                 while (!tempFile.exists() || tempFile.length() < 44) {
                     try { Thread.sleep(50) } catch (e: Exception) {}
                     waits++
-                    if (waits > 40) { // 2 seconds timeout per engine
+                    if (waits > 40) { 
+                        AppLogger.log("Timeout waiting for audio from $pkgName")
                         saveFallback(context, pkgName)
                         return
                     }
                 }
                 
                 val rate = readWavSampleRate(tempFile)
+                AppLogger.log("Detected Rate for $pkgName: $rate Hz")
                 saveRate(context, pkgName, rate)
             } else {
+                AppLogger.log("Synthesis failed for $pkgName")
                 saveFallback(context, pkgName)
             }
         } catch (e: Exception) {
+            AppLogger.error("Error detecting rate for $pkgName", e)
             saveFallback(context, pkgName)
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
@@ -115,6 +132,8 @@ object EngineScanner {
 
     private fun saveFallback(context: Context, pkg: String) {
         val rate = if (pkg.contains("espeak") || pkg.contains("shan")) 22050 else 24000
+        AppLogger.log("Using fallback rate $rate Hz for $pkg")
         saveRate(context, pkg, rate)
     }
 }
+
