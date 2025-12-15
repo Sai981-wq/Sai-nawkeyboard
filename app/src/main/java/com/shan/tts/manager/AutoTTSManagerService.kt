@@ -36,13 +36,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
+    private val stateLock = Any() // Thread Safety အတွက် Lock
     
     private lateinit var configPrefs: SharedPreferences
     private lateinit var settingsPrefs: SharedPreferences
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created. Starting initialization...")
+        AppLogger.log("Service Created.")
         
         try {
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
@@ -70,7 +71,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun initEngine(pkg: String?, onSuccess: (TextToSpeech) -> Unit) {
         if (pkg.isNullOrEmpty()) return
         try {
-            AppLogger.log("Initializing Engine: $pkg")
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
@@ -81,8 +81,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         override fun onError(id: String?) {}
                     })
                     AppLogger.log("Engine Ready: $pkg")
-                } else {
-                    AppLogger.error("Engine Init Failed: $pkg (Status: $status)")
                 }
             }, pkg)
         } catch (e: Exception) {
@@ -90,25 +88,27 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    override fun onStop() { 
-        isStopped.set(true)
-        currentTask?.cancel(true)
-        AppLogger.log("Service Stopped (onStop called)")
+    override fun onStop() {
+        // System က တကယ်ရပ်ခိုင်းမှသာ ဒီကောင်အလုပ်လုပ်မယ်
+        synchronized(stateLock) {
+            isStopped.set(true)
+            currentTask?.cancel(true)
+        }
+        AppLogger.log("Service Stopped (System Request)")
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        // AppLogger.log(">>> REQUEST START: '${text.take(20)}...'")
         
-        onStop() 
-        isStopped.set(false)
+        // Internal Reset: Don't call onStop() here to avoid log spam and confusion
+        synchronized(stateLock) {
+            currentTask?.cancel(true) // Cancel previous task quietly
+            isStopped.set(false)      // Reset flag for new task
+        }
 
         currentTask = controllerExecutor.submit {
             try {
-                if (callback == null) {
-                    AppLogger.log("Callback is null, aborting.")
-                    return@submit
-                }
+                if (callback == null) return@submit
 
                 val chunks = LanguageUtils.splitHelper(text) 
                 if (chunks.isEmpty()) {
@@ -129,7 +129,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                          lowerPkg.contains("myanmar") -> 16000
                          else -> 24000
                      }
-                     AppLogger.log("Fallback Master Rate: $sessionRate Hz (Source: $firstPkg)")
+                     AppLogger.log("Fallback Master Rate: $sessionRate Hz")
                 }
 
                 synchronized(callback) {
@@ -141,10 +141,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var lastPitch = -1.0f
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    if (isStopped.get()) {
-                        AppLogger.log("Process aborted by Stop signal.")
-                        break
-                    }
+                    if (isStopped.get()) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
@@ -155,10 +152,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         try {
                             engine.setSpeechRate(rateMultiplier)
                             engine.setPitch(pitchMultiplier)
-                            // AppLogger.log("Config Change [$activePkg]: Rate=$rateMultiplier, Pitch=$pitchMultiplier")
-                        } catch (e: Exception) {
-                            AppLogger.error("Error setting Rate/Pitch for $activePkg", e)
-                        }
+                        } catch (e: Exception) {}
                         
                         lastEngine = engine
                         lastRate = rateMultiplier
@@ -181,14 +175,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
 
+                    // Resample Logic ကို ပြန်သုံးထားသည်
                     processPipeWithResample(engine, engineRate, sessionRate, params, chunk.text, callback)
                 }
             } catch (e: Exception) {
-                AppLogger.error("CRITICAL: Synthesis Loop Error", e)
+                AppLogger.error("Synthesis Loop Error", e)
             } finally {
                 if (!isStopped.get()) {
                     callback?.done()
-                    // AppLogger.log("<<< REQUEST DONE")
                 }
             }
         }
@@ -216,9 +210,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     pitchSeekbar = settingsPrefs.getInt("pitch_english", 50)
                 }
             }
-        } catch (e: Exception) {
-            AppLogger.error("Error reading prefs for $lang", e)
-        }
+        } catch (e: Exception) {}
         
         var userRate = rateSeekbar / 50.0f
         var userPitch = pitchSeekbar / 50.0f
@@ -272,6 +264,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         if (bytesRead == -1) break
                         
                         if (bytesRead > 0) {
+                             // --- RESAMPLING LOGIC HERE ---
                              val finalAudio = if (engineRate != sessionRate) {
                                  TTSUtils.resample(buffer, bytesRead, engineRate, sessionRate)
                              } else {
@@ -281,16 +274,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                              synchronized(callback) {
                                  try {
                                      callback.audioAvailable(finalAudio, 0, finalAudio.size)
-                                 } catch (e: Exception) {
-                                     // callback closed is normal during quick stops
-                                 }
+                                 } catch (e: Exception) { }
                              }
                         }
                     }
                 } catch (e: IOException) {
-                    if (!isStopped.get()) AppLogger.error("Pipe Read IO Error", e)
                 } catch (e: Exception) {
-                    AppLogger.error("General Pipe Error", e)
+                    AppLogger.error("Pipe Error", e)
                 } finally {
                     try { fis?.close() } catch(e:Exception){}
                     try { finalReadFd.close() } catch(e:Exception){}
@@ -300,7 +290,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (localWriteFd != null) {
                 val result = engine.synthesizeToFile(text, params, localWriteFd, uuid)
                 if (result != TextToSpeech.SUCCESS) {
-                    AppLogger.log("Engine synthesizeToFile failed")
+                    AppLogger.log("synthesizeToFile failed")
                 }
             }
             

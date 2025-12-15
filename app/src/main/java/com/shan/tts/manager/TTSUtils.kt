@@ -54,7 +54,7 @@ object LanguageUtils {
 }
 
 object TTSUtils {
-    // ဤ Resample Function သည် Hz မတူသော Engine များကို ညှိပေးရန် မရှိမဖြစ်လိုအပ်ပါသည်
+    // Hz ညှိပေးမည့် Function (Linear Interpolation)
     fun resample(input: ByteArray, inputLength: Int, inRate: Int, outRate: Int): ByteArray {
         if (inRate == outRate) return input.copyOfRange(0, inputLength)
         
