@@ -239,14 +239,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try {
                     val fd = finalReadFd.fileDescriptor
                     fis = FileInputStream(fd)
-                    val buffer = ByteArray(8192) // Increased buffer size
+                    
+                    // --- STEP 1: SKIP WAV HEADER (44 BYTES) ---
+                    // This is the key fix for the crackling noise!
+                    val headerBuffer = ByteArray(44)
+                    var bytesSkipped = 0
+                    while (bytesSkipped < 44 && !isStopped.get()) {
+                        val count = fis.read(headerBuffer, 0, 44 - bytesSkipped)
+                        if (count == -1) break
+                        bytesSkipped += count
+                    }
+                    
+                    // --- STEP 2: PROCESS RAW PCM ---
+                    val buffer = ByteArray(8192)
+                    var leftoverByte: Byte? = null
                     var bytesRead: Int
                     
-                    // --- CRITICAL FIX: BYTE ALIGNMENT STORAGE ---
-                    var leftoverByte: Byte? = null
-                    
                     while (!isStopped.get()) {
-                        // Check if we have a leftover byte from previous loop
                         var offset = 0
                         if (leftoverByte != null) {
                             buffer[0] = leftoverByte!!
@@ -254,16 +263,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                             offset = 1
                         }
 
-                        // Read into buffer starting from offset
                         val readAmount = fis.read(buffer, offset, buffer.size - offset)
                         if (readAmount == -1) break
                         
                         var totalBytes = readAmount + offset
                         
-                        // Check if total bytes is Odd (Bad for PCM-16)
                         if (totalBytes > 0) {
                             if (totalBytes % 2 != 0) {
-                                // Save the last byte for next time
                                 leftoverByte = buffer[totalBytes - 1]
                                 totalBytes -= 1
                             }
