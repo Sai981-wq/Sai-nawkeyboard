@@ -12,6 +12,7 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import java.io.FileInputStream
+import java.io.IOException
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -36,7 +37,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
     
-    // --- ဒီစာကြောင်း (၂) ကြောင်း မပါရင် Error တက်ပါမယ် ---
+    // We keep track of FDs but we DO NOT close them in onStop anymore to prevent EBADF
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
@@ -87,20 +88,18 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() { 
+        // CRITICAL FIX: Just flag it. Do NOT close FDs here.
+        // Closing FDs here causes "EBADF" (Bad File Descriptor) crashes in the reader thread.
         isStopped.set(true)
         currentTask?.cancel(true)
-        try { activeReadFd?.close() } catch (e: Exception) {}
-        try { activeWriteFd?.close() } catch (e: Exception) {}
-        activeReadFd = null
-        activeWriteFd = null
         AppLogger.log("Service Stopped")
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        AppLogger.log(">>> NEW REQUEST: ${text.take(30)}...")
+        // AppLogger.log(">>> NEW REQUEST: ${text.take(30)}...")
         
-        onStop() 
+        onStop() // Ensure previous task is cancelled
         isStopped.set(false)
 
         currentTask = controllerExecutor.submit {
@@ -113,18 +112,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
-                AppLogger.log("Split text into ${chunks.size} chunks.")
-
+                // Determine Session Master Rate
                 val firstLang = chunks[0].lang
                 val firstPkg = getPkgName(firstLang)
                 
                 var sessionRate = configPrefs.getInt("RATE_$firstPkg", 0)
                 
+                // Safety fix for Saomai or Unknown engines
                 if (sessionRate < 8000) {
-                     sessionRate = if (firstPkg.lowercase().contains("espeak")) 22050 else 24000
-                     AppLogger.log("WARNING: Master rate was 0. Forced to $sessionRate Hz based on $firstPkg")
-                } else {
-                    AppLogger.log("Session Master Rate set to: $sessionRate Hz (from $firstPkg)")
+                     val lowerPkg = firstPkg.lowercase(Locale.ROOT)
+                     sessionRate = when {
+                         lowerPkg.contains("espeak") -> 22050
+                         lowerPkg.contains("shan") -> 22050
+                         lowerPkg.contains("eloquence") -> 11025
+                         lowerPkg.contains("myanmar") -> 24000 // Saomai usually 24k
+                         else -> 24000
+                     }
+                     AppLogger.log("Master rate fallback to $sessionRate Hz for $firstPkg")
                 }
 
                 synchronized(callback) {
@@ -149,8 +153,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         lastEngine = engine
                         lastRate = rateMultiplier
                         lastPitch = pitchMultiplier
-                        try { Thread.sleep(10) } catch(e:Exception){}
-                        AppLogger.log("Switched Config -> Engine: $activePkg | Rate: $rateMultiplier | Pitch: $pitchMultiplier")
+                        try { Thread.sleep(5) } catch(e:Exception){}
                     }
                     
                     val params = Bundle()
@@ -159,11 +162,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     var engineRate = configPrefs.getInt("RATE_$activePkg", 0)
                     if (engineRate < 8000) {
-                        engineRate = if (activePkg.lowercase().contains("espeak") || activePkg.lowercase().contains("shan")) 22050 else 24000
-                        AppLogger.log("Correction: $activePkg rate forced to $engineRate Hz")
+                        val lowerPkg = activePkg.lowercase(Locale.ROOT)
+                        engineRate = when {
+                             lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
+                             lowerPkg.contains("eloquence") -> 11025
+                             else -> 24000
+                        }
                     }
                     
-                    AppLogger.log("Processing Chunk $index: [${chunk.lang}] Rate: ${engineRate}Hz -> Master: ${sessionRate}Hz")
+                    // AppLogger.log("Processing Chunk $index: [${chunk.lang}] Rate: ${engineRate}Hz -> Master: ${sessionRate}Hz")
                     processDirectPipe(engine, engineRate, params, chunk.text, callback, sessionRate)
                 }
             } catch (e: Exception) {
@@ -171,7 +178,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             } finally {
                 if (!isStopped.get()) {
                     callback?.done()
-                    AppLogger.log("<<< REQUEST DONE")
+                    // AppLogger.log("<<< REQUEST DONE")
                 }
             }
         }
@@ -232,24 +239,32 @@ class AutoTTSManagerService : TextToSpeechService() {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
+        var localReadFd: ParcelFileDescriptor? = null
+        var localWriteFd: ParcelFileDescriptor? = null
+
         try {
             val pipe = ParcelFileDescriptor.createPipe()
-            activeReadFd = pipe[0]
-            activeWriteFd = pipe[1]
+            localReadFd = pipe[0]
+            localWriteFd = pipe[1]
+            
+            // Assign to globals for reference, but don't depend on them for logic
+            activeReadFd = localReadFd
+            activeWriteFd = localWriteFd
 
             val readerFuture = pipeExecutor.submit {
+                var fis: FileInputStream? = null
                 try {
-                    val fd = activeReadFd?.fileDescriptor ?: return@submit
-                    val fis = FileInputStream(fd)
+                    val fd = localReadFd.fileDescriptor
+                    fis = FileInputStream(fd)
                     val buffer = ByteArray(4096)
                     var bytesRead: Int
-                    var totalBytes = 0
                     
-                    while (fis.read(buffer).also { bytesRead = it } != -1) {
-                         if (isStopped.get()) break
-                         
-                         if (bytesRead > 0) {
-                             totalBytes += bytesRead
+                    // Loop check isStopped.get() to exit cleanly
+                    while (!isStopped.get()) {
+                        bytesRead = fis.read(buffer)
+                        if (bytesRead == -1) break
+                        
+                        if (bytesRead > 0) {
                              val finalAudio = if (engineRate != sessionRate) {
                                  TTSUtils.resample(buffer, bytesRead, engineRate, sessionRate)
                              } else {
@@ -260,33 +275,45 @@ class AutoTTSManagerService : TextToSpeechService() {
                                  try {
                                      callback.audioAvailable(finalAudio, 0, finalAudio.size)
                                  } catch (e: Exception) {
-                                     AppLogger.error("Audio Write Error", e)
+                                     // callback might be closed, normal during stop
                                  }
                              }
-                         }
+                        }
                     }
-                    fis.close()
+                } catch (e: IOException) {
+                    // Ignore "Bad file descriptor" during stop, it's expected
+                    if (!isStopped.get()) {
+                        AppLogger.error("Pipe Read Error", e)
+                    }
                 } catch (e: Exception) {
-                    AppLogger.error("Pipe Reader Error", e)
+                    AppLogger.error("General Pipe Error", e)
+                } finally {
+                    try { fis?.close() } catch(e:Exception){}
+                    try { localReadFd.close() } catch(e:Exception){}
                 }
             }
 
-            val targetFd = activeWriteFd
-            if (targetFd != null) {
-                val result = engine.synthesizeToFile(text, params, targetFd, uuid)
-                if (result != TextToSpeech.SUCCESS) {
-                     AppLogger.error("Engine synthesizeToFile Failed!")
-                }
+            // Write side
+            if (localWriteFd != null) {
+                engine.synthesizeToFile(text, params, localWriteFd, uuid)
             }
-            try { activeWriteFd?.close(); activeWriteFd = null } catch(e:Exception){}
-
-            readerFuture.get() 
+            
+            // Close write end to signal EOF to reader
+            try { localWriteFd?.close() } catch(e:Exception){}
+            
+            // Wait for reader to finish
+            try {
+                readerFuture.get()
+            } catch (e: Exception) {
+                // Interrupted during stop is normal
+            }
 
         } catch (e: Exception) {
             AppLogger.error("Pipe Setup Exception", e)
         } finally {
-            try { activeReadFd?.close() } catch (e: Exception) {}
-            try { activeWriteFd?.close() } catch (e: Exception) {}
+            // Ensure FDs are closed if something went wrong
+            try { localReadFd?.close() } catch (e: Exception) {}
+            try { localWriteFd?.close() } catch (e: Exception) {}
         }
     }
     
