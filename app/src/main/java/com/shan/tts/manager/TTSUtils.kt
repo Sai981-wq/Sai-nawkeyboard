@@ -1,7 +1,5 @@
 package com.shan.tts.manager
 
-import kotlin.math.roundToInt
-
 object LanguageUtils {
      private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
      private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
@@ -52,64 +50,6 @@ object LanguageUtils {
             list.add(LangChunk(currentBuffer.toString(), finalLang))
         }
         return list
-    }
-}
-
-object TTSUtils {
-    // Debug အတွက် Hex String ပြောင်းပေးမည့် Function
-    fun bytesToHex(bytes: ByteArray, length: Int): String {
-        val sb = StringBuilder()
-        val limit = if (length > 64) 64 else length // ပထမ ၆၄ လုံးပဲပြမယ်
-        for (i in 0 until limit) {
-            sb.append(String.format("%02X ", bytes[i]))
-        }
-        return sb.toString()
-    }
-
-    fun resample(input: ByteArray, inputLength: Int, inRate: Int, outRate: Int): ByteArray {
-        if (inRate == outRate) return input.copyOfRange(0, inputLength)
-        
-        val shortCount = inputLength / 2
-        val inputShorts = ShortArray(shortCount)
-        
-        for (i in 0 until shortCount) {
-            val b1 = input[i * 2].toInt() and 0xFF
-            val b2 = input[i * 2 + 1].toInt() shl 8
-            inputShorts[i] = (b1 or b2).toShort()
-        }
-
-        val outputLen = (shortCount.toLong() * outRate / inRate).toInt()
-        val outputShorts = ShortArray(outputLen)
-        val ratio = inRate.toDouble() / outRate.toDouble()
-        
-        for (i in 0 until outputLen) {
-            val exactPos = i * ratio
-            val index1 = exactPos.toInt()
-            val index2 = index1 + 1
-            val fraction = exactPos - index1
-
-            if (index2 < shortCount) {
-                val val1 = inputShorts[index1].toInt()
-                val val2 = inputShorts[index2].toInt()
-                
-                var mixed = (val1 + fraction * (val2 - val1)).roundToInt()
-                
-                if (mixed > 32767) mixed = 32767
-                if (mixed < -32768) mixed = -32768
-                
-                outputShorts[i] = mixed.toShort()
-            } else if (index1 < shortCount) {
-                outputShorts[i] = inputShorts[index1]
-            }
-        }
-
-        val outputBytes = ByteArray(outputLen * 2)
-        for (i in 0 until outputLen) {
-            val s = outputShorts[i].toInt()
-            outputBytes[i * 2] = (s and 0xFF).toByte()
-            outputBytes[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
-        }
-        return outputBytes
     }
 }
 

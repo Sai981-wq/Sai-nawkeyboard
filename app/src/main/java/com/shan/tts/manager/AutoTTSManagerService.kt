@@ -42,7 +42,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created (DEBUG MODE).")
+        AppLogger.log("Service Created (Pure Native Mode - No Resampler).")
         
         try {
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
@@ -88,14 +88,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        AppLogger.log(">>> onStop() CALLED - Stopping synthesis")
         isStopped.set(true)
         currentTask?.cancel(true)
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        AppLogger.log(">>> NEW REQUEST: '${text.take(20)}...'")
         
         isStopped.set(false)
         currentTask?.cancel(true)
@@ -110,8 +108,24 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
-                val sessionRate = 24000 
+                // Native Rate Strategy:
+                // ပထမဆုံး Chunk ရဲ့ Rate ကိုပဲ အဓိက Rate အဖြစ်သုံးမယ်။
+                val firstLang = chunks[0].lang
+                val firstPkg = getPkgName(firstLang)
+                var sessionRate = configPrefs.getInt("RATE_$firstPkg", 0)
                 
+                if (sessionRate < 8000) {
+                     val lowerPkg = firstPkg.lowercase(Locale.ROOT)
+                     sessionRate = when {
+                         lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
+                         lowerPkg.contains("eloquence") -> 11025
+                         lowerPkg.contains("myanmar") -> 16000
+                         else -> 24000
+                     }
+                }
+                
+                AppLogger.log("Native Session: $sessionRate Hz")
+
                 synchronized(callback) {
                     callback.start(sessionRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
@@ -121,10 +135,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var lastPitch = -1.0f
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    if (isStopped.get()) {
-                        AppLogger.log("ABORTING Chunk $index: Service Stopped")
-                        break
-                    }
+                    if (isStopped.get() || Thread.currentThread().isInterrupted) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
@@ -145,18 +156,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val balanceVolume = getVolumeCorrection(activePkg)
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, balanceVolume)
 
-                    var engineRate = configPrefs.getInt("RATE_$activePkg", 0)
-                    if (engineRate < 8000) engineRate = 24000 // Fallback
-
-                    AppLogger.log("Synthesizing Chunk $index [${chunk.lang}]: Pkg=$activePkg Rate=$engineRate")
-                    processPipeWithDebug(engine, engineRate, sessionRate, params, chunk.text, callback)
+                    // Resampler မရှိတော့သည့်အတွက် engineRate က sessionRate ဖြစ်သွားပါပြီ
+                    processPipeDirect(engine, sessionRate, params, chunk.text, callback)
                 }
+            } catch (e: InterruptedException) {
             } catch (e: Exception) {
                 AppLogger.error("Synthesis Loop Error", e)
             } finally {
                 if (!isStopped.get()) {
                     callback?.done()
-                    AppLogger.log("<<< REQUEST FINISHED")
                 }
             }
         }
@@ -211,7 +219,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         return 1.0f 
     }
     
-    private fun processPipeWithDebug(engine: TextToSpeech, engineRate: Int, sessionRate: Int, params: Bundle, text: String, callback: SynthesisCallback) {
+    // --- DIRECT PIPE (No Resample, No Header Skip) ---
+    private fun processPipeDirect(engine: TextToSpeech, sessionRate: Int, params: Bundle, text: String, callback: SynthesisCallback) {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -233,7 +242,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val buffer = ByteArray(8192)
                     var leftoverByte: Byte? = null
-                    var isFirstRead = true
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         
@@ -245,43 +253,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         val readAmount = fis.read(buffer, offset, buffer.size - offset)
-                        if (readAmount == -1) {
-                            AppLogger.log("Pipe: EOF reached")
-                            break
-                        }
+                        if (readAmount == -1) break
                         
                         var totalBytes = readAmount + offset
-                        
-                        // --- DEBUG LOGGING ---
-                        if (isFirstRead && totalBytes > 0) {
-                            val hexDump = TTSUtils.bytesToHex(buffer, totalBytes)
-                            AppLogger.log("PIPE FIRST READ ($totalBytes bytes): $hexDump")
-                            // 52 49 46 46 = RIFF
-                            // 64 61 74 61 = data
-                            isFirstRead = false
-                        }
-                        // ---------------------
                         
                         if (totalBytes > 0) {
                              if (totalBytes % 2 != 0) {
                                  leftoverByte = buffer[totalBytes - 1]
-                                 totalBytes -= 1
                              }
                              
-                             if (totalBytes > 0) {
-                                 val pcmData = ByteArray(totalBytes)
-                                 System.arraycopy(buffer, 0, pcmData, 0, totalBytes)
-
-                                 val finalAudio = if (engineRate != sessionRate) {
-                                     TTSUtils.resample(pcmData, totalBytes, engineRate, sessionRate)
-                                 } else {
-                                     pcmData
-                                 }
-                                 
+                             val processLen = if (totalBytes % 2 != 0) totalBytes - 1 else totalBytes
+                             
+                             if (processLen > 0) {
+                                 // DIRECT COPY ONLY (No Resampler Call)
                                  synchronized(callback) {
-                                     try {
-                                         callback.audioAvailable(finalAudio, 0, finalAudio.size)
-                                     } catch (e: Exception) { }
+                                     val pcmData = ByteArray(processLen)
+                                     System.arraycopy(buffer, 0, pcmData, 0, processLen)
+                                     try { callback.audioAvailable(pcmData, 0, pcmData.size) } catch (e: Exception) {}
                                  }
                              }
                         }
@@ -296,10 +284,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
             if (localWriteFd != null) {
-                val res = engine.synthesizeToFile(text, params, localWriteFd, uuid)
-                if (res != TextToSpeech.SUCCESS) {
-                    AppLogger.error("synthesizeToFile FAILED for text: $text")
-                }
+                engine.synthesizeToFile(text, params, localWriteFd, uuid)
             }
             
             try { localWriteFd?.close() } catch(e:Exception){}
