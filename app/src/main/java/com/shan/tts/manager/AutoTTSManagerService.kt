@@ -1,6 +1,7 @@
 package com.shan.tts.manager
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
@@ -38,14 +39,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     @Volatile private var activeReadFd: ParcelFileDescriptor? = null
     @Volatile private var activeWriteFd: ParcelFileDescriptor? = null
     
-    private val rateCache = HashMap<String, Int>()
-    
-    // MASTER RATE (All audio will be converted to this)
-    private val MASTER_SAMPLE_RATE = 24000
+    private lateinit var configPrefs: SharedPreferences
     
     override fun onCreate() {
         super.onCreate()
         val prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
         
         shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
         initEngine(shanPkgName) { shanEngine = it }
@@ -104,9 +103,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
-                // Start ONE session with Master Rate
+                // --- INSTANT LOAD (No Probing) ---
+                val firstLang = chunks[0].lang
+                val firstPkg = getPkgName(firstLang)
+                
+                // Direct lookup from SharedPreferences
+                var sessionRate = configPrefs.getInt("RATE_$firstPkg", 0)
+                
+                // Fallback only if scan was never run
+                if (sessionRate == 0) {
+                    sessionRate = if (firstPkg.contains("espeak")) 22050 else 24000
+                }
+
                 synchronized(callback) {
-                    callback.start(MASTER_SAMPLE_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback.start(sessionRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
                 var lastEngine: TextToSpeech? = null
@@ -117,9 +127,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (isStopped.get()) break
                     
                     val engine = getEngine(chunk.lang) ?: continue
-                    var activePkg = englishPkgName
-                    if (engine === shanEngine) activePkg = shanPkgName
-                    else if (engine === burmeseEngine) activePkg = burmesePkgName
+                    val activePkg = getPkgName(chunk.lang)
                     
                     val (rateMultiplier, pitchMultiplier) = getRateAndPitch(chunk.lang, request)
                     
@@ -136,12 +144,24 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val balanceVolume = getVolumeCorrection(activePkg)
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, balanceVolume)
                     
-                    processDirectPipe(engine, activePkg, chunk.text, params, callback)
+                    // Retrieve stored rate for this specific engine
+                    var engineRate = configPrefs.getInt("RATE_$activePkg", 0)
+                    if (engineRate == 0) engineRate = if (activePkg.contains("espeak")) 22050 else 24000
+                    
+                    processDirectPipe(engine, engineRate, params, chunk.text, callback, sessionRate)
                 }
             } catch (e: Exception) {
             } finally {
                 if (!isStopped.get()) callback?.done()
             }
+        }
+    }
+    
+    private fun getPkgName(lang: String): String {
+        return when (lang) {
+            "SHAN" -> shanPkgName
+            "MYANMAR" -> burmesePkgName
+            else -> englishPkgName
         }
     }
     
@@ -187,7 +207,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         return Pair(sysRate * userRate, sysPitch * userPitch)
     }
 
-    private fun processDirectPipe(engine: TextToSpeech, pkgName: String, text: String, params: Bundle, callback: SynthesisCallback) {
+    private fun processDirectPipe(engine: TextToSpeech, engineRate: Int, params: Bundle, text: String, callback: SynthesisCallback, sessionRate: Int) {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -200,13 +220,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try {
                     val fd = activeReadFd?.fileDescriptor ?: return@submit
                     val fis = FileInputStream(fd)
-                    
-                    var engineRate = rateCache[pkgName] ?: 0
-                    if (engineRate == 0) {
-                        engineRate = TTSUtils.detectEngineSampleRate(engine, applicationContext, pkgName)
-                        rateCache[pkgName] = engineRate
-                    }
-
                     val buffer = ByteArray(4096)
                     var bytesRead: Int
                     
@@ -214,16 +227,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                          if (isStopped.get()) break
                          
                          if (bytesRead > 0) {
-                             // HERE IS THE MAGIC FIX: Resample everything to MASTER_SAMPLE_RATE (24000)
-                             // This prevents "freaking out" when mixing 22k and 24k engines
-                             val resampledAudio = TTSUtils.resample(buffer, bytesRead, engineRate, MASTER_SAMPLE_RATE)
+                             // Resample logic using PRE-KNOWLEDGE
+                             val finalAudio = if (engineRate != sessionRate) {
+                                 TTSUtils.resample(buffer, bytesRead, engineRate, sessionRate)
+                             } else {
+                                 buffer.copyOfRange(0, bytesRead)
+                             }
                              
-                             if (resampledAudio.isNotEmpty()) {
-                                 synchronized(callback) {
-                                     try {
-                                         callback.audioAvailable(resampledAudio, 0, resampledAudio.size)
-                                     } catch (e: Exception) {}
-                                 }
+                             synchronized(callback) {
+                                 try {
+                                     callback.audioAvailable(finalAudio, 0, finalAudio.size)
+                                 } catch (e: Exception) {}
                              }
                          }
                     }

@@ -1,5 +1,6 @@
 package com.shan.tts.manager
 
+import android.app.ProgressDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -33,6 +34,27 @@ class MainActivity : AppCompatActivity() {
         setupDonation(R.id.btnWave, "09750091817", "Wave Pay Number Copied")
 
         setupLogTrigger()
+        
+        performEngineScan()
+    }
+
+    private fun performEngineScan() {
+        val progress = ProgressDialog(this)
+        progress.setMessage("Scanning TTS Engines...")
+        progress.setCancelable(false)
+        progress.show()
+
+        EngineScanner.scanAllEngines(this, 
+            onProgress = { msg ->
+                runOnUiThread { progress.setMessage(msg) }
+            },
+            onComplete = {
+                runOnUiThread {
+                    progress.dismiss()
+                    Toast.makeText(this, "Engine Scan Complete", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
     }
 
     private fun setupLogTrigger() {
@@ -71,8 +93,8 @@ class MainActivity : AppCompatActivity() {
         val seekRate = findViewById<SeekBar>(rateId)
         val seekPitch = findViewById<SeekBar>(pitchId)
 
-        seekRate.progress = prefs.getInt(rateKey, 100)
-        seekPitch.progress = prefs.getInt(pitchKey, 100)
+        seekRate.progress = prefs.getInt(rateKey, 50)
+        seekPitch.progress = prefs.getInt(pitchKey, 50)
 
         seekRate.setOnSeekBarChangeListener(getSeekListener(rateKey))
         seekPitch.setOnSeekBarChangeListener(getSeekListener(pitchKey))
