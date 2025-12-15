@@ -12,20 +12,27 @@ import java.util.Locale
 object EngineScanner {
 
     fun scanAllEngines(context: Context, onProgress: (String) -> Unit, onComplete: () -> Unit) {
-        AppLogger.log("=== STARTING SILENT SYSTEM SCAN ===")
+        AppLogger.log("=== STARTING FULL SYSTEM SCAN ===")
         
-        val intent = Intent("android.intent.action.TTS_SERVICE")
-        val resolveInfos = context.packageManager.queryIntentServices(intent, 0)
-        
-        val engines = resolveInfos.map { it.serviceInfo.packageName }
-            .filter { it != context.packageName } // Exclude self
-        
-        if (engines.isEmpty()) {
-            onComplete()
-            return
-        }
+        try {
+            val intent = Intent("android.intent.action.TTS_SERVICE")
+            val resolveInfos = context.packageManager.queryIntentServices(intent, 0)
+            
+            val engines = resolveInfos.map { it.serviceInfo.packageName }
+                .filter { it != context.packageName }
+            
+            AppLogger.log("Detected ${engines.size} engines: $engines")
 
-        scanRecursive(context, engines, 0, onProgress, onComplete)
+            if (engines.isEmpty()) {
+                onComplete()
+                return
+            }
+
+            scanRecursive(context, engines, 0, onProgress, onComplete)
+        } catch (e: Exception) {
+            AppLogger.error("Failed to query intent services", e)
+            onComplete()
+        }
     }
 
     private fun scanRecursive(context: Context, engines: List<String>, index: Int, onProgress: (String) -> Unit, onComplete: () -> Unit) {
@@ -37,12 +44,11 @@ object EngineScanner {
 
         val pkgName = engines[index]
         onProgress("Analyzing Engine (${index + 1}/${engines.size}):\n$pkgName")
-        // AppLogger.log("Scanning: $pkgName")
 
         var tts: TextToSpeech? = null
         
         val onNext = {
-            try { tts?.shutdown() } catch(e: Exception){}
+            try { tts?.shutdown() } catch(e: Exception){ AppLogger.error("Shutdown error for $pkgName", e) }
             try { Thread.sleep(100) } catch(e:Exception){}
             scanRecursive(context, engines, index + 1, onProgress, onComplete)
         }
@@ -53,7 +59,7 @@ object EngineScanner {
                     detectAndSaveRate(context, tts!!, pkgName)
                     onNext()
                 } else {
-                    AppLogger.error("Failed to bind: $pkgName")
+                    AppLogger.error("Failed to bind: $pkgName (Status: $status)")
                     saveFallback(context, pkgName)
                     onNext()
                 }
@@ -69,7 +75,6 @@ object EngineScanner {
         val tempFile = File(context.cacheDir, "probe.wav")
         val uuid = "probe_${System.currentTimeMillis()}"
         
-        // --- SMART PROBE TEXT SELECTION ---
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         val probeText = when {
             lowerPkg.contains("myanmar") || lowerPkg.contains("saomai") -> "က"
@@ -77,6 +82,8 @@ object EngineScanner {
             else -> "Hello"
         }
         
+        AppLogger.log("Probing $pkgName with text: '$probeText'")
+
         try {
             if (tempFile.exists()) tempFile.delete()
             
@@ -86,9 +93,8 @@ object EngineScanner {
                 override fun onError(id: String?) {}
             })
 
-            // --- SILENT MODE PARAMETERS ---
             val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f) // Volume 0 (Silent)
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
 
             val result = tts.synthesizeToFile(probeText, params, tempFile, uuid)
             
@@ -97,13 +103,13 @@ object EngineScanner {
                 while (!tempFile.exists() || tempFile.length() < 44) {
                     try { Thread.sleep(50) } catch (e: Exception) {}
                     waits++
-                    if (waits > 60) { // 3 seconds timeout
+                    if (waits > 60) { 
+                        AppLogger.log("Timeout: No audio from $pkgName")
                         saveFallback(context, pkgName)
                         return
                     }
                 }
                 
-                // Wait slightly for file close
                 try { Thread.sleep(100) } catch(e:Exception){}
 
                 val rate = readWavSampleRate(tempFile)
@@ -111,12 +117,15 @@ object EngineScanner {
                     AppLogger.log("SUCCESS: $pkgName -> $rate Hz")
                     saveRate(context, pkgName, rate)
                 } else {
+                    AppLogger.log("FAILED: 0Hz from $pkgName")
                     saveFallback(context, pkgName)
                 }
             } else {
+                AppLogger.log("Synthesis command failed for $pkgName")
                 saveFallback(context, pkgName)
             }
         } catch (e: Exception) {
+            AppLogger.error("Error during probe for $pkgName", e)
             saveFallback(context, pkgName)
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
@@ -135,7 +144,10 @@ object EngineScanner {
                 return (byte1 and 0xFF) or ((byte2 and 0xFF) shl 8) or 
                        ((byte3 and 0xFF) shl 16) or ((byte4 and 0xFF) shl 24)
             }
-        } catch (e: Exception) { return 0 }
+        } catch (e: Exception) { 
+            AppLogger.error("WAV read error", e)
+            return 0 
+        }
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
@@ -151,9 +163,10 @@ object EngineScanner {
         val lower = pkg.lowercase(Locale.ROOT)
         if (lower.contains("espeak") || lower.contains("shan")) rate = 22050
         if (lower.contains("eloquence")) rate = 11025
-        if (lower.contains("nirenr")) rate = 16000 
+        if (lower.contains("nirenr") || lower.contains("talkman")) rate = 16000 
+        if (lower.contains("myanmar")) rate = 16000
         
-        AppLogger.log("Fallback: $pkg -> $rate Hz")
+        AppLogger.log("Fallback applied: $pkg -> $rate Hz")
         saveRate(context, pkg, rate)
     }
 }

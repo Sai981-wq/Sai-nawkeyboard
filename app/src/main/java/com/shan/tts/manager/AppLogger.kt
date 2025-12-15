@@ -19,12 +19,16 @@ object AppLogger {
 
     fun error(message: String, e: Exception? = null) {
         val timestamp = dateFormat.format(Date())
-        val finalMsg = if (e != null) {
-            "$timestamp [ERROR] : $message \n${Log.getStackTraceString(e)}"
-        } else {
-            "$timestamp [ERROR] : $message"
+        val sb = StringBuilder()
+        sb.append("$timestamp [ERROR] : $message")
+        
+        if (e != null) {
+            sb.append("\nExample Cause: ${e.message}")
+            sb.append("\nStack Trace:\n${Log.getStackTraceString(e)}")
         }
-        Log.e(TAG, message)
+        
+        val finalMsg = sb.toString()
+        Log.e(TAG, finalMsg)
         appendBuffer(finalMsg)
     }
 
