@@ -42,7 +42,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created (C++ Cubic Mode).")
+        AppLogger.log("Service Created (No Header Skip).")
         
         try {
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
@@ -98,7 +98,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        AppLogger.log("New Request: $text")
         
         isStopped.set(false)
         currentTask?.cancel(true)
@@ -154,10 +153,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
 
-                    AppLogger.log("Chunk $index: Lang=${chunk.lang}, Pkg=$activePkg, Rate=$engineRate Hz")
-                    
                     AudioProcessor.initSonic(engineRate, 1)
-                    AudioProcessor.setConfig(1.0f, 1.0f)
+                    AudioProcessor.setConfig(1.0f, 1.0f) 
 
                     processPipeCpp(engine, params, chunk.text, callback)
                 }
@@ -214,7 +211,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private fun getVolumeCorrection(pkgName: String): Float {
         val lower = pkgName.lowercase(Locale.ROOT)
-        if (lower.contains("espeak") || lower.contains("shan")) return 0.6f 
+        // Volume 100% for Shan/eSpeak
+        if (lower.contains("espeak") || lower.contains("shan")) return 1.0f 
         if (lower.contains("vocalizer")) return 0.85f
         if (lower.contains("eloquence")) return 0.5f
         return 1.0f 
@@ -242,8 +240,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     val buffer = ByteArray(4096)
                     var leftoverByte: Byte? = null
-                    var isHeaderProcessed = false
-                    var skipBytes = 0
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         
@@ -259,53 +255,21 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         var totalBytes = readAmount + offset
                         
-                        if (!isHeaderProcessed && totalBytes > 12) {
-                            val isRiff = buffer[0] == 'R'.toByte() && buffer[1] == 'I'.toByte() && buffer[2] == 'F'.toByte()
-                            val isBlank = buffer[0] == 0.toByte() && buffer[1] == 0.toByte() && buffer[2] == 0.toByte() && buffer[3] == 0.toByte()
-                            
-                            if (isRiff) {
-                                var foundData = -1
-                                for (i in 0 until (totalBytes - 4)) {
-                                    if (buffer[i] == 'd'.toByte() && buffer[i+1] == 'a'.toByte() && buffer[i+2] == 't'.toByte() && buffer[i+3] == 'a'.toByte()) {
-                                        foundData = i
-                                        break
-                                    }
-                                }
-                                skipBytes = if (foundData != -1) foundData + 8 else 44
-                                AppLogger.log("Skipping RIFF: $skipBytes bytes")
-                            } 
-                            else if (isBlank) {
-                                skipBytes = 44
-                                AppLogger.log("Skipping BLANK: 44 bytes")
-                            } 
-                            isHeaderProcessed = true
-                        }
+                        // --- HEADER SKIP LOGIC REMOVED ---
+                        // Data အကုန်လုံးကို ယူသုံးမည်
                         
-                        var startIndex = 0
-                        if (skipBytes > 0) {
-                            if (totalBytes >= skipBytes) {
-                                startIndex = skipBytes
-                                skipBytes = 0 
-                            } else {
-                                skipBytes -= totalBytes
-                                startIndex = totalBytes 
-                            }
-                        }
-                        
-                        val validLength = totalBytes - startIndex
-                        
-                        if (validLength > 0) {
-                             if (validLength % 2 != 0) {
-                                 leftoverByte = buffer[startIndex + validLength - 1]
+                        if (totalBytes > 0) {
+                             if (totalBytes % 2 != 0) {
+                                 leftoverByte = buffer[totalBytes - 1]
+                                 totalBytes -= 1
                              }
                              
-                             val processLen = if (validLength % 2 != 0) validLength - 1 else validLength
-                             
-                             if (processLen > 0) {
-                                 val pcmData = ByteArray(processLen)
-                                 System.arraycopy(buffer, startIndex, pcmData, 0, processLen)
+                             if (totalBytes > 0) {
+                                 val pcmData = ByteArray(totalBytes)
+                                 System.arraycopy(buffer, 0, pcmData, 0, totalBytes)
                                  
-                                 val processed = AudioProcessor.processAudio(pcmData, processLen)
+                                 // C++ Processing (Sonic Bypass active if rate=1.0)
+                                 val processed = AudioProcessor.processAudio(pcmData, totalBytes)
                                  
                                  if (processed.isNotEmpty()) {
                                      synchronized(callback) {
