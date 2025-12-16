@@ -1,101 +1,116 @@
 #include <jni.h>
 #include <stdlib.h>
 #include <vector>
-#include <string.h> 
 #include <android/log.h>
 #include "sonic.h"
 
-#define LOG_TAG "AutoTTS_Native"
+#define LOG_TAG "CherryTTS_Monitor"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 class CherrySonicProcessor {
 public:
     sonicStream stream;
-    std::vector<short> sonicOutputBuffer;
-    std::vector<short> finalOutputBuffer;
-    int inputRate;
-    int targetRate = 24000;
-    short lastSample = 0; 
-    double resampleTimePos = 0.0; 
+    std::vector<short> sonicBuffer;
+    std::vector<short> outputBuffer;
+    int inRate;
+    int outRate = 24000;
+    short lastS = 0; 
+    double timePos = 0.0; 
 
     CherrySonicProcessor(int sampleRate, int channels) {
-        inputRate = sampleRate;
-        stream = sonicCreateStream(inputRate, channels);
+        inRate = sampleRate;
+        stream = sonicCreateStream(inRate, channels);
         sonicSetQuality(stream, 0);
         sonicSetVolume(stream, 1.0f);
-        LOGI("INIT: In=%d, Out=%d", inputRate, targetRate);
+        LOGI("Native Init: %dHz -> %dHz", inRate, outRate);
     }
 
-    ~CherrySonicProcessor() {
-        if (stream != NULL) sonicDestroyStream(stream);
+    ~CherrySonicProcessor() { 
+        if (stream) sonicDestroyStream(stream); 
     }
 
-    void resampleData(short* input, int inputCount) {
-        finalOutputBuffer.clear();
-        if (inputCount <= 0) return;
-        if (inputRate == targetRate) {
-            finalOutputBuffer.assign(input, input + inputCount);
+    void resample(short* in, int inCount) {
+        outputBuffer.clear();
+        if (inCount <= 0) return;
+        
+        if (inRate == outRate) {
+            outputBuffer.assign(in, in + inCount);
             return;
         }
-        double step = (double)inputRate / (double)targetRate;
+        
+        double step = (double)inRate / outRate;
+        int estimatedOut = (int)((inCount - timePos) / step) + 2;
+        if (outputBuffer.capacity() < estimatedOut) outputBuffer.reserve(estimatedOut);
+        outputBuffer.resize(estimatedOut);
+        
+        short* outPtr = outputBuffer.data();
+        int genCount = 0;
+        
         while (true) {
-            int index = (int)resampleTimePos;
-            if (index >= inputCount) {
-                resampleTimePos -= inputCount; 
-                lastSample = input[inputCount - 1];
+            int idx = (int)timePos;
+            if (idx >= inCount) {
+                timePos -= inCount;
+                lastS = in[inCount - 1];
                 break;
             }
-            double frac = resampleTimePos - index;
-            short s1 = (index == 0) ? lastSample : input[index - 1];
-            short s2 = input[index];
+            
+            double frac = timePos - idx;
+            short s1 = (idx == 0) ? lastS : in[idx - 1];
+            short s2 = in[idx];
+            
             int val = s1 + (int)((s2 - s1) * frac);
             if (val > 32767) val = 32767;
-            if (val < -32768) val = -32768;
-            finalOutputBuffer.push_back((short)val);
-            resampleTimePos += step;
+            else if (val < -32768) val = -32768;
+            
+            outPtr[genCount++] = (short)val;
+            timePos += step;
         }
+        outputBuffer.resize(genCount);
     }
 };
 
-static CherrySonicProcessor* globalProcessor = NULL;
+static CherrySonicProcessor* proc = NULL;
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint sampleRate, jint channels) {
-    if (globalProcessor != NULL) {
-        if (globalProcessor->inputRate == sampleRate) return;
-        delete globalProcessor;
-    }
-    globalProcessor = new CherrySonicProcessor(sampleRate, channels);
+Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint rate, jint ch) {
+    if (proc && proc->inRate == rate) return;
+    if (proc) delete proc;
+    proc = new CherrySonicProcessor(rate, ch);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat speed, jfloat pitch) {
-    if (globalProcessor != NULL) {
-        sonicSetSpeed(globalProcessor->stream, speed);
-        sonicSetPitch(globalProcessor->stream, pitch);
+Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat s, jfloat p) {
+    if (proc) { 
+        sonicSetSpeed(proc->stream, s); 
+        sonicSetPitch(proc->stream, p); 
     }
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray input, jint len) {
-    if (globalProcessor == NULL || len <= 0) return env->NewByteArray(0);
-    jbyte* bufferPtr = env->GetByteArrayElements(input, NULL);
-    short* inputShorts = (short*)bufferPtr;
-    int inputShortsCount = len / 2;
-    sonicWriteShortToStream(globalProcessor->stream, inputShorts, inputShortsCount);
-    env->ReleaseByteArrayElements(input, bufferPtr, 0);
-    int available = sonicSamplesAvailable(globalProcessor->stream);
-    if (available > 0) {
-        globalProcessor->sonicOutputBuffer.resize(available);
-        int readSamples = sonicReadShortFromStream(globalProcessor->stream, globalProcessor->sonicOutputBuffer.data(), available);
-        if (readSamples > 0) {
-            globalProcessor->resampleData(globalProcessor->sonicOutputBuffer.data(), readSamples);
-            int finalCount = globalProcessor->finalOutputBuffer.size();
-            LOGI("TRACE: In=%d, SonicOut=%d, Resampled=%d", inputShortsCount, readSamples, finalCount);
-            if (finalCount > 0) {
-                jbyteArray result = env->NewByteArray(finalCount * 2);
-                env->SetByteArrayRegion(result, 0, finalCount * 2, (jbyte*)globalProcessor->finalOutputBuffer.data());
-                return result;
+Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray in, jint len) {
+    if (!proc || len <= 0) return env->NewByteArray(0);
+    
+    jbyte* ptr = env->GetByteArrayElements(in, NULL);
+    sonicWriteShortToStream(proc->stream, (short*)ptr, len / 2);
+    env->ReleaseByteArrayElements(in, ptr, JNI_ABORT);
+
+    int avail = sonicSamplesAvailable(proc->stream);
+    if (avail > 0) {
+        if (proc->sonicBuffer.size() < avail) proc->sonicBuffer.resize(avail);
+        int read = sonicReadShortFromStream(proc->stream, proc->sonicBuffer.data(), avail);
+        
+        if (read > 0) {
+            proc->resample(proc->sonicBuffer.data(), read);
+            int outSz = proc->outputBuffer.size();
+            
+            // Log every chunk will spam, uncomment only if needed for debugging stutter
+            // LOGI("Native Trace: InBytes=%d, OutShorts=%d", len, outSz);
+
+            if (outSz > 0) {
+                jbyteArray res = env->NewByteArray(outSz * 2);
+                env->SetByteArrayRegion(res, 0, outSz * 2, (jbyte*)proc->outputBuffer.data());
+                return res;
             }
         }
     }
@@ -104,11 +119,11 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
-    if (globalProcessor != NULL) {
-        sonicFlushStream(globalProcessor->stream);
-        globalProcessor->lastSample = 0;
-        globalProcessor->resampleTimePos = 0.0;
-        LOGI("FLUSHED");
+    if (proc) { 
+        sonicFlushStream(proc->stream); 
+        proc->lastS = 0; 
+        proc->timePos = 0.0; 
+        LOGI("Native Flush: State Reset");
     }
 }
 
