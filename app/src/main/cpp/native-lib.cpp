@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <vector>
 #include <android/log.h>
+#include <mutex> // For Thread Safety
 #include "sonic.h"
 
 #define TAG "AutoTTS_JNI"
@@ -9,6 +10,10 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 #define TARGET_RATE 24000
+
+// --- GLOBAL MUTEX (LOCK) ---
+// ဒါက function တွေ တစ်ပြိုင်နက်အလုပ်လုပ်ပြီး တိုက်မိတာကို ကာကွယ်ပေးပါမယ်
+std::mutex processorMutex;
 
 class CherrySonicProcessor {
 public:
@@ -26,7 +31,7 @@ public:
         sonicSetQuality(stream, 0);
         sonicSetVolume(stream, 1.0f);
         outputBuffer.reserve(16384);
-        LOGI("Created Processor: In=%d, Out=%d", inRate, outRate);
+        LOGI("Created Processor: In=%d", inRate);
     }
 
     ~CherrySonicProcessor() {
@@ -92,13 +97,16 @@ static CherrySonicProcessor* proc = NULL;
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint rate, jint ch) {
+    // LOCK GUARD: ဒီ function ပြီးမှ တခြားလူ ဝင်ရမယ်
+    std::lock_guard<std::mutex> lock(processorMutex);
+    
     if (proc) {
         if (proc->inRate == rate) {
             sonicFlushStream(proc->stream);
             proc->p0 = 0; proc->p1 = 0;
             proc->timePos = 0.0;
             proc->clear();
-            LOGI("Reusing Processor for rate: %d", rate);
+            LOGI("Reusing Processor");
             return;
         }
         delete proc;
@@ -108,6 +116,7 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint ra
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat s, jfloat p) {
+    std::lock_guard<std::mutex> lock(processorMutex); // LOCK
     if (proc) {
         sonicSetSpeed(proc->stream, s);
         sonicSetPitch(proc->stream, p);
@@ -116,6 +125,9 @@ Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat 
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray in, jint len) {
+    // LOCK GUARD IS CRITICAL HERE
+    std::lock_guard<std::mutex> lock(processorMutex); 
+    
     if (!proc || len <= 0) return env->NewByteArray(0);
 
     void* primitive = env->GetPrimitiveArrayCritical(in, 0);
@@ -144,6 +156,7 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
+    std::lock_guard<std::mutex> lock(processorMutex); // LOCK
     if (proc) {
         LOGI("Flushing Stream");
         sonicFlushStream(proc->stream);
