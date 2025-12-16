@@ -32,17 +32,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
     
     private val controllerExecutor = Executors.newSingleThreadExecutor()
-    // Using CachedThreadPool can cause thread overload if many rapid stops happen.
-    // Using SingleThreadExecutor for Pipe ensures sequential processing.
-    private val pipeExecutor = Executors.newSingleThreadExecutor()
+    private val pipeExecutor = Executors.newCachedThreadPool()
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
     
     private lateinit var settingsPrefs: SharedPreferences
     
-    // MASTER FIXED RATE
-    private val MASTER_HZ = 16000
+    private val OUTPUT_HZ = 16000
     
     override fun onCreate() {
         super.onCreate()
@@ -64,8 +61,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 englishEngine = it 
             }
             
-            // Pre-init to avoid null checks
-            AudioProcessor.initSonic(MASTER_HZ, 1)
+            AudioProcessor.initSonic(16000, 1)
         } catch (e: Exception) { e.printStackTrace() }
     }
 
@@ -88,8 +84,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        
-        // HARD RESET: Stop everything immediately
         stopEverything()
         isStopped.set(false)
 
@@ -103,14 +97,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
                 
                 synchronized(callback) {
-                    callback.start(MASTER_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
                 for (chunk in rawChunks) {
                     if (isStopped.get()) break
                     
                     var effectiveLang = chunk.lang
-                    // Thai/Shan Fix
                     if ((effectiveLang == "ENGLISH" || effectiveLang == "ENG") && containsThaiOrShanChar(chunk.text)) {
                         effectiveLang = "SHAN"
                     }
@@ -132,20 +125,17 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     AudioProcessor.setConfig(1.0f, 1.0f)
                     
-                    // Blocking call to process audio
                     processPipeCpp(engine, params, chunk.text, callback, uuid)
                 }
             } catch (e: Exception) { e.printStackTrace()
-            } finally { 
-                if (!isStopped.get()) callback?.done() 
-            }
+            } finally { if (!isStopped.get()) callback?.done() }
         }
     }
 
     private fun stopEverything() {
         isStopped.set(true)
         currentTask?.cancel(true)
-        AudioProcessor.flush() // Native reset immediately
+        AudioProcessor.flush()
     }
 
     private fun containsThaiOrShanChar(text: String): Boolean {
@@ -159,10 +149,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val sysRate = (request?.speechRate ?: 100) / 100.0f
         val sysPitch = (request?.pitch ?: 100) / 100.0f
-        // Default multipliers
-        var uR = 1.0f
-        var uP = 1.0f
-        // Logic for prefs can be added here if needed, keeping it simple for now
+        var rS = 50; var pS = 50
+        try {
+            when(lang) {
+                "SHAN" -> { rS = settingsPrefs.getInt("rate_shan", 50); pS = settingsPrefs.getInt("pitch_shan", 50) }
+                "MYANMAR" -> { rS = settingsPrefs.getInt("rate_burmese", 50); pS = settingsPrefs.getInt("pitch_burmese", 50) }
+                else -> { rS = settingsPrefs.getInt("rate_english", 50); pS = settingsPrefs.getInt("pitch_english", 50) }
+            }
+        } catch (e: Exception) {}
+        var uR = rS / 50.0f; var uP = pS / 50.0f
+        if (uR < 0.2f) uR = 0.2f; if (uP < 0.2f) uP = 0.2f
         return Pair(sysRate * uR, sysPitch * uP)
     }
 
@@ -186,42 +182,34 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             val pipe = ParcelFileDescriptor.createPipe(); lR = pipe[0]; lW = pipe[1]
             val fR = lR
-            
-            // Using a Future to wait for completion
             val readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
                     fis = FileInputStream(fR.fileDescriptor)
-                    
-                    // HEADER DETECTION (CRITICAL for Rate Sync)
                     val headerBuf = ByteArray(44)
-                    var headerRead = 0
-                    while (headerRead < 44 && !isStopped.get()) {
-                        val r = fis.read(headerBuf, headerRead, 44 - headerRead)
+                    var headerBytesRead = 0
+                    while (headerBytesRead < 44 && !isStopped.get()) {
+                        val r = fis.read(headerBuf, headerBytesRead, 44 - headerBytesRead)
                         if (r == -1) break
-                        headerRead += r
+                        headerBytesRead += r
                     }
 
-                    if (headerRead == 44) {
-                        val detectedRate = ByteBuffer.wrap(headerBuf, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
-                        if (detectedRate > 0) {
-                            // Ensure Clean State for new Stream
-                            AudioProcessor.flush() 
-                            AudioProcessor.initSonic(detectedRate, 1)
+                    if (headerBytesRead == 44) {
+                        val realSampleRate = ByteBuffer.wrap(headerBuf, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                        if (realSampleRate > 0) {
+                             AudioProcessor.flush()
+                             AudioProcessor.initSonic(realSampleRate, 1) 
                         }
 
-                        // AUDIO BODY PROCESSING
                         val buffer = ByteArray(4096)
-                        var leftover: Byte? = null
+                        var leftoverByte: Byte? = null
                         
                         while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
-                            
-                            // Align leftover byte
                             var offset = 0
-                            if (leftover != null) {
-                                buffer[0] = leftover!!
+                            if (leftoverByte != null) {
+                                buffer[0] = leftoverByte!!
                                 offset = 1
-                                leftover = null
+                                leftoverByte = null
                             }
 
                             val read = fis.read(buffer, offset, buffer.size - offset)
@@ -229,11 +217,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                             
                             if (read > 0) {
                                 var totalLen = read + offset
-                                
-                                // Ensure even length
                                 if (totalLen % 2 != 0) {
-                                    leftover = buffer[totalLen - 1]
-                                    totalLen--
+                                    leftoverByte = buffer[totalLen - 1]
+                                    totalLen-- 
                                 }
                                 
                                 if (totalLen > 0) {
@@ -250,13 +236,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                 } catch (e: IOException) { 
                 } finally { fis?.close(); fR?.close() }
             }
-            
             engine.synthesizeToFile(text, params, lW!!, uuid)
             try { lW?.close() } catch(e:Exception){}
-            
-            // Wait for reader to finish or stop
             try { readerFuture.get() } catch (e: Exception) { }
-            
         } catch (e: Exception) { lR?.close(); lW?.close() }
     }
     
@@ -272,8 +254,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onDestroy() { 
         stopEverything()
-        controllerExecutor.shutdownNow()
-        pipeExecutor.shutdownNow()
+        controllerExecutor.shutdownNow(); pipeExecutor.shutdownNow()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
         super.onDestroy()
     }
