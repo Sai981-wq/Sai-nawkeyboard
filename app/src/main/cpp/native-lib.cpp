@@ -1,168 +1,77 @@
 #include <jni.h>
-#include <stdlib.h>
 #include <vector>
-#include <android/log.h>
-#include <mutex> // For Thread Safety
 #include "sonic.h"
 
-#define TAG "AutoTTS_JNI"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
-
-#define TARGET_RATE 24000
-
-// --- GLOBAL MUTEX (LOCK) ---
-// ဒါက function တွေ တစ်ပြိုင်နက်အလုပ်လုပ်ပြီး တိုက်မိတာကို ကာကွယ်ပေးပါမယ်
-std::mutex processorMutex;
-
-class CherrySonicProcessor {
+// Simple Processor Class
+class Processor {
 public:
     sonicStream stream;
-    std::vector<short> outputBuffer;
-    int inRate;
-    int outRate = TARGET_RATE;
+    std::vector<short> buffer;
+    int inputRate;
 
-    short p0 = 0, p1 = 0;
-    double timePos = 0.0;
-
-    CherrySonicProcessor(int sampleRate, int channels) {
-        inRate = sampleRate;
-        stream = sonicCreateStream(inRate, channels);
+    Processor(int inRate, int outRate, int ch) {
+        inputRate = inRate;
+        stream = sonicCreateStream(inRate, ch);
         sonicSetQuality(stream, 0);
-        sonicSetVolume(stream, 1.0f);
-        outputBuffer.reserve(16384);
-        LOGI("Created Processor: In=%d", inRate);
+        // Use sonicSetRate to resample (Change playback rate)
+        sonicSetRate(stream, (float)outRate / inRate); 
     }
-
-    ~CherrySonicProcessor() {
-        if (stream) sonicDestroyStream(stream);
-        LOGI("Destroyed Processor");
+    
+    ~Processor() { 
+        if(stream) sonicDestroyStream(stream); 
     }
-
-    inline short cubic(short y0, short y1, short y2, short y3, double mu) {
-        double mu2 = mu * mu;
-        double a0 = -0.5*y0 + 1.5*y1 - 1.5*y2 + 0.5*y3;
-        double a1 = y0 - 2.5*y1 + 2.0*y2 - 0.5*y3;
-        double a2 = -0.5*y0 + 0.5*y2;
-        double a3 = y1;
-        double res = a0*mu*mu2 + a1*mu2 + a2*mu + a3;
-        if (res > 32767) return 32767;
-        if (res < -32768) return -32768;
-        return (short)res;
-    }
-
-    void resample(short* in, int inCount) {
-        if (inCount <= 0) return;
-
-        if (inRate == outRate) {
-            int oldSize = outputBuffer.size();
-            outputBuffer.resize(oldSize + inCount);
-            memcpy(outputBuffer.data() + oldSize, in, inCount * sizeof(short));
-            return;
-        }
-
-        double step = (double)inRate / outRate;
-        int needed = (int)(inCount / step) + 5;
-        int startIdx = outputBuffer.size();
-        outputBuffer.resize(startIdx + needed);
-
-        short* outPtr = outputBuffer.data() + startIdx;
-        int produced = 0;
-
-        for (int i = 0; i < needed; i++) {
-            int idx = (int)timePos;
-            if (idx >= inCount - 2) {
-                if (inCount >= 2) { p0 = in[inCount-2]; p1 = in[inCount-1]; }
-                else if (inCount == 1) { p0 = p1; p1 = in[0]; }
-                timePos -= idx;
-                break;
-            }
-
-            double frac = timePos - idx;
-            short y0 = (idx == 0) ? p1 : in[idx - 1];
-            short y1 = in[idx];
-            short y2 = in[idx + 1];
-            short y3 = (idx + 2 < inCount) ? in[idx + 2] : in[idx + 1];
-
-            outPtr[produced++] = cubic(y0, y1, y2, y3, frac);
-            timePos += step;
-        }
-        outputBuffer.resize(startIdx + produced);
-    }
-
-    void clear() { outputBuffer.clear(); }
 };
 
-static CherrySonicProcessor* proc = NULL;
+// Global pointer - simpler than a map and safer for this use case
+static Processor* currentProc = nullptr;
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint rate, jint ch) {
-    // LOCK GUARD: ဒီ function ပြီးမှ တခြားလူ ဝင်ရမယ်
-    std::lock_guard<std::mutex> lock(processorMutex);
-    
-    if (proc) {
-        if (proc->inRate == rate) {
-            sonicFlushStream(proc->stream);
-            proc->p0 = 0; proc->p1 = 0;
-            proc->timePos = 0.0;
-            proc->clear();
-            LOGI("Reusing Processor");
+Java_com_shan_tts_manager_AudioProcessor_createProcessor(JNIEnv*, jobject, jint inRate, jint outRate, jint ch) {
+    // Only recreate if the rate has changed or it doesn't exist
+    if (currentProc) {
+        if (currentProc->inputRate == inRate) {
+            // Reuse existing processor, just flush it
+            sonicFlushStream(currentProc->stream);
             return;
         }
-        delete proc;
+        delete currentProc;
     }
-    proc = new CherrySonicProcessor(rate, ch);
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat s, jfloat p) {
-    std::lock_guard<std::mutex> lock(processorMutex); // LOCK
-    if (proc) {
-        sonicSetSpeed(proc->stream, s);
-        sonicSetPitch(proc->stream, p);
-    }
+    currentProc = new Processor(inRate, outRate, ch);
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray in, jint len) {
-    // LOCK GUARD IS CRITICAL HERE
-    std::lock_guard<std::mutex> lock(processorMutex); 
+Java_com_shan_tts_manager_AudioProcessor_process(JNIEnv* env, jobject, jbyteArray in, jint len) {
+    if (!currentProc || len <= 0) return env->NewByteArray(0);
+
+    // Get input data
+    jbyte* data = env->GetByteArrayElements(in, nullptr);
     
-    if (!proc || len <= 0) return env->NewByteArray(0);
+    // Feed to Sonic
+    sonicWriteShortToStream(currentProc->stream, (short*)data, len / 2);
+    env->ReleaseByteArrayElements(in, data, 0);
 
-    void* primitive = env->GetPrimitiveArrayCritical(in, 0);
-    sonicWriteShortToStream(proc->stream, (short*)primitive, len / 2);
-    env->ReleasePrimitiveArrayCritical(in, primitive, 0);
+    // Check available data
+    int avail = sonicSamplesAvailable(currentProc->stream);
+    if (avail <= 0) return env->NewByteArray(0);
 
-    int avail = sonicSamplesAvailable(proc->stream);
-    if (avail > 0) {
-        static std::vector<short> tempBuf;
-        if (tempBuf.size() < avail) tempBuf.resize(avail);
-        int read = sonicReadShortFromStream(proc->stream, tempBuf.data(), avail);
-
-        if (read > 0) {
-            proc->clear();
-            proc->resample(tempBuf.data(), read);
-            int sz = proc->outputBuffer.size();
-            if (sz > 0) {
-                jbyteArray res = env->NewByteArray(sz * 2);
-                env->SetByteArrayRegion(res, 0, sz * 2, (jbyte*)proc->outputBuffer.data());
-                return res;
-            }
-        }
+    // Read from Sonic
+    if (currentProc->buffer.size() < avail) {
+        currentProc->buffer.resize(avail);
     }
-    return env->NewByteArray(0);
+    
+    int read = sonicReadShortFromStream(currentProc->stream, currentProc->buffer.data(), avail);
+    if (read <= 0) return env->NewByteArray(0);
+
+    // Return result
+    jbyteArray out = env->NewByteArray(read * 2);
+    env->SetByteArrayRegion(out, 0, read * 2, (jbyte*)currentProc->buffer.data());
+    return out;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(processorMutex); // LOCK
-    if (proc) {
-        LOGI("Flushing Stream");
-        sonicFlushStream(proc->stream);
-        proc->p0 = 0; proc->p1 = 0;
-        proc->timePos = 0.0;
-        proc->clear();
+    if (currentProc) {
+        sonicFlushStream(currentProc->stream);
     }
 }
 
