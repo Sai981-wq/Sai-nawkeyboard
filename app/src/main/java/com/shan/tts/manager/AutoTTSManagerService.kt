@@ -11,7 +11,6 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
-import android.util.Log // Added native Log for direct Logcat
 import java.io.FileInputStream
 import java.io.IOException
 import java.util.Locale
@@ -19,20 +18,6 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
-
-// Utility for Debug Logging
-object DebugLog {
-    private const val TAG = "CherryTTS_Debug"
-    fun d(msg: String) {
-        Log.d(TAG, msg)
-        // Also log to AppLogger if needed
-        // AppLogger.log(msg)
-    }
-    fun e(msg: String, e: Throwable?) {
-        Log.e(TAG, msg, e)
-        AppLogger.error(msg, e)
-    }
-}
 
 data class LangChunk(val text: String, val lang: String)
 
@@ -52,38 +37,35 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
     
-    @Volatile private var sonicHandle: Long = 0
+    private var sonicHandle: Long = 0
     
     private lateinit var configPrefs: SharedPreferences
     private lateinit var settingsPrefs: SharedPreferences
     
     override fun onCreate() {
         super.onCreate()
-        DebugLog.d("=== SERVICE CREATED ===")
+        AppLogger.log("Service Created (Stateful Resampler).")
         
         try {
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             
             shanPkgName = settingsPrefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
-            DebugLog.d("Initializing Shan Engine: $shanPkgName")
             initEngine(shanPkgName) { shanEngine = it }
             
             burmesePkgName = settingsPrefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
-            DebugLog.d("Initializing Burmese Engine: $burmesePkgName")
             initEngine(burmesePkgName) { 
                 burmeseEngine = it
                 it.language = Locale("my", "MM")
             }
             
             englishPkgName = settingsPrefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
-            DebugLog.d("Initializing English Engine: $englishPkgName")
             initEngine(englishPkgName) { 
                 englishEngine = it
                 it.language = Locale.US
             }
         } catch (e: Exception) {
-            DebugLog.e("Error in onCreate", e)
+            AppLogger.error("Error during onCreate", e)
         }
     }
 
@@ -99,30 +81,24 @@ class AutoTTSManagerService : TextToSpeechService() {
                         override fun onDone(id: String?) {}
                         override fun onError(id: String?) {}
                     })
-                    DebugLog.d("Engine BOUND Successfully: $pkg")
-                } else {
-                    DebugLog.d("Engine FAILED to Bind: $pkg (Status: $status)")
+                    AppLogger.log("Engine Ready: $pkg")
                 }
             }, pkg)
         } catch (e: Exception) {
-            DebugLog.e("Exception Init Engine: $pkg", e)
+            AppLogger.error("Exception Init Engine: $pkg", e)
         }
     }
 
     override fun onStop() {
-        DebugLog.d(">>> STOP REQUEST RECEIVED <<<")
         isStopped.set(true)
         currentTask?.cancel(true)
-        synchronized(this) {
-            if (sonicHandle != 0L) {
-                AudioProcessor.flush(sonicHandle)
-            }
+        if (sonicHandle != 0L) {
+            AudioProcessor.flush(sonicHandle)
         }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        DebugLog.d(">>> START SYNTHESIS: '${text.take(20)}...' [Length: ${text.length}]")
         
         isStopped.set(false)
         currentTask?.cancel(true)
@@ -132,54 +108,35 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (callback == null) return@submit
 
                 val chunks = LanguageUtils.splitHelper(text) 
-                DebugLog.d("Text split into ${chunks.size} chunks.")
-
                 if (chunks.isEmpty()) {
                     callback.done()
                     return@submit
                 }
                 
                 synchronized(callback) {
-                    // Always 24000 for output
                     callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
                 var lastEngine: TextToSpeech? = null
-                var lastRateMultiplier = -1.0f
-                var lastPitchMultiplier = -1.0f
-                var currentSonicRate = -1
+                var lastRate = -1.0f
+                var lastPitch = -1.0f
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    if (isStopped.get() || Thread.currentThread().isInterrupted) {
-                        DebugLog.d("Synthesis Interrupted at chunk $index")
-                        break
-                    }
+                    if (isStopped.get() || Thread.currentThread().isInterrupted) break
                     
-                    val engine = getEngine(chunk.lang)
+                    val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
                     
-                    if (engine == null) {
-                        DebugLog.d("SKIP Chunk $index: No engine found for ${chunk.lang}")
-                        continue
-                    }
-
-                    DebugLog.d("--- Processing Chunk $index [${chunk.lang}] ---")
-                    DebugLog.d("    Engine: $activePkg")
-                    DebugLog.d("    Text: '${chunk.text}'")
-
                     val (rateMultiplier, pitchMultiplier) = getRateAndPitch(chunk.lang, request)
                     
-                    if (engine !== lastEngine || rateMultiplier != lastRateMultiplier || pitchMultiplier != lastPitchMultiplier) {
+                    if (engine !== lastEngine || rateMultiplier != lastRate || pitchMultiplier != lastPitch) {
                         try {
                             engine.setSpeechRate(rateMultiplier)
                             engine.setPitch(pitchMultiplier)
-                            DebugLog.d("    Applied Params: Rate=$rateMultiplier, Pitch=$pitchMultiplier")
-                        } catch (e: Exception) {
-                            DebugLog.e("    Failed to set params", e)
-                        }
+                        } catch (e: Exception) {}
                         lastEngine = engine
-                        lastRateMultiplier = rateMultiplier
-                        lastPitchMultiplier = pitchMultiplier
+                        lastRate = rateMultiplier
+                        lastPitch = pitchMultiplier
                     }
                     
                     val params = Bundle()
@@ -195,36 +152,26 @@ class AutoTTSManagerService : TextToSpeechService() {
                              lowerPkg.contains("myanmar") -> 16000
                              else -> 24000
                          }
-                         DebugLog.d("    Rate Not Found. Fallback to: $engineRate Hz")
-                    } else {
-                        DebugLog.d("    Using Saved Rate: $engineRate Hz")
                     }
 
-                    synchronized(this) {
-                        if (sonicHandle == 0L || currentSonicRate != engineRate) {
-                            if (sonicHandle != 0L) {
-                                AudioProcessor.release(sonicHandle)
-                            }
-                            sonicHandle = AudioProcessor.initSonic(engineRate, 1)
-                            currentSonicRate = engineRate
-                            DebugLog.d("    [Sonic] NEW INSTANCE created for $engineRate Hz")
-                        } else {
-                            // DebugLog.d("    [Sonic] REUSING instance")
-                        }
-                        AudioProcessor.setConfig(sonicHandle, 1.0f, 1.0f)
+                    if (sonicHandle != 0L) {
+                        AudioProcessor.release(sonicHandle)
+                        sonicHandle = 0L
                     }
+                    sonicHandle = AudioProcessor.initSonic(engineRate, 1)
+                    AudioProcessor.setConfig(sonicHandle, 1.0f, 1.0f)
 
-                    // Process Audio
-                    processPipeCpp(engine, params, chunk.text, callback)
+                    processPipeCpp(engine, params, chunk.text, callback, sonicHandle)
                 }
             } catch (e: Exception) {
-                DebugLog.e("CRITICAL ERROR in Synthesis Loop", e)
+                AppLogger.error("Synthesis Loop Error", e)
             } finally {
+                if (sonicHandle != 0L) {
+                    AudioProcessor.release(sonicHandle)
+                    sonicHandle = 0L
+                }
                 if (!isStopped.get()) {
-                    DebugLog.d(">>> SYNTHESIS DONE <<<")
                     callback?.done()
-                } else {
-                    DebugLog.d(">>> SYNTHESIS STOPPED <<<")
                 }
             }
         }
@@ -275,11 +222,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         val lower = pkgName.lowercase(Locale.ROOT)
         if (lower.contains("espeak") || lower.contains("shan")) return 1.0f 
         if (lower.contains("vocalizer")) return 0.85f
-        if (lower.contains("eloquence")) return 0.4f
+        if (lower.contains("eloquence")) return 0.5f
         return 1.0f 
     }
     
-    private fun processPipeCpp(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback) {
+    private fun processPipeCpp(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, handle: Long) {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -293,102 +240,59 @@ class AutoTTSManagerService : TextToSpeechService() {
             
             val finalReadFd = localReadFd
             
-            DebugLog.d("    [Pipe] Created. Starting Engine synthesizeToFile...")
-
             val readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
-                var totalBytesRead = 0
-                var firstByteReceived = false
-                
                 try {
                     val fd = finalReadFd.fileDescriptor
                     fis = FileInputStream(fd)
                     
-                    val buffer = ByteArray(4096)
-                    var leftoverByte: Byte? = null
+                    // Buffer Size တိုးထားသည် (16KB) - အသံပိုချောစေရန်
+                    val buffer = ByteArray(16384)
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         
-                        var offset = 0
-                        if (leftoverByte != null) {
-                            buffer[0] = leftoverByte!!
-                            leftoverByte = null
-                            offset = 1
-                        }
-
-                        // DebugLog: Wait for read
-                        val readAmount = fis.read(buffer, offset, buffer.size - offset)
+                        val readAmount = fis.read(buffer)
+                        if (readAmount == -1) break
                         
-                        if (readAmount == -1) {
-                            DebugLog.d("    [Pipe] End of Stream (readAmount = -1)")
-                            break
-                        }
-
-                        if (!firstByteReceived && readAmount > 0) {
-                            firstByteReceived = true
-                            DebugLog.d("    [Pipe] First Data Received! Engine is working.")
-                        }
-                        
-                        var totalBytes = readAmount + offset
-                        totalBytesRead += totalBytes
-                        
-                        if (totalBytes > 0) {
-                             if (totalBytes % 2 != 0) {
-                                 leftoverByte = buffer[totalBytes - 1]
-                                 totalBytes -= 1
-                             }
+                        if (readAmount > 0) {
+                             // Header Skip မလုပ်တော့ပါ
+                             val pcmData = if (readAmount == buffer.size) buffer else buffer.copyOfRange(0, readAmount)
                              
-                             if (totalBytes > 0) {
-                                 val pcmData = ByteArray(totalBytes)
-                                 System.arraycopy(buffer, 0, pcmData, 0, totalBytes)
-                                 
-                                 val currentHandle = sonicHandle
-                                 if (currentHandle != 0L) {
-                                     val processed = AudioProcessor.processAudio(currentHandle, pcmData, totalBytes)
-                                     
-                                     if (processed.isNotEmpty()) {
-                                         synchronized(callback) {
-                                             try { callback.audioAvailable(processed, 0, processed.size) } 
-                                             catch (e: Exception) { DebugLog.e("Callback Error", e) }
-                                         }
-                                     }
+                             val processed = AudioProcessor.processAudio(handle, pcmData, readAmount)
+                             
+                             if (processed.isNotEmpty()) {
+                                 synchronized(callback) {
+                                     try { callback.audioAvailable(processed, 0, processed.size) } catch (e: Exception) {}
                                  }
                              }
                         }
                     }
                 } catch (e: IOException) {
-                    DebugLog.d("    [Pipe] IOException (Expected on close)")
                 } catch (e: Exception) {
-                    DebugLog.e("    [Pipe] Unexpected Error", e)
+                    AppLogger.error("Pipe Error", e)
                 } finally {
-                    DebugLog.d("    [Pipe] Reader Closed. Total Read: $totalBytesRead bytes")
                     try { fis?.close() } catch(e:Exception){}
                     try { finalReadFd.close() } catch(e:Exception){}
                 }
             }
 
             if (localWriteFd != null) {
-                val result = engine.synthesizeToFile(text, params, localWriteFd, uuid)
-                if (result != TextToSpeech.SUCCESS) {
-                    DebugLog.e("    [Engine] synthesizeToFile FAILED. Code: $result", null)
-                }
+                engine.synthesizeToFile(text, params, localWriteFd, uuid)
             }
             
             try { localWriteFd?.close() } catch(e:Exception){}
             
             try {
                 readerFuture.get()
-            } catch (e: Exception) { 
-                 DebugLog.e("    [Pipe] Future Task Error", e)
-            }
+            } catch (e: Exception) { }
 
         } catch (e: Exception) {
-            DebugLog.e("    [Pipe] Setup Exception", e)
+            AppLogger.error("Pipe Setup Exception", e)
             try { localReadFd?.close() } catch(e:Exception){}
             try { localWriteFd?.close() } catch(e:Exception){}
         }
     }
-    // ... Other methods (onDestroy, getEngine, etc) remain the same ...
+    
     private fun getEngine(lang: String): TextToSpeech? {
         return when (lang) {
             "SHAN" -> if (shanEngine != null) shanEngine else englishEngine
@@ -398,20 +302,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() { 
-        DebugLog.d("=== SERVICE DESTROYED ===")
+        AppLogger.log("Service Destroyed.")
         isStopped.set(true)
         controllerExecutor.shutdownNow()
         pipeExecutor.shutdownNow()
-        
-        try { shanEngine?.shutdown() } catch(e:Exception){}
-        try { burmeseEngine?.shutdown() } catch(e:Exception){}
-        try { englishEngine?.shutdown() } catch(e:Exception){}
-        
-        synchronized(this) {
-            if (sonicHandle != 0L) {
-                AudioProcessor.release(sonicHandle)
-                sonicHandle = 0L
-            }
+        shanEngine?.shutdown()
+        burmeseEngine?.shutdown()
+        englishEngine?.shutdown()
+        if (sonicHandle != 0L) {
+            AudioProcessor.release(sonicHandle)
+            sonicHandle = 0L
         }
         super.onDestroy()
     }
