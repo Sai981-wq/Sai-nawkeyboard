@@ -4,17 +4,12 @@
 #include <android/log.h>
 #include "sonic.h"
 
-#define LOG_TAG "CherryTTS_Monitor"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
 class CherrySonicProcessor {
 public:
     sonicStream stream;
-    std::vector<short> sonicBuffer;
     std::vector<short> outputBuffer;
     int inRate;
-    int outRate = 24000;
+    int outRate = 16000; // Stable 16kHz Target
     short lastS = 0; 
     double timePos = 0.0; 
 
@@ -23,7 +18,6 @@ public:
         stream = sonicCreateStream(inRate, channels);
         sonicSetQuality(stream, 0);
         sonicSetVolume(stream, 1.0f);
-        LOGI("Native Init: %dHz -> %dHz", inRate, outRate);
     }
 
     ~CherrySonicProcessor() { 
@@ -40,12 +34,8 @@ public:
         }
         
         double step = (double)inRate / outRate;
-        int estimatedOut = (int)((inCount - timePos) / step) + 2;
-        if (outputBuffer.capacity() < estimatedOut) outputBuffer.reserve(estimatedOut);
-        outputBuffer.resize(estimatedOut);
-        
-        short* outPtr = outputBuffer.data();
-        int genCount = 0;
+        int approxOut = (int)(inCount / step) + 32;
+        outputBuffer.reserve(approxOut);
         
         while (true) {
             int idx = (int)timePos;
@@ -60,13 +50,13 @@ public:
             short s2 = in[idx];
             
             int val = s1 + (int)((s2 - s1) * frac);
+            
             if (val > 32767) val = 32767;
             else if (val < -32768) val = -32768;
             
-            outPtr[genCount++] = (short)val;
+            outputBuffer.push_back((short)val);
             timePos += step;
         }
-        outputBuffer.resize(genCount);
     }
 };
 
@@ -97,19 +87,14 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
 
     int avail = sonicSamplesAvailable(proc->stream);
     if (avail > 0) {
-        if (proc->sonicBuffer.size() < avail) proc->sonicBuffer.resize(avail);
-        int read = sonicReadShortFromStream(proc->stream, proc->sonicBuffer.data(), avail);
-        
+        std::vector<short> temp(avail);
+        int read = sonicReadShortFromStream(proc->stream, temp.data(), avail);
         if (read > 0) {
-            proc->resample(proc->sonicBuffer.data(), read);
-            int outSz = proc->outputBuffer.size();
-            
-            // Log every chunk will spam, uncomment only if needed for debugging stutter
-            // LOGI("Native Trace: InBytes=%d, OutShorts=%d", len, outSz);
-
-            if (outSz > 0) {
-                jbyteArray res = env->NewByteArray(outSz * 2);
-                env->SetByteArrayRegion(res, 0, outSz * 2, (jbyte*)proc->outputBuffer.data());
+            proc->resample(temp.data(), read);
+            int sz = proc->outputBuffer.size();
+            if (sz > 0) {
+                jbyteArray res = env->NewByteArray(sz * 2);
+                env->SetByteArrayRegion(res, 0, sz * 2, (jbyte*)proc->outputBuffer.data());
                 return res;
             }
         }
@@ -123,7 +108,6 @@ Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
         sonicFlushStream(proc->stream); 
         proc->lastS = 0; 
         proc->timePos = 0.0; 
-        LOGI("Native Flush: State Reset");
     }
 }
 
