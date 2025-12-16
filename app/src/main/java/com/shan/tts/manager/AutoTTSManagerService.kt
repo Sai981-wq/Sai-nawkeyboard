@@ -32,7 +32,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
     
     private val controllerExecutor = Executors.newSingleThreadExecutor()
-    private val pipeExecutor = Executors.newCachedThreadPool()
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
@@ -44,8 +43,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created (Stateful Resampler).")
-        
         try {
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
@@ -65,7 +62,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 it.language = Locale.US
             }
         } catch (e: Exception) {
-            AppLogger.error("Error during onCreate", e)
+            e.printStackTrace()
         }
     }
 
@@ -81,11 +78,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                         override fun onDone(id: String?) {}
                         override fun onError(id: String?) {}
                     })
-                    AppLogger.log("Engine Ready: $pkg")
                 }
             }, pkg)
         } catch (e: Exception) {
-            AppLogger.error("Exception Init Engine: $pkg", e)
+            e.printStackTrace()
         }
     }
 
@@ -164,7 +160,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     processPipeCpp(engine, params, chunk.text, callback, sonicHandle)
                 }
             } catch (e: Exception) {
-                AppLogger.error("Synthesis Loop Error", e)
+                e.printStackTrace()
             } finally {
                 if (sonicHandle != 0L) {
                     AudioProcessor.release(sonicHandle)
@@ -240,24 +236,20 @@ class AutoTTSManagerService : TextToSpeechService() {
             
             val finalReadFd = localReadFd
             
-            val readerFuture = pipeExecutor.submit {
+            val readerFuture = controllerExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
                     val fd = finalReadFd.fileDescriptor
                     fis = FileInputStream(fd)
                     
-                    // Buffer Size တိုးထားသည် (16KB) - အသံပိုချောစေရန်
-                    val buffer = ByteArray(16384)
+                    val buffer = ByteArray(32768)
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
-                        
                         val readAmount = fis.read(buffer)
                         if (readAmount == -1) break
                         
                         if (readAmount > 0) {
-                             // Header Skip မလုပ်တော့ပါ
                              val pcmData = if (readAmount == buffer.size) buffer else buffer.copyOfRange(0, readAmount)
-                             
                              val processed = AudioProcessor.processAudio(handle, pcmData, readAmount)
                              
                              if (processed.isNotEmpty()) {
@@ -268,8 +260,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                 } catch (e: IOException) {
-                } catch (e: Exception) {
-                    AppLogger.error("Pipe Error", e)
                 } finally {
                     try { fis?.close() } catch(e:Exception){}
                     try { finalReadFd.close() } catch(e:Exception){}
@@ -287,7 +277,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             } catch (e: Exception) { }
 
         } catch (e: Exception) {
-            AppLogger.error("Pipe Setup Exception", e)
             try { localReadFd?.close() } catch(e:Exception){}
             try { localWriteFd?.close() } catch(e:Exception){}
         }
@@ -302,10 +291,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() { 
-        AppLogger.log("Service Destroyed.")
         isStopped.set(true)
         controllerExecutor.shutdownNow()
-        pipeExecutor.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
