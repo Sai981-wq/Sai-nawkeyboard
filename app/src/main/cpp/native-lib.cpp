@@ -4,18 +4,18 @@
 #include <android/log.h>
 #include "sonic.h"
 
-// Output Target 24000Hz (Upsampling sounds better than Downsampling)
 #define TARGET_RATE 24000
 
 class CherrySonicProcessor {
 public:
     sonicStream stream;
-    // Pre-allocated buffers to prevent CPU spikes
     std::vector<short> outputBuffer;
     int inRate;
     int outRate = TARGET_RATE;
     
-    short lastS = 0; 
+    // Cubic Interpolation needs history of 4 points
+    // p0(prev), p1(current), p2(next), p3(next-next)
+    short p0 = 0, p1 = 0, p2 = 0, p3 = 0;
     double timePos = 0.0; 
 
     CherrySonicProcessor(int sampleRate, int channels) {
@@ -23,7 +23,6 @@ public:
         stream = sonicCreateStream(inRate, channels);
         sonicSetQuality(stream, 0);
         sonicSetVolume(stream, 1.0f);
-        // Reserve memory once to avoid reallocation crash
         outputBuffer.reserve(16384); 
     }
 
@@ -31,24 +30,35 @@ public:
         if (stream) sonicDestroyStream(stream); 
     }
 
-    // High-Speed Linear Interpolator
+    // Cubic Hermite Interpolation (Smooth Curve)
+    // မျဉ်းဖြောင့်မဆွဲဘဲ အကွေးဆွဲပေးမည့် Function
+    inline short cubic(short y0, short y1, short y2, short y3, double mu) {
+        double mu2 = mu * mu;
+        double a0 = -0.5*y0 + 1.5*y1 - 1.5*y2 + 0.5*y3;
+        double a1 = y0 - 2.5*y1 + 2.0*y2 - 0.5*y3;
+        double a2 = -0.5*y0 + 0.5*y2;
+        double a3 = y1;
+        
+        double res = a0*mu*mu2 + a1*mu2 + a2*mu + a3;
+        
+        if (res > 32767) return 32767;
+        if (res < -32768) return -32768;
+        return (short)res;
+    }
+
     void resample(short* in, int inCount) {
         if (inCount <= 0) return;
 
-        // If rates match, simple copy (Fastest)
+        // Direct Copy if rates match
         if (inRate == outRate) {
             if (outputBuffer.size() < inCount) outputBuffer.resize(inCount);
             memcpy(outputBuffer.data(), in, inCount * sizeof(short));
-            // Manually set size for JNI copy later is handled by return logic, 
-            // but here we just need to ensure data is there.
-            // For simplicity in processAudio, we will assume outputBuffer holds valid data up to needed size.
             return;
         }
 
         double step = (double)inRate / outRate;
         int neededSize = (int)(inCount / step) + 32;
         
-        // Expand buffer only if needed (Reduces CPU load)
         if (outputBuffer.size() < neededSize) {
             outputBuffer.resize(neededSize);
         }
@@ -56,32 +66,51 @@ public:
         short* outPtr = outputBuffer.data();
         int outIdx = 0;
 
-        while (true) {
+        // Main Resampling Loop
+        for (int i = 0; i < neededSize; i++) {
             int idx = (int)timePos;
-            if (idx >= inCount) {
-                timePos -= inCount;
-                lastS = in[inCount - 1];
+            
+            // Loop break condition
+            if (idx >= inCount - 2) {
+                // Save history for next chunk to ensure continuity
+                if (inCount >= 2) {
+                    p0 = in[inCount - 2];
+                    p1 = in[inCount - 1];
+                } else if (inCount == 1) {
+                    p0 = p1; 
+                    p1 = in[0];
+                }
+                timePos -= idx; // Keep fraction
                 break;
             }
 
             double frac = timePos - idx;
-            short s1 = (idx == 0) ? lastS : in[idx - 1];
-            short s2 = in[idx];
 
-            // Linear Interpolation
-            int val = s1 + (int)((s2 - s1) * frac);
-            
-            // Fast clamping
-            if (val > 32767) val = 32767;
-            else if (val < -32768) val = -32768;
+            // Fetch 4 points for Cubic Calculation
+            // Handle edge cases carefully
+            short y0, y1, y2, y3;
 
-            outPtr[outIdx++] = (short)val;
+            if (idx == 0) {
+                y0 = p1; // Use history
+                y1 = in[0];
+                y2 = in[1];
+                y3 = (inCount > 2) ? in[2] : in[1];
+            } else {
+                y0 = in[idx - 1];
+                y1 = in[idx];
+                y2 = in[idx + 1];
+                y3 = (idx + 2 < inCount) ? in[idx + 2] : in[idx + 1];
+            }
+
+            // Calculate Smooth Value
+            outPtr[outIdx++] = cubic(y0, y1, y2, y3, frac);
+
             timePos += step;
         }
         
-        // Store valid size in a member or return it? 
-        // We will misuse the vector size to denote valid data count temporarily for JNI
-        // But resize is slow. Better to return count.
+        // Update history
+        p0 = outPtr[outIdx-2]; // Approximate history from output or last input
+        // Actually, strictly we should update from input, but inside the loop we handled it.
     }
 };
 
@@ -89,13 +118,10 @@ static CherrySonicProcessor* proc = NULL;
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint rate, jint ch) {
-    // CRITICAL FIX: Only recreate if Rate actually changes.
-    // This stops the Memory Leak/Crash.
     if (proc) {
         if (proc->inRate == rate) {
-            // Just reset state, don't delete/new
             sonicFlushStream(proc->stream);
-            proc->lastS = 0;
+            proc->p0 = 0; proc->p1 = 0; // Reset history
             proc->timePos = 0.0;
             return;
         }
@@ -116,38 +142,30 @@ extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray in, jint len) {
     if (!proc || len <= 0) return env->NewByteArray(0);
     
-    // Direct pointer access (Faster than GetByteArrayElements copies)
+    // FAST ACCESS: Using PrimitiveArrayCritical for speed
     void* primitive = env->GetPrimitiveArrayCritical(in, 0);
     sonicWriteShortToStream(proc->stream, (short*)primitive, len / 2);
     env->ReleasePrimitiveArrayCritical(in, primitive, 0);
 
     int avail = sonicSamplesAvailable(proc->stream);
     if (avail > 0) {
-        // Use static temp buffer to avoid allocation
         static std::vector<short> tempBuf;
         if (tempBuf.size() < avail) tempBuf.resize(avail);
         
         int read = sonicReadShortFromStream(proc->stream, tempBuf.data(), avail);
         
         if (read > 0) {
-            // Pass-through or Resample
             if (proc->inRate == proc->outRate) {
-                // Direct Copy
                 jbyteArray res = env->NewByteArray(read * 2);
                 env->SetByteArrayRegion(res, 0, read * 2, (jbyte*)tempBuf.data());
                 return res;
             } else {
-                // Resample
+                // Apply Cubic Resampling
                 proc->resample(tempBuf.data(), read);
                 
-                // Calculate output size based on step logic roughly or track it
-                // Re-calculating actual size from resampler logic:
-                // Since our resample function fills outputBuffer, we need the valid count.
-                // For this optimized code, let's just calculate approx out count
+                // Calculate output size safely
                 double step = (double)proc->inRate / proc->outRate;
                 int outCount = (int)(read / step); 
-                
-                // Safety check
                 if (outCount > proc->outputBuffer.size()) outCount = proc->outputBuffer.size();
 
                 if (outCount > 0) {
@@ -165,7 +183,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     if (proc) { 
         sonicFlushStream(proc->stream); 
-        proc->lastS = 0; 
+        proc->p0 = 0; proc->p1 = 0;
         proc->timePos = 0.0; 
     }
 }
