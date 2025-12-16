@@ -2,13 +2,26 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <android/log.h>
 #include "sonic.h"
+
+#define TAG "CherryNative"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
 
 static sonicStream stream = NULL;
 static int currentSampleRate = 16000;
 static int TARGET_RATE = 24000;
 
-short* resample(short* input, int inputSamples, int inRate, int outRate, int* outSamples) {
+inline float cubicInterpolate(float p0, float p1, float p2, float p3, float t) {
+    return 0.5f * (
+        (2.0f * p1) +
+        (-p0 + p2) * t +
+        (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t * t +
+        (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t * t * t
+    );
+}
+
+short* resampleCubic(short* input, int inputSamples, int inRate, int outRate, int* outSamples) {
     if (inRate <= 0 || outRate <= 0 || inputSamples <= 0) { 
         *outSamples = 0;
         return NULL;
@@ -27,23 +40,24 @@ short* resample(short* input, int inputSamples, int inRate, int outRate, int* ou
     if (*outSamples <= 0) return NULL;
 
     short* output = new short[*outSamples];
-    
-    double ratio = (double)(inRate) / outRate;
+    double ratio = (double)inRate / outRate;
     
     for (int i = 0; i < *outSamples; i++) {
         double exactPos = i * ratio;
-        int index1 = (int)exactPos;
-        int index2 = index1 + 1;
-        double frac = exactPos - index1;
+        int index = (int)exactPos;
+        double t = exactPos - index;
 
-        short val1 = (index1 < inputSamples) ? input[index1] : 0;
-        short val2 = (index2 < inputSamples) ? input[index2] : val1; 
+        float p0 = (index > 0) ? input[index - 1] : input[0];
+        float p1 = input[index];
+        float p2 = (index < inputSamples - 1) ? input[index + 1] : input[inputSamples - 1];
+        float p3 = (index < inputSamples - 2) ? input[index + 2] : input[inputSamples - 1];
 
-        double val = (1.0 - frac) * val1 + frac * val2;
+        float mixed = cubicInterpolate(p0, p1, p2, p3, (float)t);
         
-        if (val > 32767) val = 32767;
-        if (val < -32768) val = -32768;
-        output[i] = (short)val;
+        if (mixed > 32767.0f) mixed = 32767.0f;
+        if (mixed < -32768.0f) mixed = -32768.0f;
+        
+        output[i] = (short)mixed;
     }
     return output;
 }
@@ -55,6 +69,7 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint sa
     stream = sonicCreateStream(currentSampleRate, channels);
     sonicSetQuality(stream, 1);
     sonicSetVolume(stream, 1.0f);
+    LOGD("InitSonic: Rate=%d, Target=%d", currentSampleRate, TARGET_RATE);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -63,6 +78,7 @@ Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat 
         sonicSetRate(stream, 1.0f); 
         sonicSetSpeed(stream, speed);
         sonicSetPitch(stream, pitch);
+        LOGD("SetConfig: Speed=%.2f, Pitch=%.2f", speed, pitch);
     }
 }
 
@@ -85,12 +101,14 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
 
     if (readSamples > 0) {
         int resampledCount = 0;
-        short* resampledBuffer = resample(sonicBuffer, readSamples, currentSampleRate, TARGET_RATE, &resampledCount);
+        short* resampledBuffer = resampleCubic(sonicBuffer, readSamples, currentSampleRate, TARGET_RATE, &resampledCount);
 
         if (resampledBuffer != NULL && resampledCount > 0) {
             jbyteArray result = env->NewByteArray(resampledCount * 2);
             env->SetByteArrayRegion(result, 0, resampledCount * 2, (jbyte*)resampledBuffer);
             
+            LOGD("Process: InSamples=%d -> OutSamples=%d (Cubic)", readSamples, resampledCount);
+
             delete[] sonicBuffer;
             delete[] resampledBuffer;
             return result;
@@ -104,6 +122,9 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
-    if (stream != NULL) sonicFlushStream(stream);
+    if (stream != NULL) {
+        sonicFlushStream(stream);
+        LOGD("Sonic Stream Flushed");
+    }
 }
 

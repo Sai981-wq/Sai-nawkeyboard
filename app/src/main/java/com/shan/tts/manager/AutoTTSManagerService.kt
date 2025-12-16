@@ -42,7 +42,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created (Pure Native Mode - No Resampler).")
+        AppLogger.log("Service Created (C++ Cubic Mode).")
         
         try {
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
@@ -62,6 +62,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                 englishEngine = it
                 it.language = Locale.US
             }
+            
+            AudioProcessor.initSonic(16000, 1)
+
         } catch (e: Exception) {
             AppLogger.error("CRITICAL: Error during onCreate", e)
         }
@@ -90,10 +93,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onStop() {
         isStopped.set(true)
         currentTask?.cancel(true)
+        AudioProcessor.flush()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        AppLogger.log("New Request: $text")
         
         isStopped.set(false)
         currentTask?.cancel(true)
@@ -108,26 +113,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
                 
-                // Native Rate Strategy:
-                // ပထမဆုံး Chunk ရဲ့ Rate ကိုပဲ အဓိက Rate အဖြစ်သုံးမယ်။
-                val firstLang = chunks[0].lang
-                val firstPkg = getPkgName(firstLang)
-                var sessionRate = configPrefs.getInt("RATE_$firstPkg", 0)
-                
-                if (sessionRate < 8000) {
-                     val lowerPkg = firstPkg.lowercase(Locale.ROOT)
-                     sessionRate = when {
-                         lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
-                         lowerPkg.contains("eloquence") -> 11025
-                         lowerPkg.contains("myanmar") -> 16000
-                         else -> 24000
-                     }
-                }
-                
-                AppLogger.log("Native Session: $sessionRate Hz")
-
                 synchronized(callback) {
-                    callback.start(sessionRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
                 var lastEngine: TextToSpeech? = null
@@ -156,10 +143,24 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val balanceVolume = getVolumeCorrection(activePkg)
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, balanceVolume)
 
-                    // Resampler မရှိတော့သည့်အတွက် engineRate က sessionRate ဖြစ်သွားပါပြီ
-                    processPipeDirect(engine, sessionRate, params, chunk.text, callback)
+                    var engineRate = configPrefs.getInt("RATE_$activePkg", 0)
+                    if (engineRate < 8000) {
+                         val lowerPkg = activePkg.lowercase(Locale.ROOT)
+                         engineRate = when {
+                             lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
+                             lowerPkg.contains("eloquence") -> 11025
+                             lowerPkg.contains("myanmar") -> 16000
+                             else -> 24000
+                         }
+                    }
+
+                    AppLogger.log("Chunk $index: Lang=${chunk.lang}, Pkg=$activePkg, Rate=$engineRate Hz")
+                    
+                    AudioProcessor.initSonic(engineRate, 1)
+                    AudioProcessor.setConfig(1.0f, 1.0f)
+
+                    processPipeCpp(engine, params, chunk.text, callback)
                 }
-            } catch (e: InterruptedException) {
             } catch (e: Exception) {
                 AppLogger.error("Synthesis Loop Error", e)
             } finally {
@@ -219,8 +220,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         return 1.0f 
     }
     
-    // --- DIRECT PIPE (No Resample, No Header Skip) ---
-    private fun processPipeDirect(engine: TextToSpeech, sessionRate: Int, params: Bundle, text: String, callback: SynthesisCallback) {
+    private fun processPipeCpp(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback) {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -240,8 +240,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = finalReadFd.fileDescriptor
                     fis = FileInputStream(fd)
                     
-                    val buffer = ByteArray(8192)
+                    val buffer = ByteArray(4096)
                     var leftoverByte: Byte? = null
+                    var isHeaderProcessed = false
+                    var skipBytes = 0
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         
@@ -257,19 +259,58 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         var totalBytes = readAmount + offset
                         
-                        if (totalBytes > 0) {
-                             if (totalBytes % 2 != 0) {
-                                 leftoverByte = buffer[totalBytes - 1]
+                        if (!isHeaderProcessed && totalBytes > 12) {
+                            val isRiff = buffer[0] == 'R'.toByte() && buffer[1] == 'I'.toByte() && buffer[2] == 'F'.toByte()
+                            val isBlank = buffer[0] == 0.toByte() && buffer[1] == 0.toByte() && buffer[2] == 0.toByte() && buffer[3] == 0.toByte()
+                            
+                            if (isRiff) {
+                                var foundData = -1
+                                for (i in 0 until (totalBytes - 4)) {
+                                    if (buffer[i] == 'd'.toByte() && buffer[i+1] == 'a'.toByte() && buffer[i+2] == 't'.toByte() && buffer[i+3] == 'a'.toByte()) {
+                                        foundData = i
+                                        break
+                                    }
+                                }
+                                skipBytes = if (foundData != -1) foundData + 8 else 44
+                                AppLogger.log("Skipping RIFF: $skipBytes bytes")
+                            } 
+                            else if (isBlank) {
+                                skipBytes = 44
+                                AppLogger.log("Skipping BLANK: 44 bytes")
+                            } 
+                            isHeaderProcessed = true
+                        }
+                        
+                        var startIndex = 0
+                        if (skipBytes > 0) {
+                            if (totalBytes >= skipBytes) {
+                                startIndex = skipBytes
+                                skipBytes = 0 
+                            } else {
+                                skipBytes -= totalBytes
+                                startIndex = totalBytes 
+                            }
+                        }
+                        
+                        val validLength = totalBytes - startIndex
+                        
+                        if (validLength > 0) {
+                             if (validLength % 2 != 0) {
+                                 leftoverByte = buffer[startIndex + validLength - 1]
                              }
                              
-                             val processLen = if (totalBytes % 2 != 0) totalBytes - 1 else totalBytes
+                             val processLen = if (validLength % 2 != 0) validLength - 1 else validLength
                              
                              if (processLen > 0) {
-                                 // DIRECT COPY ONLY (No Resampler Call)
-                                 synchronized(callback) {
-                                     val pcmData = ByteArray(processLen)
-                                     System.arraycopy(buffer, 0, pcmData, 0, processLen)
-                                     try { callback.audioAvailable(pcmData, 0, pcmData.size) } catch (e: Exception) {}
+                                 val pcmData = ByteArray(processLen)
+                                 System.arraycopy(buffer, startIndex, pcmData, 0, processLen)
+                                 
+                                 val processed = AudioProcessor.processAudio(pcmData, processLen)
+                                 
+                                 if (processed.isNotEmpty()) {
+                                     synchronized(callback) {
+                                         try { callback.audioAvailable(processed, 0, processed.size) } catch (e: Exception) {}
+                                     }
                                  }
                              }
                         }
@@ -316,6 +357,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
+        AudioProcessor.flush()
         super.onDestroy()
     }
     
