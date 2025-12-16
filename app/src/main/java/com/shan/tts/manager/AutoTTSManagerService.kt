@@ -116,6 +116,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var lastEngine: TextToSpeech? = null
                 var lastRate = -1.0f
                 var lastPitch = -1.0f
+                var currentEngineRate = 0
 
                 for ((index, chunk) in chunks.withIndex()) {
                     if (isStopped.get() || Thread.currentThread().isInterrupted) break
@@ -150,7 +151,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
 
-                    AudioProcessor.initSonic(engineRate, 1)
+                    if (engineRate != currentEngineRate) {
+                        AudioProcessor.flush()
+                        AudioProcessor.initSonic(engineRate, 1)
+                        currentEngineRate = engineRate
+                    }
                     AudioProcessor.setConfig(1.0f, 1.0f)
 
                     processPipeCpp(engine, params, chunk.text, callback)
@@ -234,7 +239,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val fd = finalReadFd.fileDescriptor
                     fis = FileInputStream(fd)
                     
-                    // --- IMPORTANT FIX: 32KB Buffer to prevent stuttering ---
                     val buffer = ByteArray(32768)
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
