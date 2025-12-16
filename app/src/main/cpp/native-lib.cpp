@@ -9,7 +9,7 @@ public:
     sonicStream stream;
     std::vector<short> outputBuffer;
     int inRate;
-    int outRate = 16000; // Stable 16kHz Target
+    int outRate = 24000; // Standard High Quality Output
     short lastS = 0; 
     double timePos = 0.0; 
 
@@ -34,6 +34,7 @@ public:
         }
         
         double step = (double)inRate / outRate;
+        // Simple Estimation
         int approxOut = (int)(inCount / step) + 32;
         outputBuffer.reserve(approxOut);
         
@@ -49,8 +50,8 @@ public:
             short s1 = (idx == 0) ? lastS : in[idx - 1];
             short s2 = in[idx];
             
+            // Linear Interpolation
             int val = s1 + (int)((s2 - s1) * frac);
-            
             if (val > 32767) val = 32767;
             else if (val < -32768) val = -32768;
             
@@ -64,6 +65,7 @@ static CherrySonicProcessor* proc = NULL;
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint rate, jint ch) {
+    // If rate changes (detected from header), re-create processor
     if (proc && proc->inRate == rate) return;
     if (proc) delete proc;
     proc = new CherrySonicProcessor(rate, ch);
