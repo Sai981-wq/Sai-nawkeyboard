@@ -32,11 +32,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
     
     private val controllerExecutor = Executors.newSingleThreadExecutor()
+    private val pipeExecutor = Executors.newCachedThreadPool()
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
-    
-    private var sonicHandle: Long = 0
     
     private lateinit var configPrefs: SharedPreferences
     private lateinit var settingsPrefs: SharedPreferences
@@ -61,6 +60,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                 englishEngine = it
                 it.language = Locale.US
             }
+            
+            AudioProcessor.initSonic(16000, 1)
+
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -88,9 +90,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onStop() {
         isStopped.set(true)
         currentTask?.cancel(true)
-        if (sonicHandle != 0L) {
-            AudioProcessor.flush(sonicHandle)
-        }
+        AudioProcessor.flush()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -150,22 +150,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                          }
                     }
 
-                    if (sonicHandle != 0L) {
-                        AudioProcessor.release(sonicHandle)
-                        sonicHandle = 0L
-                    }
-                    sonicHandle = AudioProcessor.initSonic(engineRate, 1)
-                    AudioProcessor.setConfig(sonicHandle, 1.0f, 1.0f)
+                    AudioProcessor.initSonic(engineRate, 1)
+                    AudioProcessor.setConfig(1.0f, 1.0f)
 
-                    processPipeCpp(engine, params, chunk.text, callback, sonicHandle)
+                    processPipeCpp(engine, params, chunk.text, callback)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
-                if (sonicHandle != 0L) {
-                    AudioProcessor.release(sonicHandle)
-                    sonicHandle = 0L
-                }
                 if (!isStopped.get()) {
                     callback?.done()
                 }
@@ -222,7 +214,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         return 1.0f 
     }
     
-    private fun processPipeCpp(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, handle: Long) {
+    private fun processPipeCpp(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback) {
         val uuid = UUID.randomUUID().toString()
         params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -236,21 +228,24 @@ class AutoTTSManagerService : TextToSpeechService() {
             
             val finalReadFd = localReadFd
             
-            val readerFuture = controllerExecutor.submit {
+            val readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
                     val fd = finalReadFd.fileDescriptor
                     fis = FileInputStream(fd)
                     
+                    // --- IMPORTANT FIX: 32KB Buffer to prevent stuttering ---
                     val buffer = ByteArray(32768)
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
+                        
                         val readAmount = fis.read(buffer)
                         if (readAmount == -1) break
                         
                         if (readAmount > 0) {
                              val pcmData = if (readAmount == buffer.size) buffer else buffer.copyOfRange(0, readAmount)
-                             val processed = AudioProcessor.processAudio(handle, pcmData, readAmount)
+                             
+                             val processed = AudioProcessor.processAudio(pcmData, readAmount)
                              
                              if (processed.isNotEmpty()) {
                                  synchronized(callback) {
@@ -293,13 +288,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onDestroy() { 
         isStopped.set(true)
         controllerExecutor.shutdownNow()
+        pipeExecutor.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
-        if (sonicHandle != 0L) {
-            AudioProcessor.release(sonicHandle)
-            sonicHandle = 0L
-        }
+        AudioProcessor.flush()
         super.onDestroy()
     }
     

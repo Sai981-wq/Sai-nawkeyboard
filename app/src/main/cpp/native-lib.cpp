@@ -14,8 +14,14 @@ public:
     float currentSpeed;
     float currentPitch;
 
+    // Buffers
     std::vector<short> processingBuffer;
     std::vector<short> resampleBuffer;
+
+    // --- STATE VARIABLES (အသံမှတ်ဉာဏ်) ---
+    // ဒါက အကြံပြုချက်ထဲက "Resampler State" ဆိုတာပါပဲ
+    short lastSampleOfPrevChunk; 
+    bool isFirstChunk;
 
     CherrySonicProcessor(int sampleRate, int channels) {
         currentSampleRate = (sampleRate > 0) ? sampleRate : 16000;
@@ -26,6 +32,10 @@ public:
         stream = sonicCreateStream(currentSampleRate, channels);
         sonicSetQuality(stream, 0);
         sonicSetVolume(stream, 1.0f);
+        
+        // Reset State
+        lastSampleOfPrevChunk = 0;
+        isFirstChunk = true;
     }
 
     ~CherrySonicProcessor() {
@@ -35,12 +45,18 @@ public:
         }
     }
 
+    // STATEFUL LINEAR RESAMPLER
+    // ရှေ့ Chunk နဲ့ နောက် Chunk ကို အပ်ချမပေါ်အောင် ဆက်ပေးမည့် Function
     int resampleLinear(short* input, int inputSamples) {
         if (inputSamples <= 0) return 0;
         
+        // Hz တူရင် Copy ကူးရုံပဲ (မှတ်ဉာဏ်မလို)
         if (currentSampleRate == targetRate) {
             resampleBuffer.resize(inputSamples);
             memcpy(resampleBuffer.data(), input, inputSamples * sizeof(short));
+            // Update state for consistency
+            lastSampleOfPrevChunk = input[inputSamples - 1];
+            isFirstChunk = false;
             return inputSamples;
         }
 
@@ -48,57 +64,75 @@ public:
         long long newSize = (long long)inputSamples * targetRate / currentSampleRate;
         
         if (newSize <= 0) return 0;
-        resampleBuffer.resize(newSize);
+        
+        if (resampleBuffer.size() < newSize) {
+            resampleBuffer.resize(newSize);
+        }
         
         short* outPtr = resampleBuffer.data();
         
         for (int i = 0; i < newSize; i++) {
             double exactPos = i * ratio;
             int index = (int)exactPos;
-            double t = exactPos - index;
+            double t = exactPos - index; // Fractional part
 
-            if (index >= inputSamples - 1) {
-                outPtr[i] = input[inputSamples - 1];
-            } else {
-                short p0 = input[index];
-                short p1 = input[index + 1];
-                outPtr[i] = (short)(p0 + (p1 - p0) * t);
+            short p0, p1;
+
+            if (index == 0) {
+                // Chunk အစပိုင်းဆိုရင် အရင် Chunk ရဲ့ နောက်ဆုံးအစက် (History) ကို ယူသုံးမယ်
+                // ဒါမှ အသံမပြတ်မှာ ဖြစ်ပါတယ်
+                p0 = isFirstChunk ? input[0] : lastSampleOfPrevChunk;
+                p1 = (inputSamples > 1) ? input[1] : input[0]; // Avoid OOB if input length is 1
+            } 
+            else if (index >= inputSamples - 1) {
+                // Chunk အဆုံးပိုင်း
+                p0 = input[inputSamples - 1];
+                p1 = p0; // End extension
+            } 
+            else {
+                // အလယ်ပိုင်း
+                p0 = input[index];
+                p1 = input[index + 1];
             }
+
+            // Linear Interpolation: y = p0 + (p1 - p0) * t
+            outPtr[i] = (short)(p0 + (p1 - p0) * t);
         }
+
+        // လက်ရှိ Chunk ရဲ့ နောက်ဆုံးအစက်ကို မှတ်ထားမယ် (နောက် Chunk အတွက်)
+        lastSampleOfPrevChunk = input[inputSamples - 1];
+        isFirstChunk = false;
+
         return newSize;
     }
 };
 
-extern "C" JNIEXPORT jlong JNICALL
+// --- GLOBAL INSTANCE ---
+static CherrySonicProcessor* globalProcessor = NULL;
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint sampleRate, jint channels) {
-    CherrySonicProcessor* processor = new CherrySonicProcessor(sampleRate, channels);
-    return (jlong)processor;
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_release(JNIEnv* env, jobject, jlong handle) {
-    CherrySonicProcessor* processor = (CherrySonicProcessor*)handle;
-    if (processor != NULL) {
-        delete processor;
+    if (globalProcessor != NULL) {
+        delete globalProcessor;
+        globalProcessor = NULL;
     }
+    globalProcessor = new CherrySonicProcessor(sampleRate, channels);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jlong handle, jfloat speed, jfloat pitch) {
-    CherrySonicProcessor* processor = (CherrySonicProcessor*)handle;
-    if (processor != NULL && processor->stream != NULL) {
-        processor->currentSpeed = speed;
-        processor->currentPitch = pitch;
-        sonicSetRate(processor->stream, 1.0f);
-        sonicSetSpeed(processor->stream, speed);
-        sonicSetPitch(processor->stream, pitch);
+Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat speed, jfloat pitch) {
+    if (globalProcessor != NULL && globalProcessor->stream != NULL) {
+        globalProcessor->currentSpeed = speed;
+        globalProcessor->currentPitch = pitch;
+        sonicSetRate(globalProcessor->stream, 1.0f); 
+        sonicSetSpeed(globalProcessor->stream, speed);
+        sonicSetPitch(globalProcessor->stream, pitch);
     }
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jlong handle, jbyteArray input, jint len) {
-    CherrySonicProcessor* processor = (CherrySonicProcessor*)handle;
-    if (processor == NULL || len <= 0) return env->NewByteArray(0);
+Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray input, jint len) {
+    if (globalProcessor == NULL || len <= 0) return env->NewByteArray(0);
 
     jbyte* bufferPtr = env->GetByteArrayElements(input, NULL);
     if (bufferPtr == NULL) return env->NewByteArray(0);
@@ -107,36 +141,45 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jlon
     int inputShortsCount = safeLen / 2;
     short* inputShorts = (short*)bufferPtr;
 
-    if (fabs(processor->currentSpeed - 1.0f) < 0.001f && fabs(processor->currentPitch - 1.0f) < 0.001f) {
-        int resampledCount = processor->resampleLinear(inputShorts, inputShortsCount);
+    // 1. DIRECT RESAMPLE (If Speed/Pitch is normal)
+    if (fabs(globalProcessor->currentSpeed - 1.0f) < 0.001f && fabs(globalProcessor->currentPitch - 1.0f) < 0.001f) {
+        
+        // Stateful Resampler ကို ခေါ်သုံးထားသည်
+        int resampledCount = globalProcessor->resampleLinear(inputShorts, inputShortsCount);
+        
         env->ReleaseByteArrayElements(input, bufferPtr, 0);
 
         if (resampledCount > 0) {
             jbyteArray result = env->NewByteArray(resampledCount * 2);
-            env->SetByteArrayRegion(result, 0, resampledCount * 2, (jbyte*)processor->resampleBuffer.data());
+            env->SetByteArrayRegion(result, 0, resampledCount * 2, (jbyte*)globalProcessor->resampleBuffer.data());
             return result;
         }
         return env->NewByteArray(0);
     }
 
-    if (processor->stream == NULL) {
+    // 2. SONIC PROCESSING (If Speed/Pitch changed)
+    if (globalProcessor->stream == NULL) {
         env->ReleaseByteArrayElements(input, bufferPtr, 0);
         return env->NewByteArray(0);
     }
 
-    sonicWriteShortToStream(processor->stream, inputShorts, inputShortsCount);
+    sonicWriteShortToStream(globalProcessor->stream, inputShorts, inputShortsCount);
     env->ReleaseByteArrayElements(input, bufferPtr, 0);
 
-    int available = sonicSamplesAvailable(processor->stream);
+    int available = sonicSamplesAvailable(globalProcessor->stream);
     if (available > 0) {
-        processor->processingBuffer.resize(available);
-        int readSamples = sonicReadShortFromStream(processor->stream, processor->processingBuffer.data(), available);
+        if (globalProcessor->processingBuffer.size() < available) {
+            globalProcessor->processingBuffer.resize(available);
+        }
+        
+        int readSamples = sonicReadShortFromStream(globalProcessor->stream, globalProcessor->processingBuffer.data(), available);
 
         if (readSamples > 0) {
-            int resampledCount = processor->resampleLinear(processor->processingBuffer.data(), readSamples);
+            // Sonic output ကိုလည်း Stateful Resampler နဲ့ပဲ ဖြတ်မယ်
+            int resampledCount = globalProcessor->resampleLinear(globalProcessor->processingBuffer.data(), readSamples);
             if (resampledCount > 0) {
                 jbyteArray result = env->NewByteArray(resampledCount * 2);
-                env->SetByteArrayRegion(result, 0, resampledCount * 2, (jbyte*)processor->resampleBuffer.data());
+                env->SetByteArrayRegion(result, 0, resampledCount * 2, (jbyte*)globalProcessor->resampleBuffer.data());
                 return result;
             }
         }
@@ -146,10 +189,12 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jlon
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject, jlong handle) {
-    CherrySonicProcessor* processor = (CherrySonicProcessor*)handle;
-    if (processor != NULL && processor->stream != NULL) {
-        sonicFlushStream(processor->stream);
+Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
+    if (globalProcessor != NULL && globalProcessor->stream != NULL) {
+        sonicFlushStream(globalProcessor->stream);
+        // Reset state for next sentence
+        globalProcessor->isFirstChunk = true;
+        globalProcessor->lastSampleOfPrevChunk = 0;
     }
 }
 

@@ -9,10 +9,9 @@ object AudioProcessor {
         }
     }
 
-    external fun initSonic(sampleRate: Int, channels: Int): Long
-    external fun setConfig(handle: Long, speed: Float, pitch: Float)
-    external fun processAudio(handle: Long, input: ByteArray, length: Int): ByteArray
-    external fun flush(handle: Long)
-    external fun release(handle: Long)
+    external fun initSonic(sampleRate: Int, channels: Int)
+    external fun setConfig(speed: Float, pitch: Float)
+    external fun processAudio(input: ByteArray, length: Int): ByteArray
+    external fun flush()
 }
 
