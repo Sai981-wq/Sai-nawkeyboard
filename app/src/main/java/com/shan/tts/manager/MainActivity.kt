@@ -43,19 +43,17 @@ class MainActivity : AppCompatActivity() {
         progress.setCancelable(false) 
         progress.show()
 
-        EngineScanner.scanAllEngines(this, 
-            onProgress = { msg ->
-                runOnUiThread { 
-                    progress.setMessage(msg) 
-                }
-            },
-            onComplete = {
-                runOnUiThread {
-                    progress.dismiss()
-                    Toast.makeText(this, "All Engines Ready!", Toast.LENGTH_SHORT).show()
-                }
+        // FIXED: Removed onProgress parameter
+        EngineScanner.scanAllEngines(this) {
+            runOnUiThread {
+                try {
+                    if (progress.isShowing) {
+                        progress.dismiss()
+                    }
+                } catch (e: Exception) {}
+                Toast.makeText(this, "All Engines Ready!", Toast.LENGTH_SHORT).show()
             }
-        )
+        }
     }
 
     private fun setupDonation(viewId: Int, number: String, msg: String) {
@@ -88,7 +86,6 @@ class MainActivity : AppCompatActivity() {
         seekRate.setOnSeekBarChangeListener(getSeekListener(rateKey))
         seekPitch.setOnSeekBarChangeListener(getSeekListener(pitchKey))
 
-        val savedPkg = prefs.getString(pkgKey, defPkg)
         // Spinner logic handled in loadInstalledEngines
     }
 
