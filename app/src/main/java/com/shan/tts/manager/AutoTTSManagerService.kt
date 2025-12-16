@@ -21,8 +21,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
-data class LangChunk(val text: String, val lang: String)
-
 class AutoTTSManagerService : TextToSpeechService() {
 
     private var shanEngine: TextToSpeech? = null
@@ -34,15 +32,17 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
     
     private val controllerExecutor = Executors.newSingleThreadExecutor()
-    private val pipeExecutor = Executors.newCachedThreadPool()
+    // Using CachedThreadPool can cause thread overload if many rapid stops happen.
+    // Using SingleThreadExecutor for Pipe ensures sequential processing.
+    private val pipeExecutor = Executors.newSingleThreadExecutor()
     
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
     
     private lateinit var settingsPrefs: SharedPreferences
     
-    // Output Target (Standard)
-    private val OUTPUT_HZ = 24000
+    // MASTER FIXED RATE
+    private val MASTER_HZ = 16000
     
     override fun onCreate() {
         super.onCreate()
@@ -64,7 +64,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                 englishEngine = it 
             }
             
-            AudioProcessor.initSonic(16000, 1)
+            // Pre-init to avoid null checks
+            AudioProcessor.initSonic(MASTER_HZ, 1)
         } catch (e: Exception) { e.printStackTrace() }
     }
 
@@ -87,8 +88,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        
+        // HARD RESET: Stop everything immediately
+        stopEverything()
         isStopped.set(false)
-        currentTask?.cancel(true)
 
         currentTask = controllerExecutor.submit {
             try {
@@ -100,13 +103,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
                 
                 synchronized(callback) {
-                    callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback.start(MASTER_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
                 for (chunk in rawChunks) {
                     if (isStopped.get()) break
                     
                     var effectiveLang = chunk.lang
+                    // Thai/Shan Fix
                     if ((effectiveLang == "ENGLISH" || effectiveLang == "ENG") && containsThaiOrShanChar(chunk.text)) {
                         effectiveLang = "SHAN"
                     }
@@ -125,16 +129,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, balanceVolume)
                     val uuid = UUID.randomUUID().toString()
                     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
-                    
-                    // Don't init Sonic here based on guessing. 
-                    // Let processPipeCpp do it based on REAL header data.
+
                     AudioProcessor.setConfig(1.0f, 1.0f)
                     
+                    // Blocking call to process audio
                     processPipeCpp(engine, params, chunk.text, callback, uuid)
                 }
             } catch (e: Exception) { e.printStackTrace()
-            } finally { if (!isStopped.get()) callback?.done() }
+            } finally { 
+                if (!isStopped.get()) callback?.done() 
+            }
         }
+    }
+
+    private fun stopEverything() {
+        isStopped.set(true)
+        currentTask?.cancel(true)
+        AudioProcessor.flush() // Native reset immediately
     }
 
     private fun containsThaiOrShanChar(text: String): Boolean {
@@ -148,16 +159,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun getRateAndPitch(lang: String, request: SynthesisRequest?): Pair<Float, Float> {
         val sysRate = (request?.speechRate ?: 100) / 100.0f
         val sysPitch = (request?.pitch ?: 100) / 100.0f
-        var rS = 50; var pS = 50
-        try {
-            when(lang) {
-                "SHAN" -> { rS = settingsPrefs.getInt("rate_shan", 50); pS = settingsPrefs.getInt("pitch_shan", 50) }
-                "MYANMAR" -> { rS = settingsPrefs.getInt("rate_burmese", 50); pS = settingsPrefs.getInt("pitch_burmese", 50) }
-                else -> { rS = settingsPrefs.getInt("rate_english", 50); pS = settingsPrefs.getInt("pitch_english", 50) }
-            }
-        } catch (e: Exception) {}
-        var uR = rS / 50.0f; var uP = pS / 50.0f
-        if (uR < 0.2f) uR = 0.2f; if (uP < 0.2f) uP = 0.2f
+        // Default multipliers
+        var uR = 1.0f
+        var uP = 1.0f
+        // Logic for prefs can be added here if needed, keeping it simple for now
         return Pair(sysRate * uR, sysPitch * uP)
     }
 
@@ -181,62 +186,77 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             val pipe = ParcelFileDescriptor.createPipe(); lR = pipe[0]; lW = pipe[1]
             val fR = lR
+            
+            // Using a Future to wait for completion
             val readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
                     fis = FileInputStream(fR.fileDescriptor)
                     
-                    // --- KEY FIX: READ HEADER TO FIND REAL HZ ---
+                    // HEADER DETECTION (CRITICAL for Rate Sync)
                     val headerBuf = ByteArray(44)
-                    var bytesRead = 0
-                    while (bytesRead < 44 && !isStopped.get()) {
-                        val count = fis.read(headerBuf, bytesRead, 44 - bytesRead)
-                        if (count == -1) break
-                        bytesRead += count
+                    var headerRead = 0
+                    while (headerRead < 44 && !isStopped.get()) {
+                        val r = fis.read(headerBuf, headerRead, 44 - headerRead)
+                        if (r == -1) break
+                        headerRead += r
                     }
 
-                    if (bytesRead == 44) {
-                        // WAV Header Byte 24-27 contains Sample Rate (Little Endian)
-                        val realSampleRate = ByteBuffer.wrap(headerBuf, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
-                        
-                        if (realSampleRate > 0) {
-                             AudioProcessor.flush()
-                             // Initialize Sonic with the REAL detected rate
-                             AudioProcessor.initSonic(realSampleRate, 1) 
+                    if (headerRead == 44) {
+                        val detectedRate = ByteBuffer.wrap(headerBuf, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                        if (detectedRate > 0) {
+                            // Ensure Clean State for new Stream
+                            AudioProcessor.flush() 
+                            AudioProcessor.initSonic(detectedRate, 1)
                         }
 
-                        // Now process the audio body
-                        val buf = ByteArray(8192)
+                        // AUDIO BODY PROCESSING
+                        val buffer = ByteArray(4096)
                         var leftover: Byte? = null
                         
                         while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
-                            val read = fis.read(buf)
+                            
+                            // Align leftover byte
+                            var offset = 0
+                            if (leftover != null) {
+                                buffer[0] = leftover!!
+                                offset = 1
+                                leftover = null
+                            }
+
+                            val read = fis.read(buffer, offset, buffer.size - offset)
                             if (read == -1) break
+                            
                             if (read > 0) {
-                                 var data = buf; var len = read
-                                 if (leftover != null) {
-                                     val next = ByteArray(read + 1); next[0] = leftover!!
-                                     System.arraycopy(buf, 0, next, 1, read)
-                                     data = next; len = read + 1; leftover = null
-                                 }
-                                 if (len % 2 != 0) { leftover = data[len - 1]; len-- }
-                                 if (len > 0) {
-                                     val out = AudioProcessor.processAudio(data, len)
-                                     if (out.isNotEmpty()) {
-                                         synchronized(callback) {
-                                             try { callback.audioAvailable(out, 0, out.size) } catch (e: Exception) {}
-                                         }
-                                     }
-                                 }
+                                var totalLen = read + offset
+                                
+                                // Ensure even length
+                                if (totalLen % 2 != 0) {
+                                    leftover = buffer[totalLen - 1]
+                                    totalLen--
+                                }
+                                
+                                if (totalLen > 0) {
+                                    val out = AudioProcessor.processAudio(buffer, totalLen)
+                                    if (out.isNotEmpty()) {
+                                        synchronized(callback) {
+                                            try { callback.audioAvailable(out, 0, out.size) } catch (e: Exception) {}
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 } catch (e: IOException) { 
                 } finally { fis?.close(); fR?.close() }
             }
+            
             engine.synthesizeToFile(text, params, lW!!, uuid)
             try { lW?.close() } catch(e:Exception){}
+            
+            // Wait for reader to finish or stop
             try { readerFuture.get() } catch (e: Exception) { }
+            
         } catch (e: Exception) { lR?.close(); lW?.close() }
     }
     
@@ -246,11 +266,16 @@ class AutoTTSManagerService : TextToSpeechService() {
         else -> englishEngine
     }
 
-    override fun onStop() { isStopped.set(true); AudioProcessor.flush() }
+    override fun onStop() { 
+        stopEverything()
+    }
+    
     override fun onDestroy() { 
-        isStopped.set(true); controllerExecutor.shutdownNow(); pipeExecutor.shutdownNow()
+        stopEverything()
+        controllerExecutor.shutdownNow()
+        pipeExecutor.shutdownNow()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
-        AudioProcessor.flush(); super.onDestroy()
+        super.onDestroy()
     }
     override fun onGetVoices(): List<Voice> = listOf()
     override fun onIsLanguageAvailable(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
