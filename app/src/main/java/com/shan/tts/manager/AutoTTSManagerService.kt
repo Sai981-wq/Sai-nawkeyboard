@@ -31,7 +31,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmesePkgName: String = ""
     private var englishPkgName: String = ""
     
+    // Single Thread for Control to prevent overlaps
     private val controllerExecutor = Executors.newSingleThreadExecutor()
+    // Cached Thread Pool is OK if we manage tasks correctly, but Single is safer for pipes
     private val pipeExecutor = Executors.newCachedThreadPool()
     
     private var currentTask: Future<*>? = null
@@ -39,7 +41,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     private lateinit var settingsPrefs: SharedPreferences
     
-    private val OUTPUT_HZ = 16000
+    // TARGET 24000Hz (Better Quality Upsampling)
+    private val TARGET_HZ = 24000
     
     override fun onCreate() {
         super.onCreate()
@@ -61,6 +64,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 englishEngine = it 
             }
             
+            // Init with default, C++ will handle re-init efficiently now
             AudioProcessor.initSonic(16000, 1)
         } catch (e: Exception) { e.printStackTrace() }
     }
@@ -84,7 +88,12 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        stopEverything()
+        
+        // STOP Previous immediately
+        isStopped.set(true)
+        currentTask?.cancel(true)
+        AudioProcessor.flush()
+        
         isStopped.set(false)
 
         currentTask = controllerExecutor.submit {
@@ -97,13 +106,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
                 
                 synchronized(callback) {
-                    callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    // Start with 24000Hz (High Quality)
+                    callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
                 for (chunk in rawChunks) {
                     if (isStopped.get()) break
                     
                     var effectiveLang = chunk.lang
+                    // Thai/Shan Correction
                     if ((effectiveLang == "ENGLISH" || effectiveLang == "ENG") && containsThaiOrShanChar(chunk.text)) {
                         effectiveLang = "SHAN"
                     }
@@ -130,12 +141,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             } catch (e: Exception) { e.printStackTrace()
             } finally { if (!isStopped.get()) callback?.done() }
         }
-    }
-
-    private fun stopEverything() {
-        isStopped.set(true)
-        currentTask?.cancel(true)
-        AudioProcessor.flush()
     }
 
     private fun containsThaiOrShanChar(text: String): Boolean {
@@ -188,6 +193,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                     fis = FileInputStream(fR.fileDescriptor)
                     val headerBuf = ByteArray(44)
                     var headerBytesRead = 0
+                    
+                    // Strictly read header
                     while (headerBytesRead < 44 && !isStopped.get()) {
                         val r = fis.read(headerBuf, headerBytesRead, 44 - headerBytesRead)
                         if (r == -1) break
@@ -197,7 +204,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (headerBytesRead == 44) {
                         val realSampleRate = ByteBuffer.wrap(headerBuf, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
                         if (realSampleRate > 0) {
-                             AudioProcessor.flush()
+                             // C++ side now handles re-init efficiently without crashing
                              AudioProcessor.initSonic(realSampleRate, 1) 
                         }
 
@@ -249,14 +256,17 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() { 
-        stopEverything()
+        isStopped.set(true)
+        currentTask?.cancel(true)
+        AudioProcessor.flush()
     }
     
     override fun onDestroy() { 
-        stopEverything()
-        controllerExecutor.shutdownNow(); pipeExecutor.shutdownNow()
+        isStopped.set(true)
+        controllerExecutor.shutdownNow()
+        pipeExecutor.shutdownNow()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
-        super.onDestroy()
+        AudioProcessor.flush(); super.onDestroy()
     }
     override fun onGetVoices(): List<Voice> = listOf()
     override fun onIsLanguageAvailable(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
