@@ -1,45 +1,64 @@
 package com.shan.tts.manager
 
-import java.util.Locale
+import android.util.Log
 
 data class LangChunk(val text: String, val lang: String)
 
 object LanguageUtils {
-    
-    fun splitHelper(text: String): List<LangChunk> {
-        val chunks = mutableListOf<LangChunk>()
-        var currentLang = ""
-        val buffer = StringBuilder()
+    private const val TAG = "AutoTTS_Utils"
+    private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
+    private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
 
-        for (char in text) {
-            val lang = detectLang(char)
-            
-            if (lang != currentLang && buffer.isNotEmpty()) {
-                chunks.add(LangChunk(buffer.toString(), currentLang))
-                buffer.setLength(0)
-            }
-            
-            currentLang = lang
-            buffer.append(char)
-        }
-        
-        if (buffer.isNotEmpty()) {
-            chunks.add(LangChunk(buffer.toString(), currentLang))
-        }
-        
-        return chunks
+    fun detectLanguage(text: CharSequence?): String {
+        if (text.isNullOrBlank()) return "ENGLISH"
+        val input = text.toString()
+        if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
+        if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
+        return "ENGLISH"
     }
 
-    private fun detectLang(c: Char): String {
-        val code = c.code
-        return when {
-            // Myanmar & Shan (1000-109F) + Extended A/B
-            code in 0x1000..0x109F || code in 0xAA60..0xAA7F || code in 0xA9E0..0xA9FF -> "MYANMAR" // Will be refined by AutoTTSManager
-            // Thai (0E00-0E7F)
-            code in 0x0E00..0x0E7F -> "SHAN" // Treat Thai as Shan/Espeak
-            // English/Latin
-            else -> "ENGLISH"
+    fun splitHelper(text: String): List<LangChunk> {
+        val list = ArrayList<LangChunk>()
+        if (text.isBlank()) return list
+
+        Log.d(TAG, "Splitting text: $text")
+
+        val rawParts = text.split(Regex("(?<=[\\s\\p{Punct}])|(?=[\\s\\p{Punct}])"))
+        var currentBuffer = StringBuilder()
+        var currentLang = ""
+
+        for (part in rawParts) {
+            if (part.isEmpty()) continue
+
+            var detected = detectLanguage(part)
+
+            if (detected == "ENGLISH" && !part.any { it.isLetter() }) {
+                detected = if (currentLang.isNotEmpty()) currentLang else "ENGLISH"
+            }
+
+            if (currentLang.isEmpty()) {
+                currentLang = detected
+                currentBuffer.append(part)
+            } else if (currentLang == detected) {
+                currentBuffer.append(part)
+            } else {
+                if (detected == "ENGLISH" && part.length < 3 && currentLang != "ENGLISH") {
+                    currentBuffer.append(part)
+                } else {
+                    list.add(LangChunk(currentBuffer.toString(), currentLang))
+                    currentBuffer = StringBuilder(part)
+                    currentLang = detected
+                }
+            }
         }
+
+        if (currentBuffer.isNotEmpty()) {
+            val finalLang = if (currentLang.isEmpty()) "ENGLISH" else currentLang
+            list.add(LangChunk(currentBuffer.toString(), finalLang))
+        }
+
+        Log.d(TAG, "Split Result: $list")
+        return list
     }
 }
 
