@@ -4,14 +4,14 @@ object AudioProcessor {
     init {
         try {
             System.loadLibrary("cherry-audio")
-        } catch (e: UnsatisfiedLinkError) {
+        } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
-    external fun initSonic(rate: Int, ch: Int)
+    external fun initSonic(sampleRate: Int, channels: Int)
     external fun setConfig(speed: Float, pitch: Float)
-    external fun processAudio(inData: ByteArray, len: Int): ByteArray
+    external fun processAudio(input: ByteArray, length: Int): ByteArray
     external fun flush()
 }
 
