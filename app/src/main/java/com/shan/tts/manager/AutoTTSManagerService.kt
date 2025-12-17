@@ -66,7 +66,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun initEngine(pkg: String?, locale: Locale, onSuccess: (TextToSpeech) -> Unit) {
         if (pkg.isNullOrEmpty()) return
-        // AppLogger.log("Initializing: $pkg")
         try {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
@@ -105,23 +104,27 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
 
-                    // FORCE HZ Logic (အသံကွဲတာ ပျောက်ဖို့ အရေးကြီးတယ်)
+                    // 1. Hz Rate Correction
                     var inputRate = configPrefs.getInt("RATE_$activePkg", 0)
-                    
                     if (activePkg.lowercase().contains("eloquence")) {
                         inputRate = 11025
-                    } 
-                    else if (activePkg.lowercase().contains("espeak") || activePkg.lowercase().contains("shan")) {
+                    } else if (activePkg.lowercase().contains("espeak") || activePkg.lowercase().contains("shan")) {
                         inputRate = 22050
-                    }
-                    else if (inputRate == 0) {
+                    } else if (inputRate == 0) {
                         inputRate = getFallbackRate(activePkg)
                     }
 
-                    AppLogger.log("[${chunk.lang}] $activePkg ($inputRate Hz)")
+                    // 2. Speed & Pitch from Seekbar (Default 100 = 1.0x)
+                    val speedVal = configPrefs.getInt("SPEED_$activePkg", 100)
+                    val pitchVal = configPrefs.getInt("PITCH_$activePkg", 100)
+
+                    val finalSpeed = speedVal / 100.0f
+                    val finalPitch = pitchVal / 100.0f
+
+                    // AppLogger.log("[${chunk.lang}] $activePkg ($inputRate Hz) | S:$finalSpeed P:$finalPitch")
 
                     AudioProcessor.initSonic(inputRate, 1)
-                    AudioProcessor.setConfig(1.0f, 1.0f)
+                    AudioProcessor.setConfig(finalSpeed, finalPitch)
 
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(activePkg))
@@ -153,6 +156,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             lR = pipe[0]
             lW = pipe[1]
             
+            // Writer Thread
             writerFuture = pipeExecutor.submit {
                 try {
                     engine.synthesizeToFile(text, params, lW!!, uuid)
@@ -163,6 +167,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
+            // Reader Thread
             readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
@@ -180,6 +185,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                     
+                    // Drain remaining audio
                     if (!isStopped.get()) {
                         val tail = AudioProcessor.drain()
                         sendAudioToSystem(tail, callback)
@@ -222,7 +228,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         AudioProcessor.flush()
     }
 
-    // Helper functions (fallback, pkg, etc.) remain the same...
     private fun getFallbackRate(pkg: String): Int {
         val lower = pkg.lowercase(Locale.ROOT)
         return when {
@@ -260,6 +265,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         controllerExecutor.shutdownNow()
         pipeExecutor.shutdownNow()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
+        AudioProcessor.flush()
         super.onDestroy() 
     }
     override fun onGetVoices(): List<Voice> = listOf()
