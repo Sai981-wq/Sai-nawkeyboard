@@ -11,8 +11,7 @@
 
 #define TARGET_RATE 24000
 
-// --- GLOBAL MUTEX (LOCK) ---
-// ဒါက function တွေ တစ်ပြိုင်နက်အလုပ်လုပ်ပြီး တိုက်မိတာကို ကာကွယ်ပေးပါမယ်
+// GLOBAL MUTEX (Thread တိုက်မိခြင်းကို ကာကွယ်ရန်)
 std::mutex processorMutex;
 
 class CherrySonicProcessor {
@@ -30,7 +29,7 @@ public:
         stream = sonicCreateStream(inRate, channels);
         sonicSetQuality(stream, 0);
         sonicSetVolume(stream, 1.0f);
-        outputBuffer.reserve(16384);
+        outputBuffer.reserve(4096); // Buffer အသေးသုံးထားသည်
         LOGI("Created Processor: In=%d", inRate);
     }
 
@@ -39,6 +38,7 @@ public:
         LOGI("Destroyed Processor");
     }
 
+    // Cubic Interpolation for smooth upsampling
     inline short cubic(short y0, short y1, short y2, short y3, double mu) {
         double mu2 = mu * mu;
         double a0 = -0.5*y0 + 1.5*y1 - 1.5*y2 + 0.5*y3;
@@ -97,8 +97,7 @@ static CherrySonicProcessor* proc = NULL;
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint rate, jint ch) {
-    // LOCK GUARD: ဒီ function ပြီးမှ တခြားလူ ဝင်ရမယ်
-    std::lock_guard<std::mutex> lock(processorMutex);
+    std::lock_guard<std::mutex> lock(processorMutex); // LOCK
     
     if (proc) {
         if (proc->inRate == rate) {
@@ -106,7 +105,6 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint ra
             proc->p0 = 0; proc->p1 = 0;
             proc->timePos = 0.0;
             proc->clear();
-            LOGI("Reusing Processor");
             return;
         }
         delete proc;
@@ -125,8 +123,7 @@ Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat 
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray in, jint len) {
-    // LOCK GUARD IS CRITICAL HERE
-    std::lock_guard<std::mutex> lock(processorMutex); 
+    std::lock_guard<std::mutex> lock(processorMutex); // LOCK IS CRITICAL HERE
     
     if (!proc || len <= 0) return env->NewByteArray(0);
 
@@ -158,7 +155,6 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex); // LOCK
     if (proc) {
-        LOGI("Flushing Stream");
         sonicFlushStream(proc->stream);
         proc->p0 = 0; proc->p1 = 0;
         proc->timePos = 0.0;

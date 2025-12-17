@@ -12,153 +12,297 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import java.io.FileInputStream
+import java.io.IOException
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
+
     private var shanEngine: TextToSpeech? = null
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
 
-    private lateinit var settingsPrefs: SharedPreferences
-    private lateinit var configPrefs: SharedPreferences
+    private var shanPkgName: String = ""
+    private var burmesePkgName: String = ""
+    private var englishPkgName: String = ""
 
-    private val executor = Executors.newSingleThreadExecutor()
+    private val controllerExecutor = Executors.newSingleThreadExecutor()
+    private val pipeExecutor = Executors.newCachedThreadPool()
+
+    private var currentTask: Future<*>? = null
+    private var currentPipeTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
+    
+    // Engine ပြီးမပြီး စောင့်ဆိုင်းရန် Lock များ
+    private val latches = ConcurrentHashMap<String, CountDownLatch>()
 
-    private val OUTPUT_RATE = 24000
+    private lateinit var configPrefs: SharedPreferences
+    private lateinit var settingsPrefs: SharedPreferences
+
+    private val OUTPUT_HZ = 24000
 
     override fun onCreate() {
         super.onCreate()
-        settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-        configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
+        AppLogger.log("=== Service Created ===")
+        try {
+            settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+            configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
-        initEngine(settingsPrefs.getString("pref_shan_pkg", "com.espeak.ng"), Locale("shn")) { shanEngine = it }
-        initEngine(settingsPrefs.getString("pref_burmese_pkg", "com.google.android.tts"), Locale("my", "MM")) { burmeseEngine = it }
-        initEngine(settingsPrefs.getString("pref_english_pkg", "com.google.android.tts"), Locale.US) { englishEngine = it }
-    }
+            shanPkgName = settingsPrefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
+            initEngine(shanPkgName, Locale("shn")) { shanEngine = it }
 
-    private fun initEngine(pkg: String?, locale: Locale, onReady: (TextToSpeech) -> Unit) {
-        if (pkg.isNullOrEmpty()) return
-        
-        lateinit var tts: TextToSpeech
-        tts = TextToSpeech(applicationContext, { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                try { tts.language = locale } catch (_: Exception) {}
-                onReady(tts)
-            }
-        }, pkg)
-    }
+            burmesePkgName = settingsPrefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
+            initEngine(burmesePkgName, Locale("my", "MM")) { burmeseEngine = it }
 
-    override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
-        if (callback == null || request == null) return
-        stopAll()
-        isStopped.set(false)
+            englishPkgName = settingsPrefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
+            initEngine(englishPkgName, Locale.US) { englishEngine = it }
 
-        executor.execute {
-            val chunks = LanguageUtils.splitHelper(request.charSequenceText.toString())
-            
-            synchronized(callback) {
-                callback.start(OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
-            }
-
-            for (chunk in chunks) {
-                if (isStopped.get()) break
-                val engine = getEngine(chunk.lang) ?: continue
-                val pkg = getPkg(chunk.lang)
-                
-                val inputRate = configPrefs.getInt("RATE_$pkg", 0).takeIf { it > 0 } ?: fallbackRate(pkg)
-
-                AudioProcessor.initSonic(inputRate, 1)
-
-                val params = Bundle()
-                val id = UUID.randomUUID().toString()
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id)
-
-                process(engine, params, chunk.text, callback, id)
-            }
-            callback.done()
+            AudioProcessor.initSonic(16000, 1)
+        } catch (e: Exception) {
+            AppLogger.error("Error in onCreate", e)
         }
     }
 
-    private fun process(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, id: String) {
-        var pipe: Array<ParcelFileDescriptor>? = null
+    private fun initEngine(pkg: String?, locale: Locale, onSuccess: (TextToSpeech) -> Unit) {
+        if (pkg.isNullOrEmpty()) return
+        AppLogger.log("Initializing Engine: $pkg ($locale)")
         try {
-            pipe = ParcelFileDescriptor.createPipe()
-            val reader = pipe[0]
-            val writer = pipe[1]
+            var tempTTS: TextToSpeech? = null
+            tempTTS = TextToSpeech(applicationContext, { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    AppLogger.log("Engine Bound: $pkg")
+                    try { tempTTS?.language = locale } catch (e: Exception) {}
+                    onSuccess(tempTTS!!)
+                    
+                    // Engine Listener (အရေးကြီးသည်)
+                    tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(id: String?) {}
+                        
+                        override fun onDone(id: String?) {
+                            // Engine ပြီးပြီဖြစ်ကြောင်း Lock ဖွင့်ပေးခြင်း
+                            id?.let { latches[it]?.countDown() }
+                        }
+                        
+                        override fun onError(id: String?) {
+                            AppLogger.error("Engine internal error: $pkg")
+                            id?.let { latches[it]?.countDown() }
+                        }
+                    })
+                } else {
+                    AppLogger.error("Failed to bind: $pkg")
+                }
+            }, pkg)
+        } catch (e: Exception) {
+            AppLogger.error("Crash initializing $pkg", e)
+        }
+    }
 
-            val result = engine.synthesizeToFile(text, params, writer, id)
-            
-            writer.close() 
+    override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
+        val text = request?.charSequenceText.toString()
 
-            if (result == TextToSpeech.SUCCESS) {
-                FileInputStream(reader.fileDescriptor).use { fis ->
-                    val buf = ByteArray(8192)
-                    while (!isStopped.get()) {
-                        val r = fis.read(buf)
-                        if (r == -1) break
-                        if (r > 0) {
-                            val out = AudioProcessor.processAudio(buf, r)
+        stopEverything("New Request")
+        isStopped.set(false)
+
+        currentTask = controllerExecutor.submit {
+            try {
+                if (callback == null) return@submit
+                val rawChunks = LanguageUtils.splitHelper(text)
+                if (rawChunks.isEmpty()) {
+                    callback.done()
+                    return@submit
+                }
+
+                synchronized(callback) {
+                    callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+                }
+
+                for (chunk in rawChunks) {
+                    if (isStopped.get()) {
+                        AppLogger.log("Stopped during processing loop.")
+                        break
+                    }
+
+                    val engine = getEngine(chunk.lang) ?: continue
+                    val activePkg = getPkgName(chunk.lang)
+
+                    var inputRate = configPrefs.getInt("RATE_$activePkg", 0)
+                    if (inputRate == 0) inputRate = getFallbackRate(activePkg)
+
+                    AppLogger.log("[${chunk.lang}] $activePkg ($inputRate Hz)")
+
+                    AudioProcessor.initSonic(inputRate, 1)
+                    AudioProcessor.setConfig(1.0f, 1.0f)
+
+                    val params = Bundle()
+                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(activePkg))
+                    val uuid = UUID.randomUUID().toString()
+                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
+
+                    processPipeCpp(engine, params, chunk.text, callback, uuid)
+                }
+            } catch (e: Exception) {
+                AppLogger.error("Synthesize Critical Error", e)
+            } finally {
+                if (!isStopped.get()) {
+                    // အသံမဆုံးခင် ဖြတ်မချအောင် ခဏစောင့်
+                    try { Thread.sleep(150) } catch (e: Exception) {}
+                    AppLogger.log("Done.")
+                    callback?.done()
+                }
+            }
+        }
+    }
+
+    private fun processPipeCpp(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
+        var lR: ParcelFileDescriptor? = null
+        var lW: ParcelFileDescriptor? = null
+        
+        // Lock ဖန်တီးခြင်း (Engine ပြီးမပြီး စောင့်ရန်)
+        val latch = CountDownLatch(1)
+        latches[uuid] = latch
+        
+        try {
+            val pipe = ParcelFileDescriptor.createPipe()
+            lR = pipe[0]
+            lW = pipe[1]
+            val fR = lR
+
+            // 1. Reader Thread (Pipe ထဲက အသံကို ဖတ်ပြီး C++ ပို့)
+            currentPipeTask = pipeExecutor.submit {
+                var fis: FileInputStream? = null
+                try {
+                    fis = FileInputStream(fR.fileDescriptor)
+                    val buffer = ByteArray(2048) // Buffer အသေးသုံးခြင်း (Safe Size)
+                    
+                    while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
+                        val read = fis.read(buffer)
+                        if (read == -1) break 
+                        if (read > 0) {
+                            if (isStopped.get()) break
+                            
+                            val out = AudioProcessor.processAudio(buffer, read)
                             if (out.isNotEmpty()) {
                                 synchronized(callback) {
-                                    callback.audioAvailable(out, 0, out.size)
+                                    try {
+                                        // အသံကို အပိုင်းသေးလေးတွေခွဲပို့ (Buffer overflow ကာကွယ်ရန်)
+                                        var offset = 0
+                                        while (offset < out.size) {
+                                            val chunkLen = min(4096, out.size - offset)
+                                            callback.audioAvailable(out, offset, chunkLen)
+                                            offset += chunkLen
+                                        }
+                                    } catch (e: Exception) {
+                                        AppLogger.error("Audio write failed", e)
+                                    }
                                 }
                             }
                         }
                     }
+                } catch (e: IOException) {
+                } finally {
+                    try { fis?.close() } catch (e: Exception) {}
+                    try { fR?.close() } catch (e: Exception) {}
                 }
             }
-            reader.close()
+
+            // 2. Engine ကို အသံဖန်တီးခိုင်းခြင်း
+            val result = engine.synthesizeToFile(text, params, lW!!, uuid)
+            
+            if (result == TextToSpeech.SUCCESS) {
+                // Engine က "Done" လို့ ပြောတဲ့အထိ ဒီနေရာမှာ စောင့်နေပါမယ်
+                try {
+                    latch.await(15, TimeUnit.SECONDS) // အကြာဆုံး ၁၅ စက္ကန့် စောင့်မယ်
+                } catch (e: InterruptedException) {
+                    AppLogger.log("Latch interrupted")
+                }
+            } else {
+                AppLogger.error("Engine failed to start synthesis")
+            }
+
         } catch (e: Exception) {
-            e.printStackTrace()
+            AppLogger.error("Pipe Setup Error", e)
+        } finally {
+            // ပြီးမှ လမ်းကြောင်းပိတ်မယ် (ဒါမှ Engine Error မတက်မှာပါ)
+            try { lW?.close() } catch (e: Exception) {}
+            try { lR?.close() } catch (e: Exception) {}
+            
+            latches.remove(uuid) // Cleanup
+            
+            // Reader ပြီးတဲ့အထိ စောင့်
+            try { currentPipeTask?.get() } catch (e: Exception) {}
         }
+    }
+
+    private fun stopEverything(reason: String) {
+        // AppLogger.log("Stopping: $reason")
+        isStopped.set(true)
+        currentTask?.cancel(true)
+        currentPipeTask?.cancel(true)
+        
+        // ရှိသမျှ Lock တွေအကုန်ဖွင့်ချ (မစောင့်ခိုင်းတော့ဘူး)
+        latches.values.forEach { it.countDown() }
+        latches.clear()
         
         AudioProcessor.flush()
     }
 
-    private fun stopAll() {
-        isStopped.set(true)
-        AudioProcessor.flush()
-    }
-
-    private fun fallbackRate(pkg: String): Int {
-        val p = pkg.lowercase(Locale.ROOT)
+    private fun getFallbackRate(pkg: String): Int {
+        val lower = pkg.lowercase(Locale.ROOT)
         return when {
-            p.contains("eloquence") -> 11025
-            p.contains("espeak") || p.contains("shan") -> 22050
-            else -> 24000
+            lower.contains("eloquence") -> 11025
+            lower.contains("espeak") || lower.contains("shan") -> 22050
+            lower.contains("google") -> 24000
+            else -> 16000
         }
     }
 
+    private fun getPkgName(lang: String) = when (lang) {
+        "SHAN" -> shanPkgName
+        "MYANMAR" -> burmesePkgName
+        else -> englishPkgName
+    }
+
     private fun getEngine(lang: String) = when (lang) {
-        "SHAN" -> shanEngine ?: englishEngine
-        "MYANMAR" -> burmeseEngine ?: englishEngine
+        "SHAN" -> if (shanEngine != null) shanEngine else englishEngine
+        "MYANMAR" -> if (burmeseEngine != null) burmeseEngine else englishEngine
         else -> englishEngine
     }
 
-    private fun getPkg(lang: String) = when (lang) {
-        "SHAN" -> settingsPrefs.getString("pref_shan_pkg", "com.espeak.ng")!!
-        "MYANMAR" -> settingsPrefs.getString("pref_burmese_pkg", "com.google.android.tts")!!
-        else -> settingsPrefs.getString("pref_english_pkg", "com.google.android.tts")!!
+    private fun getVolumeCorrection(pkg: String): Float {
+        val l = pkg.lowercase(Locale.ROOT)
+        return when {
+            l.contains("vocalizer") -> 0.85f
+            l.contains("eloquence") -> 0.6f
+            else -> 1.0f
+        }
     }
 
-    override fun onStop() { stopAll() }
+    override fun onStop() {
+        stopEverything("onStop Called")
+    }
 
     override fun onDestroy() {
-        stopAll()
+        AppLogger.log("Service Destroyed")
+        stopEverything("Destroy")
+        controllerExecutor.shutdownNow()
+        pipeExecutor.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
-        executor.shutdownNow()
+        AudioProcessor.flush()
         super.onDestroy()
     }
-    
-    override fun onGetVoices(): List<Voice> = emptyList()
-    override fun onIsLanguageAvailable(l: String?, c: String?, v: String?) = TextToSpeech.LANG_AVAILABLE
-    override fun onLoadLanguage(l: String?, c: String?, v: String?) = TextToSpeech.LANG_AVAILABLE
+
+    override fun onGetVoices(): List<Voice> = listOf()
+    override fun onIsLanguageAvailable(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    override fun onLoadLanguage(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onGetLanguage() = arrayOf("eng", "USA", "")
 }
 
