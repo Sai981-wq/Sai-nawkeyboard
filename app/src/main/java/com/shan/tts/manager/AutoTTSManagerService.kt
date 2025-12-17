@@ -11,10 +11,12 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
 import java.io.FileInputStream
+import java.io.IOException
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -23,19 +25,19 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
 
-    private var shanPkgName = ""
-    private var burmesePkgName = ""
-    private var englishPkgName = ""
+    private var shanPkgName: String = ""
+    private var burmesePkgName: String = ""
+    private var englishPkgName: String = ""
 
-    private val executor = Executors.newCachedThreadPool()
-    
-    // Session ID to prevent crashes during seekbar adjustment
-    private val currentSessionId = AtomicLong(0)
-    
-    // Track the last rate to avoid restarting audio track unnecessarily
-    private var lastReportedRate = 0
+    private val controllerExecutor = Executors.newSingleThreadExecutor()
+    private val pipeExecutor = Executors.newCachedThreadPool()
 
+    private var currentTask: Future<*>? = null
+    private val isStopped = AtomicBoolean(false)
     private lateinit var prefs: SharedPreferences
+
+    private val OUTPUT_HZ = 24000
+    private var currentSonicRate = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -50,9 +52,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
-            
+
+            AudioProcessor.initSonic(16000, 1)
         } catch (e: Exception) {
-            e.printStackTrace()
+            AppLogger.error("Error in onCreate", e)
         }
     }
 
@@ -67,153 +70,69 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }, pkg)
         } catch (e: Exception) {
-            e.printStackTrace()
+            AppLogger.error("Crash initializing $pkg", e)
         }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        if (callback == null) return
+        stopEverything("New Request")
+        isStopped.set(false)
 
-        val sessionId = currentSessionId.incrementAndGet()
-        
-        try { AudioProcessor.flush() } catch (e: Exception) {}
-        
-        // Reset last rate for new request
-        lastReportedRate = 0
-
-        executor.submit {
-            if (sessionId != currentSessionId.get()) return@submit
-
-            val rawChunks = TTSUtils.splitHelper(text)
-            if (rawChunks.isEmpty()) {
-                callback.done()
-                return@submit
-            }
-
-            for (chunk in rawChunks) {
-                if (sessionId != currentSessionId.get()) break
-
-                val engineData = getEngineDataForLang(chunk.lang)
-                val engine = engineData.engine ?: continue
-
-                val speedRaw = prefs.getInt(engineData.rateKey, 50)
-                val pitchRaw = prefs.getInt(engineData.pitchKey, 50)
-
-                val finalSpeed = 0.5f + (speedRaw / 100.0f)
-                val finalPitch = 0.5f + (pitchRaw / 100.0f)
-                
-                val params = Bundle()
-                val uuid = UUID.randomUUID().toString()
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
-
-                processChunk(sessionId, engine, params, chunk.text, callback, finalSpeed, finalPitch)
-            }
-            
-            if (sessionId == currentSessionId.get()) {
-                try { callback.done() } catch (e: Exception) {}
-            }
-        }
-    }
-
-    private fun processChunk(
-        sessionId: Long,
-        engine: TextToSpeech,
-        params: Bundle,
-        text: String,
-        callback: SynthesisCallback,
-        speed: Float,
-        pitch: Float
-    ) {
-        var lR: ParcelFileDescriptor? = null
-        var lW: ParcelFileDescriptor? = null
-        
-        try {
-            val pipe = ParcelFileDescriptor.createPipe()
-            lR = pipe[0]
-            lW = pipe[1]
-            
-            val writerTask = executor.submit {
-                try {
-                    engine.synthesizeToFile(text, params, lW!!, UUID.randomUUID().toString())
-                } catch (e: Exception) {
-                } finally {
-                    try { lW?.close() } catch (e: Exception) {}
-                }
-            }
-
-            var fis: FileInputStream? = null
+        currentTask = controllerExecutor.submit {
             try {
-                fis = FileInputStream(lR!!.fileDescriptor)
-                val header = ByteArray(44)
-                val bytesRead = fis.read(header)
+                if (callback == null) return@submit
                 
-                var realRate = 16000 
+                val rawChunks = TTSUtils.splitHelper(text)
                 
-                if (bytesRead == 44) {
-                    realRate = (header[24].toInt() and 0xFF) or
-                               ((header[25].toInt() and 0xFF) shl 8) or
-                               ((header[26].toInt() and 0xFF) shl 16) or
-                               ((header[27].toInt() and 0xFF) shl 24)
+                if (rawChunks.isEmpty()) {
+                    callback.done()
+                    return@submit
                 }
 
                 synchronized(callback) {
-                    if (sessionId == currentSessionId.get()) {
-                        // Only restart audio track if Hz changes (Smooth transition for mixed langs)
-                        if (realRate != lastReportedRate) {
-                            callback.start(realRate, AudioFormat.ENCODING_PCM_16BIT, 1)
-                            lastReportedRate = realRate
-                        }
+                    callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+                }
+
+                for (chunk in rawChunks) {
+                    if (isStopped.get()) break
+
+                    val engineData = getEngineDataForLang(chunk.lang)
+                    val engine = engineData.engine ?: continue
+                    val pkgName = engineData.pkgName
+
+                    var inputRate = 16000
+                    val lowerPkg = pkgName.lowercase(Locale.ROOT)
+                    if (lowerPkg.contains("eloquence")) inputRate = 11025
+                    else if (lowerPkg.contains("espeak") || lowerPkg.contains("shan")) inputRate = 22050
+                    else if (lowerPkg.contains("google")) inputRate = 24000
+
+                    val speedRaw = prefs.getInt(engineData.rateKey, 50)
+                    val pitchRaw = prefs.getInt(engineData.pitchKey, 50)
+
+                    val safeSpeed = if (speedRaw < 5) 5 else speedRaw
+                    val safePitch = if (pitchRaw < 5) 5 else pitchRaw
+
+                    val finalSpeed = safeSpeed / 50.0f
+                    val finalPitch = safePitch / 50.0f
+
+                    if (currentSonicRate != inputRate) {
+                        AudioProcessor.initSonic(inputRate, 1)
+                        currentSonicRate = inputRate
                     }
-                }
+                    AudioProcessor.setConfig(finalSpeed, finalPitch)
 
-                AudioProcessor.initSonic(realRate, 1)
-                AudioProcessor.setConfig(speed, pitch)
+                    val params = Bundle()
+                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(pkgName))
+                    val uuid = UUID.randomUUID().toString()
+                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
-                val buffer = ByteArray(4096)
-                while (sessionId == currentSessionId.get()) {
-                    val read = fis.read(buffer)
-                    if (read == -1) break
-                    if (read > 0) {
-                        val out = AudioProcessor.processAudio(buffer, read)
-                        sendSafe(sessionId, out, callback)
-                    }
+                    processDualThreads(engine, params, chunk.text, callback, uuid)
                 }
-                
-                if (sessionId == currentSessionId.get()) {
-                    val tail = AudioProcessor.drain()
-                    sendSafe(sessionId, tail, callback)
-                }
-
             } catch (e: Exception) {
-                e.printStackTrace()
+                AppLogger.error("Synthesize Critical Error", e)
             } finally {
-                try { fis?.close() } catch (e: Exception) {}
-            }
-            
-            try { writerTask.get() } catch (e: Exception) {}
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            try { lW?.close() } catch (e: Exception) {}
-            try { lR?.close() } catch (e: Exception) {}
-        }
-    }
-
-    private fun sendSafe(sessionId: Long, data: ByteArray, callback: SynthesisCallback) {
-        if (data.isEmpty()) return
-        synchronized(callback) {
-            try {
-                if (sessionId == currentSessionId.get()) {
-                    var offset = 0
-                    while (offset < data.size) {
-                        val len = min(4096, data.size - offset)
-                        callback.audioAvailable(data, offset, len)
-                        offset += len
-                    }
-                }
-            } catch (e: Exception) {
+                if (!isStopped.get()) callback?.done()
             }
         }
     }
@@ -228,20 +147,82 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    override fun onStop() {
-        currentSessionId.incrementAndGet() 
-        try { AudioProcessor.flush() } catch (e: Exception) {}
+    private fun processDualThreads(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
+        var lR: ParcelFileDescriptor? = null
+        var lW: ParcelFileDescriptor? = null
+        var writerFuture: Future<*>? = null
+        var readerFuture: Future<*>? = null
+
+        try {
+            val pipe = ParcelFileDescriptor.createPipe()
+            lR = pipe[0]; lW = pipe[1]
+            
+            writerFuture = pipeExecutor.submit {
+                try { engine.synthesizeToFile(text, params, lW!!, uuid) } 
+                catch (e: Exception) {} 
+                finally { try { lW?.close() } catch (e: Exception) {} }
+            }
+
+            readerFuture = pipeExecutor.submit {
+                var fis: FileInputStream? = null
+                try {
+                    fis = FileInputStream(lR!!.fileDescriptor)
+                    val buffer = ByteArray(8192)
+                    while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
+                        val read = fis.read(buffer)
+                        if (read == -1) break
+                        if (read > 0) {
+                            if (isStopped.get()) break
+                            val out = AudioProcessor.processAudio(buffer, read)
+                            sendAudioToSystem(out, callback)
+                        }
+                    }
+                    if (!isStopped.get()) {
+                        val tail = AudioProcessor.drain()
+                        sendAudioToSystem(tail, callback)
+                    }
+                } catch (e: IOException) {} 
+                finally { try { fis?.close() } catch (e: Exception) {} }
+            }
+            try { writerFuture.get(); readerFuture.get() } catch (e: Exception) {}
+        } catch (e: Exception) {
+            AppLogger.error("Setup Error", e)
+        } finally {
+            try { lW?.close() } catch (e: Exception) {}
+            try { lR?.close() } catch (e: Exception) {}
+        }
     }
 
-    override fun onDestroy() {
-        currentSessionId.incrementAndGet()
-        executor.shutdownNow()
-        try { shanEngine?.shutdown() } catch(e:Exception){}
-        try { burmeseEngine?.shutdown() } catch(e:Exception){}
-        try { englishEngine?.shutdown() } catch(e:Exception){}
-        super.onDestroy()
+    private fun sendAudioToSystem(out: ByteArray, callback: SynthesisCallback) {
+        if (out.isEmpty()) return
+        synchronized(callback) {
+            try {
+                var offset = 0
+                while (offset < out.size) {
+                    val chunkLen = min(4096, out.size - offset)
+                    callback.audioAvailable(out, offset, chunkLen)
+                    offset += chunkLen
+                }
+            } catch (e: Exception) {}
+        }
+    }
+
+    private fun stopEverything(reason: String) {
+        isStopped.set(true)
+        currentTask?.cancel(true)
+        AudioProcessor.flush()
+        currentSonicRate = 0
+    }
+
+    private fun getVolumeCorrection(pkg: String): Float {
+        val l = pkg.lowercase(Locale.ROOT)
+        return when {
+            l.contains("vocalizer") -> 0.85f; l.contains("eloquence") -> 0.6f; else -> 1.0f
+        }
     }
     
+    override fun onStop() { stopEverything("onStop") }
+    override fun onDestroy() { stopEverything("Destroy"); controllerExecutor.shutdownNow(); pipeExecutor.shutdownNow(); AudioProcessor.flush(); super.onDestroy() }
     override fun onGetVoices(): List<Voice> = listOf()
     override fun onIsLanguageAvailable(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE

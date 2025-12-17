@@ -2,16 +2,12 @@ package com.shan.tts.manager
 
 object AudioProcessor {
     init {
-        try {
-            System.loadLibrary("cherry-audio")
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        System.loadLibrary("cherry-audio")
     }
 
     external fun initSonic(sampleRate: Int, channels: Int)
     external fun setConfig(speed: Float, pitch: Float)
-    external fun processAudio(input: ByteArray, length: Int): ByteArray
+    external fun processAudio(buffer: ByteArray, len: Int): ByteArray
     external fun drain(): ByteArray
     external fun flush()
 }
