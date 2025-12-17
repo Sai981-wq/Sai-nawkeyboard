@@ -1,64 +1,63 @@
 package com.shan.tts.manager
 
-import android.util.Log
+object TTSUtils {
 
-data class LangChunk(val text: String, val lang: String)
+    data class Chunk(val text: String, val lang: String)
 
-object LanguageUtils {
-    private const val TAG = "AutoTTS_Utils"
-    private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
-    private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
+    fun splitHelper(text: String): List<Chunk> {
+        val chunks = ArrayList<Chunk>()
+        if (text.isEmpty()) return chunks
 
-    fun detectLanguage(text: CharSequence?): String {
-        if (text.isNullOrBlank()) return "ENGLISH"
-        val input = text.toString()
-        if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
-        if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
-        return "ENGLISH"
-    }
+        var currentSb = StringBuilder()
+        // ပထမ စာလုံးရဲ့ ဘာသာစကားကို စစ်မယ်
+        var currentLang = getLang(text[0])
 
-    fun splitHelper(text: String): List<LangChunk> {
-        val list = ArrayList<LangChunk>()
-        if (text.isBlank()) return list
+        for (i in text.indices) {
+            val c = text[i]
+            val lang = getLang(c)
 
-        Log.d(TAG, "Splitting text: $text")
-
-        val rawParts = text.split(Regex("(?<=[\\s\\p{Punct}])|(?=[\\s\\p{Punct}])"))
-        var currentBuffer = StringBuilder()
-        var currentLang = ""
-
-        for (part in rawParts) {
-            if (part.isEmpty()) continue
-
-            var detected = detectLanguage(part)
-
-            if (detected == "ENGLISH" && !part.any { it.isLetter() }) {
-                detected = if (currentLang.isNotEmpty()) currentLang else "ENGLISH"
-            }
-
-            if (currentLang.isEmpty()) {
-                currentLang = detected
-                currentBuffer.append(part)
-            } else if (currentLang == detected) {
-                currentBuffer.append(part)
+            // ဘာသာစကား တူနေသမျှ စာကြောင်းဆက်မယ်
+            if (lang == currentLang) {
+                currentSb.append(c)
             } else {
-                if (detected == "ENGLISH" && part.length < 3 && currentLang != "ENGLISH") {
-                    currentBuffer.append(part)
+                // Space (ကွက်လပ်) ဖြစ်နေရင် ချက်ချင်းမဖြတ်ဘဲ ရှေ့ကောင်နဲ့ တွဲပေးမယ်
+                if (c == ' ' && currentSb.isNotEmpty()) {
+                    currentSb.append(c)
                 } else {
-                    list.add(LangChunk(currentBuffer.toString(), currentLang))
-                    currentBuffer = StringBuilder(part)
-                    currentLang = detected
+                    // ဘာသာစကား ကွဲသွားပြီ -> အဟောင်းကိုသိမ်း၊ အသစ်ပြန်စ
+                    chunks.add(Chunk(currentSb.toString(), currentLang))
+                    
+                    currentSb = StringBuilder()
+                    currentSb.append(c)
+                    currentLang = lang
                 }
             }
         }
+        // ကျန်နေတဲ့ စာတွေကို သိမ်းမယ်
+        if (currentSb.isNotEmpty()) {
+            chunks.add(Chunk(currentSb.toString(), currentLang))
+        }
+        return chunks
+    }
 
-        if (currentBuffer.isNotEmpty()) {
-            val finalLang = if (currentLang.isEmpty()) "ENGLISH" else currentLang
-            list.add(LangChunk(currentBuffer.toString(), finalLang))
+    private fun getLang(c: Char): String {
+        // ၁။ ဂဏန်းများ (0-9) ကို English ဟု သတ်မှတ်မည်
+        if (c in '0'..'9') return "ENGLISH"
+        
+        // ၂။ သင်္ကေတများကို English ဟု သတ်မှတ်မည်
+        // % + $ : ) ( ! # . , ; " ' - ? / စသည်တို့ ပါဝင်သည်
+        if ("%$+)(!:#.,;\"'-_=[]{}<>/?@^&*|\\~`".contains(c)) {
+            return "ENGLISH"
         }
 
-        Log.d(TAG, "Split Result: $list")
-        return list
+        // ၃။ မြန်မာစာလုံး range ဖြစ်မဖြစ် စစ်မည် (Shan ပါဝင်သည်)
+        val code = c.code
+        if ((code in 0x1000..0x109F) || (code in 0xAA60..0xAA7F) || (code in 0xA9E0..0xA9FF)) {
+            return "MYANMAR" 
+        }
+
+        // ကျန်တာမှန်သမျှ (A-Z, a-z, etc.) ကို English လို့ သတ်မှတ်မည်
+        return "ENGLISH"
     }
 }
 

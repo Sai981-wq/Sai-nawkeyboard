@@ -46,6 +46,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onCreate()
         AppLogger.log("=== Service Created ===")
         try {
+            // Note: Settings Activity က ဒီဖိုင်တွေထဲကို Save လုပ်ပေးရပါမယ်
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
@@ -115,13 +116,19 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
 
                     // 2. Speed & Pitch from Seekbar (Default 100 = 1.0x)
-                    val speedVal = configPrefs.getInt("SPEED_$activePkg", 100)
-                    val pitchVal = configPrefs.getInt("PITCH_$activePkg", 100)
+                    // အရင်ဆုံး Engine သီးသန့် Key ကို ရှာမယ်
+                    var speedVal = configPrefs.getInt("SPEED_$activePkg", -1)
+                    var pitchVal = configPrefs.getInt("PITCH_$activePkg", -1)
+
+                    // မတွေ့ရင် (သို့) မသတ်မှတ်ရသေးရင် Global Key ကို ရှာမယ်
+                    if (speedVal == -1) speedVal = configPrefs.getInt("SPEED_Global", 100)
+                    if (pitchVal == -1) pitchVal = configPrefs.getInt("PITCH_Global", 100)
 
                     val finalSpeed = speedVal / 100.0f
                     val finalPitch = pitchVal / 100.0f
 
-                    // AppLogger.log("[${chunk.lang}] $activePkg ($inputRate Hz) | S:$finalSpeed P:$finalPitch")
+                    // DEBUG LOG: ဒီစာကြောင်းက အရေးကြီးပါတယ်။ Log မှာ S နဲ့ P တန်ဖိုး ပြောင်းမပြောင်း ကြည့်ပါ
+                    AppLogger.log("[${chunk.lang}] $activePkg ($inputRate Hz) | Speed:$speedVal Pitch:$pitchVal")
 
                     AudioProcessor.initSonic(inputRate, 1)
                     AudioProcessor.setConfig(finalSpeed, finalPitch)
@@ -143,6 +150,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
     }
+    
+    // ... (ကျန်တဲ့ processDualThreads, stopEverything, helper function များသည် ယခင်အတိုင်းဖြစ်သည်) ...
 
     private fun processDualThreads(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
         var lR: ParcelFileDescriptor? = null
@@ -156,7 +165,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             lR = pipe[0]
             lW = pipe[1]
             
-            // Writer Thread
             writerFuture = pipeExecutor.submit {
                 try {
                     engine.synthesizeToFile(text, params, lW!!, uuid)
@@ -167,7 +175,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
-            // Reader Thread
             readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
@@ -185,7 +192,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                     
-                    // Drain remaining audio
                     if (!isStopped.get()) {
                         val tail = AudioProcessor.drain()
                         sendAudioToSystem(tail, callback)
