@@ -26,6 +26,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
 
+    // Package Names from Settings
     private var shanPkgName: String = ""
     private var burmesePkgName: String = ""
     private var englishPkgName: String = ""
@@ -36,8 +37,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
 
-    private lateinit var configPrefs: SharedPreferences
-    private lateinit var settingsPrefs: SharedPreferences
+    // Single SharedPreference file (Synced with MainActivity)
+    private lateinit var prefs: SharedPreferences
 
     private val OUTPUT_HZ = 24000
 
@@ -45,16 +46,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onCreate()
         AppLogger.log("=== Service Created ===")
         try {
-            settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-            configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
+            // FIX 1: Use "TTS_SETTINGS" to match MainActivity
+            prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
 
-            shanPkgName = settingsPrefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
+            // Load Engine Packages
+            shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
             initEngine(shanPkgName, Locale("shn")) { shanEngine = it }
 
-            burmesePkgName = settingsPrefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
+            burmesePkgName = prefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(burmesePkgName, Locale("my", "MM")) { burmeseEngine = it }
 
-            englishPkgName = settingsPrefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
+            englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
 
             AudioProcessor.initSonic(16000, 1)
@@ -88,7 +90,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             try {
                 if (callback == null) return@submit
                 
-                // စာကြောင်းခွဲခြင်း (Splitting)
+                // Using TTSUtils for splitting (Ensure TTSUtils is correct)
                 val rawChunks = TTSUtils.splitHelper(text)
                 
                 if (rawChunks.isEmpty()) {
@@ -103,36 +105,41 @@ class AutoTTSManagerService : TextToSpeechService() {
                 for (chunk in rawChunks) {
                     if (isStopped.get()) break
 
-                    val engine = getEngine(chunk.lang) ?: continue
-                    val activePkg = getPkgName(chunk.lang)
+                    // FIX 2: Dynamic Mapping based on Chunk Language
+                    val engineData = getEngineDataForLang(chunk.lang)
+                    val engine = engineData.engine ?: continue
+                    val pkgName = engineData.pkgName
 
-                    // 1. Hz Setting
-                    var inputRate = configPrefs.getInt("RATE_$activePkg", 0)
-                    if (activePkg.lowercase().contains("eloquence")) {
+                    // 1. Hz Rate Handling
+                    // We assume standard rates based on known engines since MainActivity doesn't set Hertz
+                    var inputRate = 16000 // Default fallback
+                    val lowerPkg = pkgName.lowercase(Locale.ROOT)
+                    
+                    if (lowerPkg.contains("eloquence")) {
                         inputRate = 11025
-                    } else if (activePkg.lowercase().contains("espeak") || activePkg.lowercase().contains("shan")) {
+                    } else if (lowerPkg.contains("espeak") || lowerPkg.contains("shan")) {
                         inputRate = 22050
-                    } else if (inputRate == 0) {
-                        inputRate = getFallbackRate(activePkg)
+                    } else if (lowerPkg.contains("google")) {
+                        inputRate = 24000
                     }
 
-                    // 2. Speed/Pitch Setting
-                    var speedVal = configPrefs.getInt("SPEED_$activePkg", -1)
-                    var pitchVal = configPrefs.getInt("PITCH_$activePkg", -1)
+                    // 2. Speed & Pitch from MainActivity Keys
+                    // Keys: rate_shan, pitch_shan, rate_burmese, etc.
+                    // Default is 50 (from MainActivity)
+                    val speedRaw = prefs.getInt(engineData.rateKey, 50)
+                    val pitchRaw = prefs.getInt(engineData.pitchKey, 50)
 
-                    if (speedVal == -1) speedVal = configPrefs.getInt("SPEED_Global", 100)
-                    if (pitchVal == -1) pitchVal = configPrefs.getInt("PITCH_Global", 100)
+                    // FIX 3: Math (50 is Normal 1.0x)
+                    val finalSpeed = speedRaw / 50.0f
+                    val finalPitch = pitchRaw / 50.0f
 
-                    val finalSpeed = speedVal / 100.0f
-                    val finalPitch = pitchVal / 100.0f
-
-                    // AppLogger.log("[${chunk.lang}] $activePkg ($inputRate Hz) | S:$finalSpeed P:$finalPitch")
+                    // AppLogger.log("[${chunk.lang}] using $pkgName | Rate: $inputRate Hz | S:$finalSpeed P:$finalPitch")
 
                     AudioProcessor.initSonic(inputRate, 1)
                     AudioProcessor.setConfig(finalSpeed, finalPitch)
 
                     val params = Bundle()
-                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(activePkg))
+                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(pkgName))
                     val uuid = UUID.randomUUID().toString()
                     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -142,9 +149,41 @@ class AutoTTSManagerService : TextToSpeechService() {
                 AppLogger.error("Synthesize Critical Error", e)
             } finally {
                 if (!isStopped.get()) {
-                    callback?.done() // Delay ဖြုတ်လိုက်သည် (ပိုမြန်စေရန်)
+                    callback?.done()
                 }
             }
+        }
+    }
+
+    // Helper Data Class to hold Engine info
+    data class EngineData(
+        val engine: TextToSpeech?,
+        val pkgName: String,
+        val rateKey: String,
+        val pitchKey: String
+    )
+
+    // FIX 2 Implementation: Map Lang to Keys
+    private fun getEngineDataForLang(lang: String): EngineData {
+        return when (lang) {
+            "SHAN" -> EngineData(
+                if (shanEngine != null) shanEngine else englishEngine,
+                shanPkgName,
+                "rate_shan",
+                "pitch_shan"
+            )
+            "MYANMAR" -> EngineData(
+                if (burmeseEngine != null) burmeseEngine else englishEngine,
+                burmesePkgName,
+                "rate_burmese",
+                "pitch_burmese"
+            )
+            else -> EngineData( // ENGLISH or Numbers/Symbols
+                englishEngine,
+                englishPkgName,
+                "rate_english",
+                "pitch_english"
+            )
         }
     }
 
@@ -160,7 +199,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             lR = pipe[0]
             lW = pipe[1]
             
-            // Writer Thread
             writerFuture = pipeExecutor.submit {
                 try {
                     engine.synthesizeToFile(text, params, lW!!, uuid)
@@ -171,12 +209,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
-            // Reader Thread
             readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
-                    val buffer = ByteArray(4096) // Buffer နည်းနည်းတိုးလိုက်သည် (Performance ကောင်းရန်)
+                    val buffer = ByteArray(8192) 
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         val read = fis.read(buffer)
@@ -229,29 +266,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped.set(true)
         currentTask?.cancel(true)
         AudioProcessor.flush()
-    }
-    
-    // ကျန်တဲ့ Helper Function များ (getFallbackRate, getPkgName, etc.) အတူတူပါပဲ...
-    private fun getFallbackRate(pkg: String): Int {
-        val lower = pkg.lowercase(Locale.ROOT)
-        return when {
-            lower.contains("eloquence") -> 11025
-            lower.contains("espeak") || lower.contains("shan") -> 22050
-            lower.contains("google") -> 24000
-            else -> 16000
-        }
-    }
-
-    private fun getPkgName(lang: String) = when (lang) {
-        "SHAN" -> shanPkgName
-        "MYANMAR" -> burmesePkgName
-        else -> englishPkgName
-    }
-
-    private fun getEngine(lang: String) = when (lang) {
-        "SHAN" -> if (shanEngine != null) shanEngine else englishEngine
-        "MYANMAR" -> if (burmeseEngine != null) burmeseEngine else englishEngine
-        else -> englishEngine
     }
 
     private fun getVolumeCorrection(pkg: String): Float {
