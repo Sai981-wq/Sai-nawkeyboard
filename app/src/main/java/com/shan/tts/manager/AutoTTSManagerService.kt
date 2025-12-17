@@ -15,11 +15,8 @@ import java.io.FileInputStream
 import java.io.IOException
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
@@ -34,14 +31,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
 
     private val controllerExecutor = Executors.newSingleThreadExecutor()
-    private val pipeExecutor = Executors.newCachedThreadPool()
+    // Thread Pool 2 ခုခွဲသုံးမှ Writer နဲ့ Reader ပြိုင်လုပ်လို့ရမယ်
+    private val pipeExecutor = Executors.newCachedThreadPool() 
 
     private var currentTask: Future<*>? = null
-    private var currentPipeTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
-    
-    // Engine ပြီးမပြီး စောင့်ဆိုင်းရန် Lock များ
-    private val latches = ConcurrentHashMap<String, CountDownLatch>()
 
     private lateinit var configPrefs: SharedPreferences
     private lateinit var settingsPrefs: SharedPreferences
@@ -72,29 +66,14 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun initEngine(pkg: String?, locale: Locale, onSuccess: (TextToSpeech) -> Unit) {
         if (pkg.isNullOrEmpty()) return
-        AppLogger.log("Initializing Engine: $pkg ($locale)")
+        AppLogger.log("Initializing: $pkg")
         try {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    AppLogger.log("Engine Bound: $pkg")
                     try { tempTTS?.language = locale } catch (e: Exception) {}
                     onSuccess(tempTTS!!)
-                    
-                    // Engine Listener (အရေးကြီးသည်)
-                    tempTTS?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onStart(id: String?) {}
-                        
-                        override fun onDone(id: String?) {
-                            // Engine ပြီးပြီဖြစ်ကြောင်း Lock ဖွင့်ပေးခြင်း
-                            id?.let { latches[it]?.countDown() }
-                        }
-                        
-                        override fun onError(id: String?) {
-                            AppLogger.error("Engine internal error: $pkg")
-                            id?.let { latches[it]?.countDown() }
-                        }
-                    })
+                    // Listener မလိုတော့ပါ (Future နဲ့ ထိန်းချုပ်မည်)
                 } else {
                     AppLogger.error("Failed to bind: $pkg")
                 }
@@ -124,10 +103,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
 
                 for (chunk in rawChunks) {
-                    if (isStopped.get()) {
-                        AppLogger.log("Stopped during processing loop.")
-                        break
-                    }
+                    if (isStopped.get()) break
 
                     val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
@@ -145,14 +121,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val uuid = UUID.randomUUID().toString()
                     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
-                    processPipeCpp(engine, params, chunk.text, callback, uuid)
+                    processDualThreads(engine, params, chunk.text, callback, uuid)
                 }
             } catch (e: Exception) {
                 AppLogger.error("Synthesize Critical Error", e)
             } finally {
                 if (!isStopped.get()) {
-                    // အသံမဆုံးခင် ဖြတ်မချအောင် ခဏစောင့်
-                    try { Thread.sleep(150) } catch (e: Exception) {}
+                    try { Thread.sleep(100) } catch (e: Exception) {}
                     AppLogger.log("Done.")
                     callback?.done()
                 }
@@ -160,96 +135,95 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun processPipeCpp(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
+    private fun processDualThreads(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
         var lR: ParcelFileDescriptor? = null
         var lW: ParcelFileDescriptor? = null
         
-        // Lock ဖန်တီးခြင်း (Engine ပြီးမပြီး စောင့်ရန်)
-        val latch = CountDownLatch(1)
-        latches[uuid] = latch
-        
+        var writerFuture: Future<*>? = null
+        var readerFuture: Future<*>? = null
+
         try {
             val pipe = ParcelFileDescriptor.createPipe()
             lR = pipe[0]
             lW = pipe[1]
-            val fR = lR
+            
+            // Thread 1: WRITER (Engine -> Pipe)
+            // Engine က Pipe ထဲကို စာရေးထည့်မယ့် ကောင်
+            writerFuture = pipeExecutor.submit {
+                try {
+                    // Note: synthesizeToFile is blocking, so it runs here until done
+                    engine.synthesizeToFile(text, params, lW!!, uuid)
+                } catch (e: Exception) {
+                    if (!isStopped.get()) AppLogger.error("Writer Failed", e)
+                } finally {
+                    // အရေးကြီးဆုံးအချက်: ရေးပြီးတာနဲ့ Pipe အဝင်ပေါက်ကို ပိတ်ရမယ်
+                    // ဒါမှ Reader က "စာကုန်ပြီ" ဆိုတာ သိပြီး ရပ်မှာ
+                    try { lW?.close() } catch (e: Exception) {}
+                }
+            }
 
-            // 1. Reader Thread (Pipe ထဲက အသံကို ဖတ်ပြီး C++ ပို့)
-            currentPipeTask = pipeExecutor.submit {
+            // Thread 2: READER (Pipe -> C++ -> System)
+            // Pipe ထဲက Data ကို ဖတ်ပြီး အသံပြောင်းမယ့် ကောင်
+            readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
-                    fis = FileInputStream(fR.fileDescriptor)
-                    val buffer = ByteArray(2048) // Buffer အသေးသုံးခြင်း (Safe Size)
+                    fis = FileInputStream(lR!!.fileDescriptor)
+                    val buffer = ByteArray(2048)
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         val read = fis.read(buffer)
-                        if (read == -1) break 
+                        if (read == -1) break // Writer closed pipe -> EOF
+                        
                         if (read > 0) {
                             if (isStopped.get()) break
-                            
                             val out = AudioProcessor.processAudio(buffer, read)
                             if (out.isNotEmpty()) {
                                 synchronized(callback) {
                                     try {
-                                        // အသံကို အပိုင်းသေးလေးတွေခွဲပို့ (Buffer overflow ကာကွယ်ရန်)
                                         var offset = 0
                                         while (offset < out.size) {
                                             val chunkLen = min(4096, out.size - offset)
                                             callback.audioAvailable(out, offset, chunkLen)
                                             offset += chunkLen
                                         }
-                                    } catch (e: Exception) {
-                                        AppLogger.error("Audio write failed", e)
-                                    }
+                                    } catch (e: Exception) {}
                                 }
                             }
                         }
                     }
                 } catch (e: IOException) {
+                    // Pipe broken during stop is normal
                 } finally {
                     try { fis?.close() } catch (e: Exception) {}
-                    try { fR?.close() } catch (e: Exception) {}
                 }
             }
 
-            // 2. Engine ကို အသံဖန်တီးခိုင်းခြင်း
-            val result = engine.synthesizeToFile(text, params, lW!!, uuid)
+            // SYNCHRONIZATION POINT (ထိန်းချုပ်ခန်း)
+            // Writer ပြီးတဲ့အထိ စောင့်မယ်
+            try {
+                writerFuture.get() 
+            } catch (e: Exception) { }
             
-            if (result == TextToSpeech.SUCCESS) {
-                // Engine က "Done" လို့ ပြောတဲ့အထိ ဒီနေရာမှာ စောင့်နေပါမယ်
-                try {
-                    latch.await(15, TimeUnit.SECONDS) // အကြာဆုံး ၁၅ စက္ကန့် စောင့်မယ်
-                } catch (e: InterruptedException) {
-                    AppLogger.log("Latch interrupted")
-                }
-            } else {
-                AppLogger.error("Engine failed to start synthesis")
-            }
+            // Reader ပြီးတဲ့အထိ စောင့်မယ်
+            try {
+                readerFuture.get()
+            } catch (e: Exception) { }
 
         } catch (e: Exception) {
-            AppLogger.error("Pipe Setup Error", e)
+            AppLogger.error("Setup Error", e)
         } finally {
-            // ပြီးမှ လမ်းကြောင်းပိတ်မယ် (ဒါမှ Engine Error မတက်မှာပါ)
+            // အားလုံးပြီးရင် (သို့) Error တက်ရင် လက်ကျန်လမ်းကြောင်းတွေ ပိတ်မယ်
             try { lW?.close() } catch (e: Exception) {}
             try { lR?.close() } catch (e: Exception) {}
-            
-            latches.remove(uuid) // Cleanup
-            
-            // Reader ပြီးတဲ့အထိ စောင့်
-            try { currentPipeTask?.get() } catch (e: Exception) {}
         }
     }
 
     private fun stopEverything(reason: String) {
-        // AppLogger.log("Stopping: $reason")
         isStopped.set(true)
+        // Main Controller ကို ရပ်မယ်
         currentTask?.cancel(true)
-        currentPipeTask?.cancel(true)
         
-        // ရှိသမျှ Lock တွေအကုန်ဖွင့်ချ (မစောင့်ခိုင်းတော့ဘူး)
-        latches.values.forEach { it.countDown() }
-        latches.clear()
-        
+        // C++ Buffer ကို ရှင်းမယ်
         AudioProcessor.flush()
     }
 
@@ -289,7 +263,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() {
-        AppLogger.log("Service Destroyed")
         stopEverything("Destroy")
         controllerExecutor.shutdownNow()
         pipeExecutor.shutdownNow()
