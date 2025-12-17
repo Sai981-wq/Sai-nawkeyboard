@@ -66,15 +66,13 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun initEngine(pkg: String?, locale: Locale, onSuccess: (TextToSpeech) -> Unit) {
         if (pkg.isNullOrEmpty()) return
-        AppLogger.log("Initializing: $pkg")
+        // AppLogger.log("Initializing: $pkg")
         try {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     try { tempTTS?.language = locale } catch (e: Exception) {}
                     onSuccess(tempTTS!!)
-                } else {
-                    AppLogger.error("Failed to bind: $pkg")
                 }
             }, pkg)
         } catch (e: Exception) {
@@ -107,14 +105,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
 
-                    // --- FORCE HZ CORRECTION (အသံကွဲခြင်းကို ပြင်ဆင်ချက်) ---
+                    // FORCE HZ Logic (အသံကွဲတာ ပျောက်ဖို့ အရေးကြီးတယ်)
                     var inputRate = configPrefs.getInt("RATE_$activePkg", 0)
                     
-                    // Eloquence သည် 11025 Hz ဖြစ်ရမည်
                     if (activePkg.lowercase().contains("eloquence")) {
                         inputRate = 11025
                     } 
-                    // eSpeak/Shan သည် 22050 Hz ဖြစ်ရမည်
                     else if (activePkg.lowercase().contains("espeak") || activePkg.lowercase().contains("shan")) {
                         inputRate = 22050
                     }
@@ -139,7 +135,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             } finally {
                 if (!isStopped.get()) {
                     try { Thread.sleep(50) } catch (e: Exception) {}
-                    AppLogger.log("Done.")
                     callback?.done()
                 }
             }
@@ -158,7 +153,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             lR = pipe[0]
             lW = pipe[1]
             
-            // Writer Thread
             writerFuture = pipeExecutor.submit {
                 try {
                     engine.synthesizeToFile(text, params, lW!!, uuid)
@@ -169,7 +163,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
-            // Reader Thread
             readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
@@ -187,8 +180,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                     
-                    // --- FIX FOR CUTOFF: DRAIN REMAINING AUDIO ---
-                    // အသံမဆုံးခင် ဖြတ်မချဘဲ ကျန်တာတွေ ညှစ်ထုတ်မယ်
                     if (!isStopped.get()) {
                         val tail = AudioProcessor.drain()
                         sendAudioToSystem(tail, callback)
@@ -231,6 +222,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         AudioProcessor.flush()
     }
 
+    // Helper functions (fallback, pkg, etc.) remain the same...
     private fun getFallbackRate(pkg: String): Int {
         val lower = pkg.lowercase(Locale.ROOT)
         return when {
