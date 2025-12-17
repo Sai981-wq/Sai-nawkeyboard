@@ -1,76 +1,57 @@
 package com.shan.tts.manager
 
 object TTSUtils {
+     private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
+     private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
+     
+     fun detectLanguage(text: CharSequence?): String {
+        if (text.isNullOrBlank()) return "ENGLISH"
+        val input = text.toString()
+        if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
+        if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
+        return "ENGLISH"
+    }
 
-    data class Chunk(val text: String, val lang: String)
+    fun splitHelper(text: String): List<LangChunk> {
+        val list = ArrayList<LangChunk>()
+        if (text.isBlank()) return list
+        
+        val rawParts = text.split(Regex("(?<=[\\s\\p{Punct}])|(?=[\\s\\p{Punct}])"))
+        var currentBuffer = StringBuilder()
+        var currentLang = ""
+        
+        for (part in rawParts) {
+            if (part.isEmpty()) continue
+            
+            var detected = detectLanguage(part)
+            
+            if (detected == "ENGLISH" && !part.any { it.isLetter() }) {
+                detected = if (currentLang.isNotEmpty()) currentLang else "ENGLISH"
+            }
 
-    private const val MAX_LENGTH = 500
-
-    fun splitHelper(text: String): List<Chunk> {
-        val chunks = ArrayList<Chunk>()
-        if (text.isEmpty()) return chunks
-
-        var currentSb = StringBuilder()
-        var currentLang = getLang(text[0])
-
-        for (i in text.indices) {
-            val c = text[i]
-            val lang = getLang(c)
-
-            if (lang != currentLang) {
-                addChunk(chunks, currentSb, currentLang)
-                currentSb = StringBuilder()
-                currentSb.append(c)
-                currentLang = lang
+            if (currentLang.isEmpty()) {
+                currentLang = detected
+                currentBuffer.append(part)
+            } else if (currentLang == detected) {
+                currentBuffer.append(part)
             } else {
-                currentSb.append(c)
-                if (currentSb.length > MAX_LENGTH) {
-                    if (isSentenceEnd(c) || c == ' ') {
-                        addChunk(chunks, currentSb, currentLang)
-                        currentSb = StringBuilder()
-                    }
-                } else if (isSentenceEnd(c)) {
-                    addChunk(chunks, currentSb, currentLang)
-                    currentSb = StringBuilder()
+                if (detected == "ENGLISH" && part.length < 3 && currentLang != "ENGLISH") {
+                     currentBuffer.append(part)
+                } else {
+                    list.add(LangChunk(currentBuffer.toString(), currentLang))
+                    currentBuffer = StringBuilder(part)
+                    currentLang = detected
                 }
             }
         }
         
-        if (currentSb.isNotEmpty()) {
-            addChunk(chunks, currentSb, currentLang)
+        if (currentBuffer.isNotEmpty()) {
+            val finalLang = if(currentLang.isEmpty()) "ENGLISH" else currentLang
+            list.add(LangChunk(currentBuffer.toString(), finalLang))
         }
-        return chunks
-    }
-
-    private fun addChunk(chunks: ArrayList<Chunk>, sb: StringBuilder, lang: String) {
-        val str = sb.toString().trim()
-        if (str.isNotEmpty()) {
-            chunks.add(Chunk(str, lang))
-        }
-    }
-
-    private fun isSentenceEnd(c: Char): Boolean {
-        return c == '။' || c == '?' || c == '!' || c == '\n' || c == '.'
-    }
-
-    private fun getLang(c: Char): String {
-        if (c in '0'..'9') return "ENGLISH"
-        
-        if ("%$+)(!:#.,;\"'-_=[]{}<>/?@^&*|\\~`".contains(c)) {
-            return "ENGLISH"
-        }
-
-        val code = c.code
-
-        if ((code in 0x1075..0x108F) || (code in 0x1090..0x109F) || (code in 0xAA60..0xAA7F)) {
-            return "SHAN"
-        }
-
-        if ((code in 0x1000..0x109F) || (code in 0xA9E0..0xA9FF)) {
-            return "MYANMAR"
-        }
-
-        return "ENGLISH"
+        return list
     }
 }
+
+data class LangChunk(val text: String, val lang: String)
 

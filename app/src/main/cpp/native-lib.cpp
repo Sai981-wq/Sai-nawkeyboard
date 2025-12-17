@@ -11,11 +11,12 @@ std::mutex processorMutex;
 static sonicStream stream = NULL;
 static int currentInRate = 0;
 
-// Helper: Stream ထဲက Data တွေကို ယူပြီး Byte Array ပြောင်းပေးခြင်း
+// Helper to convert Sonic output to Java ByteArray
 jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
     int avail = sonicSamplesAvailable(s);
     if (avail <= 0) return env->NewByteArray(0);
 
+    // Sonic uses short (16-bit), so byte size is count * 2
     std::vector<short> buf(avail);
     int read = sonicReadShortFromStream(s, buf.data(), avail);
     
@@ -32,15 +33,8 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint ra
     std::lock_guard<std::mutex> lock(processorMutex);
     
     if (stream) {
-        // Rate တူရင် အသစ်မဆောက်ဘဲ ပြန်သုံးမယ်
         if (currentInRate == rate) {
             sonicFlushStream(stream);
-            // လက်ကျန် Data တွေကို ရှင်းထုတ်မယ်
-            int avail = sonicSamplesAvailable(stream);
-            if (avail > 0) {
-                std::vector<short> dummy(avail);
-                sonicReadShortFromStream(stream, dummy.data(), avail);
-            }
             return;
         }
         sonicDestroyStream(stream);
@@ -49,13 +43,13 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint ra
     stream = sonicCreateStream(rate, ch);
     currentInRate = rate;
     
-    sonicSetQuality(stream, 0); 
+    // CHANGE: Use Quality 1 for better speech clarity (reduces cracking)
+    sonicSetQuality(stream, 1); 
+    
     sonicSetSpeed(stream, 1.0f);
     sonicSetPitch(stream, 1.0f);
     
-    // KEY FIX: Sonic Native Resampling
-    // 11025Hz -> 24000Hz ပြောင်းဖို့ Rate ကို ချိန်ညှိခြင်း
-    // Rate < 1.0 ဆိုရင် Sonic က Sample တွေ ပွားပေးပါလိမ့်မယ် (Upsample)
+    // Resampling Logic: Adjust internal rate to match fixed System Output (24kHz)
     float playbackRate = (float)rate / (float)TARGET_RATE;
     sonicSetRate(stream, playbackRate);
 }
@@ -75,7 +69,8 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
     if (!stream || len <= 0) return env->NewByteArray(0);
 
     void* primitive = env->GetPrimitiveArrayCritical(in, 0);
-    // Sonic ဆီ ပို့လိုက်တာနဲ့ Rate အတိုင်း Resample အော်တိုလုပ်သွားပါမယ်
+    if (primitive == NULL) return env->NewByteArray(0); // Safety check
+
     sonicWriteShortToStream(stream, (short*)primitive, len / 2);
     env->ReleasePrimitiveArrayCritical(in, primitive, 0);
 
@@ -87,7 +82,6 @@ Java_com_shan_tts_manager_AudioProcessor_drain(JNIEnv* env, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (!stream) return env->NewByteArray(0);
 
-    // လက်ကျန်အသံတွေကို အကုန်ညှစ်ထုတ်ခြင်း
     sonicFlushStream(stream);
     return readFromStream(env, stream);
 }
@@ -97,7 +91,6 @@ Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
         sonicFlushStream(stream);
-        // Flush လုပ်ပြီး ထွက်လာသမျှကို လွှင့်ပစ်မယ် (Stop လုပ်ချိန်သုံးရန်)
         int avail = sonicSamplesAvailable(stream);
         if (avail > 0) {
             std::vector<short> dummy(avail);
