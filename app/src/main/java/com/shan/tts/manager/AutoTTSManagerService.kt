@@ -39,14 +39,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var configPrefs: SharedPreferences
     private lateinit var settingsPrefs: SharedPreferences
 
-    // Target Output Rate (Standard)
     private val OUTPUT_HZ = 24000
 
     override fun onCreate() {
         super.onCreate()
         AppLogger.log("=== Service Created ===")
         try {
-            // Note: Settings Activity က ဒီဖိုင်တွေထဲကို Save လုပ်ပေးရပါမယ်
             settingsPrefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
@@ -89,7 +87,10 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentTask = controllerExecutor.submit {
             try {
                 if (callback == null) return@submit
-                val rawChunks = LanguageUtils.splitHelper(text)
+                
+                // စာကြောင်းခွဲခြင်း (Splitting)
+                val rawChunks = TTSUtils.splitHelper(text)
+                
                 if (rawChunks.isEmpty()) {
                     callback.done()
                     return@submit
@@ -105,7 +106,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
 
-                    // 1. Hz Rate Correction
+                    // 1. Hz Setting
                     var inputRate = configPrefs.getInt("RATE_$activePkg", 0)
                     if (activePkg.lowercase().contains("eloquence")) {
                         inputRate = 11025
@@ -115,20 +116,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                         inputRate = getFallbackRate(activePkg)
                     }
 
-                    // 2. Speed & Pitch from Seekbar (Default 100 = 1.0x)
-                    // အရင်ဆုံး Engine သီးသန့် Key ကို ရှာမယ်
+                    // 2. Speed/Pitch Setting
                     var speedVal = configPrefs.getInt("SPEED_$activePkg", -1)
                     var pitchVal = configPrefs.getInt("PITCH_$activePkg", -1)
 
-                    // မတွေ့ရင် (သို့) မသတ်မှတ်ရသေးရင် Global Key ကို ရှာမယ်
                     if (speedVal == -1) speedVal = configPrefs.getInt("SPEED_Global", 100)
                     if (pitchVal == -1) pitchVal = configPrefs.getInt("PITCH_Global", 100)
 
                     val finalSpeed = speedVal / 100.0f
                     val finalPitch = pitchVal / 100.0f
 
-                    // DEBUG LOG: ဒီစာကြောင်းက အရေးကြီးပါတယ်။ Log မှာ S နဲ့ P တန်ဖိုး ပြောင်းမပြောင်း ကြည့်ပါ
-                    AppLogger.log("[${chunk.lang}] $activePkg ($inputRate Hz) | Speed:$speedVal Pitch:$pitchVal")
+                    // AppLogger.log("[${chunk.lang}] $activePkg ($inputRate Hz) | S:$finalSpeed P:$finalPitch")
 
                     AudioProcessor.initSonic(inputRate, 1)
                     AudioProcessor.setConfig(finalSpeed, finalPitch)
@@ -144,14 +142,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                 AppLogger.error("Synthesize Critical Error", e)
             } finally {
                 if (!isStopped.get()) {
-                    try { Thread.sleep(50) } catch (e: Exception) {}
-                    callback?.done()
+                    callback?.done() // Delay ဖြုတ်လိုက်သည် (ပိုမြန်စေရန်)
                 }
             }
         }
     }
-    
-    // ... (ကျန်တဲ့ processDualThreads, stopEverything, helper function များသည် ယခင်အတိုင်းဖြစ်သည်) ...
 
     private fun processDualThreads(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
         var lR: ParcelFileDescriptor? = null
@@ -165,6 +160,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             lR = pipe[0]
             lW = pipe[1]
             
+            // Writer Thread
             writerFuture = pipeExecutor.submit {
                 try {
                     engine.synthesizeToFile(text, params, lW!!, uuid)
@@ -175,11 +171,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
+            // Reader Thread
             readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
-                    val buffer = ByteArray(2048) 
+                    val buffer = ByteArray(4096) // Buffer နည်းနည်းတိုးလိုက်သည် (Performance ကောင်းရန်)
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         val read = fis.read(buffer)
@@ -233,7 +230,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentTask?.cancel(true)
         AudioProcessor.flush()
     }
-
+    
+    // ကျန်တဲ့ Helper Function များ (getFallbackRate, getPkgName, etc.) အတူတူပါပဲ...
     private fun getFallbackRate(pkg: String): Int {
         val lower = pkg.lowercase(Locale.ROOT)
         return when {
