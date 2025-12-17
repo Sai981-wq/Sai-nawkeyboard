@@ -2,58 +2,49 @@
 #include <stdlib.h>
 #include <vector>
 #include <android/log.h>
-#include <mutex> // For Thread Safety
+#include <mutex>
+#include <cmath>
 #include "sonic.h"
 
 #define TAG "AutoTTS_JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 #define TARGET_RATE 24000
 
-// GLOBAL MUTEX (Thread တိုက်မိခြင်းကို ကာကွယ်ရန်)
 std::mutex processorMutex;
 
-class CherrySonicProcessor {
+class CherryResampler {
 public:
     sonicStream stream;
     std::vector<short> outputBuffer;
+    
     int inRate;
     int outRate = TARGET_RATE;
-
-    short p0 = 0, p1 = 0;
-    double timePos = 0.0;
-
-    CherrySonicProcessor(int sampleRate, int channels) {
+    
+    // အသံမကွဲအောင် Phase ကို မှတ်ထားမည်
+    float phase = 0.0f;
+    
+    CherryResampler(int sampleRate, int channels) {
         inRate = sampleRate;
         stream = sonicCreateStream(inRate, channels);
-        sonicSetQuality(stream, 0);
-        sonicSetVolume(stream, 1.0f);
-        outputBuffer.reserve(4096); // Buffer အသေးသုံးထားသည်
-        LOGI("Created Processor: In=%d", inRate);
+        sonicSetQuality(stream, 0); 
+        sonicSetSpeed(stream, 1.0f);
+        sonicSetPitch(stream, 1.0f);
+        sonicSetRate(stream, 1.0f); 
+        
+        outputBuffer.reserve(4096);
+        LOGI("Created Resampler: In=%d", inRate);
     }
 
-    ~CherrySonicProcessor() {
+    ~CherryResampler() {
         if (stream) sonicDestroyStream(stream);
-        LOGI("Destroyed Processor");
     }
 
-    // Cubic Interpolation for smooth upsampling
-    inline short cubic(short y0, short y1, short y2, short y3, double mu) {
-        double mu2 = mu * mu;
-        double a0 = -0.5*y0 + 1.5*y1 - 1.5*y2 + 0.5*y3;
-        double a1 = y0 - 2.5*y1 + 2.0*y2 - 0.5*y3;
-        double a2 = -0.5*y0 + 0.5*y2;
-        double a3 = y1;
-        double res = a0*mu*mu2 + a1*mu2 + a2*mu + a3;
-        if (res > 32767) return 32767;
-        if (res < -32768) return -32768;
-        return (short)res;
-    }
-
-    void resample(short* in, int inCount) {
+    // Linear Interpolation (အသံချောမွေ့စေရန် တွက်ချက်ခြင်း)
+    void processResample(short* in, int inCount) {
         if (inCount <= 0) return;
 
+        // Rate တူရင် တွက်စရာမလို၊ တိုက်ရိုက်ကူးမယ်
         if (inRate == outRate) {
             int oldSize = outputBuffer.size();
             outputBuffer.resize(oldSize + inCount);
@@ -62,59 +53,60 @@ public:
         }
 
         double step = (double)inRate / outRate;
-        int needed = (int)(inCount / step) + 5;
+        int needed = (int)ceil((inCount - phase) / step);
+        
         int startIdx = outputBuffer.size();
         outputBuffer.resize(startIdx + needed);
-
         short* outPtr = outputBuffer.data() + startIdx;
+        
         int produced = 0;
 
-        for (int i = 0; i < needed; i++) {
-            int idx = (int)timePos;
-            if (idx >= inCount - 2) {
-                if (inCount >= 2) { p0 = in[inCount-2]; p1 = in[inCount-1]; }
-                else if (inCount == 1) { p0 = p1; p1 = in[0]; }
-                timePos -= idx;
-                break;
-            }
+        while (produced < needed) {
+            int idx = (int)phase;
+            if (idx >= inCount) break;
 
-            double frac = timePos - idx;
-            short y0 = (idx == 0) ? p1 : in[idx - 1];
-            short y1 = in[idx];
-            short y2 = in[idx + 1];
-            short y3 = (idx + 2 < inCount) ? in[idx + 2] : in[idx + 1];
+            float frac = phase - idx;
+            short s0 = in[idx];
+            short s1 = (idx + 1 < inCount) ? in[idx + 1] : s0;
 
-            outPtr[produced++] = cubic(y0, y1, y2, y3, frac);
-            timePos += step;
+            // Linear Formula: s0 + (s1 - s0) * fraction
+            float val = s0 + (s1 - s0) * frac;
+            outPtr[produced++] = (short)val;
+            
+            phase += step;
         }
+
+        // နောက်တစ်ခေါက်အတွက် Phase ကို သိမ်းထားမယ် (ဒါမှ အသံမကွဲမှာ)
+        phase -= inCount; 
         outputBuffer.resize(startIdx + produced);
     }
 
-    void clear() { outputBuffer.clear(); }
+    void clear() { 
+        outputBuffer.clear(); 
+        phase = 0.0f;
+    }
 };
 
-static CherrySonicProcessor* proc = NULL;
+static CherryResampler* proc = NULL;
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint rate, jint ch) {
-    std::lock_guard<std::mutex> lock(processorMutex); // LOCK
+    std::lock_guard<std::mutex> lock(processorMutex);
     
     if (proc) {
         if (proc->inRate == rate) {
             sonicFlushStream(proc->stream);
-            proc->p0 = 0; proc->p1 = 0;
-            proc->timePos = 0.0;
             proc->clear();
             return;
         }
         delete proc;
     }
-    proc = new CherrySonicProcessor(rate, ch);
+    proc = new CherryResampler(rate, ch);
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat s, jfloat p) {
-    std::lock_guard<std::mutex> lock(processorMutex); // LOCK
+    std::lock_guard<std::mutex> lock(processorMutex);
     if (proc) {
         sonicSetSpeed(proc->stream, s);
         sonicSetPitch(proc->stream, p);
@@ -123,14 +115,17 @@ Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat 
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray in, jint len) {
-    std::lock_guard<std::mutex> lock(processorMutex); // LOCK IS CRITICAL HERE
+    std::lock_guard<std::mutex> lock(processorMutex);
     
     if (!proc || len <= 0) return env->NewByteArray(0);
 
     void* primitive = env->GetPrimitiveArrayCritical(in, 0);
+    
+    // 1. Sonic ကို အရင်ပို့ (Speed/Pitch အတွက်)
     sonicWriteShortToStream(proc->stream, (short*)primitive, len / 2);
     env->ReleasePrimitiveArrayCritical(in, primitive, 0);
 
+    // 2. Sonic ကနေ ပြန်ဖတ်
     int avail = sonicSamplesAvailable(proc->stream);
     if (avail > 0) {
         static std::vector<short> tempBuf;
@@ -138,8 +133,38 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
         int read = sonicReadShortFromStream(proc->stream, tempBuf.data(), avail);
 
         if (read > 0) {
+            // 3. Resample လုပ် (24000Hz ပြောင်း)
+            proc->clear(); 
+            proc->processResample(tempBuf.data(), read);
+            
+            int sz = proc->outputBuffer.size();
+            if (sz > 0) {
+                jbyteArray res = env->NewByteArray(sz * 2);
+                env->SetByteArrayRegion(res, 0, sz * 2, (jbyte*)proc->outputBuffer.data());
+                return res;
+            }
+        }
+    }
+    return env->NewByteArray(0);
+}
+
+// --- DRAIN FUNCTION (အသံအဆုံးထိထွက်အောင် လုပ်ပေးမည့်ကောင်) ---
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_shan_tts_manager_AudioProcessor_drain(JNIEnv* env, jobject) {
+    std::lock_guard<std::mutex> lock(processorMutex);
+    if (!proc) return env->NewByteArray(0);
+
+    sonicFlushStream(proc->stream);
+    int avail = sonicSamplesAvailable(proc->stream);
+    
+    if (avail > 0) {
+        static std::vector<short> drainBuf;
+        if (drainBuf.size() < avail) drainBuf.resize(avail);
+        int read = sonicReadShortFromStream(proc->stream, drainBuf.data(), avail);
+        
+        if (read > 0) {
             proc->clear();
-            proc->resample(tempBuf.data(), read);
+            proc->processResample(drainBuf.data(), read); // Drain လုပ်တာကိုလည်း Resample လုပ်ရမယ်
             int sz = proc->outputBuffer.size();
             if (sz > 0) {
                 jbyteArray res = env->NewByteArray(sz * 2);
@@ -153,11 +178,9 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyt
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(processorMutex); // LOCK
+    std::lock_guard<std::mutex> lock(processorMutex);
     if (proc) {
         sonicFlushStream(proc->stream);
-        proc->p0 = 0; proc->p1 = 0;
-        proc->timePos = 0.0;
         proc->clear();
     }
 }

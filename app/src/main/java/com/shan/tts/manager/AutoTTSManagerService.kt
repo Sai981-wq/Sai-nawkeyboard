@@ -31,8 +31,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
 
     private val controllerExecutor = Executors.newSingleThreadExecutor()
-    // Thread Pool 2 ခုခွဲသုံးမှ Writer နဲ့ Reader ပြိုင်လုပ်လို့ရမယ်
-    private val pipeExecutor = Executors.newCachedThreadPool() 
+    private val pipeExecutor = Executors.newCachedThreadPool()
 
     private var currentTask: Future<*>? = null
     private val isStopped = AtomicBoolean(false)
@@ -40,6 +39,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var configPrefs: SharedPreferences
     private lateinit var settingsPrefs: SharedPreferences
 
+    // Target Output Rate (Standard)
     private val OUTPUT_HZ = 24000
 
     override fun onCreate() {
@@ -73,7 +73,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (status == TextToSpeech.SUCCESS) {
                     try { tempTTS?.language = locale } catch (e: Exception) {}
                     onSuccess(tempTTS!!)
-                    // Listener မလိုတော့ပါ (Future နဲ့ ထိန်းချုပ်မည်)
                 } else {
                     AppLogger.error("Failed to bind: $pkg")
                 }
@@ -108,8 +107,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val engine = getEngine(chunk.lang) ?: continue
                     val activePkg = getPkgName(chunk.lang)
 
+                    // --- FORCE HZ CORRECTION (အသံကွဲခြင်းကို ပြင်ဆင်ချက်) ---
                     var inputRate = configPrefs.getInt("RATE_$activePkg", 0)
-                    if (inputRate == 0) inputRate = getFallbackRate(activePkg)
+                    
+                    // Eloquence သည် 11025 Hz ဖြစ်ရမည်
+                    if (activePkg.lowercase().contains("eloquence")) {
+                        inputRate = 11025
+                    } 
+                    // eSpeak/Shan သည် 22050 Hz ဖြစ်ရမည်
+                    else if (activePkg.lowercase().contains("espeak") || activePkg.lowercase().contains("shan")) {
+                        inputRate = 22050
+                    }
+                    else if (inputRate == 0) {
+                        inputRate = getFallbackRate(activePkg)
+                    }
 
                     AppLogger.log("[${chunk.lang}] $activePkg ($inputRate Hz)")
 
@@ -127,7 +138,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 AppLogger.error("Synthesize Critical Error", e)
             } finally {
                 if (!isStopped.get()) {
-                    try { Thread.sleep(100) } catch (e: Exception) {}
+                    try { Thread.sleep(50) } catch (e: Exception) {}
                     AppLogger.log("Done.")
                     callback?.done()
                 }
@@ -147,83 +158,76 @@ class AutoTTSManagerService : TextToSpeechService() {
             lR = pipe[0]
             lW = pipe[1]
             
-            // Thread 1: WRITER (Engine -> Pipe)
-            // Engine က Pipe ထဲကို စာရေးထည့်မယ့် ကောင်
+            // Writer Thread
             writerFuture = pipeExecutor.submit {
                 try {
-                    // Note: synthesizeToFile is blocking, so it runs here until done
                     engine.synthesizeToFile(text, params, lW!!, uuid)
                 } catch (e: Exception) {
                     if (!isStopped.get()) AppLogger.error("Writer Failed", e)
                 } finally {
-                    // အရေးကြီးဆုံးအချက်: ရေးပြီးတာနဲ့ Pipe အဝင်ပေါက်ကို ပိတ်ရမယ်
-                    // ဒါမှ Reader က "စာကုန်ပြီ" ဆိုတာ သိပြီး ရပ်မှာ
                     try { lW?.close() } catch (e: Exception) {}
                 }
             }
 
-            // Thread 2: READER (Pipe -> C++ -> System)
-            // Pipe ထဲက Data ကို ဖတ်ပြီး အသံပြောင်းမယ့် ကောင်
+            // Reader Thread
             readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
-                    val buffer = ByteArray(2048)
+                    val buffer = ByteArray(2048) 
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         val read = fis.read(buffer)
-                        if (read == -1) break // Writer closed pipe -> EOF
+                        if (read == -1) break 
                         
                         if (read > 0) {
                             if (isStopped.get()) break
                             val out = AudioProcessor.processAudio(buffer, read)
-                            if (out.isNotEmpty()) {
-                                synchronized(callback) {
-                                    try {
-                                        var offset = 0
-                                        while (offset < out.size) {
-                                            val chunkLen = min(4096, out.size - offset)
-                                            callback.audioAvailable(out, offset, chunkLen)
-                                            offset += chunkLen
-                                        }
-                                    } catch (e: Exception) {}
-                                }
-                            }
+                            sendAudioToSystem(out, callback)
                         }
                     }
+                    
+                    // --- FIX FOR CUTOFF: DRAIN REMAINING AUDIO ---
+                    // အသံမဆုံးခင် ဖြတ်မချဘဲ ကျန်တာတွေ ညှစ်ထုတ်မယ်
+                    if (!isStopped.get()) {
+                        val tail = AudioProcessor.drain()
+                        sendAudioToSystem(tail, callback)
+                    }
+
                 } catch (e: IOException) {
-                    // Pipe broken during stop is normal
                 } finally {
                     try { fis?.close() } catch (e: Exception) {}
                 }
             }
 
-            // SYNCHRONIZATION POINT (ထိန်းချုပ်ခန်း)
-            // Writer ပြီးတဲ့အထိ စောင့်မယ်
-            try {
-                writerFuture.get() 
-            } catch (e: Exception) { }
-            
-            // Reader ပြီးတဲ့အထိ စောင့်မယ်
-            try {
-                readerFuture.get()
-            } catch (e: Exception) { }
+            try { writerFuture.get() } catch (e: Exception) { }
+            try { readerFuture.get() } catch (e: Exception) { }
 
         } catch (e: Exception) {
             AppLogger.error("Setup Error", e)
         } finally {
-            // အားလုံးပြီးရင် (သို့) Error တက်ရင် လက်ကျန်လမ်းကြောင်းတွေ ပိတ်မယ်
             try { lW?.close() } catch (e: Exception) {}
             try { lR?.close() } catch (e: Exception) {}
         }
     }
 
+    private fun sendAudioToSystem(out: ByteArray, callback: SynthesisCallback) {
+        if (out.isEmpty()) return
+        synchronized(callback) {
+            try {
+                var offset = 0
+                while (offset < out.size) {
+                    val chunkLen = min(4096, out.size - offset)
+                    callback.audioAvailable(out, offset, chunkLen)
+                    offset += chunkLen
+                }
+            } catch (e: Exception) {}
+        }
+    }
+
     private fun stopEverything(reason: String) {
         isStopped.set(true)
-        // Main Controller ကို ရပ်မယ်
         currentTask?.cancel(true)
-        
-        // C++ Buffer ကို ရှင်းမယ်
         AudioProcessor.flush()
     }
 
@@ -258,21 +262,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    override fun onStop() {
-        stopEverything("onStop Called")
-    }
-
-    override fun onDestroy() {
+    override fun onStop() { stopEverything("onStop") }
+    override fun onDestroy() { 
         stopEverything("Destroy")
         controllerExecutor.shutdownNow()
         pipeExecutor.shutdownNow()
-        shanEngine?.shutdown()
-        burmeseEngine?.shutdown()
-        englishEngine?.shutdown()
-        AudioProcessor.flush()
-        super.onDestroy()
+        shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
+        super.onDestroy() 
     }
-
     override fun onGetVoices(): List<Voice> = listOf()
     override fun onIsLanguageAvailable(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
