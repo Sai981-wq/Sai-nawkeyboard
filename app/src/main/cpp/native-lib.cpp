@@ -3,69 +3,19 @@
 #include <vector>
 #include <android/log.h>
 #include <mutex>
-#include <cmath>
 #include "sonic.h"
 
-#define TARGET_RATE 24000  // Master Output
+#define TARGET_RATE 24000  
 #define MAX_OUTPUT_SAMPLES 4096
 
 std::mutex processorMutex;
 static sonicStream stream = NULL;
+
+static float userSpeed = 1.0f;
+static float userPitch = 1.0f;
 static int currentInputRate = 16000;
-static bool isFirstBuffer = true; // To track start of playback for Fade-In
 
-// --- Helper: Cubic Hermite Interpolation (High Quality Audio) ---
-// This calculates smooth curves between samples, preventing "Phone Sound" and "Wavering"
-float cubic_hermite(float p0, float p1, float p2, float p3, float x) {
-    float a = -0.5f * p0 + 1.5f * p1 - 1.5f * p2 + 0.5f * p3;
-    float b = p0 - 2.5f * p1 + 2.0f * p2 - 0.5f * p3;
-    float c = -0.5f * p0 + 0.5f * p2;
-    float d = p1;
-    return a*x*x*x + b*x*x + c*x + d;
-}
-
-// Resamples input to TARGET_RATE using Cubic Interpolation
-std::vector<short> CubicResample(const short* input, int inputLen, int inRate, int outRate) {
-    if (inRate == outRate || inputLen <= 0) {
-        return std::vector<short>(input, input + inputLen);
-    }
-
-    float ratio = (float)inRate / (float)outRate;
-    int outputLen = (int)((float)inputLen / ratio);
-    std::vector<short> output(outputLen);
-
-    for (int i = 0; i < outputLen; i++) {
-        float pos = i * ratio;
-        int idx = (int)pos;
-        float frac = pos - idx;
-
-        // Get 4 neighboring samples (Clamp to edges)
-        float p0 = (idx > 0) ? input[idx - 1] : input[0];
-        float p1 = input[idx];
-        float p2 = (idx + 1 < inputLen) ? input[idx + 1] : input[inputLen - 1];
-        float p3 = (idx + 2 < inputLen) ? input[idx + 2] : input[inputLen - 1];
-
-        float val = cubic_hermite(p0, p1, p2, p3, frac);
-        
-        // Clip to 16-bit range
-        if (val > 32767.0f) val = 32767.0f;
-        if (val < -32768.0f) val = -32768.0f;
-        
-        output[i] = (short)val;
-    }
-    return output;
-}
-
-// Apply a tiny fade-in to the first few milliseconds to remove "Duk/Click" sound
-void applyFadeIn(short* buffer, int len) {
-    int fadeLen = 240; // Approx 10ms at 24kHz
-    if (len < fadeLen) fadeLen = len;
-    
-    for (int i = 0; i < fadeLen; i++) {
-        float gain = (float)i / (float)fadeLen;
-        buffer[i] = (short)(buffer[i] * gain);
-    }
-}
+static int garbageBytesRemaining = 0; 
 
 jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
     int avail = sonicSamplesAvailable(s);
@@ -84,31 +34,44 @@ jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
     return env->NewByteArray(0);
 }
 
+void updateSonicConfig() {
+    if (!stream) return;
+
+    float resampleRatio = (float)currentInputRate / (float)TARGET_RATE;
+    sonicSetRate(stream, resampleRatio);
+
+    sonicSetSpeed(stream, userSpeed);
+    
+    float safePitch = (userPitch < 0.4f) ? 0.4f : userPitch;
+    sonicSetPitch(stream, safePitch);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
     currentInputRate = inputRate;
-    isFirstBuffer = true; // Reset fade-in flag for new stream
 
     if (!stream) {
-        stream = sonicCreateStream(TARGET_RATE, ch); // Stream is always 24k
-        sonicSetQuality(stream, 1);
-        sonicSetRate(stream, 1.0f);
+        stream = sonicCreateStream(TARGET_RATE, ch);
+        sonicSetQuality(stream, 1); 
         sonicSetVolume(stream, 1.0f);
     }
+    updateSonicConfig();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_shan_tts_manager_AudioProcessor_resetHeaderSkip(JNIEnv* env, jobject) {
+    std::lock_guard<std::mutex> lock(processorMutex);
+    garbageBytesRemaining = 44; 
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat s, jfloat p) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    if (stream) {
-        float safeSpeed = (s < 0.1f) ? 0.1f : s;
-        float safePitch = (p < 0.4f) ? 0.4f : p;
-        
-        sonicSetSpeed(stream, safeSpeed);
-        sonicSetPitch(stream, safePitch);
-    }
+    userSpeed = s;
+    userPitch = p;
+    updateSonicConfig();
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
@@ -119,20 +82,22 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jobj
     void* bufferAddr = env->GetDirectBufferAddress(buffer);
     if (bufferAddr == NULL) return env->NewByteArray(0);
 
-    short* rawInput = (short*)bufferAddr;
-    int sampleCount = len / 2;
+    jbyte* rawBytes = (jbyte*)bufferAddr;
+    int processLen = len;
+    int offset = 0;
 
-    // 1. Resample (Smooth Cubic)
-    std::vector<short> resampled = CubicResample(rawInput, sampleCount, currentInputRate, TARGET_RATE);
-
-    // 2. Apply Fade-In only for the very first chunk to kill "Duk" sound
-    if (isFirstBuffer && resampled.size() > 0) {
-        applyFadeIn(resampled.data(), resampled.size());
-        isFirstBuffer = false;
+    if (garbageBytesRemaining > 0) {
+        if (processLen <= garbageBytesRemaining) {
+            garbageBytesRemaining -= processLen;
+            return env->NewByteArray(0); 
+        } else {
+            offset = garbageBytesRemaining;
+            processLen -= garbageBytesRemaining;
+            garbageBytesRemaining = 0;
+        }
     }
 
-    // 3. Feed to Sonic
-    sonicWriteShortToStream(stream, resampled.data(), resampled.size());
+    sonicWriteShortToStream(stream, (short*)(rawBytes + offset), processLen / 2);
     
     return readFromStream(env, stream);
 }
@@ -149,7 +114,7 @@ Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
         sonicFlushStream(stream);
-        isFirstBuffer = true; // Reset for next utterance
+        garbageBytesRemaining = 0;
     }
 }
 

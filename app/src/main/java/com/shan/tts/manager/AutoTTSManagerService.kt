@@ -38,7 +38,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private lateinit var prefs: SharedPreferences
 
-    // MASTER RATE: 24000Hz (Fixed)
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
 
@@ -101,6 +100,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     val engineData = getEngineDataForLang(chunk.lang)
                     val engine = engineData.engine ?: continue
+                    
                     val engineInputRate = determineInputRate(engineData.pkgName)
 
                     val sysRate = request?.speechRate ?: 100
@@ -136,10 +136,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         return when {
+            lowerPkg.contains("com.shan.tts") -> 22050
             lowerPkg.contains("eloquence") -> 11025
             lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
             lowerPkg.contains("google") -> 24000
-            lowerPkg.contains("samsung") -> 22050
+            lowerPkg.contains("samsung") -> 22050 
+            lowerPkg.contains("vocalizer") -> 22050
             else -> 16000 
         }
     }
@@ -178,17 +180,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     channel = fis.channel
                     val buffer = ByteBuffer.allocateDirect(4096)
                     
-                    // STRICT HEADER SKIP: Ensure exactly 44 bytes are consumed
-                    var bytesToSkip = 44
-                    val tempSkipBuf = ByteBuffer.allocateDirect(44)
-                    
-                    while (bytesToSkip > 0 && !isStopped.get()) {
-                        tempSkipBuf.limit(bytesToSkip)
-                        val r = channel.read(tempSkipBuf)
-                        if (r == -1) break
-                        bytesToSkip -= r
-                        tempSkipBuf.clear()
-                    }
+                    AudioProcessor.resetHeaderSkip()
 
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()
