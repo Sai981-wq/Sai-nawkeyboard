@@ -38,7 +38,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private lateinit var prefs: SharedPreferences
 
-    // MASTER RATE: Always output 24000Hz to system
+    // MASTER RATE: 24000Hz (Fixed)
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
 
@@ -56,7 +56,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
             
-            // Init C++ with default 16k input, output is fixed at 24k internally
             AudioProcessor.initSonic(16000, 1)
         } catch (e: Exception) {
             AppLogger.error("Error in onCreate", e)
@@ -93,8 +92,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
 
-                // ALWAYS start with Master Rate (24000)
-                // This ensures "Hello" (Eng) and "မင်္ဂလာပါ" (Shan) flow smoothly without restart.
                 synchronized(callback) {
                     callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
@@ -104,8 +101,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     val engineData = getEngineDataForLang(chunk.lang)
                     val engine = engineData.engine ?: continue
-                    
-                    // Detect what rate the ENGINE will provide
                     val engineInputRate = determineInputRate(engineData.pkgName)
 
                     val sysRate = request?.speechRate ?: 100
@@ -117,7 +112,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val finalSpeed = (sysRate / 100.0f) * (appRateRaw / 50.0f)
                     val finalPitch = (sysPitch / 100.0f) * (appPitchRaw / 50.0f)
 
-                    // Update C++ with the current Engine's Rate
                     if (currentInputRate != engineInputRate) {
                         AudioProcessor.initSonic(engineInputRate, 1)
                         currentInputRate = engineInputRate
@@ -184,9 +178,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                     channel = fis.channel
                     val buffer = ByteBuffer.allocateDirect(4096)
                     
-                    // Skip WAV Header (44 bytes) to prevent "Static Noise" or Crash
-                    val headerBuffer = ByteBuffer.allocateDirect(44)
-                    channel.read(headerBuffer)
+                    // STRICT HEADER SKIP: Ensure exactly 44 bytes are consumed
+                    var bytesToSkip = 44
+                    val tempSkipBuf = ByteBuffer.allocateDirect(44)
+                    
+                    while (bytesToSkip > 0 && !isStopped.get()) {
+                        tempSkipBuf.limit(bytesToSkip)
+                        val r = channel.read(tempSkipBuf)
+                        if (r == -1) break
+                        bytesToSkip -= r
+                        tempSkipBuf.clear()
+                    }
 
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()
