@@ -3,43 +3,18 @@
 #include <vector>
 #include <android/log.h>
 #include <mutex>
-#include <cmath>
 #include "sonic.h"
 
-#define TARGET_RATE 24000  // Master Output Rate
+#define TARGET_RATE 24000  // System Output Fixed at 24kHz
 #define MAX_OUTPUT_SAMPLES 4096
 
 std::mutex processorMutex;
 static sonicStream stream = NULL;
-static int currentInputRate = 16000; // Default
 
-// --- Helper: Linear Resampler ---
-// Converts input samples to TARGET_RATE (24000) smoothly
-std::vector<short> SimpleLinearResample(const short* input, int inputLen, int inRate, int outRate) {
-    if (inRate == outRate || inputLen <= 0) {
-        return std::vector<short>(input, input + inputLen);
-    }
-
-    float ratio = (float)inRate / (float)outRate;
-    int outputLen = (int)((float)inputLen / ratio);
-    std::vector<short> output(outputLen);
-
-    for (int i = 0; i < outputLen; i++) {
-        float index = i * ratio;
-        int leftIndex = (int)index;
-        int rightIndex = leftIndex + 1;
-        float frac = index - leftIndex;
-
-        if (rightIndex >= inputLen) {
-            output[i] = input[leftIndex]; // End case
-        } else {
-            // Linear Interpolation formula
-            float val = input[leftIndex] * (1.0f - frac) + input[rightIndex] * frac;
-            output[i] = (short)val;
-        }
-    }
-    return output;
-}
+// Variables to store User Preferences
+static float userSpeed = 1.0f;
+static float userPitch = 1.0f;
+static int currentInputRate = 16000;
 
 jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
     int avail = sonicSamplesAvailable(s);
@@ -58,33 +33,56 @@ jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
     return env->NewByteArray(0);
 }
 
+// Update Sonic settings based on InputRate vs TargetRate
+void updateSonicConfig() {
+    if (!stream) return;
+
+    // Calculate the compensation factor
+    // Example: Input 16k, Target 24k. Factor = 0.666
+    float rateFactor = (float)currentInputRate / (float)TARGET_RATE;
+
+    // We apply this factor to both Speed and Pitch to counteract the
+    // "Chipmunk effect" of playing low-rate audio on high-rate stream.
+    
+    float finalSpeed = userSpeed * rateFactor;
+    float finalPitch = userPitch * rateFactor;
+
+    // Safety checks
+    if (finalSpeed < 0.1f) finalSpeed = 0.1f;
+    if (finalPitch < 0.1f) finalPitch = 0.1f; // Pitch 0.4 check handles in Java or here if needed
+
+    sonicSetSpeed(stream, finalSpeed);
+    sonicSetPitch(stream, finalPitch);
+    sonicSetRate(stream, 1.0f); // Always 1.0 playback rate
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
-    currentInputRate = inputRate; // Store the Engine's Rate (e.g., 22050)
+    currentInputRate = inputRate;
 
-    // Ensure Stream is always 24000Hz (TARGET_RATE)
+    // Always create stream at TARGET_RATE (24000)
     if (!stream) {
         stream = sonicCreateStream(TARGET_RATE, ch);
-        sonicSetQuality(stream, 1);
-        sonicSetRate(stream, 1.0f);
+        sonicSetQuality(stream, 1); // Enable High Quality SINC Filter
         sonicSetVolume(stream, 1.0f);
-    } 
-    // No need to destroy/recreate if just input rate changed. 
-    // The stream stays at 24000Hz. We handle conversion before feeding.
+    }
+    
+    // Apply the correction math
+    updateSonicConfig();
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat s, jfloat p) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    if (stream) {
-        float safeSpeed = (s < 0.1f) ? 0.1f : s;
-        float safePitch = (p < 0.4f) ? 0.4f : p; // Safety floor
-        
-        sonicSetSpeed(stream, safeSpeed);
-        sonicSetPitch(stream, safePitch);
-    }
+    
+    userSpeed = s;
+    
+    // Protect against Low Pitch Crash (User requested 0.4 limit previously)
+    userPitch = (p < 0.4f) ? 0.4f : p;
+    
+    updateSonicConfig();
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
@@ -95,16 +93,11 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jobj
     void* bufferAddr = env->GetDirectBufferAddress(buffer);
     if (bufferAddr == NULL) return env->NewByteArray(0);
 
-    short* rawInput = (short*)bufferAddr;
-    int sampleCount = len / 2;
-
-    // 1. Resample Input -> 24000Hz
-    std::vector<short> resampled = SimpleLinearResample(rawInput, sampleCount, currentInputRate, TARGET_RATE);
-
-    // 2. Feed 24000Hz data to Sonic
-    sonicWriteShortToStream(stream, resampled.data(), resampled.size());
+    // Write RAW input samples directly. 
+    // Since stream is 24k and data is (e.g.) 16k, Sonic treats it as 24k (fast).
+    // But 'updateSonicConfig' has already set Speed/Pitch to slow it down correctly.
+    sonicWriteShortToStream(stream, (short*)bufferAddr, len / 2);
     
-    // 3. Read back
     return readFromStream(env, stream);
 }
 
