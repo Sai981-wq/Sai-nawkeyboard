@@ -60,14 +60,15 @@ Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat 
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jbyteArray in, jint len) {
+Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jobject buffer, jint len) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (!stream || len <= 0) return env->NewByteArray(0);
 
-    void* primitive = env->GetPrimitiveArrayCritical(in, 0);
-    sonicWriteShortToStream(stream, (short*)primitive, len / 2);
-    env->ReleasePrimitiveArrayCritical(in, primitive, 0);
+    void* bufferAddr = env->GetDirectBufferAddress(buffer);
+    if (bufferAddr == NULL) return env->NewByteArray(0);
 
+    sonicWriteShortToStream(stream, (short*)bufferAddr, len / 2);
+    
     return readFromStream(env, stream);
 }
 

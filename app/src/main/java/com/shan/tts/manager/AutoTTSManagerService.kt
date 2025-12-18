@@ -12,6 +12,8 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
 import java.io.FileInputStream
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -165,14 +167,20 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             readerFuture = pipeExecutor.submit {
                 var fis: FileInputStream? = null
+                var channel: FileChannel? = null
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
-                    val buffer = ByteArray(8192)
+                    channel = fis.channel
+                    val buffer = ByteBuffer.allocateDirect(2048)
+
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
-                        val read = fis.read(buffer)
+                        buffer.clear()
+                        val read = channel.read(buffer)
                         if (read == -1) break
+                        
                         if (read > 0) {
                             if (isStopped.get()) break
+                            buffer.flip()
                             val out = AudioProcessor.processAudio(buffer, read)
                             sendAudioToSystem(out, callback)
                         }
