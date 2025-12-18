@@ -109,8 +109,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                     else if (lowerPkg.contains("espeak") || lowerPkg.contains("shan")) inputRate = 22050
                     else if (lowerPkg.contains("google")) inputRate = 24000
 
+                    // ERROR FIX HERE: request?.pitch instead of speechPitch
                     val sysRate = request?.speechRate ?: 100
-                    val sysPitch = request?.speechPitch ?: 100
+                    val sysPitch = request?.pitch ?: 100
                     
                     val appRateRaw = prefs.getInt(engineData.rateKey, 50)
                     val appPitchRaw = prefs.getInt(engineData.pitchKey, 50)
@@ -180,6 +181,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         if (read > 0) {
                             if (isStopped.get()) break
+                            
+                            // buffer.flip() is implied by passing explicit 'read' length to processAudio
+                            // but can be added if JNI implementation changes to rely on limit.
+                            // For current JNI (buffer, len), direct reading is fine.
+                            
                             val out = AudioProcessor.processAudio(buffer, read)
                             if (out.isNotEmpty()) {
                                 sendAudioToSystem(out, callback)
