@@ -10,12 +10,7 @@
 
 std::mutex processorMutex;
 static sonicStream stream = NULL;
-
-static float userSpeed = 1.0f;
-static float userPitch = 1.0f;
 static int currentInputRate = 16000;
-
-static int garbageBytesRemaining = 0; 
 
 jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
     int avail = sonicSamplesAvailable(s);
@@ -37,13 +32,13 @@ jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
 void updateSonicConfig() {
     if (!stream) return;
 
+    // Sinc Resampling ONLY
     float resampleRatio = (float)currentInputRate / (float)TARGET_RATE;
     sonicSetRate(stream, resampleRatio);
 
-    sonicSetSpeed(stream, userSpeed);
-    
-    float safePitch = (userPitch < 0.4f) ? 0.4f : userPitch;
-    sonicSetPitch(stream, safePitch);
+    // Speed & Pitch are ALWAYS 1.0 (Let System/Engine handle it)
+    sonicSetSpeed(stream, 1.0f);
+    sonicSetPitch(stream, 1.0f);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -61,16 +56,10 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint in
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_resetHeaderSkip(JNIEnv* env, jobject) {
-    std::lock_guard<std::mutex> lock(processorMutex);
-    garbageBytesRemaining = 44; 
-}
-
-extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat s, jfloat p) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    userSpeed = s;
-    userPitch = p;
+    // We ignore inputs 's' and 'p' effectively, or just force update.
+    // Logic ensures it stays 1.0
     updateSonicConfig();
 }
 
@@ -82,22 +71,8 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jobj
     void* bufferAddr = env->GetDirectBufferAddress(buffer);
     if (bufferAddr == NULL) return env->NewByteArray(0);
 
-    jbyte* rawBytes = (jbyte*)bufferAddr;
-    int processLen = len;
-    int offset = 0;
-
-    if (garbageBytesRemaining > 0) {
-        if (processLen <= garbageBytesRemaining) {
-            garbageBytesRemaining -= processLen;
-            return env->NewByteArray(0); 
-        } else {
-            offset = garbageBytesRemaining;
-            processLen -= garbageBytesRemaining;
-            garbageBytesRemaining = 0;
-        }
-    }
-
-    sonicWriteShortToStream(stream, (short*)(rawBytes + offset), processLen / 2);
+    // Direct Feed
+    sonicWriteShortToStream(stream, (short*)bufferAddr, len / 2);
     
     return readFromStream(env, stream);
 }
@@ -114,7 +89,6 @@ Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
         sonicFlushStream(stream);
-        garbageBytesRemaining = 0;
     }
 }
 

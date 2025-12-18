@@ -101,22 +101,27 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val engineData = getEngineDataForLang(chunk.lang)
                     val engine = engineData.engine ?: continue
                     
+                    // 1. Hz Detection (Package Name)
                     val engineInputRate = determineInputRate(engineData.pkgName)
-
+                    
+                    // 2. Get System Settings
                     val sysRate = request?.speechRate ?: 100
                     val sysPitch = request?.pitch ?: 100
                     
-                    val appRateRaw = prefs.getInt(engineData.rateKey, 50)
-                    val appPitchRaw = prefs.getInt(engineData.pitchKey, 50)
+                    // 3. Apply System Settings DIRECTLY to the Engine
+                    // (We divide by 100.0f because Android uses 1.0 as normal, 2.0 as fast)
+                    try {
+                        engine.setSpeechRate(sysRate / 100.0f)
+                        engine.setPitch(sysPitch / 100.0f)
+                    } catch (e: Exception) {}
 
-                    val finalSpeed = (sysRate / 100.0f) * (appRateRaw / 50.0f)
-                    val finalPitch = (sysPitch / 100.0f) * (appPitchRaw / 50.0f)
-
+                    // 4. Configure Sonic (Only for Resampling)
+                    // We tell Sonic to stay at 1.0 (Normal) because the Engine is already handling the speed.
                     if (currentInputRate != engineInputRate) {
                         AudioProcessor.initSonic(engineInputRate, 1)
                         currentInputRate = engineInputRate
                     }
-                    AudioProcessor.setConfig(finalSpeed, finalPitch)
+                    AudioProcessor.setConfig(1.0f, 1.0f) // Always 1.0
 
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
@@ -180,8 +185,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     channel = fis.channel
                     val buffer = ByteBuffer.allocateDirect(4096)
                     
-                    AudioProcessor.resetHeaderSkip()
-
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()
                         val read = channel.read(buffer)
