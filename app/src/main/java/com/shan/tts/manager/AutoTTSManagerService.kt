@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.Process // For setting Thread Priority
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -38,6 +39,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private lateinit var prefs: SharedPreferences
 
+    // MASTER RATE: 24000Hz (Fixed)
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
 
@@ -82,6 +84,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped.set(false)
 
         currentTask = controllerExecutor.submit {
+            // Priority High for Control Thread
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            
             try {
                 if (callback == null) return@submit
                 
@@ -101,27 +106,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val engineData = getEngineDataForLang(chunk.lang)
                     val engine = engineData.engine ?: continue
                     
-                    // 1. Hz Detection (Package Name)
                     val engineInputRate = determineInputRate(engineData.pkgName)
-                    
-                    // 2. Get System Settings
+
                     val sysRate = request?.speechRate ?: 100
                     val sysPitch = request?.pitch ?: 100
                     
-                    // 3. Apply System Settings DIRECTLY to the Engine
-                    // (We divide by 100.0f because Android uses 1.0 as normal, 2.0 as fast)
+                    // Direct Control to Engine
                     try {
                         engine.setSpeechRate(sysRate / 100.0f)
                         engine.setPitch(sysPitch / 100.0f)
                     } catch (e: Exception) {}
 
-                    // 4. Configure Sonic (Only for Resampling)
-                    // We tell Sonic to stay at 1.0 (Normal) because the Engine is already handling the speed.
+                    // Update Sonic only for Resampling (Fixed Speed 1.0)
                     if (currentInputRate != engineInputRate) {
                         AudioProcessor.initSonic(engineInputRate, 1)
                         currentInputRate = engineInputRate
                     }
-                    AudioProcessor.setConfig(1.0f, 1.0f) // Always 1.0
+                    AudioProcessor.setConfig(1.0f, 1.0f)
 
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
@@ -172,18 +173,26 @@ class AutoTTSManagerService : TextToSpeechService() {
             lR = pipe[0]; lW = pipe[1]
             
             writerFuture = pipeExecutor.submit {
+                // HIGH PRIORITY for Writer
+                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
                 try { engine.synthesizeToFile(text, params, lW!!, uuid) } 
                 catch (e: Exception) {} 
                 finally { try { lW?.close() } catch (e: Exception) {} }
             }
 
             readerFuture = pipeExecutor.submit {
+                // HIGH PRIORITY for Reader
+                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+                
                 var fis: FileInputStream? = null
                 var channel: FileChannel? = null
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
-                    val buffer = ByteBuffer.allocateDirect(4096)
+                    
+                    // INCREASED BUFFER SIZE (16KB) - Fixes "Pyat-Taung Pyat-Taung"
+                    // 16384 bytes = approx 0.3s of audio, much smoother than 4096
+                    val buffer = ByteBuffer.allocateDirect(16384)
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()
@@ -224,7 +233,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             try {
                 var offset = 0
                 while (offset < out.size) {
-                    val chunkLen = min(4096, out.size - offset)
+                    // Send larger chunks to AudioTrack to prevent starvation
+                    val chunkLen = min(8192, out.size - offset)
                     callback.audioAvailable(out, offset, chunkLen)
                     offset += chunkLen
                 }
