@@ -109,14 +109,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                     else if (lowerPkg.contains("espeak") || lowerPkg.contains("shan")) inputRate = 22050
                     else if (lowerPkg.contains("google")) inputRate = 24000
 
-                    val speedRaw = prefs.getInt(engineData.rateKey, 50)
-                    val pitchRaw = prefs.getInt(engineData.pitchKey, 50)
+                    val sysRate = request?.speechRate ?: 100
+                    val sysPitch = request?.speechPitch ?: 100
+                    
+                    val appRateRaw = prefs.getInt(engineData.rateKey, 50)
+                    val appPitchRaw = prefs.getInt(engineData.pitchKey, 50)
 
-                    val safeSpeed = if (speedRaw < 5) 5 else speedRaw
-                    val safePitch = if (pitchRaw < 5) 5 else pitchRaw
-
-                    val finalSpeed = safeSpeed / 50.0f
-                    val finalPitch = safePitch / 50.0f
+                    val finalSpeed = (sysRate / 100.0f) * (appRateRaw / 50.0f)
+                    val finalPitch = (sysPitch / 100.0f) * (appPitchRaw / 50.0f)
 
                     if (currentSonicRate != inputRate) {
                         AudioProcessor.initSonic(inputRate, 1)
@@ -171,7 +171,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
-                    val buffer = ByteBuffer.allocateDirect(2048)
+                    val buffer = ByteBuffer.allocateDirect(4096)
 
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()
@@ -180,14 +180,18 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         if (read > 0) {
                             if (isStopped.get()) break
-                            buffer.flip()
                             val out = AudioProcessor.processAudio(buffer, read)
-                            sendAudioToSystem(out, callback)
+                            if (out.isNotEmpty()) {
+                                sendAudioToSystem(out, callback)
+                            }
                         }
                     }
                     if (!isStopped.get()) {
-                        val tail = AudioProcessor.drain()
-                        sendAudioToSystem(tail, callback)
+                        var tail = AudioProcessor.drain()
+                        while (tail.isNotEmpty() && !isStopped.get()) {
+                             sendAudioToSystem(tail, callback)
+                             tail = AudioProcessor.drain()
+                        }
                     }
                 } catch (e: IOException) {} 
                 finally { try { fis?.close() } catch (e: Exception) {} }
