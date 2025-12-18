@@ -38,7 +38,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private lateinit var prefs: SharedPreferences
 
-    private var currentSonicRate = 0
+    // MASTER RATE: Always output 24000Hz to system
+    private val OUTPUT_HZ = 24000 
+    private var currentInputRate = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -53,7 +55,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
-
+            
+            // Init C++ with default 16k input, output is fixed at 24k internally
             AudioProcessor.initSonic(16000, 1)
         } catch (e: Exception) {
             AppLogger.error("Error in onCreate", e)
@@ -90,12 +93,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
 
-                val firstLang = rawChunks[0].lang
-                val firstEngineData = getEngineDataForLang(firstLang)
-                val globalRate = determineInputRate(firstEngineData.pkgName)
-
+                // ALWAYS start with Master Rate (24000)
+                // This ensures "Hello" (Eng) and "မင်္ဂလာပါ" (Shan) flow smoothly without restart.
                 synchronized(callback) {
-                    callback.start(globalRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
                 for (chunk in rawChunks) {
@@ -104,7 +105,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val engineData = getEngineDataForLang(chunk.lang)
                     val engine = engineData.engine ?: continue
                     
-                    val inputRate = determineInputRate(engineData.pkgName)
+                    // Detect what rate the ENGINE will provide
+                    val engineInputRate = determineInputRate(engineData.pkgName)
 
                     val sysRate = request?.speechRate ?: 100
                     val sysPitch = request?.pitch ?: 100
@@ -115,9 +117,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val finalSpeed = (sysRate / 100.0f) * (appRateRaw / 50.0f)
                     val finalPitch = (sysPitch / 100.0f) * (appPitchRaw / 50.0f)
 
-                    if (currentSonicRate != inputRate) {
-                        AudioProcessor.initSonic(inputRate, 1)
-                        currentSonicRate = inputRate
+                    // Update C++ with the current Engine's Rate
+                    if (currentInputRate != engineInputRate) {
+                        AudioProcessor.initSonic(engineInputRate, 1)
+                        currentInputRate = engineInputRate
                     }
                     AudioProcessor.setConfig(finalSpeed, finalPitch)
 
@@ -142,7 +145,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             lowerPkg.contains("eloquence") -> 11025
             lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
             lowerPkg.contains("google") -> 24000
-            lowerPkg.contains("samsung") -> 22050 
+            lowerPkg.contains("samsung") -> 22050
             else -> 16000 
         }
     }
@@ -181,6 +184,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     channel = fis.channel
                     val buffer = ByteBuffer.allocateDirect(4096)
                     
+                    // Skip WAV Header (44 bytes) to prevent "Static Noise" or Crash
                     val headerBuffer = ByteBuffer.allocateDirect(44)
                     channel.read(headerBuffer)
 
@@ -235,7 +239,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped.set(true)
         currentTask?.cancel(true)
         AudioProcessor.flush()
-        currentSonicRate = 0
+        currentInputRate = 0
     }
 
     private fun getVolumeCorrection(pkg: String): Float {
