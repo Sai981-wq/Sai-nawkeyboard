@@ -38,7 +38,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val isStopped = AtomicBoolean(false)
     private lateinit var prefs: SharedPreferences
 
-    private val OUTPUT_HZ = 24000
     private var currentSonicRate = 0
 
     override fun onCreate() {
@@ -86,14 +85,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (callback == null) return@submit
                 
                 val rawChunks = TTSUtils.splitHelper(text)
-                
                 if (rawChunks.isEmpty()) {
                     callback.done()
                     return@submit
                 }
 
+                val firstLang = rawChunks[0].lang
+                val firstEngineData = getEngineDataForLang(firstLang)
+                val globalRate = determineInputRate(firstEngineData.pkgName)
+
                 synchronized(callback) {
-                    callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+                    callback.start(globalRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
                 for (chunk in rawChunks) {
@@ -101,15 +103,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     val engineData = getEngineDataForLang(chunk.lang)
                     val engine = engineData.engine ?: continue
-                    val pkgName = engineData.pkgName
+                    
+                    val inputRate = determineInputRate(engineData.pkgName)
 
-                    var inputRate = 16000
-                    val lowerPkg = pkgName.lowercase(Locale.ROOT)
-                    if (lowerPkg.contains("eloquence")) inputRate = 11025
-                    else if (lowerPkg.contains("espeak") || lowerPkg.contains("shan")) inputRate = 22050
-                    else if (lowerPkg.contains("google")) inputRate = 24000
-
-                    // ERROR FIX HERE: request?.pitch instead of speechPitch
                     val sysRate = request?.speechRate ?: 100
                     val sysPitch = request?.pitch ?: 100
                     
@@ -126,7 +122,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     AudioProcessor.setConfig(finalSpeed, finalPitch)
 
                     val params = Bundle()
-                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(pkgName))
+                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
                     val uuid = UUID.randomUUID().toString()
                     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
@@ -137,6 +133,17 @@ class AutoTTSManagerService : TextToSpeechService() {
             } finally {
                 if (!isStopped.get()) callback?.done()
             }
+        }
+    }
+    
+    private fun determineInputRate(pkgName: String): Int {
+        val lowerPkg = pkgName.lowercase(Locale.ROOT)
+        return when {
+            lowerPkg.contains("eloquence") -> 11025
+            lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
+            lowerPkg.contains("google") -> 24000
+            lowerPkg.contains("samsung") -> 22050 
+            else -> 16000 
         }
     }
 
@@ -173,6 +180,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
                     val buffer = ByteBuffer.allocateDirect(4096)
+                    
+                    val headerBuffer = ByteBuffer.allocateDirect(44)
+                    channel.read(headerBuffer)
 
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()
@@ -181,10 +191,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         if (read > 0) {
                             if (isStopped.get()) break
-                            
-                            // buffer.flip() is implied by passing explicit 'read' length to processAudio
-                            // but can be added if JNI implementation changes to rely on limit.
-                            // For current JNI (buffer, len), direct reading is fine.
                             
                             val out = AudioProcessor.processAudio(buffer, read)
                             if (out.isNotEmpty()) {

@@ -5,7 +5,6 @@
 #include <mutex>
 #include "sonic.h"
 
-#define TARGET_RATE 24000
 #define MAX_OUTPUT_SAMPLES 4096
 
 std::mutex processorMutex;
@@ -39,17 +38,19 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint ra
         return;
     }
     
-    if (stream) sonicDestroyStream(stream);
-    
-    stream = sonicCreateStream(rate, ch);
+    if (stream) {
+        sonicSetSampleRate(stream, rate);
+    } else {
+        stream = sonicCreateStream(rate, ch);
+    }
+
     currentInRate = rate;
     
     sonicSetQuality(stream, 1); 
     sonicSetSpeed(stream, 1.0f);
     sonicSetPitch(stream, 1.0f);
-    
-    float playbackRate = (float)rate / (float)TARGET_RATE;
-    sonicSetRate(stream, playbackRate); 
+    sonicSetRate(stream, 1.0f);
+    sonicSetVolume(stream, 1.0f);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -57,7 +58,7 @@ Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat 
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
         float safeSpeed = (s < 0.1f) ? 0.1f : s;
-        float safePitch = (p < 0.1f) ? 0.1f : p;
+        float safePitch = (p < 0.4f) ? 0.4f : p;
         
         sonicSetSpeed(stream, safeSpeed);
         sonicSetPitch(stream, safePitch);
@@ -82,8 +83,6 @@ Java_com_shan_tts_manager_AudioProcessor_drain(JNIEnv* env, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (!stream) return env->NewByteArray(0);
 
-    // Note: We don't flush stream here to avoid silence insertion, 
-    // just read remaining samples.
     return readFromStream(env, stream);
 }
 
@@ -92,11 +91,6 @@ Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
         sonicFlushStream(stream);
-        int avail = sonicSamplesAvailable(stream);
-        if (avail > 0) {
-            std::vector<short> dummy(avail);
-            sonicReadShortFromStream(stream, dummy.data(), avail);
-        }
     }
 }
 
