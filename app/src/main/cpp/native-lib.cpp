@@ -76,6 +76,14 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
+        sonicFlushStream(stream);
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_shan_tts_manager_AudioProcessor_stop(JNIEnv*, jobject) {
+    std::lock_guard<std::mutex> lock(processorMutex);
+    if (stream) {
         sonicDestroyStream(stream);
         stream = NULL;
         currentInputRate = 0;

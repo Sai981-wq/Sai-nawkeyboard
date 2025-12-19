@@ -11,5 +11,6 @@ object AudioProcessor {
     external fun setConfig(speed: Float, pitch: Float)
     external fun processAudio(inBuffer: ByteBuffer, len: Int, outBuffer: ByteArray): Int
     external fun flush()
+    external fun stop()
 }
 

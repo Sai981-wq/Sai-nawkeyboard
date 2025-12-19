@@ -36,6 +36,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val pipeExecutor = Executors.newCachedThreadPool()
 
     private var currentTask: Future<*>? = null
+    private var writerFuture: Future<*>? = null 
+    private var readerFuture: Future<*>? = null
+    
+    private var currentReadFd: ParcelFileDescriptor? = null
+    private var currentWriteFd: ParcelFileDescriptor? = null
+
     private val isStopped = AtomicBoolean(false)
     private lateinit var prefs: SharedPreferences
 
@@ -77,6 +83,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
+        
         stopEverything("New Request")
         isStopped.set(false)
         
@@ -114,6 +121,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         AudioProcessor.initSonic(engineInputRate, 1)
                         currentInputRate = engineInputRate
                     } else {
+                        AudioProcessor.flush() 
                         AudioProcessor.setConfig(1.0f, 1.0f)
                     }
 
@@ -162,22 +170,18 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun processDualThreads(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
-        var lR: ParcelFileDescriptor? = null
-        var lW: ParcelFileDescriptor? = null
-        var writerFuture: Future<*>? = null
-        var readerFuture: Future<*>? = null
-
         try {
             val pipe = ParcelFileDescriptor.createPipe()
-            lR = pipe[0]; lW = pipe[1]
+            currentReadFd = pipe[0]
+            currentWriteFd = pipe[1]
             
             writerFuture = pipeExecutor.submit {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 try { 
-                    engine.synthesizeToFile(text, params, lW!!, uuid) 
+                    engine.synthesizeToFile(text, params, currentWriteFd!!, uuid) 
                 } 
                 catch (e: Exception) { } 
-                finally { try { lW?.close() } catch (e: Exception) {} }
+                finally { try { currentWriteFd?.close() } catch (e: Exception) {} }
             }
 
             readerFuture = pipeExecutor.submit {
@@ -189,7 +193,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val outBuffer = ByteArray(16384) 
                 
                 try {
-                    fis = FileInputStream(lR!!.fileDescriptor)
+                    fis = FileInputStream(currentReadFd!!.fileDescriptor)
                     channel = fis.channel
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
@@ -210,18 +214,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         if (read > 0) {
                             if (isStopped.get()) break
-                            
                             var bytesProcessed = AudioProcessor.processAudio(inBuffer, read, outBuffer)
-                            
-                            if (bytesProcessed > 0) {
-                                sendAudioToSystem(outBuffer, bytesProcessed, callback)
-                            }
+                            if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
                             
                             while (bytesProcessed > 0 && !isStopped.get()) {
                                 bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
-                                if (bytesProcessed > 0) {
-                                    sendAudioToSystem(outBuffer, bytesProcessed, callback)
-                                }
+                                if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
                             }
                         }
                     }
@@ -229,13 +227,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                 } catch (e: Exception) {
                 } finally { try { fis?.close() } catch (e: Exception) {} }
             }
-            try { writerFuture.get(); readerFuture.get() } catch (e: Exception) {}
+            try { writerFuture?.get(); readerFuture?.get() } catch (e: Exception) {}
         } catch (e: Exception) {
         } finally {
-            try { lW?.close() } catch (e: Exception) {}
-            try { lR?.close() } catch (e: Exception) {}
-            writerFuture?.cancel(true)
-            readerFuture?.cancel(true)
+            try { currentWriteFd?.close() } catch (e: Exception) {}
+            try { currentReadFd?.close() } catch (e: Exception) {}
         }
     }
 
@@ -255,16 +251,21 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun stopEverything(reason: String) {
         isStopped.set(true)
-        currentTask?.cancel(true)
         
+        currentTask?.cancel(true)
+        writerFuture?.cancel(true)
+        readerFuture?.cancel(true)
+        
+        try { currentWriteFd?.close() } catch(e: Exception) {}
+        try { currentReadFd?.close() } catch(e: Exception) {}
+
         try {
             shanEngine?.stop()
             burmeseEngine?.stop()
             englishEngine?.stop()
         } catch (e: Exception) {}
 
-        AudioProcessor.flush()
-        currentInputRate = 0
+        AudioProcessor.stop()
     }
     
     override fun onStop() { 
@@ -277,7 +278,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
         controllerExecutor.shutdownNow()
         pipeExecutor.shutdownNow()
-        AudioProcessor.flush()
+        AudioProcessor.stop()
         super.onDestroy() 
     }
     
