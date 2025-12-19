@@ -42,38 +42,26 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
-
-    // INVISIBLE SHIELD (WakeLock Only)
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
-        
-        // Setup Invisible WakeLock
         try {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:SilentLock")
-            wakeLock?.setReferenceCounted(false) // Handle multiple acquires safely
-        } catch (e: Exception) {
-            AppLogger.error("WakeLock Init Error", e)
-        }
+            wakeLock?.setReferenceCounted(false)
+        } catch (e: Exception) {}
 
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-
             shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
             initEngine(shanPkgName, Locale("shn")) { shanEngine = it }
-
             burmesePkgName = prefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(burmesePkgName, Locale("my", "MM")) { burmeseEngine = it }
-
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
-            
             AudioProcessor.initSonic(16000, 1)
-        } catch (e: Exception) {
-            AppLogger.error("Error in onCreate", e)
-        }
+        } catch (e: Exception) {}
     }
 
     private fun initEngine(pkg: String?, locale: Locale, onSuccess: (TextToSpeech) -> Unit) {
@@ -86,9 +74,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     onSuccess(tempTTS!!)
                 }
             }, pkg)
-        } catch (e: Exception) {
-            AppLogger.error("Crash initializing $pkg", e)
-        }
+        } catch (e: Exception) {}
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -96,20 +82,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         stopEverything("New Request")
         isStopped.set(false)
         
-        // Acquire Lock Silently (Keep CPU awake for max 10 mins per request)
-        try {
-            wakeLock?.acquire(10 * 60 * 1000L)
-        } catch (e: Exception) {}
+        try { wakeLock?.acquire(10 * 60 * 1000L) } catch (e: Exception) {}
 
         currentTask = controllerExecutor.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             try {
                 if (callback == null) return@submit
                 val rawChunks = TTSUtils.splitHelper(text)
-                if (rawChunks.isEmpty()) {
-                    callback.done()
-                    return@submit
-                }
+                if (rawChunks.isEmpty()) { callback.done(); return@submit }
 
                 synchronized(callback) {
                     callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -143,17 +123,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                     processDualThreads(engine, params, chunk.text, callback, uuid)
                     
                     val tail = AudioProcessor.drain()
-                    if (tail.isNotEmpty()) sendAudioToSystem(tail, callback)
+                    if (tail.isNotEmpty()) sendAudioToSystem(tail, tail.size, callback)
                 }
             } catch (e: Exception) {
                 AppLogger.error("Synthesize Critical Error", e)
             } finally {
                 if (!isStopped.get()) callback?.done()
-                
-                // Release Lock immediately when done to save battery
-                try {
-                    if (wakeLock?.isHeld == true) wakeLock?.release()
-                } catch (e: Exception) {}
+                try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
             }
         }
     }
@@ -201,15 +177,19 @@ class AutoTTSManagerService : TextToSpeechService() {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 var fis: FileInputStream? = null
                 var channel: FileChannel? = null
+                
+                val inBuffer = ByteBuffer.allocateDirect(4096)
+                val outBuffer = ByteArray(16384) 
+                val headerCheck = ByteBuffer.allocate(44)
+                var isFirstRead = true
+
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
-                    val buffer = ByteBuffer.allocateDirect(4096)
-                    val headerCheck = ByteBuffer.allocate(44)
-                    var isFirstRead = true
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
-                        buffer.clear()
+                        inBuffer.clear()
+                        
                         if (isFirstRead) {
                             headerCheck.clear()
                             val hRead = channel.read(headerCheck)
@@ -221,18 +201,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                                     val tempDirect = ByteBuffer.allocateDirect(hRead)
                                     tempDirect.put(arr, 0, hRead)
                                     tempDirect.flip()
-                                    val out = AudioProcessor.processAudio(tempDirect, hRead)
-                                    if (out.isNotEmpty()) sendAudioToSystem(out, callback)
+                                    val bytesRead = AudioProcessor.processAudio(tempDirect, hRead, outBuffer)
+                                    if (bytesRead > 0) sendAudioToSystem(outBuffer, bytesRead, callback)
                                 }
                             }
                             isFirstRead = false
                         }
-                        val read = channel.read(buffer)
+
+                        val read = channel.read(inBuffer)
                         if (read == -1) break
+                        
                         if (read > 0) {
                             if (isStopped.get()) break
-                            val out = AudioProcessor.processAudio(buffer, read)
-                            if (out.isNotEmpty()) sendAudioToSystem(out, callback)
+                            val bytesRead = AudioProcessor.processAudio(inBuffer, read, outBuffer)
+                            if (bytesRead > 0) sendAudioToSystem(outBuffer, bytesRead, callback)
                         }
                     }
                 } catch (e: IOException) {} 
@@ -244,17 +226,19 @@ class AutoTTSManagerService : TextToSpeechService() {
         } finally {
             try { lW?.close() } catch (e: Exception) {}
             try { lR?.close() } catch (e: Exception) {}
+            writerFuture?.cancel(true)
+            readerFuture?.cancel(true)
         }
     }
 
-    private fun sendAudioToSystem(out: ByteArray, callback: SynthesisCallback) {
-        if (out.isEmpty()) return
+    private fun sendAudioToSystem(data: ByteArray, length: Int, callback: SynthesisCallback) {
+        if (length <= 0) return
         synchronized(callback) {
             try {
                 var offset = 0
-                while (offset < out.size) {
-                    val chunkLen = min(4096, out.size - offset)
-                    callback.audioAvailable(out, offset, chunkLen)
+                while (offset < length) {
+                    val chunkLen = min(4096, length - offset)
+                    callback.audioAvailable(data, offset, chunkLen)
                     offset += chunkLen
                 }
             } catch (e: Exception) {}
@@ -277,7 +261,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onStop() { 
         stopEverything("onStop")
-        // Force release lock if still held
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
     }
     

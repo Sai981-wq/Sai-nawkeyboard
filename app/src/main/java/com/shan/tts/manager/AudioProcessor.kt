@@ -9,8 +9,7 @@ object AudioProcessor {
 
     external fun initSonic(sampleRate: Int, channels: Int)
     external fun setConfig(speed: Float, pitch: Float)
-    external fun resetHeaderSkip()
-    external fun processAudio(buffer: ByteBuffer, len: Int): ByteArray
+    external fun processAudio(inBuffer: ByteBuffer, len: Int, outBuffer: ByteArray): Int
     external fun drain(): ByteArray
     external fun flush()
 }
