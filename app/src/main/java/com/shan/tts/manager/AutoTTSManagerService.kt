@@ -80,16 +80,17 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
+        // STOP aggressive: Clears C++ buffers instantly
         stopEverything("New Request")
         isStopped.set(false)
 
         currentTask = controllerExecutor.submit {
+            // High Priority for Keyboard responsiveness
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             
             try {
                 if (callback == null) return@submit
                 
-                // Note: Make sure TTSUtils is defined in your project
                 val rawChunks = TTSUtils.splitHelper(text)
                 if (rawChunks.isEmpty()) {
                     callback.done()
@@ -103,7 +104,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 for (chunk in rawChunks) {
                     if (isStopped.get()) break
 
-                    // ERROR FIXED HERE: Ensure getEngineDataForLang is defined below
                     val engineData = getEngineDataForLang(chunk.lang)
                     val engine = engineData.engine ?: continue
                     
@@ -112,18 +112,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val sysRate = request?.speechRate ?: 100
                     val sysPitch = request?.pitch ?: 100
                     
-                    // ERROR FIXED HERE: engine is now correctly identified as TextToSpeech
                     try {
                         engine.setSpeechRate(sysRate / 100.0f)
                         engine.setPitch(sysPitch / 100.0f)
                     } catch (e: Exception) {}
 
-                    if (currentInputRate != engineInputRate) {
-                        AudioProcessor.initSonic(engineInputRate, 1)
-                        currentInputRate = engineInputRate
-                    } else {
-                        AudioProcessor.setConfig(1.0f, 1.0f)
-                    }
+                    // Refresh Sonic: Force init to recreate stream and kill Hz ghosts
+                    AudioProcessor.initSonic(engineInputRate, 1)
+                    currentInputRate = engineInputRate
 
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
@@ -140,7 +136,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // --- Helper Functions (Must be inside the class) ---
+    // --- Helper Functions ---
 
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
@@ -155,10 +151,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    // Data Class for holding Engine info
     data class EngineData(val engine: TextToSpeech?, val pkgName: String, val rateKey: String, val pitchKey: String)
 
-    // The missing function causing the error
     private fun getEngineDataForLang(lang: String): EngineData {
         return when (lang) {
             "SHAN" -> EngineData(if (shanEngine != null) shanEngine else englishEngine, shanPkgName, "rate_shan", "pitch_shan")
@@ -195,7 +189,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
                     
-                    val buffer = ByteBuffer.allocateDirect(8192) 
+                    // 4KB Buffer is better for LOW LATENCY (Keyboard typing)
+                    val buffer = ByteBuffer.allocateDirect(4096) 
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()

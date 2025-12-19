@@ -16,7 +16,6 @@ jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
     int avail = sonicSamplesAvailable(s);
     if (avail <= 0) return env->NewByteArray(0);
 
-    // Limit read size to prevent massive allocation
     int samplesToRead = (avail > MAX_OUTPUT_SAMPLES) ? MAX_OUTPUT_SAMPLES : avail;
     std::vector<short> buf(samplesToRead);
     int read = sonicReadShortFromStream(s, buf.data(), samplesToRead);
@@ -37,7 +36,7 @@ void updateSonicConfig() {
     float resampleRatio = (float)currentInputRate / (float)TARGET_RATE;
     sonicSetRate(stream, resampleRatio);
 
-    // Lock Speed/Pitch to 1.0 (System handles speed, Sonic handles Resampling only)
+    // Lock Speed/Pitch to 1.0 (System handles speed)
     sonicSetSpeed(stream, 1.0f);
     sonicSetPitch(stream, 1.0f);
 }
@@ -46,18 +45,19 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
-    // Always FLUSH on init to kill previous audio ghosting
+    // KEY FIX FOR KEYBOARD: 
+    // Always DESTROY and RECREATE stream on new init.
+    // This guarantees 0% chance of "Hz Confusion" or "Ghost Audio".
     if (stream) {
-        sonicFlushStream(stream);
+        sonicDestroyStream(stream);
+        stream = NULL;
     }
 
     currentInputRate = inputRate;
 
-    if (!stream) {
-        stream = sonicCreateStream(TARGET_RATE, ch);
-        sonicSetQuality(stream, 1); 
-        sonicSetVolume(stream, 1.0f);
-    }
+    stream = sonicCreateStream(TARGET_RATE, ch);
+    sonicSetQuality(stream, 1); 
+    sonicSetVolume(stream, 1.0f);
     
     updateSonicConfig();
 }
@@ -93,13 +93,8 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
+        // Just flush, don't destroy here to keep object alive for drain
         sonicFlushStream(stream);
-        // Clear buffer completely
-        int avail = sonicSamplesAvailable(stream);
-        if (avail > 0) {
-            std::vector<short> trash(avail);
-            sonicReadShortFromStream(stream, trash.data(), avail);
-        }
     }
 }
 
