@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
@@ -42,8 +43,21 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
 
+    // INVISIBLE SHIELD (WakeLock Only)
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
+        
+        // Setup Invisible WakeLock
+        try {
+            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:SilentLock")
+            wakeLock?.setReferenceCounted(false) // Handle multiple acquires safely
+        } catch (e: Exception) {
+            AppLogger.error("WakeLock Init Error", e)
+        }
+
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
 
@@ -81,13 +95,16 @@ class AutoTTSManagerService : TextToSpeechService() {
         val text = request?.charSequenceText.toString()
         stopEverything("New Request")
         isStopped.set(false)
+        
+        // Acquire Lock Silently (Keep CPU awake for max 10 mins per request)
+        try {
+            wakeLock?.acquire(10 * 60 * 1000L)
+        } catch (e: Exception) {}
 
         currentTask = controllerExecutor.submit {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-            
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             try {
                 if (callback == null) return@submit
-                
                 val rawChunks = TTSUtils.splitHelper(text)
                 if (rawChunks.isEmpty()) {
                     callback.done()
@@ -100,27 +117,21 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                 for (chunk in rawChunks) {
                     if (isStopped.get()) break
-
                     val engineData = getEngineDataForLang(chunk.lang)
                     val engine = engineData.engine ?: continue
-                    
                     val engineInputRate = determineInputRate(engineData.pkgName)
 
                     val sysRate = request?.speechRate ?: 100
                     val sysPitch = request?.pitch ?: 100
-                    
                     try {
                         engine.setSpeechRate(sysRate / 100.0f)
                         engine.setPitch(sysPitch / 100.0f)
                     } catch (e: Exception) {}
 
-                    // OPTIMIZED SWITCHING:
-                    // Only re-init if Rate changes. This keeps "Sai" from being dropped.
                     if (currentInputRate != engineInputRate) {
                         AudioProcessor.initSonic(engineInputRate, 1)
                         currentInputRate = engineInputRate
                     } else {
-                        // Just ensure config is 1.0
                         AudioProcessor.setConfig(1.0f, 1.0f)
                     }
 
@@ -131,8 +142,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     processDualThreads(engine, params, chunk.text, callback, uuid)
                     
-                    // CRITICAL FOR SHORT WORDS:
-                    // Drain whatever is left in Sonic buffer after this chunk
                     val tail = AudioProcessor.drain()
                     if (tail.isNotEmpty()) sendAudioToSystem(tail, callback)
                 }
@@ -140,6 +149,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                 AppLogger.error("Synthesize Critical Error", e)
             } finally {
                 if (!isStopped.get()) callback?.done()
+                
+                // Release Lock immediately when done to save battery
+                try {
+                    if (wakeLock?.isHeld == true) wakeLock?.release()
+                } catch (e: Exception) {}
             }
         }
     }
@@ -158,7 +172,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     data class EngineData(val engine: TextToSpeech?, val pkgName: String, val rateKey: String, val pitchKey: String)
-
     private fun getEngineDataForLang(lang: String): EngineData {
         return when (lang) {
             "SHAN" -> EngineData(if (shanEngine != null) shanEngine else englishEngine, shanPkgName, "rate_shan", "pitch_shan")
@@ -178,36 +191,50 @@ class AutoTTSManagerService : TextToSpeechService() {
             lR = pipe[0]; lW = pipe[1]
             
             writerFuture = pipeExecutor.submit {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 try { engine.synthesizeToFile(text, params, lW!!, uuid) } 
                 catch (e: Exception) {} 
                 finally { try { lW?.close() } catch (e: Exception) {} }
             }
 
             readerFuture = pipeExecutor.submit {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 var fis: FileInputStream? = null
                 var channel: FileChannel? = null
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
                     val buffer = ByteBuffer.allocateDirect(4096)
+                    val headerCheck = ByteBuffer.allocate(44)
+                    var isFirstRead = true
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()
+                        if (isFirstRead) {
+                            headerCheck.clear()
+                            val hRead = channel.read(headerCheck)
+                            if (hRead > 0) {
+                                val arr = headerCheck.array()
+                                val isWav = (arr.size >= 4 && arr[0] == 82.toByte() && arr[1] == 73.toByte() && arr[2] == 70.toByte())
+                                if (isWav) { isFirstRead = false; continue } 
+                                else {
+                                    val tempDirect = ByteBuffer.allocateDirect(hRead)
+                                    tempDirect.put(arr, 0, hRead)
+                                    tempDirect.flip()
+                                    val out = AudioProcessor.processAudio(tempDirect, hRead)
+                                    if (out.isNotEmpty()) sendAudioToSystem(out, callback)
+                                }
+                            }
+                            isFirstRead = false
+                        }
                         val read = channel.read(buffer)
                         if (read == -1) break
-                        
                         if (read > 0) {
                             if (isStopped.get()) break
-                            
                             val out = AudioProcessor.processAudio(buffer, read)
-                            if (out.isNotEmpty()) {
-                                sendAudioToSystem(out, callback)
-                            }
+                            if (out.isNotEmpty()) sendAudioToSystem(out, callback)
                         }
                     }
-                    // Drain is handled in the main loop now for better flow control
                 } catch (e: IOException) {} 
                 finally { try { fis?.close() } catch (e: Exception) {} }
             }
@@ -248,8 +275,21 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    override fun onStop() { stopEverything("onStop") }
-    override fun onDestroy() { stopEverything("Destroy"); controllerExecutor.shutdownNow(); pipeExecutor.shutdownNow(); AudioProcessor.flush(); super.onDestroy() }
+    override fun onStop() { 
+        stopEverything("onStop")
+        // Force release lock if still held
+        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
+    }
+    
+    override fun onDestroy() { 
+        stopEverything("Destroy")
+        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
+        controllerExecutor.shutdownNow()
+        pipeExecutor.shutdownNow()
+        AudioProcessor.flush()
+        super.onDestroy() 
+    }
+    
     override fun onGetVoices(): List<Voice> = listOf()
     override fun onIsLanguageAvailable(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE

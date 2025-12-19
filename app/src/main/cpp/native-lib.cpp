@@ -32,11 +32,8 @@ jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
 void updateSonicConfig() {
     if (!stream || currentInputRate == 0) return;
 
-    // Direct Sinc Resampling
     float resampleRatio = (float)currentInputRate / (float)TARGET_RATE;
     sonicSetRate(stream, resampleRatio);
-
-    // Keep Speed/Pitch neutral (Let System handle it)
     sonicSetSpeed(stream, 1.0f);
     sonicSetPitch(stream, 1.0f);
 }
@@ -45,13 +42,10 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
-    // IMPORTANT FIX:
-    // Only FLUSH if the rate actually changes. 
-    // Do NOT destroy the stream. This prevents dropping short words like "Sai".
-    if (stream && currentInputRate != inputRate) {
-        sonicFlushStream(stream); // Clear old language audio
-    }
-
+    // LOGIC CHANGE: 
+    // Do NOT flush here. Changing rate should be a "Soft Transition".
+    // If we flush here, we kill the ending of the previous language (e.g. "Sai").
+    
     currentInputRate = inputRate;
 
     if (!stream) {
@@ -60,7 +54,7 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint in
         sonicSetVolume(stream, 1.0f);
     }
     
-    // Just update the math, don't kill the object
+    // Just update math, keep the audio in buffer alive!
     updateSonicConfig();
 }
 
@@ -90,6 +84,7 @@ Java_com_shan_tts_manager_AudioProcessor_drain(JNIEnv* env, jobject) {
     return readFromStream(env, stream);
 }
 
+// Only flush when explicitly told to (Hard Stop)
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
