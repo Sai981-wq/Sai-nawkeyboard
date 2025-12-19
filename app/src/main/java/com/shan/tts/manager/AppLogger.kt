@@ -6,25 +6,29 @@ import java.util.Date
 import java.util.Locale
 
 object AppLogger {
-    private const val TAG = "CherryTTS_Monitor"
+    private const val TAG = "CherryTTS_Debug"
     private val logBuilder = StringBuilder()
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
+    // Log with Thread Name (To debug concurrency)
     fun log(message: String) {
         val timestamp = dateFormat.format(Date())
-        val finalMsg = "$timestamp : $message"
-        Log.d(TAG, message)
+        val threadName = Thread.currentThread().name
+        val finalMsg = "$timestamp [$threadName] : $message"
+        
+        Log.d(TAG, finalMsg)
         appendBuffer(finalMsg)
     }
 
     fun error(message: String, e: Exception? = null) {
         val timestamp = dateFormat.format(Date())
+        val threadName = Thread.currentThread().name
         val sb = StringBuilder()
-        sb.append("$timestamp [ERROR] : $message")
+        sb.append("$timestamp [$threadName] [ERROR] : $message")
         
         if (e != null) {
-            sb.append("\nExample Cause: ${e.message}")
-            sb.append("\nStack Trace:\n${Log.getStackTraceString(e)}")
+            sb.append("\nCause: ${e.message}")
+            sb.append("\nTrace: ${Log.getStackTraceString(e)}")
         }
         
         val finalMsg = sb.toString()
@@ -34,9 +38,10 @@ object AppLogger {
 
     private fun appendBuffer(msg: String) {
         synchronized(this) {
-            logBuilder.append(msg).append("\n\n")
-            if (logBuilder.length > 100000) {
-                logBuilder.delete(0, logBuilder.length - 80000)
+            logBuilder.append(msg).append("\n")
+            // Limit buffer to avoid OutOfMemory during heavy logging
+            if (logBuilder.length > 150000) {
+                logBuilder.delete(0, logBuilder.length - 100000)
             }
         }
     }
