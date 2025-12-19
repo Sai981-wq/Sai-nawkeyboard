@@ -40,9 +40,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
 
     private val OUTPUT_HZ = 24000 
-    
-    // Track current rate to avoid redundant JNI calls, 
-    // BUT reset it on Stop to ensure freshness.
     private var currentInputRate = 0
 
     override fun onCreate() {
@@ -83,7 +80,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         
-        // Critical: Stop previous tasks immediately
+        // 1. Force Stop & Clean Previous State IMMEDIATELY
         stopEverything("New Request")
         isStopped.set(false)
 
@@ -99,6 +96,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     return@submit
                 }
 
+                // 2. Start callback ASAP
                 synchronized(callback) {
                     callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
@@ -119,13 +117,16 @@ class AutoTTSManagerService : TextToSpeechService() {
                         engine.setPitch(sysPitch / 100.0f)
                     } catch (e: Exception) {}
 
-                    // Refresh Sonic ONLY if Rate changed OR if it was reset (0)
+                    // Refresh Sonic with Force Flush (via init)
+                    // We call initSonic every chunk change if rate differs, 
+                    // OR if we just started (to ensure flush)
                     if (currentInputRate != engineInputRate) {
                         AudioProcessor.initSonic(engineInputRate, 1)
                         currentInputRate = engineInputRate
+                    } else {
+                        // Even if rate is same, ensure config is enforced (no speed change)
+                        AudioProcessor.setConfig(1.0f, 1.0f)
                     }
-                    // Force config update just in case
-                    AudioProcessor.setConfig(1.0f, 1.0f)
 
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
@@ -155,16 +156,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    data class EngineData(val engine: TextToSpeech?, val pkgName: String, val rateKey: String, val pitchKey: String)
-
-    private fun getEngineDataForLang(lang: String): EngineData {
-        return when (lang) {
-            "SHAN" -> EngineData(if (shanEngine != null) shanEngine else englishEngine, shanPkgName, "rate_shan", "pitch_shan")
-            "MYANMAR" -> EngineData(if (burmeseEngine != null) burmeseEngine else englishEngine, burmesePkgName, "rate_burmese", "pitch_burmese")
-            else -> EngineData(englishEngine, englishPkgName, "rate_english", "pitch_english")
-        }
-    }
-
+    // ROBUST DUAL THREAD PROCESSING (Fixes Crash/Freeze)
     private fun processDualThreads(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
         var lR: ParcelFileDescriptor? = null
         var lW: ParcelFileDescriptor? = null
@@ -175,13 +167,20 @@ class AutoTTSManagerService : TextToSpeechService() {
             val pipe = ParcelFileDescriptor.createPipe()
             lR = pipe[0]; lW = pipe[1]
             
+            // Writer Thread
             writerFuture = pipeExecutor.submit {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-                try { engine.synthesizeToFile(text, params, lW!!, uuid) } 
-                catch (e: Exception) {} 
-                finally { try { lW?.close() } catch (e: Exception) {} }
+                try { 
+                    engine.synthesizeToFile(text, params, lW!!, uuid) 
+                } catch (e: Exception) {
+                    // Ignore synthesize errors
+                } finally {
+                    // CRITICAL: Always close Write end immediately after writing
+                    try { lW?.close() } catch (e: Exception) {}
+                }
             }
 
+            // Reader Thread
             readerFuture = pipeExecutor.submit {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
                 var fis: FileInputStream? = null
@@ -189,7 +188,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
-                    val buffer = ByteBuffer.allocateDirect(16384) // Large buffer for smoothness
+                    
+                    // 8KB Buffer (Sweet Spot for TalkBack speed vs smoothness)
+                    val buffer = ByteBuffer.allocateDirect(8192) 
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()
@@ -212,13 +213,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                              tail = AudioProcessor.drain()
                         }
                     }
-                } catch (e: IOException) {} 
-                finally { try { fis?.close() } catch (e: Exception) {} }
+                } catch (e: IOException) {
+                    // IO Stop is normal
+                } finally {
+                    try { fis?.close() } catch (e: Exception) {}
+                }
             }
+            
+            // Wait for both to finish (or be cancelled)
             try { writerFuture.get(); readerFuture.get() } catch (e: Exception) {}
+
         } catch (e: Exception) {
             AppLogger.error("Setup Error", e)
         } finally {
+            // DOUBLE SAFETY: Ensure descriptors are closed if threads crashed
             try { lW?.close() } catch (e: Exception) {}
             try { lR?.close() } catch (e: Exception) {}
         }
@@ -230,7 +238,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             try {
                 var offset = 0
                 while (offset < out.size) {
-                    val chunkLen = min(8192, out.size - offset)
+                    val chunkLen = min(4096, out.size - offset)
                     callback.audioAvailable(out, offset, chunkLen)
                     offset += chunkLen
                 }
@@ -240,12 +248,13 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun stopEverything(reason: String) {
         isStopped.set(true)
+        // Cancel main task
         currentTask?.cancel(true)
         
-        // Critical: Flush C++ Buffer
+        // CRITICAL: Flush Native Buffer immediately
         AudioProcessor.flush()
         
-        // Critical: Reset Input Rate so next Start forces a clean init
+        // Reset Rate so next init flushes strictly
         currentInputRate = 0
     }
 

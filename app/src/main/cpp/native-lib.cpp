@@ -10,12 +10,13 @@
 
 std::mutex processorMutex;
 static sonicStream stream = NULL;
-static int currentInputRate = 0; // Initialize to 0
+static int currentInputRate = 0;
 
 jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
     int avail = sonicSamplesAvailable(s);
     if (avail <= 0) return env->NewByteArray(0);
 
+    // Limit read size to prevent massive allocation
     int samplesToRead = (avail > MAX_OUTPUT_SAMPLES) ? MAX_OUTPUT_SAMPLES : avail;
     std::vector<short> buf(samplesToRead);
     int read = sonicReadShortFromStream(s, buf.data(), samplesToRead);
@@ -32,11 +33,11 @@ jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
 void updateSonicConfig() {
     if (!stream || currentInputRate == 0) return;
 
-    // Strict Sinc Resampling
+    // Direct Sinc Resampling
     float resampleRatio = (float)currentInputRate / (float)TARGET_RATE;
     sonicSetRate(stream, resampleRatio);
 
-    // Force Speed/Pitch to 1.0 (Engine handles speed, Sonic handles Resampling only)
+    // Lock Speed/Pitch to 1.0 (System handles speed, Sonic handles Resampling only)
     sonicSetSpeed(stream, 1.0f);
     sonicSetPitch(stream, 1.0f);
 }
@@ -45,9 +46,8 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
-    // CRITICAL FIX: If rate changes, FLUSH the old data immediately!
-    // This prevents "Ghost sounds" or "Hz confusion" from the previous utterance.
-    if (stream && currentInputRate != inputRate) {
+    // Always FLUSH on init to kill previous audio ghosting
+    if (stream) {
         sonicFlushStream(stream);
     }
 
@@ -65,7 +65,6 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint in
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat s, jfloat p) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    // Ignore user params, enforce 1.0 logic inside updateSonicConfig
     updateSonicConfig();
 }
 
@@ -73,7 +72,6 @@ extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jobject buffer, jint len) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
-    // Safety check
     if (!stream || len <= 0) return env->NewByteArray(0);
 
     void* bufferAddr = env->GetDirectBufferAddress(buffer);
@@ -96,8 +94,12 @@ Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
         sonicFlushStream(stream);
-        // Do NOT reset currentInputRate here, keeping context is fine,
-        // but the buffer must be empty.
+        // Clear buffer completely
+        int avail = sonicSamplesAvailable(stream);
+        if (avail > 0) {
+            std::vector<short> trash(avail);
+            sonicReadShortFromStream(stream, trash.data(), avail);
+        }
     }
 }
 
