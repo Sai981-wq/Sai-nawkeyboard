@@ -71,12 +71,14 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(
         jbyteArray outArray
 ) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    if (!stream || len <= 0) return 0;
+    if (!stream) return 0;
 
-    void* inAddr = env->GetDirectBufferAddress(inBuffer);
-    if (inAddr == NULL) return 0;
-    
-    sonicWriteShortToStream(stream, (short*)inAddr, len / 2);
+    if (len > 0 && inBuffer != NULL) {
+        void* inAddr = env->GetDirectBufferAddress(inBuffer);
+        if (inAddr != NULL) {
+            sonicWriteShortToStream(stream, (short*)inAddr, len / 2);
+        }
+    }
 
     int avail = sonicSamplesAvailable(stream);
     if (avail <= 0) return 0;

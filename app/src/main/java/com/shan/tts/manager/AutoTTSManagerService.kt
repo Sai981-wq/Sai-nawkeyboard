@@ -206,8 +206,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                                     val tempDirect = ByteBuffer.allocateDirect(hRead)
                                     tempDirect.put(arr, 0, hRead)
                                     tempDirect.flip()
-                                    val bytesRead = AudioProcessor.processAudio(tempDirect, hRead, outBuffer)
-                                    if (bytesRead > 0) sendAudioToSystem(outBuffer, bytesRead, callback)
+                                    
+                                    var bytesProcessed = AudioProcessor.processAudio(tempDirect, hRead, outBuffer)
+                                    if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
+                                    
+                                    // Immediate Drain Check for the first chunk
+                                    while (bytesProcessed > 0 && !isStopped.get()) {
+                                        bytesProcessed = AudioProcessor.processAudio(tempDirect, 0, outBuffer)
+                                        if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
+                                    }
                                 }
                             }
                             isFirstRead = false
@@ -218,8 +225,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         if (read > 0) {
                             if (isStopped.get()) break
-                            val bytesRead = AudioProcessor.processAudio(inBuffer, read, outBuffer)
-                            if (bytesRead > 0) sendAudioToSystem(outBuffer, bytesRead, callback)
+                            
+                            // 1. Process new data
+                            var bytesProcessed = AudioProcessor.processAudio(inBuffer, read, outBuffer)
+                            if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
+                            
+                            // 2. AGGRESSIVE DRAIN LOOP:
+                            // Keep extracting audio from Sonic until it's empty, 
+                            // even while waiting for new pipe data.
+                            while (bytesProcessed > 0 && !isStopped.get()) {
+                                bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
+                                if (bytesProcessed > 0) {
+                                    sendAudioToSystem(outBuffer, bytesProcessed, callback)
+                                }
+                            }
                         }
                     }
                 } catch (e: IOException) {} 
