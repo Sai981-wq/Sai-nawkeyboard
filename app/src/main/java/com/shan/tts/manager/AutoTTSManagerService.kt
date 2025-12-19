@@ -62,8 +62,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
             
-            AudioProcessor.initSonic(16000, 1)
-            AppLogger.log("Service Created & Sonic Init done")
+            AppLogger.log("Service Created")
         } catch (e: Exception) { AppLogger.error("Error in onCreate", e) }
     }
 
@@ -76,8 +75,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try { tempTTS?.language = locale } catch (e: Exception) {}
                     onSuccess(tempTTS!!)
                     AppLogger.log("Engine Ready: $pkg")
-                } else {
-                    AppLogger.error("Engine Failed: $pkg")
                 }
             }, pkg)
         } catch (e: Exception) { AppLogger.error("Crash initializing $pkg", e) }
@@ -86,9 +83,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         val sampleText = if (text.length > 20) text.substring(0, 20) + "..." else text
-        AppLogger.log(">>> NEW REQUEST: '$sampleText' [Len: ${text.length}]")
+        AppLogger.log(">>> NEW REQUEST: '$sampleText'")
         
-        stopEverything("New Request Start")
+        stopEverything("New Request")
         isStopped.set(false)
         
         try { wakeLock?.acquire(10 * 60 * 1000L) } catch (e: Exception) {}
@@ -100,7 +97,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val rawChunks = TTSUtils.splitHelper(text)
                 if (rawChunks.isEmpty()) { 
                     callback.done()
-                    AppLogger.log("Empty chunks, done.")
                     return@submit 
                 }
 
@@ -108,10 +104,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                     callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
                 }
 
-                for ((index, chunk) in rawChunks.withIndex()) {
+                for (chunk in rawChunks) {
                     if (isStopped.get()) break
-                    AppLogger.log("Processing Chunk $index: ${chunk.lang}")
-
+                    
                     val engineData = getEngineDataForLang(chunk.lang)
                     val engine = engineData.engine ?: continue
                     val engineInputRate = determineInputRate(engineData.pkgName)
@@ -124,7 +119,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     } catch (e: Exception) {}
 
                     if (currentInputRate != engineInputRate) {
-                        AppLogger.log("Rate Change: $currentInputRate -> $engineInputRate")
                         AudioProcessor.initSonic(engineInputRate, 1)
                         currentInputRate = engineInputRate
                     } else {
@@ -148,9 +142,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // ... (Helpers: determineInputRate, getEngineDataForLang, EngineData stay same) ...
-    // Copy them from previous code or let me know if you need them included
-    
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         return when {
@@ -172,12 +163,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             else -> EngineData(englishEngine, englishPkgName, "rate_english", "pitch_english")
         }
     }
+
     private fun getVolumeCorrection(pkg: String): Float {
-         val l = pkg.lowercase(Locale.ROOT)
-         return when {
-             l.contains("vocalizer") -> 0.85f; l.contains("eloquence") -> 0.6f; else -> 1.0f
-         }
-     }
+        val l = pkg.lowercase(Locale.ROOT)
+        return when {
+            l.contains("vocalizer") -> 0.85f; l.contains("eloquence") -> 0.6f; else -> 1.0f
+        }
+    }
 
     private fun processDualThreads(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
         var lR: ParcelFileDescriptor? = null
@@ -189,14 +181,10 @@ class AutoTTSManagerService : TextToSpeechService() {
             val pipe = ParcelFileDescriptor.createPipe()
             lR = pipe[0]; lW = pipe[1]
             
-            AppLogger.log("Pipe Created. Starting Threads...")
-
             writerFuture = pipeExecutor.submit {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 try { 
-                    AppLogger.log("Writer: Start Synthesize...")
                     engine.synthesizeToFile(text, params, lW!!, uuid) 
-                    AppLogger.log("Writer: Synthesize Done.")
                 } 
                 catch (e: Exception) { AppLogger.error("Writer Error", e) } 
                 finally { try { lW?.close() } catch (e: Exception) {} }
@@ -210,60 +198,45 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val inBuffer = ByteBuffer.allocateDirect(4096)
                 val outBuffer = ByteArray(16384) 
                 
-                // Debug vars
-                var totalBytesRead = 0
-                var totalBytesSent = 0
-
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
-                    AppLogger.log("Reader: Start Loop...")
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         inBuffer.clear()
                         val read = channel.read(inBuffer)
                         
-                        if (read == -1) {
-                            AppLogger.log("Reader: EOF (End of Stream)")
-                            break
-                        }
+                        if (read == -1) break
                         
                         if (read > 0) {
-                            totalBytesRead += read
                             if (isStopped.get()) break
                             
-                            // 1. Process
                             var bytesProcessed = AudioProcessor.processAudio(inBuffer, read, outBuffer)
                             
                             if (bytesProcessed > 0) {
                                 sendAudioToSystem(outBuffer, bytesProcessed, callback)
-                                totalBytesSent += bytesProcessed
-                            } else {
-                                AppLogger.log("Reader: Warning - Read $read bytes but Sonic returned 0")
                             }
                             
-                            // 2. Drain Loop (Log if heavy draining occurs)
-                            var drainCount = 0
                             while (bytesProcessed > 0 && !isStopped.get()) {
                                 bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                                 if (bytesProcessed > 0) {
                                     sendAudioToSystem(outBuffer, bytesProcessed, callback)
-                                    totalBytesSent += bytesProcessed
-                                    drainCount++
                                 }
                             }
-                            if (drainCount > 0) AppLogger.log("Reader: Drained $drainCount extra chunks")
                         }
                     }
-                    AppLogger.log("Reader: Finished. Read=${totalBytesRead}, Sent=${totalBytesSent}")
 
-                } catch (e: IOException) {
-                    AppLogger.error("Reader IO Error", e)
+                } catch (e: Exception) {
+                    if (e is java.nio.channels.ClosedByInterruptException || e is InterruptedException) {
+                        // Normal interruption, ignore
+                    } else {
+                        AppLogger.error("Reader Error", e)
+                    }
                 } finally { try { fis?.close() } catch (e: Exception) {} }
             }
             try { writerFuture.get(); readerFuture.get() } catch (e: Exception) {}
         } catch (e: Exception) {
-            AppLogger.error("DualThread Setup Error", e)
+            AppLogger.error("Setup Error", e)
         } finally {
             try { lW?.close() } catch (e: Exception) {}
             try { lR?.close() } catch (e: Exception) {}
@@ -282,12 +255,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                     callback.audioAvailable(data, offset, chunkLen)
                     offset += chunkLen
                 }
-            } catch (e: Exception) { AppLogger.error("Audio Write Error", e) }
+            } catch (e: Exception) {}
         }
     }
 
     private fun stopEverything(reason: String) {
-        AppLogger.log("STOPPING: $reason")
         isStopped.set(true)
         currentTask?.cancel(true)
         
@@ -298,16 +270,16 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) {}
 
         AudioProcessor.flush()
-        currentInputRate = 0
+        // Removed: currentInputRate = 0
     }
     
     override fun onStop() { 
-        stopEverything("onStop Called")
+        stopEverything("onStop")
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
     }
     
     override fun onDestroy() { 
-        stopEverything("Destroy Called")
+        stopEverything("Destroy")
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
         controllerExecutor.shutdownNow()
         pipeExecutor.shutdownNow()
