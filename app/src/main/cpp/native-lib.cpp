@@ -5,8 +5,6 @@
 #include <mutex>
 #include "sonic.h"
 
-#define MAX_OUTPUT_SAMPLES 16384 
-
 std::mutex processorMutex;
 static sonicStream stream = NULL;
 static int currentInputRate = 0;
@@ -78,7 +76,9 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
-        sonicFlushStream(stream);
+        sonicDestroyStream(stream);
+        stream = NULL;
+        currentInputRate = 0;
     }
 }
 

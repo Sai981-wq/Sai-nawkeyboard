@@ -13,7 +13,6 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
 import java.io.FileInputStream
-import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.util.Locale
@@ -46,12 +45,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Creating...")
         try {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:SilentLock")
             wakeLock?.setReferenceCounted(false)
-        } catch (e: Exception) { AppLogger.error("WakeLock Error", e) }
+        } catch (e: Exception) { }
 
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
@@ -61,9 +59,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             initEngine(burmesePkgName, Locale("my", "MM")) { burmeseEngine = it }
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
-            
-            AppLogger.log("Service Created")
-        } catch (e: Exception) { AppLogger.error("Error in onCreate", e) }
+        } catch (e: Exception) { }
     }
 
     private fun initEngine(pkg: String?, locale: Locale, onSuccess: (TextToSpeech) -> Unit) {
@@ -74,17 +70,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                 if (status == TextToSpeech.SUCCESS) {
                     try { tempTTS?.language = locale } catch (e: Exception) {}
                     onSuccess(tempTTS!!)
-                    AppLogger.log("Engine Ready: $pkg")
                 }
             }, pkg)
-        } catch (e: Exception) { AppLogger.error("Crash initializing $pkg", e) }
+        } catch (e: Exception) { }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        val sampleText = if (text.length > 20) text.substring(0, 20) + "..." else text
-        AppLogger.log(">>> NEW REQUEST: '$sampleText'")
-        
         stopEverything("New Request")
         isStopped.set(false)
         
@@ -133,11 +125,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                     processDualThreads(engine, params, chunk.text, callback, uuid)
                 }
             } catch (e: Exception) {
-                AppLogger.error("Synthesize Critical Error", e)
             } finally {
                 if (!isStopped.get()) callback?.done()
                 try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
-                AppLogger.log("<<< REQUEST FINISHED")
             }
         }
     }
@@ -186,7 +176,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try { 
                     engine.synthesizeToFile(text, params, lW!!, uuid) 
                 } 
-                catch (e: Exception) { AppLogger.error("Writer Error", e) } 
+                catch (e: Exception) { } 
                 finally { try { lW?.close() } catch (e: Exception) {} }
             }
 
@@ -206,7 +196,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                         inBuffer.clear()
                         val read = channel.read(inBuffer)
                         
-                        if (read == -1) break
+                        if (read == -1) {
+                            AudioProcessor.flush()
+                            var flushBytes = 1
+                            while (flushBytes > 0 && !isStopped.get()) {
+                                flushBytes = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
+                                if (flushBytes > 0) {
+                                    sendAudioToSystem(outBuffer, flushBytes, callback)
+                                }
+                            }
+                            break
+                        }
                         
                         if (read > 0) {
                             if (isStopped.get()) break
@@ -227,16 +227,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
 
                 } catch (e: Exception) {
-                    if (e is java.nio.channels.ClosedByInterruptException || e is InterruptedException) {
-                        // Normal interruption, ignore
-                    } else {
-                        AppLogger.error("Reader Error", e)
-                    }
                 } finally { try { fis?.close() } catch (e: Exception) {} }
             }
             try { writerFuture.get(); readerFuture.get() } catch (e: Exception) {}
         } catch (e: Exception) {
-            AppLogger.error("Setup Error", e)
         } finally {
             try { lW?.close() } catch (e: Exception) {}
             try { lR?.close() } catch (e: Exception) {}
@@ -270,7 +264,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) {}
 
         AudioProcessor.flush()
-        // Removed: currentInputRate = 0
+        currentInputRate = 0
     }
     
     override fun onStop() { 
