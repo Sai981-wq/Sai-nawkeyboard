@@ -122,8 +122,13 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     processDualThreads(engine, params, chunk.text, callback, uuid)
                     
-                    val tail = AudioProcessor.drain()
-                    if (tail.isNotEmpty()) sendAudioToSystem(tail, tail.size, callback)
+                    var tail: ByteArray
+                    do {
+                        tail = AudioProcessor.drain()
+                        if (tail.isNotEmpty()) {
+                            sendAudioToSystem(tail, tail.size, callback)
+                        }
+                    } while (tail.isNotEmpty() && !isStopped.get())
                 }
             } catch (e: Exception) {
                 AppLogger.error("Synthesize Critical Error", e)
