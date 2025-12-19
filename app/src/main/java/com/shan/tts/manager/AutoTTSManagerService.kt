@@ -122,13 +122,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     processDualThreads(engine, params, chunk.text, callback, uuid)
                     
-                    var tail: ByteArray
+                    // Final Drain for the chunk using processAudio with 0 length
+                    val outBuffer = ByteArray(16384) 
+                    val inBuffer = ByteBuffer.allocateDirect(0) // Dummy buffer
+                    var bytesProcessed: Int
                     do {
-                        tail = AudioProcessor.drain()
-                        if (tail.isNotEmpty()) {
-                            sendAudioToSystem(tail, tail.size, callback)
+                        bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
+                        if (bytesProcessed > 0) {
+                            sendAudioToSystem(outBuffer, bytesProcessed, callback)
                         }
-                    } while (tail.isNotEmpty() && !isStopped.get())
+                    } while (bytesProcessed > 0 && !isStopped.get())
                 }
             } catch (e: Exception) {
                 AppLogger.error("Synthesize Critical Error", e)
@@ -210,9 +213,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                                     var bytesProcessed = AudioProcessor.processAudio(tempDirect, hRead, outBuffer)
                                     if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
                                     
-                                    // Immediate Drain Check for the first chunk
+                                    // Immediate Drain
                                     while (bytesProcessed > 0 && !isStopped.get()) {
-                                        bytesProcessed = AudioProcessor.processAudio(tempDirect, 0, outBuffer)
+                                        bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                                         if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
                                     }
                                 }
@@ -230,9 +233,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                             var bytesProcessed = AudioProcessor.processAudio(inBuffer, read, outBuffer)
                             if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
                             
-                            // 2. AGGRESSIVE DRAIN LOOP:
-                            // Keep extracting audio from Sonic until it's empty, 
-                            // even while waiting for new pipe data.
+                            // 2. DRAIN IMMEDIATELY using processAudio(len=0)
+                            // This replaces the old drain() and reuses the buffer
                             while (bytesProcessed > 0 && !isStopped.get()) {
                                 bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                                 if (bytesProcessed > 0) {
@@ -272,6 +274,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun stopEverything(reason: String) {
         isStopped.set(true)
         currentTask?.cancel(true)
+        
+        // CRITICAL FIX: Stop Engines to clear the pipe immediately
+        try {
+            shanEngine?.stop()
+            burmeseEngine?.stop()
+            englishEngine?.stop()
+        } catch (e: Exception) {}
+
         AudioProcessor.flush()
         currentInputRate = 0
     }

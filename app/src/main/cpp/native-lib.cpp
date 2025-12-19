@@ -11,23 +11,6 @@ std::mutex processorMutex;
 static sonicStream stream = NULL;
 static int currentInputRate = 0;
 
-jbyteArray readFromStream(JNIEnv* env, sonicStream s) {
-    int avail = sonicSamplesAvailable(s);
-    if (avail <= 0) return env->NewByteArray(0);
-
-    int samplesToRead = (avail > MAX_OUTPUT_SAMPLES) ? MAX_OUTPUT_SAMPLES : avail;
-    std::vector<short> buf(samplesToRead);
-    int read = sonicReadShortFromStream(s, buf.data(), samplesToRead);
-    
-    if (read > 0) {
-        jbyteArray res = env->NewByteArray(read * 2);
-        if (res == NULL) return env->NewByteArray(0);
-        env->SetByteArrayRegion(res, 0, read * 2, (jbyte*)buf.data());
-        return res;
-    }
-    return env->NewByteArray(0);
-}
-
 void updateSonicConfig() {
     if (!stream || currentInputRate == 0) return;
     float resampleRatio = (float)currentInputRate / 24000.0f;
@@ -94,13 +77,6 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(
     env->ReleaseByteArrayElements(outArray, outPtr, 0);
 
     return samplesRead * 2;
-}
-
-extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_shan_tts_manager_AudioProcessor_drain(JNIEnv* env, jobject) {
-    std::lock_guard<std::mutex> lock(processorMutex);
-    if (!stream) return env->NewByteArray(0);
-    return readFromStream(env, stream);
 }
 
 extern "C" JNIEXPORT void JNICALL
