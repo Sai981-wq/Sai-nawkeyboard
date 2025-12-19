@@ -36,7 +36,7 @@ void updateSonicConfig() {
     float resampleRatio = (float)currentInputRate / (float)TARGET_RATE;
     sonicSetRate(stream, resampleRatio);
 
-    // Lock Speed/Pitch to 1.0 (System handles speed)
+    // Keep Speed/Pitch neutral (Let System handle it)
     sonicSetSpeed(stream, 1.0f);
     sonicSetPitch(stream, 1.0f);
 }
@@ -45,20 +45,22 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
-    // KEY FIX FOR KEYBOARD: 
-    // Always DESTROY and RECREATE stream on new init.
-    // This guarantees 0% chance of "Hz Confusion" or "Ghost Audio".
-    if (stream) {
-        sonicDestroyStream(stream);
-        stream = NULL;
+    // IMPORTANT FIX:
+    // Only FLUSH if the rate actually changes. 
+    // Do NOT destroy the stream. This prevents dropping short words like "Sai".
+    if (stream && currentInputRate != inputRate) {
+        sonicFlushStream(stream); // Clear old language audio
     }
 
     currentInputRate = inputRate;
 
-    stream = sonicCreateStream(TARGET_RATE, ch);
-    sonicSetQuality(stream, 1); 
-    sonicSetVolume(stream, 1.0f);
+    if (!stream) {
+        stream = sonicCreateStream(TARGET_RATE, ch);
+        sonicSetQuality(stream, 1); 
+        sonicSetVolume(stream, 1.0f);
+    }
     
+    // Just update the math, don't kill the object
     updateSonicConfig();
 }
 
@@ -71,7 +73,6 @@ Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_shan_tts_manager_AudioProcessor_processAudio(JNIEnv* env, jobject, jobject buffer, jint len) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    
     if (!stream || len <= 0) return env->NewByteArray(0);
 
     void* bufferAddr = env->GetDirectBufferAddress(buffer);
@@ -93,7 +94,6 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
     if (stream) {
-        // Just flush, don't destroy here to keep object alive for drain
         sonicFlushStream(stream);
     }
 }

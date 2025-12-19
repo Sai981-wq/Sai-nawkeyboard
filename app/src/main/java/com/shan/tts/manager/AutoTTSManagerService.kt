@@ -79,13 +79,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        
-        // STOP aggressive: Clears C++ buffers instantly
         stopEverything("New Request")
         isStopped.set(false)
 
         currentTask = controllerExecutor.submit {
-            // High Priority for Keyboard responsiveness
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             
             try {
@@ -117,9 +114,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                         engine.setPitch(sysPitch / 100.0f)
                     } catch (e: Exception) {}
 
-                    // Refresh Sonic: Force init to recreate stream and kill Hz ghosts
-                    AudioProcessor.initSonic(engineInputRate, 1)
-                    currentInputRate = engineInputRate
+                    // OPTIMIZED SWITCHING:
+                    // Only re-init if Rate changes. This keeps "Sai" from being dropped.
+                    if (currentInputRate != engineInputRate) {
+                        AudioProcessor.initSonic(engineInputRate, 1)
+                        currentInputRate = engineInputRate
+                    } else {
+                        // Just ensure config is 1.0
+                        AudioProcessor.setConfig(1.0f, 1.0f)
+                    }
 
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
@@ -127,6 +130,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
                     processDualThreads(engine, params, chunk.text, callback, uuid)
+                    
+                    // CRITICAL FOR SHORT WORDS:
+                    // Drain whatever is left in Sonic buffer after this chunk
+                    val tail = AudioProcessor.drain()
+                    if (tail.isNotEmpty()) sendAudioToSystem(tail, callback)
                 }
             } catch (e: Exception) {
                 AppLogger.error("Synthesize Critical Error", e)
@@ -136,8 +144,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // --- Helper Functions ---
-
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         return when {
@@ -173,12 +179,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             
             writerFuture = pipeExecutor.submit {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-                try { 
-                    engine.synthesizeToFile(text, params, lW!!, uuid) 
-                } catch (e: Exception) {
-                } finally {
-                    try { lW?.close() } catch (e: Exception) {}
-                }
+                try { engine.synthesizeToFile(text, params, lW!!, uuid) } 
+                catch (e: Exception) {} 
+                finally { try { lW?.close() } catch (e: Exception) {} }
             }
 
             readerFuture = pipeExecutor.submit {
@@ -188,9 +191,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
-                    
-                    // 4KB Buffer is better for LOW LATENCY (Keyboard typing)
-                    val buffer = ByteBuffer.allocateDirect(4096) 
+                    val buffer = ByteBuffer.allocateDirect(4096)
                     
                     while (!isStopped.get() && !Thread.currentThread().isInterrupted) {
                         buffer.clear()
@@ -206,21 +207,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                             }
                         }
                     }
-                    if (!isStopped.get()) {
-                        var tail = AudioProcessor.drain()
-                        while (tail.isNotEmpty() && !isStopped.get()) {
-                             sendAudioToSystem(tail, callback)
-                             tail = AudioProcessor.drain()
-                        }
-                    }
-                } catch (e: IOException) {
-                } finally {
-                    try { fis?.close() } catch (e: Exception) {}
-                }
+                    // Drain is handled in the main loop now for better flow control
+                } catch (e: IOException) {} 
+                finally { try { fis?.close() } catch (e: Exception) {} }
             }
-            
             try { writerFuture.get(); readerFuture.get() } catch (e: Exception) {}
-
         } catch (e: Exception) {
             AppLogger.error("Setup Error", e)
         } finally {
