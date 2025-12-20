@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -13,7 +12,6 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
 import java.io.FileInputStream
 import java.nio.ByteBuffer
-import java.nio.channels.FileChannel
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.min
@@ -64,12 +62,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
-    override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
+    // synchronized ထည့်လိုက်ပါ (eSpeak Style)
+    override synchronized fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         if (text.isNullOrEmpty() || callback == null) return
 
         mIsStopped = false 
-        resetSonicStream()
+        resetSonicStream() // C++ Memory ကို ရှင်းမယ်
 
         val rawChunks = TTSUtils.splitHelper(text)
         
@@ -84,12 +83,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             val engine = engineData.engine ?: continue
             val engineInputRate = determineInputRate(engineData.pkgName)
 
-            // ပြင်ဆင်ထားသောအပိုင်း (Error တက်တဲ့နေရာ)
             try {
-                // request က null ဖြစ်နိုင်လို့ ? နဲ့စစ်ပြီး default 100 ထားလိုက်ပါတယ်
                 val sysRate = request?.speechRate ?: 100
                 val sysPitch = request?.pitch ?: 100
-                
                 engine.setSpeechRate(sysRate / 100.0f)
                 engine.setPitch(sysPitch / 100.0f)
             } catch (e: Exception) {}
@@ -197,20 +193,26 @@ class AutoTTSManagerService : TextToSpeechService() {
         AudioProcessor.stop()
     }
     
+    // [eSpeak Style] Buffer Size ကို စစ်ပြီးမှ ပို့ခြင်း
     private fun sendAudioToSystem(data: ByteArray, length: Int, callback: SynthesisCallback) {
         if (length <= 0) return
+        
+        val maxBufferSize = callback.maxBufferSize 
+        var offset = 0
+
         synchronized(callback) {
             try {
-                var offset = 0
                 while (offset < length) {
-                    val chunkLen = min(4096, length - offset)
-                    callback.audioAvailable(data, offset, chunkLen)
-                    offset += chunkLen
+                    val bytesToWrite = min(maxBufferSize, length - offset)
+                    callback.audioAvailable(data, offset, bytesToWrite)
+                    offset += bytesToWrite
                 }
             } catch (e: Exception) {}
         }
     }
 
+    // ... (determineInputRate, getEngineDataForLang, getVolumeCorrection တို့သည် အရင်အတိုင်း) ...
+    // Space သက်သာအောင် ဒီမှာ ချန်လှပ်ထားပါတယ်၊ အရင် code ကဟာ ပြန်ကူးထည့်ပါ
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         return when {
@@ -239,7 +241,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             l.contains("vocalizer") -> 0.85f; l.contains("eloquence") -> 0.6f; else -> 1.0f
         }
     }
-
+    
     override fun onDestroy() {
         onStop()
         super.onDestroy()
