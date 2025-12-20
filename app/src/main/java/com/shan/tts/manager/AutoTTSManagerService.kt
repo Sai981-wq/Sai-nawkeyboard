@@ -62,13 +62,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
-    // synchronized ထည့်လိုက်ပါ (eSpeak Style)
-    override synchronized fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
+    // [FIXED] Kotlin မှာ @Synchronized ကို သုံးရပါမယ်
+    @Synchronized
+    override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         if (text.isNullOrEmpty() || callback == null) return
 
         mIsStopped = false 
-        resetSonicStream() // C++ Memory ကို ရှင်းမယ်
+        resetSonicStream()
 
         val rawChunks = TTSUtils.splitHelper(text)
         
@@ -172,6 +173,23 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
+    private fun sendAudioToSystem(data: ByteArray, length: Int, callback: SynthesisCallback) {
+        if (length <= 0) return
+        
+        val maxBufferSize = callback.maxBufferSize 
+        var offset = 0
+
+        synchronized(callback) {
+            try {
+                while (offset < length) {
+                    val bytesToWrite = min(maxBufferSize, length - offset)
+                    callback.audioAvailable(data, offset, bytesToWrite)
+                    offset += bytesToWrite
+                }
+            } catch (e: Exception) {}
+        }
+    }
+
     private fun resetSonicStream() {
         try {
             AudioProcessor.stop()
@@ -193,26 +211,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         AudioProcessor.stop()
     }
     
-    // [eSpeak Style] Buffer Size ကို စစ်ပြီးမှ ပို့ခြင်း
-    private fun sendAudioToSystem(data: ByteArray, length: Int, callback: SynthesisCallback) {
-        if (length <= 0) return
-        
-        val maxBufferSize = callback.maxBufferSize 
-        var offset = 0
-
-        synchronized(callback) {
-            try {
-                while (offset < length) {
-                    val bytesToWrite = min(maxBufferSize, length - offset)
-                    callback.audioAvailable(data, offset, bytesToWrite)
-                    offset += bytesToWrite
-                }
-            } catch (e: Exception) {}
-        }
-    }
-
-    // ... (determineInputRate, getEngineDataForLang, getVolumeCorrection တို့သည် အရင်အတိုင်း) ...
-    // Space သက်သာအောင် ဒီမှာ ချန်လှပ်ထားပါတယ်၊ အရင် code ကဟာ ပြန်ကူးထည့်ပါ
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         return when {
@@ -241,7 +239,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             l.contains("vocalizer") -> 0.85f; l.contains("eloquence") -> 0.6f; else -> 1.0f
         }
     }
-    
+
     override fun onDestroy() {
         onStop()
         super.onDestroy()
