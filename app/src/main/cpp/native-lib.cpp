@@ -1,56 +1,37 @@
 #include <jni.h>
 #include <stdlib.h>
-#include <mutex>
 #include "sonic.h"
 
-std::mutex processorMutex;
-static sonicStream stream = NULL;
-static int currentInputRate = 0;
+sonicStream getStream(jlong handle) {
+    return (sonicStream) handle;
+}
 
-void updateSonicConfig() {
-    if (!stream || currentInputRate == 0) return;
-    float resampleRatio = (float)currentInputRate / 24000.0f;
-    sonicSetRate(stream, resampleRatio);
-    sonicSetSpeed(stream, 1.0f);
-    sonicSetPitch(stream, 1.0f);
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_shan_tts_manager_AudioProcessor_nativeCreate(JNIEnv* env, jobject, jint sampleRate, jint channels) {
+    sonicStream stream = sonicCreateStream(sampleRate, channels);
+    sonicSetQuality(stream, 1);
+    sonicSetVolume(stream, 1.0f);
+    return (jlong) stream;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
-    std::lock_guard<std::mutex> lock(processorMutex);
-    
-    // ရှိပြီးသား Stream ကို ပြန်သုံးနိုင်လျှင် ပြန်သုံးမည်
-    if (stream && currentInputRate != inputRate) {
-        sonicDestroyStream(stream);
-        stream = NULL;
+Java_com_shan_tts_manager_AudioProcessor_nativeSetConfig(JNIEnv* env, jobject, jlong handle, jfloat speed, jfloat pitch, jfloat rate) {
+    sonicStream stream = getStream(handle);
+    if (stream) {
+        sonicSetSpeed(stream, speed);
+        sonicSetPitch(stream, pitch);
+        sonicSetRate(stream, rate);
     }
-    
-    currentInputRate = inputRate;
-
-    if (!stream) {
-        stream = sonicCreateStream(24000, ch);
-        sonicSetQuality(stream, 1); 
-        sonicSetVolume(stream, 1.0f);
-    } else {
-        sonicFlushStream(stream);
-    }
-    
-    updateSonicConfig();
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_setConfig(JNIEnv* env, jobject, jfloat s, jfloat p) {
-    std::lock_guard<std::mutex> lock(processorMutex);
-    updateSonicConfig();
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_shan_tts_manager_AudioProcessor_processAudio(
-        JNIEnv* env, jobject, 
-        jobject inBuffer, jint len, 
+Java_com_shan_tts_manager_AudioProcessor_nativeProcess(
+        JNIEnv* env, jobject,
+        jlong handle,
+        jobject inBuffer, jint len,
         jbyteArray outArray
 ) {
-    std::lock_guard<std::mutex> lock(processorMutex);
+    sonicStream stream = getStream(handle);
     if (!stream) return 0;
 
     if (len > 0 && inBuffer != NULL) {
@@ -68,29 +49,27 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(
 
     jsize outLen = env->GetArrayLength(outArray);
     int maxShorts = outLen / 2;
-    
+
     int samplesRead = sonicReadShortFromStream(stream, (short*)outPtr, maxShorts);
-    
+
     env->ReleaseByteArrayElements(outArray, outPtr, 0);
 
     return samplesRead * 2;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(processorMutex);
+Java_com_shan_tts_manager_AudioProcessor_nativeFlush(JNIEnv* env, jobject, jlong handle) {
+    sonicStream stream = getStream(handle);
     if (stream) {
         sonicFlushStream(stream);
     }
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_stop(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(processorMutex);
+Java_com_shan_tts_manager_AudioProcessor_nativeDestroy(JNIEnv* env, jobject, jlong handle) {
+    sonicStream stream = getStream(handle);
     if (stream) {
         sonicDestroyStream(stream);
-        stream = NULL;
-        currentInputRate = 0;
     }
 }
 
