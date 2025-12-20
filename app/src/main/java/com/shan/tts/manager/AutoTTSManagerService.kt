@@ -30,11 +30,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private lateinit var prefs: SharedPreferences
 
-    // ရှုပ်ထွေးတဲ့ Thread Pool တွေ မသုံးတော့ဘူး
-    // ရိုးရှင်းတဲ့ Boolean Flag လေးတစ်ခုပဲ သုံးမယ်
     @Volatile private var mIsStopped = false
     
-    // Pipe တွေကို ဒီမှာခဏသိမ်းမယ် (Stop လုပ်ရင် ပိတ်ပစ်ဖို့)
     @Volatile private var currentReadFd: ParcelFileDescriptor? = null
     @Volatile private var currentWriteFd: ParcelFileDescriptor? = null
 
@@ -43,7 +40,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        // Engine တွေ Load လုပ်မယ်
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
@@ -68,15 +64,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
-    // Android System က သူ့အလိုလို တန်းစီပြီး ဒီ Function ကို ခေါ်ပေးပါတယ်
-    // ကျွန်တော်တို့က ဒီထဲမှာ ဝင်လာတာကို ဖတ်ပေးလိုက်ရုံပါပဲ
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         if (text.isNullOrEmpty() || callback == null) return
 
-        mIsStopped = false // အလုပ်စပြီ
-        
-        // အသစ်စတိုင်း C++ Memory ကို ရှင်းမယ် (Deadlock မဖြစ်အောင်)
+        mIsStopped = false 
         resetSonicStream()
 
         val rawChunks = TTSUtils.splitHelper(text)
@@ -86,20 +78,22 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
 
         for (chunk in rawChunks) {
-            // Stop အမိန့်လာရင် ချက်ချင်း ရပ်မယ်
             if (mIsStopped) break
 
             val engineData = getEngineDataForLang(chunk.lang)
             val engine = engineData.engine ?: continue
             val engineInputRate = determineInputRate(engineData.pkgName)
 
-            // Engine Setting ချိန်မယ်
+            // ပြင်ဆင်ထားသောအပိုင်း (Error တက်တဲ့နေရာ)
             try {
-                engine.setSpeechRate(request.speechRate / 100.0f)
-                engine.setPitch(request.pitch / 100.0f)
+                // request က null ဖြစ်နိုင်လို့ ? နဲ့စစ်ပြီး default 100 ထားလိုက်ပါတယ်
+                val sysRate = request?.speechRate ?: 100
+                val sysPitch = request?.pitch ?: 100
+                
+                engine.setSpeechRate(sysRate / 100.0f)
+                engine.setPitch(sysPitch / 100.0f)
             } catch (e: Exception) {}
 
-            // Sonic Config (Rate မတူမှ Init လုပ်မယ်)
             if (currentInputRate != engineInputRate) {
                 AudioProcessor.initSonic(engineInputRate, 1)
                 currentInputRate = engineInputRate
@@ -112,11 +106,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             val uuid = UUID.randomUUID().toString()
             params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
-            // အသံဖတ်မယ်
             processAudioChunk(engine, params, chunk.text, callback, uuid)
         }
         
-        // ပြီးသွားရင် Done ခေါ်မယ် (Stop လုပ်ခံရရင် မခေါ်ဘူး)
         if (!mIsStopped) {
             callback.done()
         }
@@ -128,8 +120,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             currentReadFd = pipe[0]
             currentWriteFd = pipe[1]
 
-            // Writer Thread (Engine က File ထဲရေးဖို့ သီးသန့် Thread တစ်ခုလိုလို့ပါ)
-            // ဒါပေမဲ့ Executor တွေ Queue တွေ မသုံးတော့ပါဘူး
             val writerThread = Thread {
                 try {
                     engine.synthesizeToFile(text, params, currentWriteFd!!, uuid)
@@ -140,7 +130,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
             writerThread.start()
 
-            // Main Thread မှာပဲ ဖတ်မယ် (Reader)
             val inBuffer = ByteBuffer.allocateDirect(4096)
             val outBuffer = ByteArray(8192)
             var fis: FileInputStream? = null
@@ -154,7 +143,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val read = channel.read(inBuffer)
                     
                     if (read == -1) {
-                        // Chunk ပြီးသွားရင် လက်ကျန်ရှင်းထုတ်
                         AudioProcessor.flush()
                         var flushBytes = 1
                         while (flushBytes > 0 && !mIsStopped) {
@@ -179,7 +167,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try { fis?.close() } catch (e: Exception) {}
             }
 
-            // Writer ပြီးတဲ့အထိ စောင့်မယ် (Join)
             try { writerThread.join() } catch (e: Exception) {}
 
         } catch (e: Exception) {
@@ -196,15 +183,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) {}
     }
 
-    // System က Stop လုပ်ခိုင်းရင် ဒီကောင်အလုပ်လုပ်မယ်
     override fun onStop() {
-        mIsStopped = true // Flag ထောင်လိုက်တာနဲ့ Loop တွေအကုန်ရပ်မယ်
-        
-        // Pipe တွေကို အတင်းပိတ်မယ် (ဒါမှ Read/Write တွေလွတ်ပြီး Thread သေမှာ)
+        mIsStopped = true 
         try { currentWriteFd?.close() } catch (e: Exception) {}
         try { currentReadFd?.close() } catch (e: Exception) {}
         
-        // Engine တွေကိုရပ်မယ်
         try {
             shanEngine?.stop()
             burmeseEngine?.stop()
@@ -228,7 +211,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    // Helper functions (Rate, PkgName, Volume) - အရင်အတိုင်း
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         return when {
