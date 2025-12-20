@@ -30,6 +30,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     @Volatile private var mIsStopped = false
     
+    // Dynamic Language အတွက် Variable များ
     private var currentLanguage: String = "eng"
     private var currentCountry: String = "USA"
 
@@ -74,7 +75,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             val rawChunks = TTSUtils.splitHelper(text)
             
-            // Jieshuo Fix: မူရင်း Parameters ကို ယူထားပါ (Stream Type မပျောက်အောင်)
+            // Jieshuo Fix (1): မူရင်း Parameters ကို ရယူခြင်း
             val originalParams = request?.params ?: Bundle()
             
             synchronized(callback) {
@@ -98,6 +99,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val userRateMulti = userRatePref / 50.0f
                     val userPitchMulti = userPitchPref / 50.0f
                     
+                    // Engine Rate သတ်မှတ်ခြင်း
                     engine.setSpeechRate(sysRate * userRateMulti)
                     engine.setPitch(sysPitch * userPitchMulti)
                 } catch (e: Exception) {}
@@ -109,17 +111,19 @@ class AutoTTSManagerService : TextToSpeechService() {
                     AudioProcessor.flush() 
                 }
                 
-                // Jieshuo Fix: Params ကို Copy ကူးပြီး Rate/Pitch Key တွေကို ဖယ်ထုတ်လိုက်ပါ
-                // ဒါမှသာ Engine က ကျွန်တော်တို့ သတ်မှတ်ပေးတဲ့ Rate ကို နားထောင်မှာပါ
+                // Jieshuo Fix (2): Params ကို Copy ကူးပြီး Rate/Pitch Key များကို String အနေနဲ့ ဖယ်ရှားခြင်း
+                // (TextToSpeech.Engine.KEY_PARAM_RATE မရှိလို့ String "rate" ကို သုံးထားပါတယ်)
                 val engineParams = Bundle(originalParams)
-                engineParams.remove(TextToSpeech.Engine.KEY_PARAM_RATE)
-                engineParams.remove(TextToSpeech.Engine.KEY_PARAM_PITCH)
+                engineParams.remove("rate")
+                engineParams.remove("pitch")
                 
+                // Volume Correction
                 val volCorrection = getVolumeCorrection(engineData.pkgName)
                 if (volCorrection != 1.0f) {
                     engineParams.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volCorrection)
                 }
                 
+                // Jieshuo Fix (3): Utterance ID ထိန်းသိမ်းခြင်း
                 val uuid = originalParams.getString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID) 
                            ?: UUID.randomUUID().toString()
                 engineParams.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
@@ -161,7 +165,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val readBytes = channel.read(inBuffer)
 
                     if (readBytes == -1) {
-                        // Audio Cut-out Fix: လက်ကျန်အသံများကို ကုန်စင်အောင် ထုတ်ပေးခြင်း
+                        // Audio Cut-out Fix: အဆုံးသတ်တွင် လက်ကျန်များကို ကုန်စင်အောင် ထုတ်ခြင်း
                         AudioProcessor.flush()
                         var flushLength: Int
                         do {
@@ -179,6 +183,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                             sendAudioToSystem(outBuffer, processed, callback)
                         }
                         
+                        // Sonic Buffer ပြည့်နေလျှင် ဆက်ထုတ်ခြင်း
                         do {
                             processed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                             if (processed > 0) {
@@ -189,6 +194,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
             
+            // Writer thread ကို ခဏစောင့်ခြင်း
             try { writerThread.join(500) } catch (e: Exception) {}
 
         } catch (e: Exception) {
