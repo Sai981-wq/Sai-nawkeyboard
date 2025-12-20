@@ -18,7 +18,6 @@ import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
 
-    // VoiceConfig ရှိမှသာ ဒီလိုင်းအလုပ်လုပ်ပါမည် (VoiceConfig.kt ကို သေချာထည့်ပါ)
     private val supportedVoices = VoiceConfig.supportedVoices
 
     private val engineMap = HashMap<String, TextToSpeech>()
@@ -35,38 +34,67 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        AppLogger.log("AutoTTSManagerService: onCreate started")
         
-        supportedVoices.forEach { voice ->
-            val pkg = prefs.getString("pref_${voice.locale.language}_pkg", voice.enginePkg) ?: voice.enginePkg
-            initEngine(pkg, voice.locale) { tts ->
-                engineMap[voice.name] = tts
+        try {
+            prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+            
+            supportedVoices.forEach { voice ->
+                val pkg = prefs.getString("pref_${voice.locale.language}_pkg", voice.enginePkg) ?: voice.enginePkg
+                AppLogger.log("Initializing Engine: ${voice.name} -> $pkg")
+                
+                initEngine(pkg, voice.locale) { tts ->
+                    engineMap[voice.name] = tts
+                    AppLogger.log("Engine Loaded Successfully: ${voice.name}")
+                }
             }
+        } catch (e: Exception) {
+            AppLogger.error("Error in onCreate", e)
         }
     }
 
     private fun initEngine(pkg: String?, locale: Locale, onSuccess: (TextToSpeech) -> Unit) {
-        if (pkg.isNullOrEmpty()) return
+        if (pkg.isNullOrEmpty()) {
+            AppLogger.log("Skipping init: Package name is empty for $locale")
+            return
+        }
         try {
             var tempTTS: TextToSpeech? = null
             tempTTS = TextToSpeech(applicationContext, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    try { tempTTS?.language = locale } catch (e: Exception) {}
-                    onSuccess(tempTTS!!)
+                    try { 
+                        val result = tempTTS?.setLanguage(locale)
+                        AppLogger.log("TTS Init Success for $pkg. Language Result: $result")
+                        onSuccess(tempTTS!!)
+                    } catch (e: Exception) {
+                        AppLogger.error("Failed to set language for $pkg", e)
+                    }
+                } else {
+                    AppLogger.log("TTS Init FAILED for $pkg. Status code: $status")
                 }
             }, pkg)
-        } catch (e: Exception) { }
+        } catch (e: Exception) {
+            AppLogger.error("Exception in initEngine for $pkg", e)
+        }
     }
 
     @Synchronized
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        if (text.isNullOrEmpty() || callback == null) return
+        AppLogger.log("onSynthesizeText requested. Text length: ${text.length}")
+
+        if (text.isNullOrEmpty() || callback == null) {
+            AppLogger.log("Text is empty or callback is null. Returning.")
+            return
+        }
 
         mIsStopped = false 
 
         try {
+            // Audio Processor Initialization Log
+            AppLogger.log("Initializing AudioProcessor with Rate: $OUTPUT_HZ")
             audioProcessor.destroy()
+            audioProcessor.init(OUTPUT_HZ, 1)
             currentInputRate = 0
 
             val rawChunks = TTSUtils.splitHelper(text)
@@ -77,14 +105,36 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
             for (chunk in rawChunks) {
-                if (mIsStopped) break
+                if (mIsStopped) {
+                    AppLogger.log("Synthesis stopped by user.")
+                    break
+                }
 
                 val targetVoice = getVoiceForLang(chunk.lang)
-                val engine = engineMap[targetVoice.name] ?: engineMap["en-US"] ?: continue
+                val engine = engineMap[targetVoice.name]
                 
-                val enginePkg = engine.engines.find { it.name == engine.defaultEngine }?.name ?: targetVoice.enginePkg
-                val engineInputRate = determineInputRate(enginePkg)
+                if (engine == null) {
+                    AppLogger.log("Warning: Engine not ready for ${targetVoice.name}. Using English Fallback.")
+                }
+                
+                val activeEngine = engine ?: engineMap["en-US"] 
+                
+                if (activeEngine == null) {
+                    AppLogger.log("Error: No engine available at all. Skipping chunk.")
+                    continue
+                }
 
+                // Package Name ရှာဖွေခြင်း
+                val enginePkg = try {
+                    activeEngine.engines.find { it.name == activeEngine.defaultEngine }?.name ?: targetVoice.enginePkg
+                } catch (e: Exception) {
+                    targetVoice.enginePkg
+                }
+                
+                val engineInputRate = determineInputRate(enginePkg)
+                AppLogger.log("Processing chunk: Lang=${chunk.lang}, Pkg=$enginePkg, Rate=$engineInputRate")
+
+                // Rate & Pitch Calculations
                 try {
                     val sysRate = (request?.speechRate ?: 100) / 100.0f
                     val sysPitch = (request?.pitch ?: 100) / 100.0f
@@ -102,15 +152,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val finalPitch = sysPitch * userPitchMulti
                     
                     try {
-                        engine.setSpeechRate(finalRate)
-                        engine.setPitch(finalPitch)
+                        activeEngine.setSpeechRate(finalRate)
+                        activeEngine.setPitch(finalPitch)
                     } catch (e: Exception) {
-                        engine.setSpeechRate(1.0f)
-                        engine.setPitch(1.0f)
+                        AppLogger.error("Failed to set Rate/Pitch", e)
+                        activeEngine.setSpeechRate(1.0f)
+                        activeEngine.setPitch(1.0f)
                     }
-                } catch (e: Exception) {}
+                } catch (e: Exception) {
+                    AppLogger.error("Error calculating rate/pitch", e)
+                }
 
+                // Sonic Re-init if rate changed
                 if (currentInputRate != engineInputRate) {
+                    AppLogger.log("Switching Sonic Rate: $currentInputRate -> $engineInputRate")
                     audioProcessor.init(engineInputRate, 1)
                     currentInputRate = engineInputRate
                 } else {
@@ -120,8 +175,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val engineParams = Bundle(originalParams)
                 engineParams.remove("rate")
                 engineParams.remove("pitch")
-                // ERROR တက်စေသော လိုင်းများကို ဖြုတ်လိုက်ပါပြီ
-                
+                // Remove Constants if not found to avoid errors
+                 try {
+                    engineParams.remove(TextToSpeech.Engine.KEY_PARAM_RATE)
+                    engineParams.remove(TextToSpeech.Engine.KEY_PARAM_PITCH)
+                } catch (e: Exception) {}
+
                 val volCorrection = getVolumeCorrection(enginePkg)
                 if (volCorrection != 1.0f) {
                     engineParams.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volCorrection)
@@ -131,13 +190,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                            ?: UUID.randomUUID().toString()
                 engineParams.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
 
-                processAudioChunk(engine, engineParams, chunk.text, callback, uuid)
+                processAudioChunk(activeEngine, engineParams, chunk.text, callback, uuid)
             }
             
             if (!mIsStopped) {
                 callback.done()
+                AppLogger.log("Synthesis Finished Successfully.")
             }
+        } catch (e: Exception) {
+            AppLogger.error("CRITICAL ERROR in onSynthesizeText", e)
         } finally {
+            // Clean up if needed
         }
     }
 
@@ -150,8 +213,12 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             val writerThread = Thread {
                 try {
-                    engine.synthesizeToFile(text, params, writeFd, uuid)
+                    val result = engine.synthesizeToFile(text, params, writeFd, uuid)
+                    if (result != TextToSpeech.SUCCESS) {
+                        AppLogger.log("synthesizeToFile returned ERROR code: $result")
+                    }
                 } catch (e: Exception) {
+                    AppLogger.error("Writer Thread Error", e)
                 } finally {
                     try { writeFd.close() } catch (e: Exception) {}
                 }
@@ -168,6 +235,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val readBytes = channel.read(inBuffer)
 
                     if (readBytes == -1) {
+                        // End of Stream
                         audioProcessor.flush()
                         var flushLength: Int
                         do {
@@ -180,11 +248,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
 
                     if (readBytes > 0) {
+                        // Sonic Processing
                         var processed = audioProcessor.process(inBuffer, readBytes, outBuffer)
                         if (processed > 0) {
                             sendAudioToSystem(outBuffer, processed, callback)
                         }
                         
+                        // Check if more data is available from Sonic
                         do {
                             processed = audioProcessor.process(inBuffer, 0, outBuffer)
                             if (processed > 0) {
@@ -198,6 +268,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             try { writerThread.join(500) } catch (e: Exception) {}
 
         } catch (e: Exception) {
+            AppLogger.error("Error in processAudioChunk", e)
         } finally {
             try { pipe?.get(0)?.close() } catch (e: Exception) {}
             try { pipe?.get(1)?.close() } catch (e: Exception) {}
@@ -215,11 +286,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                     callback.audioAvailable(data, offset, bytesToWrite)
                     offset += bytesToWrite
                 }
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                AppLogger.error("Error sending audio to system", e)
+            }
         }
     }
 
     override fun onStop() {
+        AppLogger.log("onStop called")
         mIsStopped = true 
         engineMap.values.forEach { try { it.stop() } catch (e: Exception) {} }
         audioProcessor.destroy()
@@ -281,6 +355,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onDestroy() {
+        AppLogger.log("onDestroy called")
         onStop()
         super.onDestroy()
     }
