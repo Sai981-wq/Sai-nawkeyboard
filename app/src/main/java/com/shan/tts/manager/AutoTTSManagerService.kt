@@ -18,6 +18,7 @@ import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
 
+    // VoiceConfig ရှိမှသာ ဒီလိုင်းအလုပ်လုပ်ပါမည် (VoiceConfig.kt ကို သေချာထည့်ပါ)
     private val supportedVoices = VoiceConfig.supportedVoices
 
     private val engineMap = HashMap<String, TextToSpeech>()
@@ -119,8 +120,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val engineParams = Bundle(originalParams)
                 engineParams.remove("rate")
                 engineParams.remove("pitch")
-                engineParams.remove(TextToSpeech.Engine.KEY_PARAM_RATE)
-                engineParams.remove(TextToSpeech.Engine.KEY_PARAM_PITCH)
+                // ERROR တက်စေသော လိုင်းများကို ဖြုတ်လိုက်ပါပြီ
                 
                 val volCorrection = getVolumeCorrection(enginePkg)
                 if (volCorrection != 1.0f) {
