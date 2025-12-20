@@ -25,7 +25,6 @@ object EngineScanner {
             return
         }
 
-        // Main Thread ပေါ်မှာ စမယ်
         mainHandler.post {
             scanRecursive(context, engines, 0, onComplete)
         }
@@ -40,14 +39,12 @@ object EngineScanner {
         val pkgName = engines[index]
         var tts: TextToSpeech? = null
 
-        // နောက်တစ်ခုမကူးခင် လက်ရှိဟာကို သေချာရှင်းထုတ်မယ်
         val onNext = {
             try {
                 tts?.stop()
                 tts?.shutdown()
             } catch (e: Exception) {}
             
-            // Stack Overflow မဖြစ်အောင် Handler နဲ့ ခွဲထုတ်လိုက်တာ ပိုကောင်းပါတယ်
             mainHandler.post {
                 scanRecursive(context, engines, index + 1, onComplete)
             }
@@ -72,10 +69,8 @@ object EngineScanner {
         val tempFile = File(context.cacheDir, "probe.wav")
         val uuid = "probe"
         
-        // Double Call မဖြစ်အောင် Lock ခတ်မယ်
         val isFinished = AtomicBoolean(false)
         
-        // ပြီးဆုံးကြောင်း သတ်မှတ်တဲ့ Function (တစ်ခါပဲ အလုပ်လုပ်မယ်)
         fun finishOnce() {
             if (isFinished.compareAndSet(false, true)) {
                 onDone()
@@ -83,7 +78,6 @@ object EngineScanner {
         }
 
         val lower = pkg.lowercase(Locale.ROOT)
-        // For Burmese engines, using Myanmar char might help initialization
         val text = if (lower.contains("myanmar") || lower.contains("saomai") || lower.contains("ttsm")) "က" else "a"
 
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -93,8 +87,6 @@ object EngineScanner {
                 finishOnce() 
             }
             override fun onDone(id: String?) { 
-                // onDone ခေါ်တိုင်း ပြီးပြီလို့ မသတ်မှတ်သေးဘူး (File Write မပြီးခင် ဖြစ်တတ်လို့)
-                // Thread ကပဲ အဓိက စစ်ပေးလိမ့်မယ်
             }
         })
 
@@ -105,10 +97,8 @@ object EngineScanner {
 
             tts.synthesizeToFile(text, params, tempFile, uuid)
 
-            // Watcher Thread
             Thread {
                 var wait = 0
-                // 2.5 seconds timeout (နည်းနည်းတိုးထားတယ်)
                 while (!isFinished.get()) {
                     if (tempFile.exists() && tempFile.length() > 44) {
                         break
@@ -145,7 +135,6 @@ object EngineScanner {
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
-        // eSpeak/Flite လိုဟာတွေက Rate နိမ့်တတ်လို့ 8000 အောက်ဆို 16000 ပြောင်းတာ မှန်ပါတယ်
         val finalRate = if (rate < 8000) 16000 else rate
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", finalRate).apply()

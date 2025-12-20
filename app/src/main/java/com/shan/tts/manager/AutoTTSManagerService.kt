@@ -30,16 +30,14 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     @Volatile private var mIsStopped = false
     
-    @Volatile private var currentReadFd: ParcelFileDescriptor? = null
-    @Volatile private var currentWriteFd: ParcelFileDescriptor? = null
+    private var currentLanguage: String = "eng"
+    private var currentCountry: String = "USA"
 
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
 
     override fun onCreate() {
         super.onCreate()
-        // WakeLock ကုဒ်များကို ဖယ်ရှားလိုက်ပါပြီ
-        
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
@@ -70,8 +68,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (text.isNullOrEmpty() || callback == null) return
 
         mIsStopped = false 
-        
-        // WakeLock Acquire ကုဒ်ကို ဖယ်ရှားလိုက်ပါပြီ
 
         try {
             resetSonicStream()
@@ -122,69 +118,69 @@ class AutoTTSManagerService : TextToSpeechService() {
                 callback.done()
             }
         } finally {
-             // WakeLock Release ကုဒ်ကို ဖယ်ရှားလိုက်ပါပြီ
         }
     }
 
     private fun processAudioChunk(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
+        var pipe: Array<ParcelFileDescriptor>? = null
         try {
-            val pipe = ParcelFileDescriptor.createPipe()
-            currentReadFd = pipe[0]
-            currentWriteFd = pipe[1]
+            pipe = ParcelFileDescriptor.createPipe()
+            val readFd = pipe[0]
+            val writeFd = pipe[1]
 
             val writerThread = Thread {
                 try {
-                    engine.synthesizeToFile(text, params, currentWriteFd!!, uuid)
+                    engine.synthesizeToFile(text, params, writeFd, uuid)
                 } catch (e: Exception) {
                 } finally {
-                    try { currentWriteFd?.close() } catch (e: Exception) {}
+                    try { writeFd.close() } catch (e: Exception) {}
                 }
             }
             writerThread.start()
 
             val inBuffer = ByteBuffer.allocateDirect(4096)
             val outBuffer = ByteArray(8192)
-            var fis: FileInputStream? = null
             
-            try {
-                fis = FileInputStream(currentReadFd!!.fileDescriptor)
+            FileInputStream(readFd.fileDescriptor).use { fis ->
                 val channel = fis.channel
-                
                 while (!mIsStopped) {
                     inBuffer.clear()
-                    val read = channel.read(inBuffer)
-                    
-                    if (read == -1) {
+                    val readBytes = channel.read(inBuffer)
+
+                    if (readBytes == -1) {
                         AudioProcessor.flush()
-                        var flushBytes = 1
-                        while (flushBytes > 0 && !mIsStopped) {
-                            flushBytes = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
-                            if (flushBytes > 0) sendAudioToSystem(outBuffer, flushBytes, callback)
-                        }
+                        var flushLength: Int
+                        do {
+                            flushLength = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
+                            if (flushLength > 0) {
+                                sendAudioToSystem(outBuffer, flushLength, callback)
+                            }
+                        } while (flushLength > 0 && !mIsStopped)
                         break
                     }
-                    
-                    if (read > 0) {
-                        var bytesProcessed = AudioProcessor.processAudio(inBuffer, read, outBuffer)
-                        if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
-                        
-                        while (bytesProcessed > 0 && !mIsStopped) {
-                            bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
-                            if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
+
+                    if (readBytes > 0) {
+                        var processed = AudioProcessor.processAudio(inBuffer, readBytes, outBuffer)
+                        if (processed > 0) {
+                            sendAudioToSystem(outBuffer, processed, callback)
                         }
+                        
+                        do {
+                            processed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
+                            if (processed > 0) {
+                                sendAudioToSystem(outBuffer, processed, callback)
+                            }
+                        } while (processed > 0 && !mIsStopped)
                     }
                 }
-            } catch (e: Exception) {
-            } finally {
-                try { fis?.close() } catch (e: Exception) {}
             }
-
-            try { writerThread.join() } catch (e: Exception) {}
+            
+            try { writerThread.join(500) } catch (e: Exception) {}
 
         } catch (e: Exception) {
         } finally {
-            try { currentWriteFd?.close() } catch (e: Exception) {}
-            try { currentReadFd?.close() } catch (e: Exception) {}
+            try { pipe?.get(0)?.close() } catch (e: Exception) {}
+            try { pipe?.get(1)?.close() } catch (e: Exception) {}
         }
     }
 
@@ -212,8 +208,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         mIsStopped = true 
-        try { currentWriteFd?.close() } catch (e: Exception) {}
-        try { currentReadFd?.close() } catch (e: Exception) {}
         try {
             shanEngine?.stop()
             burmeseEngine?.stop()
@@ -240,11 +234,17 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        return onIsLanguageAvailable(lang, country, variant)
+        val result = onIsLanguageAvailable(lang, country, variant)
+        if (result == TextToSpeech.LANG_COUNTRY_AVAILABLE || result == TextToSpeech.LANG_AVAILABLE) {
+            currentLanguage = lang ?: "eng"
+            currentCountry = country ?: ""
+            return result
+        }
+        return TextToSpeech.LANG_NOT_SUPPORTED
     }
 
     override fun onGetLanguage(): Array<String> {
-        return arrayOf("shn", "MM", "")
+        return arrayOf(currentLanguage, currentCountry, "")
     }
 
     private fun determineInputRate(pkgName: String): Int {
