@@ -11,8 +11,10 @@ android {
         applicationId "com.shan.tts.manager"
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName "1.1"
+        
+        // Version 1.2 သို့ ပြောင်းလဲထားခြင်း
+        versionCode 3
+        versionName "1.2"
 
         // *** ADDED: C++ Configuration ***
         externalNativeBuild {

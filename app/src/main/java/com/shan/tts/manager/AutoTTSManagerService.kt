@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -35,9 +36,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
+        try {
+            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:ReadingLock")
+            wakeLock?.setReferenceCounted(false)
+        } catch (e: Exception) {}
+
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
@@ -62,52 +70,67 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
-    // [FIXED] Kotlin မှာ @Synchronized ကို သုံးရပါမယ်
     @Synchronized
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         if (text.isNullOrEmpty() || callback == null) return
 
         mIsStopped = false 
-        resetSonicStream()
-
-        val rawChunks = TTSUtils.splitHelper(text)
         
-        synchronized(callback) {
-            callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
-        }
+        try {
+            if (wakeLock?.isHeld == false) wakeLock?.acquire(60 * 60 * 1000L)
+        } catch (e: Exception) {}
 
-        for (chunk in rawChunks) {
-            if (mIsStopped) break
+        try {
+            resetSonicStream()
 
-            val engineData = getEngineDataForLang(chunk.lang)
-            val engine = engineData.engine ?: continue
-            val engineInputRate = determineInputRate(engineData.pkgName)
+            val rawChunks = TTSUtils.splitHelper(text)
+            
+            synchronized(callback) {
+                callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+            }
 
-            try {
-                val sysRate = request?.speechRate ?: 100
-                val sysPitch = request?.pitch ?: 100
-                engine.setSpeechRate(sysRate / 100.0f)
-                engine.setPitch(sysPitch / 100.0f)
-            } catch (e: Exception) {}
+            for (chunk in rawChunks) {
+                if (mIsStopped) break
 
-            if (currentInputRate != engineInputRate) {
-                AudioProcessor.initSonic(engineInputRate, 1)
-                currentInputRate = engineInputRate
-            } else {
-                AudioProcessor.flush() 
+                val engineData = getEngineDataForLang(chunk.lang)
+                val engine = engineData.engine ?: continue
+                val engineInputRate = determineInputRate(engineData.pkgName)
+
+                try {
+                    val sysRate = (request?.speechRate ?: 100) / 100.0f
+                    val sysPitch = (request?.pitch ?: 100) / 100.0f
+                    
+                    val userRatePref = prefs.getInt(engineData.rateKey, 50)
+                    val userPitchPref = prefs.getInt(engineData.pitchKey, 50)
+                    
+                    val userRateMulti = userRatePref / 50.0f
+                    val userPitchMulti = userPitchPref / 50.0f
+                    
+                    engine.setSpeechRate(sysRate * userRateMulti)
+                    engine.setPitch(sysPitch * userPitchMulti)
+                } catch (e: Exception) {}
+
+                if (currentInputRate != engineInputRate) {
+                    AudioProcessor.initSonic(engineInputRate, 1)
+                    currentInputRate = engineInputRate
+                } else {
+                    AudioProcessor.flush() 
+                }
+                
+                val params = Bundle()
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
+                val uuid = UUID.randomUUID().toString()
+                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
+
+                processAudioChunk(engine, params, chunk.text, callback, uuid)
             }
             
-            val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
-            val uuid = UUID.randomUUID().toString()
-            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
-
-            processAudioChunk(engine, params, chunk.text, callback, uuid)
-        }
-        
-        if (!mIsStopped) {
-            callback.done()
+            if (!mIsStopped) {
+                callback.done()
+            }
+        } finally {
+            try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
         }
     }
 
@@ -175,10 +198,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun sendAudioToSystem(data: ByteArray, length: Int, callback: SynthesisCallback) {
         if (length <= 0) return
-        
         val maxBufferSize = callback.maxBufferSize 
         var offset = 0
-
         synchronized(callback) {
             try {
                 while (offset < length) {
@@ -199,18 +220,42 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         mIsStopped = true 
+        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
         try { currentWriteFd?.close() } catch (e: Exception) {}
         try { currentReadFd?.close() } catch (e: Exception) {}
-        
         try {
             shanEngine?.stop()
             burmeseEngine?.stop()
             englishEngine?.stop()
         } catch (e: Exception) {}
-        
         AudioProcessor.stop()
     }
     
+    override fun onGetVoices(): List<Voice> {
+        return listOf(
+            Voice("shn-MM", Locale("shn", "MM"), Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, setOf()),
+            Voice("my-MM", Locale("my", "MM"), Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, setOf()),
+            Voice("en-US", Locale.US, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, setOf())
+        )
+    }
+
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
+        val checkLang = lang?.lowercase(Locale.ROOT) ?: return TextToSpeech.LANG_NOT_SUPPORTED
+        return if (checkLang == "shn" || checkLang == "my" || checkLang == "en") {
+            TextToSpeech.LANG_COUNTRY_AVAILABLE
+        } else {
+            TextToSpeech.LANG_NOT_SUPPORTED
+        }
+    }
+
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
+        return onIsLanguageAvailable(lang, country, variant)
+    }
+
+    override fun onGetLanguage(): Array<String> {
+        return arrayOf("shn", "MM", "")
+    }
+
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         return when {
@@ -244,10 +289,5 @@ class AutoTTSManagerService : TextToSpeechService() {
         onStop()
         super.onDestroy()
     }
-
-    override fun onGetVoices(): List<Voice> = listOf()
-    override fun onIsLanguageAvailable(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    override fun onLoadLanguage(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    override fun onGetLanguage() = arrayOf("eng", "USA", "")
 }
 
