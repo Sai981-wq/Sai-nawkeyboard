@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.PowerManager
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -36,16 +35,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
-    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
-        try {
-            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:ReadingLock")
-            wakeLock?.setReferenceCounted(false)
-        } catch (e: Exception) {}
-
+        // WakeLock ကုဒ်များကို ဖယ်ရှားလိုက်ပါပြီ
+        
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
@@ -77,9 +71,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         mIsStopped = false 
         
-        try {
-            if (wakeLock?.isHeld == false) wakeLock?.acquire(60 * 60 * 1000L)
-        } catch (e: Exception) {}
+        // WakeLock Acquire ကုဒ်ကို ဖယ်ရှားလိုက်ပါပြီ
 
         try {
             resetSonicStream()
@@ -130,7 +122,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 callback.done()
             }
         } finally {
-            try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
+             // WakeLock Release ကုဒ်ကို ဖယ်ရှားလိုက်ပါပြီ
         }
     }
 
@@ -220,7 +212,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         mIsStopped = true 
-        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
         try { currentWriteFd?.close() } catch (e: Exception) {}
         try { currentReadFd?.close() } catch (e: Exception) {}
         try {
