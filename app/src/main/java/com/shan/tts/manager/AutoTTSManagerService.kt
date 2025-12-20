@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.PowerManager
 import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
@@ -17,11 +16,6 @@ import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.Executors
-import java.util.concurrent.Future
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -34,42 +28,22 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmesePkgName: String = ""
     private var englishPkgName: String = ""
 
-    // Queue အတွက် Data Class
-    data class TTSRequest(
-        val text: String,
-        val callback: SynthesisCallback,
-        val sysRate: Int,
-        val sysPitch: Int,
-        val uuid: String
-    )
-    private val requestQueue = LinkedBlockingQueue<TTSRequest>()
+    private lateinit var prefs: SharedPreferences
+
+    // ရှုပ်ထွေးတဲ့ Thread Pool တွေ မသုံးတော့ဘူး
+    // ရိုးရှင်းတဲ့ Boolean Flag လေးတစ်ခုပဲ သုံးမယ်
+    @Volatile private var mIsStopped = false
     
-    // Worker Thread & Cancellation Control
-    private var workerThread: Thread? = null
-    private val isRunning = AtomicBoolean(true)
-    private val currentRequestCancelled = AtomicBoolean(false)
-    
-    // လုပ်လက်စ Thread တွေကို လှမ်းပိတ်ဖို့ Global Variable အဖြစ်ထုတ်ထားခြင်း
-    @Volatile private var currentWriterFuture: Future<*>? = null
-    @Volatile private var currentReaderFuture: Future<*>? = null
+    // Pipe တွေကို ဒီမှာခဏသိမ်းမယ် (Stop လုပ်ရင် ပိတ်ပစ်ဖို့)
     @Volatile private var currentReadFd: ParcelFileDescriptor? = null
     @Volatile private var currentWriteFd: ParcelFileDescriptor? = null
 
-    private val pipeExecutor = Executors.newCachedThreadPool()
-    private lateinit var prefs: SharedPreferences
-
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
-    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
-        try {
-            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:WorkerLock")
-            wakeLock?.setReferenceCounted(false)
-        } catch (e: Exception) { }
-
+        // Engine တွေ Load လုပ်မယ်
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
@@ -79,32 +53,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
         } catch (e: Exception) { }
-
-        startWorker()
-    }
-
-    // နောက်ကွယ်က အလုပ်သမား Thread
-    private fun startWorker() {
-        workerThread = Thread {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-            while (isRunning.get()) {
-                try {
-                    // အလုပ်မရှိရင် စောင့်မယ်
-                    val request = requestQueue.poll(2, TimeUnit.SECONDS)
-                    if (request != null) {
-                        currentRequestCancelled.set(false)
-                        try { wakeLock?.acquire(10 * 60 * 1000L) } catch (e: Exception) {}
-                        
-                        processRequest(request)
-                        
-                        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
-                    }
-                } catch (e: Exception) {
-                    // Error တက်လဲ Loop မထွက်ဘူး
-                }
-            }
-        }
-        workerThread?.start()
     }
 
     private fun initEngine(pkg: String?, locale: Locale, onSuccess: (TextToSpeech) -> Unit) {
@@ -120,150 +68,150 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
+    // Android System က သူ့အလိုလို တန်းစီပြီး ဒီ Function ကို ခေါ်ပေးပါတယ်
+    // ကျွန်တော်တို့က ဒီထဲမှာ ဝင်လာတာကို ဖတ်ပေးလိုက်ရုံပါပဲ
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         if (text.isNullOrEmpty() || callback == null) return
 
-        // အသစ်လာရင် Queue ကိုရှင်းပြီး လက်ရှိလုပ်လက်စကို အတင်းဖြတ်ချမယ် (Kill Switch)
-        forceStopCurrentWork()
-
-        val uuid = UUID.randomUUID().toString()
-        val reqData = TTSRequest(text, callback, request?.speechRate ?: 100, request?.pitch ?: 100, uuid)
-        requestQueue.offer(reqData)
-    }
-
-    private fun forceStopCurrentWork() {
-        requestQueue.clear() // တန်းစီနေတာတွေ ဖျက်မယ်
-        currentRequestCancelled.set(true) // Loop တွေကို ရပ်ဖို့ အလံပြမယ်
+        mIsStopped = false // အလုပ်စပြီ
         
-        // လုပ်လက်စ Thread တွေကို အတင်း Cancel လုပ်မယ် (Stuck မဖြစ်အောင်)
-        currentWriterFuture?.cancel(true)
-        currentReaderFuture?.cancel(true)
+        // အသစ်စတိုင်း C++ Memory ကို ရှင်းမယ် (Deadlock မဖြစ်အောင်)
+        resetSonicStream()
+
+        val rawChunks = TTSUtils.splitHelper(text)
         
-        // Pipe တွေကို ပိတ်လိုက်မှ Read/Write လုပ်နေတာတွေ လွတ်ထွက်သွားမယ်
-        try { currentWriteFd?.close() } catch (e: Exception) {}
-        try { currentReadFd?.close() } catch (e: Exception) {}
-    }
+        synchronized(callback) {
+            callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+        }
 
-    private fun processRequest(req: TTSRequest) {
-        try {
-            val callback = req.callback
-            val rawChunks = TTSUtils.splitHelper(req.text)
-            if (rawChunks.isEmpty()) { 
-                callback.done()
-                return 
-            }
+        for (chunk in rawChunks) {
+            // Stop အမိန့်လာရင် ချက်ချင်း ရပ်မယ်
+            if (mIsStopped) break
 
-            synchronized(callback) {
-                try { callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1) } catch(e:Exception){}
-            }
+            val engineData = getEngineDataForLang(chunk.lang)
+            val engine = engineData.engine ?: continue
+            val engineInputRate = determineInputRate(engineData.pkgName)
 
-            for (chunk in rawChunks) {
-                if (currentRequestCancelled.get()) break
-                
-                val engineData = getEngineDataForLang(chunk.lang)
-                val engine = engineData.engine ?: continue
-                val engineInputRate = determineInputRate(engineData.pkgName)
+            // Engine Setting ချိန်မယ်
+            try {
+                engine.setSpeechRate(request.speechRate / 100.0f)
+                engine.setPitch(request.pitch / 100.0f)
+            } catch (e: Exception) {}
 
-                try {
-                    engine.setSpeechRate(req.sysRate / 100.0f)
-                    engine.setPitch(req.sysPitch / 100.0f)
-                } catch (e: Exception) {}
-
-                // Hz ညှိဖို့အတွက် Sonic ကို သုံးပါတယ်
-                if (currentInputRate != engineInputRate) {
-                    AudioProcessor.initSonic(engineInputRate, 1)
-                    currentInputRate = engineInputRate
-                } else {
-                    AudioProcessor.flush() 
-                    AudioProcessor.setConfig(1.0f, 1.0f)
-                }
-
-                val params = Bundle()
-                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, req.uuid)
-
-                processDualThreads(engine, params, chunk.text, callback, req.uuid)
+            // Sonic Config (Rate မတူမှ Init လုပ်မယ်)
+            if (currentInputRate != engineInputRate) {
+                AudioProcessor.initSonic(engineInputRate, 1)
+                currentInputRate = engineInputRate
+            } else {
+                AudioProcessor.flush() 
             }
             
-            if (!currentRequestCancelled.get()) {
-                try { callback.done() } catch(e:Exception){}
-            }
-        } catch (e: Exception) {
-            // Log error but keep worker alive
+            val params = Bundle()
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
+            val uuid = UUID.randomUUID().toString()
+            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
+
+            // အသံဖတ်မယ်
+            processAudioChunk(engine, params, chunk.text, callback, uuid)
+        }
+        
+        // ပြီးသွားရင် Done ခေါ်မယ် (Stop လုပ်ခံရရင် မခေါ်ဘူး)
+        if (!mIsStopped) {
+            callback.done()
         }
     }
 
-    private fun processDualThreads(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
+    private fun processAudioChunk(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
         try {
             val pipe = ParcelFileDescriptor.createPipe()
             currentReadFd = pipe[0]
             currentWriteFd = pipe[1]
-            
-            // Writer Future
-            currentWriterFuture = pipeExecutor.submit {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-                try { 
-                    engine.synthesizeToFile(text, params, currentWriteFd!!, uuid) 
-                } 
-                catch (e: Exception) { } 
-                finally { try { currentWriteFd?.close() } catch (e: Exception) {} }
-            }
 
-            // Reader Future
-            currentReaderFuture = pipeExecutor.submit {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-                var fis: FileInputStream? = null
-                var channel: FileChannel? = null
-                val inBuffer = ByteBuffer.allocateDirect(8192) // Buffer ကြီးကြီးထားမယ်
-                val outBuffer = ByteArray(16384) 
-                
+            // Writer Thread (Engine က File ထဲရေးဖို့ သီးသန့် Thread တစ်ခုလိုလို့ပါ)
+            // ဒါပေမဲ့ Executor တွေ Queue တွေ မသုံးတော့ပါဘူး
+            val writerThread = Thread {
                 try {
-                    fis = FileInputStream(currentReadFd!!.fileDescriptor)
-                    channel = fis.channel
+                    engine.synthesizeToFile(text, params, currentWriteFd!!, uuid)
+                } catch (e: Exception) {
+                } finally {
+                    try { currentWriteFd?.close() } catch (e: Exception) {}
+                }
+            }
+            writerThread.start()
+
+            // Main Thread မှာပဲ ဖတ်မယ် (Reader)
+            val inBuffer = ByteBuffer.allocateDirect(4096)
+            val outBuffer = ByteArray(8192)
+            var fis: FileInputStream? = null
+            
+            try {
+                fis = FileInputStream(currentReadFd!!.fileDescriptor)
+                val channel = fis.channel
+                
+                while (!mIsStopped) {
+                    inBuffer.clear()
+                    val read = channel.read(inBuffer)
                     
-                    while (!currentRequestCancelled.get() && !Thread.currentThread().isInterrupted) {
-                        inBuffer.clear()
-                        val read = channel.read(inBuffer)
-                        
-                        if (read == -1) {
-                            AudioProcessor.flush()
-                            var flushBytes = 1
-                            while (flushBytes > 0 && !currentRequestCancelled.get()) {
-                                flushBytes = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
-                                if (flushBytes > 0) sendAudioToSystem(outBuffer, flushBytes, callback)
-                            }
-                            break
+                    if (read == -1) {
+                        // Chunk ပြီးသွားရင် လက်ကျန်ရှင်းထုတ်
+                        AudioProcessor.flush()
+                        var flushBytes = 1
+                        while (flushBytes > 0 && !mIsStopped) {
+                            flushBytes = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
+                            if (flushBytes > 0) sendAudioToSystem(outBuffer, flushBytes, callback)
                         }
+                        break
+                    }
+                    
+                    if (read > 0) {
+                        var bytesProcessed = AudioProcessor.processAudio(inBuffer, read, outBuffer)
+                        if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
                         
-                        if (read > 0) {
-                            var bytesProcessed = AudioProcessor.processAudio(inBuffer, read, outBuffer)
+                        while (bytesProcessed > 0 && !mIsStopped) {
+                            bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                             if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
-                            
-                            while (bytesProcessed > 0 && !currentRequestCancelled.get()) {
-                                bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
-                                if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
-                            }
                         }
                     }
-                } catch (e: Exception) {
-                    // Interrupted (Force Stop) ဖြစ်ရင် ဒီကိုရောက်မယ်
-                } finally { try { fis?.close() } catch (e: Exception) {} }
-            }
-            
-            // စောင့်မယ် (User က Stop မလုပ်သရွေ့)
-            try { 
-                currentWriterFuture?.get()
-                currentReaderFuture?.get()
+                }
             } catch (e: Exception) {
-                // Cancel လုပ်ရင် Exception တက်မယ်၊ ကျော်သွားမယ်
+            } finally {
+                try { fis?.close() } catch (e: Exception) {}
             }
-            
+
+            // Writer ပြီးတဲ့အထိ စောင့်မယ် (Join)
+            try { writerThread.join() } catch (e: Exception) {}
+
         } catch (e: Exception) {
         } finally {
             try { currentWriteFd?.close() } catch (e: Exception) {}
             try { currentReadFd?.close() } catch (e: Exception) {}
         }
+    }
+
+    private fun resetSonicStream() {
+        try {
+            AudioProcessor.stop()
+            currentInputRate = 0
+        } catch (e: Exception) {}
+    }
+
+    // System က Stop လုပ်ခိုင်းရင် ဒီကောင်အလုပ်လုပ်မယ်
+    override fun onStop() {
+        mIsStopped = true // Flag ထောင်လိုက်တာနဲ့ Loop တွေအကုန်ရပ်မယ်
+        
+        // Pipe တွေကို အတင်းပိတ်မယ် (ဒါမှ Read/Write တွေလွတ်ပြီး Thread သေမှာ)
+        try { currentWriteFd?.close() } catch (e: Exception) {}
+        try { currentReadFd?.close() } catch (e: Exception) {}
+        
+        // Engine တွေကိုရပ်မယ်
+        try {
+            shanEngine?.stop()
+            burmeseEngine?.stop()
+            englishEngine?.stop()
+        } catch (e: Exception) {}
+        
+        AudioProcessor.stop()
     }
     
     private fun sendAudioToSystem(data: ByteArray, length: Int, callback: SynthesisCallback) {
@@ -280,7 +228,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    // Helper functions...
+    // Helper functions (Rate, PkgName, Volume) - အရင်အတိုင်း
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         return when {
@@ -309,28 +257,12 @@ class AutoTTSManagerService : TextToSpeechService() {
             l.contains("vocalizer") -> 0.85f; l.contains("eloquence") -> 0.6f; else -> 1.0f
         }
     }
-    
-    override fun onStop() { 
-        forceStopCurrentWork()
+
+    override fun onDestroy() {
+        onStop()
+        super.onDestroy()
     }
-    
-    override fun onDestroy() { 
-        isRunning.set(false)
-        forceStopCurrentWork()
-        workerThread?.interrupt()
-        pipeExecutor.shutdownNow()
-        
-        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
-        try {
-            shanEngine?.stop()
-            burmeseEngine?.stop()
-            englishEngine?.stop()
-        } catch (e: Exception) {}
-        
-        AudioProcessor.stop()
-        super.onDestroy() 
-    }
-    
+
     override fun onGetVoices(): List<Voice> = listOf()
     override fun onIsLanguageAvailable(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(l: String?, c: String?, v: String?) = TextToSpeech.LANG_COUNTRY_AVAILABLE
