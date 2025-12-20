@@ -33,7 +33,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var burmesePkgName: String = ""
     private var englishPkgName: String = ""
 
-    // ၁။ တန်းစီဇယား (Queue) တည်ဆောက်ခြင်း
+    // Queue System: အလုပ်တွေကို တန်းစီခိုင်းမယ်
     data class TTSRequest(
         val text: String,
         val callback: SynthesisCallback,
@@ -42,11 +42,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         val uuid: String
     )
     private val requestQueue = LinkedBlockingQueue<TTSRequest>()
-
-    // ၂။ နောက်ကွယ်က အလုပ်သမား (Worker Thread)
     private var workerThread: Thread? = null
     private val isRunning = AtomicBoolean(true)
-    private val isInterrupted = AtomicBoolean(false) // ဖြတ်ချခံရခြင်း ရှိ/မရှိ စစ်ရန်
+    private val currentRequestCancelled = AtomicBoolean(false)
 
     private val pipeExecutor = Executors.newCachedThreadPool()
     private lateinit var prefs: SharedPreferences
@@ -57,15 +55,12 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        
-        // Power Management
         try {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:QueueWorker")
             wakeLock?.setReferenceCounted(false)
         } catch (e: Exception) { }
 
-        // Load Settings & Engines
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
@@ -76,7 +71,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
         } catch (e: Exception) { }
 
-        // ၃။ အလုပ်သမားကို စတင်ခိုင်းစေခြင်း
         startWorker()
     }
 
@@ -85,17 +79,17 @@ class AutoTTSManagerService : TextToSpeechService() {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             while (isRunning.get()) {
                 try {
-                    // Queue ထဲမှာ အလုပ်လာမယ့်အချိန်ကို စောင့်မယ် (5 seconds)
-                    val request = requestQueue.poll(5, TimeUnit.SECONDS)
+                    // Queue ထဲမှာ အလုပ်လာမယ့်အချိန်ကို စောင့်မယ်
+                    val request = requestQueue.poll(2, TimeUnit.SECONDS)
                     if (request != null) {
+                        currentRequestCancelled.set(false)
                         try { wakeLock?.acquire(10 * 60 * 1000L) } catch (e: Exception) {}
+                        
                         processRequest(request)
+                        
                         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
                     }
-                } catch (e: InterruptedException) {
-                    // Thread ကို နှိုးလိုက်ရင် (Stop လုပ်တဲ့အခါ) ဒီကိုရောက်မယ်
                 } catch (e: Exception) {
-                    // Other errors
                 }
             }
         }
@@ -115,83 +109,68 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { }
     }
 
-    // System က စာဖတ်ခိုင်းတဲ့အခါ Queue ထဲထည့်မယ်
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
         if (text.isNullOrEmpty() || callback == null) return
 
-        // အသစ်လာရင် အဟောင်းတွေကို ရှင်းထုတ်မယ် (Queue Clear)
-        // ဒါမှ စာရိုက်တဲ့အခါ "မ", "မင်္ဂ" ဆိုပြီး ထပ်မနေမှာ
+        // အသစ်လာရင် Queue ကိုရှင်းပြီး လက်ရှိအလုပ်ကို ချက်ချင်းရပ်ခိုင်းမယ်
         stopForNewRequest()
 
         val uuid = UUID.randomUUID().toString()
-        val reqData = TTSRequest(
-            text, 
-            callback, 
-            request?.speechRate ?: 100, 
-            request?.pitch ?: 100,
-            uuid
-        )
-        
-        // Queue ထဲထည့်မယ်
+        val reqData = TTSRequest(text, callback, request?.speechRate ?: 100, request?.pitch ?: 100, uuid)
         requestQueue.offer(reqData)
     }
 
     private fun stopForNewRequest() {
-        // Queue ထဲက စောင့်နေတဲ့ဟာတွေကို ဖျက်မယ်
         requestQueue.clear()
-        // လက်ရှိလုပ်နေတဲ့ကောင်ကို ရပ်ဖို့ အလံပြမယ်
-        isInterrupted.set(true)
-        // Worker Thread အိပ်နေရင် နှိုးလိုက်မယ်
-        // workerThread?.interrupt() // မလိုပါ၊ AtomicBoolean နဲ့တင်လုံလောက်ပါတယ်
+        currentRequestCancelled.set(true) // လက်ရှိအလုပ်ကို ရပ်!
     }
 
-    // Worker Thread က လုပ်မယ့် အလုပ်
     private fun processRequest(req: TTSRequest) {
-        isInterrupted.set(false) // အလုပ်စပြီ၊ အလံပြန်ချ
-        val callback = req.callback
-        val text = req.text
-
-        val rawChunks = TTSUtils.splitHelper(text)
-        if (rawChunks.isEmpty()) { 
-            callback.done()
-            return 
-        }
-
-        synchronized(callback) {
-            callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
-        }
-
-        for (chunk in rawChunks) {
-            // ကြားဖြတ်ခံရရင် ရပ်မယ်
-            if (isInterrupted.get()) break
-            
-            val engineData = getEngineDataForLang(chunk.lang)
-            val engine = engineData.engine ?: continue
-            val engineInputRate = determineInputRate(engineData.pkgName)
-
-            try {
-                engine.setSpeechRate(req.sysRate / 100.0f)
-                engine.setPitch(req.sysPitch / 100.0f)
-            } catch (e: Exception) {}
-
-            if (currentInputRate != engineInputRate) {
-                AudioProcessor.initSonic(engineInputRate, 1)
-                currentInputRate = engineInputRate
-            } else {
-                AudioProcessor.flush() 
-                AudioProcessor.setConfig(1.0f, 1.0f)
+        try {
+            val callback = req.callback
+            val rawChunks = TTSUtils.splitHelper(req.text)
+            if (rawChunks.isEmpty()) { 
+                callback.done()
+                return 
             }
 
-            val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
-            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, req.uuid)
+            synchronized(callback) {
+                try { callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1) } catch(e:Exception){}
+            }
 
-            processDualThreads(engine, params, chunk.text, callback, req.uuid)
-        }
-        
-        if (!isInterrupted.get()) {
-            callback.done()
+            for (chunk in rawChunks) {
+                // ကြားဖြတ်ခံရရင် ရပ်မယ် (Stop signal)
+                if (currentRequestCancelled.get()) break
+                
+                val engineData = getEngineDataForLang(chunk.lang)
+                val engine = engineData.engine ?: continue
+                val engineInputRate = determineInputRate(engineData.pkgName)
+
+                try {
+                    engine.setSpeechRate(req.sysRate / 100.0f)
+                    engine.setPitch(req.sysPitch / 100.0f)
+                } catch (e: Exception) {}
+
+                if (currentInputRate != engineInputRate) {
+                    AudioProcessor.initSonic(engineInputRate, 1)
+                    currentInputRate = engineInputRate
+                } else {
+                    AudioProcessor.flush() 
+                    AudioProcessor.setConfig(1.0f, 1.0f)
+                }
+
+                val params = Bundle()
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, getVolumeCorrection(engineData.pkgName))
+                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, req.uuid)
+
+                processDualThreads(engine, params, chunk.text, callback, req.uuid)
+            }
+            
+            if (!currentRequestCancelled.get()) {
+                try { callback.done() } catch(e:Exception){}
+            }
+        } catch (e: Exception) {
         }
     }
 
@@ -205,6 +184,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             val pipe = ParcelFileDescriptor.createPipe()
             lR = pipe[0]; lW = pipe[1]
             
+            // Writer Thread
             writerFuture = pipeExecutor.submit {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 try { 
@@ -214,26 +194,29 @@ class AutoTTSManagerService : TextToSpeechService() {
                 finally { try { lW?.close() } catch (e: Exception) {} }
             }
 
+            // Reader Thread
             readerFuture = pipeExecutor.submit {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 var fis: FileInputStream? = null
                 var channel: FileChannel? = null
                 
-                val inBuffer = ByteBuffer.allocateDirect(4096)
+                // Buffer Size ကို 8192 ထိ တိုးလိုက်ပါတယ် (အသံပိုမြန်အောင်)
+                val inBuffer = ByteBuffer.allocateDirect(8192)
                 val outBuffer = ByteArray(16384) 
                 
                 try {
                     fis = FileInputStream(lR!!.fileDescriptor)
                     channel = fis.channel
                     
-                    while (!isInterrupted.get() && !Thread.currentThread().isInterrupted) {
+                    while (!currentRequestCancelled.get() && !Thread.currentThread().isInterrupted) {
                         inBuffer.clear()
                         val read = channel.read(inBuffer)
                         
                         if (read == -1) {
+                            // EOF ရောက်ရင် လက်ကျန်ညှစ်ထုတ်မယ်
                             AudioProcessor.flush()
                             var flushBytes = 1
-                            while (flushBytes > 0 && !isInterrupted.get()) {
+                            while (flushBytes > 0 && !currentRequestCancelled.get()) {
                                 flushBytes = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                                 if (flushBytes > 0) {
                                     sendAudioToSystem(outBuffer, flushBytes, callback)
@@ -243,11 +226,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                         
                         if (read > 0) {
-                            if (isInterrupted.get()) break
+                            if (currentRequestCancelled.get()) break
+                            
                             var bytesProcessed = AudioProcessor.processAudio(inBuffer, read, outBuffer)
                             if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
                             
-                            while (bytesProcessed > 0 && !isInterrupted.get()) {
+                            while (bytesProcessed > 0 && !currentRequestCancelled.get()) {
                                 bytesProcessed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                                 if (bytesProcessed > 0) sendAudioToSystem(outBuffer, bytesProcessed, callback)
                             }
@@ -257,6 +241,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                 } finally { try { fis?.close() } catch (e: Exception) {} }
             }
             
+            // Timeout မထားတော့ပါဘူး (စာပြီးတဲ့အထိ စောင့်ပါမယ်)
+            // User က Stop နှိပ်ရင် currentRequestCancelled က True ဖြစ်ပြီး Loop ကထွက်သွားမှာပါ
             try { writerFuture.get(); readerFuture.get() } catch (e: Exception) {}
             
         } catch (e: Exception) {
@@ -266,7 +252,20 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // Helper functions
+    private fun sendAudioToSystem(data: ByteArray, length: Int, callback: SynthesisCallback) {
+        if (length <= 0) return
+        synchronized(callback) {
+            try {
+                var offset = 0
+                while (offset < length) {
+                    val chunkLen = min(4096, length - offset)
+                    callback.audioAvailable(data, offset, chunkLen)
+                    offset += chunkLen
+                }
+            } catch (e: Exception) {}
+        }
+    }
+
     private fun determineInputRate(pkgName: String): Int {
         val lowerPkg = pkgName.lowercase(Locale.ROOT)
         return when {
@@ -295,21 +294,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             l.contains("vocalizer") -> 0.85f; l.contains("eloquence") -> 0.6f; else -> 1.0f
         }
     }
-
-    private fun sendAudioToSystem(data: ByteArray, length: Int, callback: SynthesisCallback) {
-        if (length <= 0) return
-        synchronized(callback) {
-            try {
-                var offset = 0
-                while (offset < length) {
-                    val chunkLen = min(4096, length - offset)
-                    callback.audioAvailable(data, offset, chunkLen)
-                    offset += chunkLen
-                }
-            } catch (e: Exception) {}
-        }
-    }
-
+    
     override fun onStop() { 
         stopForNewRequest()
     }
