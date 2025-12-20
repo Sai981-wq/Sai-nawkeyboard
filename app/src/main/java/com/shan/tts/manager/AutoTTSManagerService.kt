@@ -30,7 +30,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     @Volatile private var mIsStopped = false
     
-    // Dynamic Language အတွက် Variable များ
+    // Dynamic Language
     private var currentLanguage: String = "eng"
     private var currentCountry: String = "USA"
 
@@ -75,7 +75,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             val rawChunks = TTSUtils.splitHelper(text)
             
-            // Jieshuo Fix (1): မူရင်း Parameters ကို ရယူခြင်း
+            // Jieshuo မှလာသော မူရင်း Parameters များ
             val originalParams = request?.params ?: Bundle()
             
             synchronized(callback) {
@@ -89,21 +89,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val engine = engineData.engine ?: continue
                 val engineInputRate = determineInputRate(engineData.pkgName)
 
-                try {
-                    val sysRate = (request?.speechRate ?: 100) / 100.0f
-                    val sysPitch = (request?.pitch ?: 100) / 100.0f
-                    
-                    val userRatePref = prefs.getInt(engineData.rateKey, 50)
-                    val userPitchPref = prefs.getInt(engineData.pitchKey, 50)
-                    
-                    val userRateMulti = userRatePref / 50.0f
-                    val userPitchMulti = userPitchPref / 50.0f
-                    
-                    // Engine Rate သတ်မှတ်ခြင်း
-                    engine.setSpeechRate(sysRate * userRateMulti)
-                    engine.setPitch(sysPitch * userPitchMulti)
-                } catch (e: Exception) {}
-
+                // ---------------------------------------------------------
+                // RATE & PITCH ချိန်ညှိမှုများကို အကုန်ဖြုတ်ထားပါသည်
+                // ---------------------------------------------------------
+                // ယခုအခါ Engine သည် သူ့မူရင်းအသံ (Default) အတိုင်းသာ ထွက်ပါမည်။
+                // User Setting နှင့် Jieshuo Setting များကို လျစ်လျူရှုထားပါမည်။
+                
                 if (currentInputRate != engineInputRate) {
                     AudioProcessor.initSonic(engineInputRate, 1)
                     currentInputRate = engineInputRate
@@ -111,22 +102,21 @@ class AutoTTSManagerService : TextToSpeechService() {
                     AudioProcessor.flush() 
                 }
                 
-                // Jieshuo Fix (2): Params ကို Copy ကူးပြီး Rate/Pitch Key များကို String အနေနဲ့ ဖယ်ရှားခြင်း
-                // (TextToSpeech.Engine.KEY_PARAM_RATE မရှိလို့ String "rate" ကို သုံးထားပါတယ်)
+                // Bundle ကို ပြုပြင်ခြင်းမရှိဘဲ (No Remove) မူရင်းအတိုင်း လက်ဆင့်ကမ်းပါမည်
                 val engineParams = Bundle(originalParams)
-                engineParams.remove("rate")
-                engineParams.remove("pitch")
                 
-                // Volume Correction
+                // Volume Correction တစ်ခုတော့ ထားခဲ့ပါမယ် (အသံအရမ်းတိုးမှာစိုးလို့ပါ)
                 val volCorrection = getVolumeCorrection(engineData.pkgName)
                 if (volCorrection != 1.0f) {
                     engineParams.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volCorrection)
                 }
                 
-                // Jieshuo Fix (3): Utterance ID ထိန်းသိမ်းခြင်း
-                val uuid = originalParams.getString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID) 
-                           ?: UUID.randomUUID().toString()
-                engineParams.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
+                // Utterance ID မပါရင် ထည့်ပေးရပါမယ် (မထည့်ရင် Error တက်နိုင်လို့ပါ)
+                var uuid = originalParams.getString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID)
+                if (uuid == null) {
+                    uuid = UUID.randomUUID().toString()
+                    engineParams.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uuid)
+                }
 
                 processAudioChunk(engine, engineParams, chunk.text, callback, uuid)
             }
@@ -165,7 +155,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val readBytes = channel.read(inBuffer)
 
                     if (readBytes == -1) {
-                        // Audio Cut-out Fix: အဆုံးသတ်တွင် လက်ကျန်များကို ကုန်စင်အောင် ထုတ်ခြင်း
                         AudioProcessor.flush()
                         var flushLength: Int
                         do {
@@ -183,7 +172,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                             sendAudioToSystem(outBuffer, processed, callback)
                         }
                         
-                        // Sonic Buffer ပြည့်နေလျှင် ဆက်ထုတ်ခြင်း
                         do {
                             processed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                             if (processed > 0) {
@@ -194,7 +182,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
             
-            // Writer thread ကို ခဏစောင့်ခြင်း
             try { writerThread.join(500) } catch (e: Exception) {}
 
         } catch (e: Exception) {
