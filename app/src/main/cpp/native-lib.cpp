@@ -19,6 +19,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
+    // ရှိပြီးသား Stream ကို ပြန်သုံးနိုင်လျှင် ပြန်သုံးမည်
     if (stream && currentInputRate != inputRate) {
         sonicDestroyStream(stream);
         stream = NULL;
