@@ -1,7 +1,5 @@
 #include <jni.h>
 #include <stdlib.h>
-#include <vector>
-#include <android/log.h>
 #include <mutex>
 #include "sonic.h"
 
@@ -21,7 +19,6 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
-    // Rate မတူမှသာ Stream ကို Reset ချမယ်၊ တူရင် ဒီအတိုင်းဆက်သုံးမယ်
     if (stream && currentInputRate != inputRate) {
         sonicDestroyStream(stream);
         stream = NULL;
@@ -34,7 +31,6 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint in
         sonicSetQuality(stream, 1); 
         sonicSetVolume(stream, 1.0f);
     } else {
-        // ရှိပြီးသားဆိုရင် လက်ကျန်အသံဟောင်းကိုပဲ ရှင်းထုတ်မယ်
         sonicFlushStream(stream);
     }
     
