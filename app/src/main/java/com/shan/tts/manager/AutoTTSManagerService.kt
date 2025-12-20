@@ -91,7 +91,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         mIsStopped = false 
 
         try {
-            // Audio Processor Initialization Log
             AppLogger.log("Initializing AudioProcessor with Rate: $OUTPUT_HZ")
             audioProcessor.destroy()
             audioProcessor.init(OUTPUT_HZ, 1)
@@ -124,7 +123,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     continue
                 }
 
-                // Package Name ရှာဖွေခြင်း
                 val enginePkg = try {
                     activeEngine.engines.find { it.name == activeEngine.defaultEngine }?.name ?: targetVoice.enginePkg
                 } catch (e: Exception) {
@@ -134,7 +132,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val engineInputRate = determineInputRate(enginePkg)
                 AppLogger.log("Processing chunk: Lang=${chunk.lang}, Pkg=$enginePkg, Rate=$engineInputRate")
 
-                // Rate & Pitch Calculations
                 try {
                     val sysRate = (request?.speechRate ?: 100) / 100.0f
                     val sysPitch = (request?.pitch ?: 100) / 100.0f
@@ -163,7 +160,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     AppLogger.error("Error calculating rate/pitch", e)
                 }
 
-                // Sonic Re-init if rate changed
                 if (currentInputRate != engineInputRate) {
                     AppLogger.log("Switching Sonic Rate: $currentInputRate -> $engineInputRate")
                     audioProcessor.init(engineInputRate, 1)
@@ -173,13 +169,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
                 
                 val engineParams = Bundle(originalParams)
+                // String Key ဖြင့် ဖျက်ပစ်ခြင်း (မှန်ကန်သောနည်းလမ်း)
                 engineParams.remove("rate")
                 engineParams.remove("pitch")
-                // Remove Constants if not found to avoid errors
-                 try {
-                    engineParams.remove(TextToSpeech.Engine.KEY_PARAM_RATE)
-                    engineParams.remove(TextToSpeech.Engine.KEY_PARAM_PITCH)
-                } catch (e: Exception) {}
 
                 val volCorrection = getVolumeCorrection(enginePkg)
                 if (volCorrection != 1.0f) {
@@ -200,7 +192,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) {
             AppLogger.error("CRITICAL ERROR in onSynthesizeText", e)
         } finally {
-            // Clean up if needed
         }
     }
 
@@ -235,7 +226,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val readBytes = channel.read(inBuffer)
 
                     if (readBytes == -1) {
-                        // End of Stream
                         audioProcessor.flush()
                         var flushLength: Int
                         do {
@@ -248,13 +238,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
 
                     if (readBytes > 0) {
-                        // Sonic Processing
                         var processed = audioProcessor.process(inBuffer, readBytes, outBuffer)
                         if (processed > 0) {
                             sendAudioToSystem(outBuffer, processed, callback)
                         }
                         
-                        // Check if more data is available from Sonic
                         do {
                             processed = audioProcessor.process(inBuffer, 0, outBuffer)
                             if (processed > 0) {
