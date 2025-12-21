@@ -51,11 +51,10 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
             
-            // Initial Init with default
             AudioProcessor.initSonic(OUTPUT_HZ, 1)
 
         } catch (e: Exception) {
-            // Log error if needed
+            // Log error
         }
     }
 
@@ -150,7 +149,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                 override fun onError(utteranceId: String?) { latch.countDown() }
             })
 
-            engine.synthesizeToFile(text, params, destFile.absolutePath, uuid)
+            // ပြင်ဆင်ချက်: destFile.absolutePath အစား destFile (File Object) ကို တိုက်ရိုက်ပို့လိုက်ပါပြီ
+            engine.synthesizeToFile(text, params, destFile, uuid)
+            
             latch.await(4000, TimeUnit.MILLISECONDS)
 
             if (destFile.length() > 44) {
@@ -169,7 +170,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                             AudioProcessor.flush()
                             var flushLength: Int
                             do {
-                                // 0 ကို Int အနေနဲ့ သေချာပေးပို့ခြင်း
                                 flushLength = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                                 if (flushLength > 0) {
                                     sendAudioToSystem(outBuffer, flushLength, callback)
@@ -179,7 +179,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         if (readBytes > 0) {
-                            // readBytes ကို Int အနေနဲ့ သေချာပေးပို့ခြင်း
                             var processed: Int = AudioProcessor.processAudio(inBuffer, readBytes, outBuffer)
                             if (processed > 0) {
                                 sendAudioToSystem(outBuffer, processed, callback)
