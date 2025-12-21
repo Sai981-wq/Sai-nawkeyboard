@@ -19,7 +19,6 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
-    // Performance Fix: Stream ကို လိုအပ်မှသာ အသစ်ဆောက်ခြင်း
     if (stream && currentInputRate != inputRate) {
         sonicDestroyStream(stream);
         stream = NULL;
@@ -32,7 +31,7 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint in
         sonicSetQuality(stream, 1); 
         sonicSetVolume(stream, 1.0f);
     } else {
-        sonicFlushStream(stream); // ရှိပြီးသားကို ပြန်သုံးခြင်း
+        sonicFlushStream(stream);
     }
     
     updateSonicConfig();
