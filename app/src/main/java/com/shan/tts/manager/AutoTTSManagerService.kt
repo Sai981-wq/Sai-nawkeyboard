@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
+import android.os.SystemClock
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -14,8 +15,7 @@ import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -31,7 +31,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
 
     @Volatile private var mIsStopped = false
-
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
 
@@ -88,6 +87,12 @@ class AutoTTSManagerService : TextToSpeechService() {
         mIsStopped = false
 
         val text = request.charSequenceText.toString()
+        
+        // Settings Seekbar မှ Rate နှင့် Pitch ကို ရယူခြင်း
+        // Android System က ပို့ပေးတဲ့ တန်ဖိုးကို တိုက်ရိုက်ယူပါမယ်
+        val sysRate = request.speechRate // ပုံမှန် 100
+        val sysPitch = request.pitch     // ပုံမှန် 100
+
         val chunks = TTSUtils.splitHelper(text)
 
         callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -108,98 +113,99 @@ class AutoTTSManagerService : TextToSpeechService() {
                 currentInputRate = determineInputRate(engineData.pkgName)
                 AudioProcessor.initSonic(currentInputRate, 1)
                 
-                val speed = getRateValue(engineData.rateKey)
-                val pitch = getPitchValue(engineData.pitchKey)
-                val volume = getVolumeCorrection(engineData.pkgName)
-
-                val sonicSpeed = speed / 100f 
-                val sonicPitch = pitch / 100f
-
+                // Seekbar Value များကို Sonic သို့ ပို့ခြင်း
+                val sonicSpeed = sysRate / 100f 
+                val sonicPitch = sysPitch / 100f
                 AudioProcessor.setConfig(sonicSpeed, sonicPitch)
                 
+                // Volume Correction
+                val volume = getVolumeCorrection(engineData.pkgName)
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
 
-                processAudioChunk(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString())
+                // Instant Play Logic ကို သုံးပါမယ်
+                processAudioChunkInstant(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString())
             }
         }
         
         callback.done()
     }
 
-    private fun processAudioChunk(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
+    // ၂ စက္ကန့်စောင့်စရာမလိုဘဲ ရေးနေတုန်း ဖတ်မယ့် Function အသစ်
+    private fun processAudioChunkInstant(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
         var tempFile: File? = null
         try {
-            tempFile = File.createTempFile("tts_audio", ".wav", cacheDir)
+            tempFile = File.createTempFile("tts_stream", ".wav", cacheDir)
             val destFile = tempFile
-            val latch = CountDownLatch(1)
+            val isDone = AtomicBoolean(false)
 
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) { latch.countDown() }
-                override fun onError(utteranceId: String?) { latch.countDown() }
+                override fun onDone(utteranceId: String?) { isDone.set(true) }
+                override fun onError(utteranceId: String?) { isDone.set(true) }
             })
 
+            // Engine ကို စာစရေးခိုင်းပါမယ်
             engine.synthesizeToFile(text, params, destFile, uuid)
-            
-            latch.await(4000, TimeUnit.MILLISECONDS)
 
-            if (destFile.exists() && destFile.length() > 0) {
-                val inBuffer: ByteBuffer = ByteBuffer.allocateDirect(4096)
-                val outBuffer: ByteArray = ByteArray(8192)
+            // ဖိုင်ရေးနေတုန်းမှာပဲ တပြိုင်နက်တည်း လိုက်ဖတ်ပါမယ် (Streaming)
+            var offset: Long = 0
+            val headerSkipped = AtomicBoolean(false)
+            val inBuffer = ByteBuffer.allocateDirect(4096)
+            val outBuffer = ByteArray(8192)
 
-                FileInputStream(destFile).use { fis ->
-                    val channel = fis.channel
-                    
-                    if (destFile.length() >= 44) {
-                        val headerCheck = ByteBuffer.allocate(4)
-                        channel.read(headerCheck)
-                        headerCheck.flip()
-
-                        if (headerCheck.remaining() >= 4 &&
-                            headerCheck.get(0) == 0x52.toByte() && 
-                            headerCheck.get(1) == 0x49.toByte() && 
-                            headerCheck.get(2) == 0x46.toByte() && 
-                            headerCheck.get(3) == 0x46.toByte())   
-                        {
-                            channel.position(44)
-                        } else {
-                            channel.position(0)
-                        }
-                    }
-
-                    while (!mIsStopped) {
-                        inBuffer.clear()
-                        val readBytes: Int = channel.read(inBuffer)
-
-                        if (readBytes == -1) {
-                            AudioProcessor.flush()
-                            var flushLength: Int
-                            do {
-                                flushLength = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
-                                if (flushLength > 0) {
-                                    sendAudioToSystem(outBuffer, flushLength, callback)
-                                }
-                            } while (flushLength > 0 && !mIsStopped)
-                            break
-                        }
-
-                        if (readBytes > 0) {
-                            var processed: Int = AudioProcessor.processAudio(inBuffer, readBytes, outBuffer)
-                            if (processed > 0) {
-                                sendAudioToSystem(outBuffer, processed, callback)
+            while (!mIsStopped) {
+                val fileLength = destFile.length()
+                
+                // ဖိုင်ထဲမှာ Data အသစ်ရောက်လာပြီလား စစ်မယ်
+                if (fileLength > offset) {
+                    FileInputStream(destFile).use { fis ->
+                        fis.channel.position(offset) // ဖတ်ပြီးသားနေရာကို ကျော်မယ်
+                        val fc = fis.channel
+                        
+                        // Header Skip Logic (44 Bytes) - တကြိမ်ပဲ လုပ်မယ်
+                        if (!headerSkipped.get()) {
+                            if (fileLength >= 44) {
+                                offset += 44 // Header ကို ကျော်လိုက်ပြီ
+                                fc.position(offset)
+                                headerSkipped.set(true)
+                            } else {
+                                // Header မပြည့်သေးရင် ခဏစောင့်မယ်
+                                Thread.sleep(10)
+                                return@use
                             }
+                        }
+
+                        // Data ဖတ်ပြီး Sonic ထဲထည့်မယ်
+                        inBuffer.clear()
+                        val bytesRead = fc.read(inBuffer)
+                        if (bytesRead > 0) {
+                            offset += bytesRead
+                            var processed = AudioProcessor.processAudio(inBuffer, bytesRead, outBuffer)
+                            if (processed > 0) sendAudioToSystem(outBuffer, processed, callback)
+                            
+                            // Sonic ထဲ ကျန်နေတာတွေ အကုန်ညှစ်ထုတ်မယ်
                             do {
                                 processed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
-                                if (processed > 0) {
-                                    sendAudioToSystem(outBuffer, processed, callback)
-                                }
+                                if (processed > 0) sendAudioToSystem(outBuffer, processed, callback)
                             } while (processed > 0 && !mIsStopped)
                         }
                     }
+                } else {
+                    // Data အသစ်မရောက်သေးရင် Engine ပြီးမပြီး စစ်မယ်
+                    if (isDone.get()) {
+                        // Engine ပြီးသွားပြီ၊ Data လည်းကုန်သွားပြီဆိုရင် Loop ထွက်မယ်
+                        break
+                    }
+                    // Engine မပြီးသေးရင် Data အသစ်ရောက်လာအောင် ခဏစောင့်မယ် (CPU မတက်အောင်)
+                    SystemClock.sleep(20)
                 }
             }
+            // အဆုံးသတ် Flush
+            AudioProcessor.flush()
+            
         } catch (e: Exception) {
+            e.printStackTrace()
         } finally {
             try { tempFile?.delete() } catch (e: Exception) {}
             engine.setOnUtteranceProgressListener(null)
@@ -230,27 +236,19 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    data class EngineData(val engine: TextToSpeech?, val pkgName: String, val rateKey: String, val pitchKey: String)
+    data class EngineData(val engine: TextToSpeech?, val pkgName: String)
     
     private fun getEngineDataForLang(lang: String): EngineData {
         return when (lang) {
-            "SHAN", "shn" -> EngineData(if (shanEngine != null) shanEngine else englishEngine, shanPkgName, "rate_shan", "pitch_shan")
-            "MYANMAR", "my", "mya", "bur" -> EngineData(if (burmeseEngine != null) burmeseEngine else englishEngine, burmesePkgName, "rate_burmese", "pitch_burmese")
-            else -> EngineData(englishEngine, englishPkgName, "rate_english", "pitch_english")
+            "SHAN", "shn" -> EngineData(if (shanEngine != null) shanEngine else englishEngine, shanPkgName)
+            "MYANMAR", "my", "mya", "bur" -> EngineData(if (burmeseEngine != null) burmeseEngine else englishEngine, burmesePkgName)
+            else -> EngineData(englishEngine, englishPkgName)
         }
     }
 
     private fun getVolumeCorrection(pkg: String): Float {
         val l = pkg.lowercase(Locale.ROOT)
         return if (l.contains("espeak") || l.contains("shan")) 1.0f else 0.8f
-    }
-
-    private fun getRateValue(key: String): Int {
-        return prefs.getInt(key, 100) 
-    }
-
-    private fun getPitchValue(key: String): Int {
-        return prefs.getInt(key, 100)
     }
 
     override fun onDestroy() {
