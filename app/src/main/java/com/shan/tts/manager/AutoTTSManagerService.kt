@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
-import android.os.SystemClock
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -29,15 +28,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var configPrefs: SharedPreferences
 
     @Volatile private var mIsStopped = false
-    private val OUTPUT_HZ = 24000 
-    private var currentInputRate = 0
+    private val FIXED_OUTPUT_HZ = 24000 
 
     override fun onCreate() {
         super.onCreate()
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+            configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             
             shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
             initEngine(shanPkgName, Locale("shn", "MM")) { shanEngine = it }
@@ -48,9 +48,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
             
-            AudioProcessor.initSonic(OUTPUT_HZ, 1)
-
         } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -65,17 +64,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         }, pkg)
     }
 
-    override fun onGetLanguage(): Array<String> {
-        return arrayOf("eng", "USA", "")
-    }
-
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE
-    }
-
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE
-    }
+    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 
     override fun onStop() {
         mIsStopped = true
@@ -89,10 +80,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         val text = request.charSequenceText.toString()
         val sysRate = request.speechRate
         val sysPitch = request.pitch
-
         val chunks = TTSUtils.splitHelper(text)
 
-        callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+        callback.start(FIXED_OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         for (chunk in chunks) {
             if (mIsStopped) break
@@ -107,8 +97,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             val targetEngine = engineData.engine ?: englishEngine
             
             if (targetEngine != null) {
-                currentInputRate = determineInputRate(engineData.pkgName)
-                AudioProcessor.initSonic(currentInputRate, 1)
+                val detectedRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
+                
+                AudioProcessor.initSonic(detectedRate, 1)
                 
                 val sonicSpeed = sysRate / 100f 
                 val sonicPitch = sysPitch / 100f
@@ -142,8 +133,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             var offset: Long = 0
             val inBuffer = ByteBuffer.allocateDirect(4096)
-            val outBufferDirect = ByteBuffer.allocateDirect(16384)
-            val outBufferArray = ByteArray(16384)
+            val outBufferDirect = ByteBuffer.allocateDirect(8192) 
+            val outBufferArray = ByteArray(8192)
 
             while (!mIsStopped) {
                 val fileLength = destFile.length()
@@ -166,7 +157,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                                 outBufferDirect.get(outBufferArray, 0, processed)
                                 sendAudioToSystem(outBufferArray, processed, callback)
                             }
-
+                            
                             do {
                                 outBufferDirect.clear()
                                 processed = AudioProcessor.processAudio(inBuffer, 0, outBufferDirect, outBufferDirect.capacity())
@@ -178,9 +169,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                 } else {
-                    if (isDone.get()) {
-                        break
-                    }
+                    if (isDone.get()) break
                     Thread.sleep(1)
                 }
             }
@@ -202,19 +191,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             val chunk = min(length - offset, maxBufferSize)
             callback.audioAvailable(buffer, offset, chunk)
             offset += chunk
-        }
-    }
-
-    private fun determineInputRate(pkgName: String): Int {
-        val lowerPkg = pkgName.lowercase(Locale.ROOT)
-        return when {
-            lowerPkg.contains("com.shan.tts") -> 22050
-            lowerPkg.contains("eloquence") -> 11025
-            lowerPkg.contains("espeak") || lowerPkg.contains("shan") -> 22050
-            lowerPkg.contains("google") -> 24000
-            lowerPkg.contains("samsung") -> 22050 
-            lowerPkg.contains("vocalizer") -> 22050
-            else -> 16000 
         }
     }
 

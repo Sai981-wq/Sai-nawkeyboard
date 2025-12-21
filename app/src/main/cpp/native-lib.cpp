@@ -5,13 +5,19 @@
 
 std::mutex processorMutex;
 static sonicStream stream = NULL;
-static int currentInputRate = 0;
+
+static int currentInputRate = 22050; 
+const int FIXED_OUTPUT_RATE = 24000;
+
 static float currentSpeed = 1.0f;
 static float currentPitch = 1.0f;
 
+static int skippedHeaderBytes = 0;
+const int HEADER_SIZE = 44;
+
 void updateSonicConfig() {
-    if (!stream || currentInputRate == 0) return;
-    float resampleRatio = (float)currentInputRate / 24000.0f;
+    if (!stream) return;
+    float resampleRatio = (float)currentInputRate / (float)FIXED_OUTPUT_RATE;
     sonicSetRate(stream, resampleRatio);
     sonicSetSpeed(stream, currentSpeed);
     sonicSetPitch(stream, currentPitch);
@@ -21,20 +27,17 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
     
-    if (stream && currentInputRate != inputRate) {
+    currentInputRate = inputRate; 
+    skippedHeaderBytes = 0;     
+
+    if (stream) {
         sonicDestroyStream(stream);
         stream = NULL;
     }
-    
-    currentInputRate = inputRate;
 
-    if (!stream) {
-        stream = sonicCreateStream(24000, ch);
-        sonicSetQuality(stream, 1); 
-        sonicSetVolume(stream, 1.0f);
-    } else {
-        sonicFlushStream(stream);
-    }
+    stream = sonicCreateStream(FIXED_OUTPUT_RATE, ch);
+    sonicSetQuality(stream, 0); 
+    sonicSetVolume(stream, 1.0f);
     
     updateSonicConfig();
 }
@@ -59,15 +62,22 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(
     if (len > 0 && inBuffer != NULL) {
         unsigned char* inAddr = (unsigned char*)env->GetDirectBufferAddress(inBuffer);
         if (inAddr != NULL) {
+            
             int dataOffset = 0;
-            if (len > 44 && inAddr[0] == 'R' && inAddr[1] == 'I' && inAddr[2] == 'F' && inAddr[3] == 'F') {
-                for (int i = 12; i < len - 4; i++) {
-                    if (inAddr[i] == 'd' && inAddr[i+1] == 'a' && inAddr[i+2] == 't' && inAddr[i+3] == 'a') {
-                        dataOffset = i + 8; 
-                        break;
-                    }
+            
+            if (skippedHeaderBytes < HEADER_SIZE) {
+                int remainingToSkip = HEADER_SIZE - skippedHeaderBytes;
+                if (len <= remainingToSkip) {
+                    skippedHeaderBytes += len;
+                    return 0; 
+                } else {
+                    dataOffset = remainingToSkip;
+                    skippedHeaderBytes += remainingToSkip;
                 }
-                if (dataOffset == 0) dataOffset = 44; 
+            }
+
+            if ((uintptr_t)(inAddr + dataOffset) % 2 != 0) {
+                dataOffset++;
             }
 
             int audioLen = len - dataOffset;
@@ -86,21 +96,16 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(
     return samplesRead * 2;
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
+extern "C" JNIEXPORT void JNICALL Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    if (stream) {
-        sonicFlushStream(stream);
-    }
+    if (stream) sonicFlushStream(stream);
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_stop(JNIEnv*, jobject) {
+extern "C" JNIEXPORT void JNICALL Java_com_shan_tts_manager_AudioProcessor_stop(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    if (stream) {
-        sonicDestroyStream(stream);
-        stream = NULL;
-        currentInputRate = 0;
+    if (stream) { 
+        sonicDestroyStream(stream); 
+        stream = NULL; 
     }
 }
 
