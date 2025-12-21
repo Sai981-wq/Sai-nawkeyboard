@@ -87,11 +87,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         mIsStopped = false
 
         val text = request.charSequenceText.toString()
-        
-        // Settings Seekbar မှ Rate နှင့် Pitch ကို ရယူခြင်း
-        // Android System က ပို့ပေးတဲ့ တန်ဖိုးကို တိုက်ရိုက်ယူပါမယ်
-        val sysRate = request.speechRate // ပုံမှန် 100
-        val sysPitch = request.pitch     // ပုံမှန် 100
+        val sysRate = request.speechRate
+        val sysPitch = request.pitch
 
         val chunks = TTSUtils.splitHelper(text)
 
@@ -113,17 +110,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                 currentInputRate = determineInputRate(engineData.pkgName)
                 AudioProcessor.initSonic(currentInputRate, 1)
                 
-                // Seekbar Value များကို Sonic သို့ ပို့ခြင်း
                 val sonicSpeed = sysRate / 100f 
                 val sonicPitch = sysPitch / 100f
                 AudioProcessor.setConfig(sonicSpeed, sonicPitch)
                 
-                // Volume Correction
                 val volume = getVolumeCorrection(engineData.pkgName)
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
 
-                // Instant Play Logic ကို သုံးပါမယ်
                 processAudioChunkInstant(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString())
             }
         }
@@ -131,7 +125,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         callback.done()
     }
 
-    // ၂ စက္ကန့်စောင့်စရာမလိုဘဲ ရေးနေတုန်း ဖတ်မယ့် Function အသစ်
     private fun processAudioChunkInstant(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
         var tempFile: File? = null
         try {
@@ -145,63 +138,52 @@ class AutoTTSManagerService : TextToSpeechService() {
                 override fun onError(utteranceId: String?) { isDone.set(true) }
             })
 
-            // Engine ကို စာစရေးခိုင်းပါမယ်
             engine.synthesizeToFile(text, params, destFile, uuid)
 
-            // ဖိုင်ရေးနေတုန်းမှာပဲ တပြိုင်နက်တည်း လိုက်ဖတ်ပါမယ် (Streaming)
             var offset: Long = 0
-            val headerSkipped = AtomicBoolean(false)
             val inBuffer = ByteBuffer.allocateDirect(4096)
-            val outBuffer = ByteArray(8192)
+            val outBufferDirect = ByteBuffer.allocateDirect(16384)
+            val outBufferArray = ByteArray(16384)
 
             while (!mIsStopped) {
                 val fileLength = destFile.length()
                 
-                // ဖိုင်ထဲမှာ Data အသစ်ရောက်လာပြီလား စစ်မယ်
                 if (fileLength > offset) {
                     FileInputStream(destFile).use { fis ->
-                        fis.channel.position(offset) // ဖတ်ပြီးသားနေရာကို ကျော်မယ်
+                        fis.channel.position(offset)
                         val fc = fis.channel
                         
-                        // Header Skip Logic (44 Bytes) - တကြိမ်ပဲ လုပ်မယ်
-                        if (!headerSkipped.get()) {
-                            if (fileLength >= 44) {
-                                offset += 44 // Header ကို ကျော်လိုက်ပြီ
-                                fc.position(offset)
-                                headerSkipped.set(true)
-                            } else {
-                                // Header မပြည့်သေးရင် ခဏစောင့်မယ်
-                                Thread.sleep(10)
-                                return@use
-                            }
-                        }
-
-                        // Data ဖတ်ပြီး Sonic ထဲထည့်မယ်
                         inBuffer.clear()
                         val bytesRead = fc.read(inBuffer)
+                        
                         if (bytesRead > 0) {
                             offset += bytesRead
-                            var processed = AudioProcessor.processAudio(inBuffer, bytesRead, outBuffer)
-                            if (processed > 0) sendAudioToSystem(outBuffer, processed, callback)
                             
-                            // Sonic ထဲ ကျန်နေတာတွေ အကုန်ညှစ်ထုတ်မယ်
+                            outBufferDirect.clear()
+                            var processed = AudioProcessor.processAudio(inBuffer, bytesRead, outBufferDirect, outBufferDirect.capacity())
+                            
+                            if (processed > 0) {
+                                outBufferDirect.get(outBufferArray, 0, processed)
+                                sendAudioToSystem(outBufferArray, processed, callback)
+                            }
+
                             do {
-                                processed = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
-                                if (processed > 0) sendAudioToSystem(outBuffer, processed, callback)
+                                outBufferDirect.clear()
+                                processed = AudioProcessor.processAudio(inBuffer, 0, outBufferDirect, outBufferDirect.capacity())
+                                if (processed > 0) {
+                                    outBufferDirect.get(outBufferArray, 0, processed)
+                                    sendAudioToSystem(outBufferArray, processed, callback)
+                                }
                             } while (processed > 0 && !mIsStopped)
                         }
                     }
                 } else {
-                    // Data အသစ်မရောက်သေးရင် Engine ပြီးမပြီး စစ်မယ်
                     if (isDone.get()) {
-                        // Engine ပြီးသွားပြီ၊ Data လည်းကုန်သွားပြီဆိုရင် Loop ထွက်မယ်
                         break
                     }
-                    // Engine မပြီးသေးရင် Data အသစ်ရောက်လာအောင် ခဏစောင့်မယ် (CPU မတက်အောင်)
-                    SystemClock.sleep(20)
+                    Thread.sleep(1)
                 }
             }
-            // အဆုံးသတ် Flush
             AudioProcessor.flush()
             
         } catch (e: Exception) {

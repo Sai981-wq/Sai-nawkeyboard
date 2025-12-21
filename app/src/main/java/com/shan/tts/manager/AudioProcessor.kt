@@ -8,7 +8,7 @@ object AudioProcessor {
     }
     external fun initSonic(sampleRate: Int, channels: Int)
     external fun setConfig(speed: Float, pitch: Float)
-    external fun processAudio(inBuffer: ByteBuffer, len: Int, outBuffer: ByteArray): Int
+    external fun processAudio(inBuffer: ByteBuffer, len: Int, outBuffer: ByteBuffer, maxOutLen: Int): Int
     external fun flush()
     external fun stop()
 }
