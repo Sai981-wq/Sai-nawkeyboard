@@ -150,6 +150,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                         if (bytesRead > 0) {
                             offset += bytesRead
                             
+                            // Header Skip Logic လုံးဝ မရှိပါ။
+                            // Data အကုန်လုံးကို C++ ဆီ တိုက်ရိုက်ပို့ပါတယ်။
+                            
                             outBufferDirect.clear()
                             var processed = AudioProcessor.processAudio(inBuffer, bytesRead, outBufferDirect, outBufferDirect.capacity())
                             
