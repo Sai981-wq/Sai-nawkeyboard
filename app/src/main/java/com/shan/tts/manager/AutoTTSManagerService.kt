@@ -101,9 +101,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                 
                 AudioProcessor.initSonic(detectedRate, 1)
                 
-                val sonicSpeed = sysRate / 100f 
-                val sonicPitch = sysPitch / 100f
-                AudioProcessor.setConfig(sonicSpeed, sonicPitch)
+                val rateFloat = sysRate / 100f
+                val pitchFloat = sysPitch / 100f
+                targetEngine.setSpeechRate(rateFloat)
+                targetEngine.setPitch(pitchFloat)
                 
                 val volume = getVolumeCorrection(engineData.pkgName)
                 val params = Bundle()
@@ -149,9 +150,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         
                         if (bytesRead > 0) {
                             offset += bytesRead
-                            
-                            // Header Skip Logic လုံးဝ မရှိပါ။
-                            // Data အကုန်လုံးကို C++ ဆီ တိုက်ရိုက်ပို့ပါတယ်။
                             
                             outBufferDirect.clear()
                             var processed = AudioProcessor.processAudio(inBuffer, bytesRead, outBufferDirect, outBufferDirect.capacity())
