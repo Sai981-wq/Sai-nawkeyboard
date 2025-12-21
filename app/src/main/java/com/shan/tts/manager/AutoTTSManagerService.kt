@@ -31,9 +31,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
 
     @Volatile private var mIsStopped = false
-    
-    private var currentLanguage: String = "eng"
-    private var currentCountry: String = "USA"
 
     private val OUTPUT_HZ = 24000 
     private var currentInputRate = 0
@@ -42,6 +39,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onCreate()
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+            
             shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
             initEngine(shanPkgName, Locale("shn", "MM")) { shanEngine = it }
 
@@ -54,7 +52,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             AudioProcessor.initSonic(OUTPUT_HZ, 1)
 
         } catch (e: Exception) {
-            // Log error
         }
     }
 
@@ -70,24 +67,15 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onGetLanguage(): Array<String> {
-        val lang = if (currentLanguage.isNotEmpty()) currentLanguage else "eng"
-        val country = if (currentCountry.isNotEmpty()) currentCountry else "USA"
-        return arrayOf(lang, country, "")
+        return arrayOf("eng", "USA", "")
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
-        val checkLang = lang?.lowercase(Locale.ROOT) ?: return TextToSpeech.LANG_NOT_SUPPORTED
-        return if (checkLang == "shn" || checkLang == "my" || checkLang == "mya" || checkLang == "en" || checkLang == "eng") {
-            TextToSpeech.LANG_COUNTRY_AVAILABLE
-        } else {
-            TextToSpeech.LANG_NOT_SUPPORTED
-        }
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
     }
 
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        currentLanguage = lang ?: "eng"
-        currentCountry = country ?: "USA"
-        return onIsLanguageAvailable(lang, country, variant)
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
     }
 
     override fun onStop() {
@@ -100,13 +88,16 @@ class AutoTTSManagerService : TextToSpeechService() {
         mIsStopped = false
 
         val text = request.charSequenceText.toString()
-        val lang = request.language
-        val country = request.country
         
-        currentLanguage = lang
-        currentCountry = country
+        val detected = TTSUtils.detectLanguage(text)
+        
+        val langCode = when(detected) {
+            "SHAN" -> "shn"
+            "MYANMAR" -> "my"
+            else -> "eng"
+        }
 
-        val engineData = getEngineDataForLang(lang)
+        val engineData = getEngineDataForLang(langCode)
         val targetEngine = engineData.engine ?: englishEngine
         
         if (targetEngine == null) {
@@ -121,7 +112,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val pitch = getPitchValue(engineData.pitchKey)
         val volume = getVolumeCorrection(engineData.pkgName)
 
-        val sonicSpeed = speed / 100f
+        val sonicSpeed = speed / 100f 
         val sonicPitch = pitch / 100f
 
         AudioProcessor.setConfig(sonicSpeed, sonicPitch)
@@ -149,19 +140,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                 override fun onError(utteranceId: String?) { latch.countDown() }
             })
 
-            // ပြင်ဆင်ချက်: destFile.absolutePath အစား destFile (File Object) ကို တိုက်ရိုက်ပို့လိုက်ပါပြီ
             engine.synthesizeToFile(text, params, destFile, uuid)
             
             latch.await(4000, TimeUnit.MILLISECONDS)
 
-            if (destFile.length() > 44) {
+            if (destFile.exists()) {
                 val inBuffer: ByteBuffer = ByteBuffer.allocateDirect(4096)
                 val outBuffer: ByteArray = ByteArray(8192)
 
                 FileInputStream(destFile).use { fis ->
                     val channel = fis.channel
-                    fis.skip(44) 
-
+                    
                     while (!mIsStopped) {
                         inBuffer.clear()
                         val readBytes: Int = channel.read(inBuffer)
@@ -194,7 +183,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
         } catch (e: Exception) {
-            // Log error
         } finally {
             try { tempFile?.delete() } catch (e: Exception) {}
             engine.setOnUtteranceProgressListener(null)
@@ -241,7 +229,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun getRateValue(key: String): Int {
-        return prefs.getInt(key, 100)
+        return prefs.getInt(key, 100) 
     }
 
     private fun getPitchValue(key: String): Int {
