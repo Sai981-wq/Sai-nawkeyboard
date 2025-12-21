@@ -111,11 +111,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                     AudioProcessor.flush() 
                 }
                 
-                // Jieshuo Fix (2): Params ကို Copy ကူးပြီး Rate/Pitch Key များကို ဖယ်ရှားခြင်း
-                // ဒါမှသာ setSpeechRate က အလုပ်လုပ်ပါမည်
+                // Jieshuo Fix (2): Params ကို Copy ကူးပြီး Rate/Pitch Key များကို String အနေနဲ့ ဖယ်ရှားခြင်း
+                // (TextToSpeech.Engine.KEY_PARAM_RATE မရှိလို့ String "rate" ကို သုံးထားပါတယ်)
                 val engineParams = Bundle(originalParams)
-                engineParams.remove(TextToSpeech.Engine.KEY_PARAM_RATE)
-                engineParams.remove(TextToSpeech.Engine.KEY_PARAM_PITCH)
+                engineParams.remove("rate")
+                engineParams.remove("pitch")
                 
                 // Volume Correction
                 val volCorrection = getVolumeCorrection(engineData.pkgName)
@@ -194,7 +194,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
             
-            // Writer thread ကို ခဏစောင့်ခြင်း (Deadlock မဖြစ်စေရန် Timeout ထားပါ)
+            // Writer thread ကို ခဏစောင့်ခြင်း
             try { writerThread.join(500) } catch (e: Exception) {}
 
         } catch (e: Exception) {
@@ -255,7 +255,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
         val result = onIsLanguageAvailable(lang, country, variant)
-        // Setting Fix: လက်ရှိရွေးလိုက်တဲ့ Language ကို မှတ်သားထားခြင်း
         if (result == TextToSpeech.LANG_COUNTRY_AVAILABLE || result == TextToSpeech.LANG_AVAILABLE) {
             currentLanguage = lang ?: "eng"
             currentCountry = country ?: ""
@@ -265,7 +264,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onGetLanguage(): Array<String> {
-        // Setting Fix: မှတ်သားထားတဲ့ Language ကို ပြန်ပေးခြင်း
         return arrayOf(currentLanguage, currentCountry, "")
     }
 
