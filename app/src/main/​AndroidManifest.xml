@@ -26,6 +26,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".LogViewerActivity"
+            android:label="System Logs"
+            android:exported="false" />
+
         <service
             android:name=".AutoTTSManagerService"
             android:exported="true"
