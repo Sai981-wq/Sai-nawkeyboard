@@ -51,10 +51,11 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
             
+            // Initial Init with default
             AudioProcessor.initSonic(OUTPUT_HZ, 1)
 
         } catch (e: Exception) {
-            AppLogger.error("Service Create Error", e)
+            // Log error if needed
         }
     }
 
@@ -153,8 +154,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             latch.await(4000, TimeUnit.MILLISECONDS)
 
             if (destFile.length() > 44) {
-                val inBuffer = ByteBuffer.allocateDirect(4096)
-                val outBuffer = ByteArray(8192)
+                val inBuffer: ByteBuffer = ByteBuffer.allocateDirect(4096)
+                val outBuffer: ByteArray = ByteArray(8192)
 
                 FileInputStream(destFile).use { fis ->
                     val channel = fis.channel
@@ -162,12 +163,13 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     while (!mIsStopped) {
                         inBuffer.clear()
-                        val readBytes = channel.read(inBuffer)
+                        val readBytes: Int = channel.read(inBuffer)
 
                         if (readBytes == -1) {
                             AudioProcessor.flush()
                             var flushLength: Int
                             do {
+                                // 0 ကို Int အနေနဲ့ သေချာပေးပို့ခြင်း
                                 flushLength = AudioProcessor.processAudio(inBuffer, 0, outBuffer)
                                 if (flushLength > 0) {
                                     sendAudioToSystem(outBuffer, flushLength, callback)
@@ -177,7 +179,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         if (readBytes > 0) {
-                            var processed = AudioProcessor.processAudio(inBuffer, readBytes, outBuffer)
+                            // readBytes ကို Int အနေနဲ့ သေချာပေးပို့ခြင်း
+                            var processed: Int = AudioProcessor.processAudio(inBuffer, readBytes, outBuffer)
                             if (processed > 0) {
                                 sendAudioToSystem(outBuffer, processed, callback)
                             }
@@ -192,7 +195,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
         } catch (e: Exception) {
-            AppLogger.error("ProcessAudioChunk Error", e)
+            // Log error
         } finally {
             try { tempFile?.delete() } catch (e: Exception) {}
             engine.setOnUtteranceProgressListener(null)
