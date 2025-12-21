@@ -88,41 +88,41 @@ class AutoTTSManagerService : TextToSpeechService() {
         mIsStopped = false
 
         val text = request.charSequenceText.toString()
-        
-        val detected = TTSUtils.detectLanguage(text)
-        
-        val langCode = when(detected) {
-            "SHAN" -> "shn"
-            "MYANMAR" -> "my"
-            else -> "eng"
-        }
+        val chunks = TTSUtils.splitHelper(text)
 
-        val engineData = getEngineDataForLang(langCode)
-        val targetEngine = engineData.engine ?: englishEngine
-        
-        if (targetEngine == null) {
-            callback.error()
-            return
-        }
-
-        currentInputRate = determineInputRate(engineData.pkgName)
-        AudioProcessor.initSonic(currentInputRate, 1)
-        
-        val speed = getRateValue(engineData.rateKey)
-        val pitch = getPitchValue(engineData.pitchKey)
-        val volume = getVolumeCorrection(engineData.pkgName)
-
-        val sonicSpeed = speed / 100f 
-        val sonicPitch = pitch / 100f
-
-        AudioProcessor.setConfig(sonicSpeed, sonicPitch)
-        
-        val params = Bundle()
-        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
-        
         callback.start(OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
-        
-        processAudioChunk(targetEngine, params, text, callback, UUID.randomUUID().toString())
+
+        for (chunk in chunks) {
+            if (mIsStopped) break
+
+            val langCode = when(chunk.lang) {
+                "SHAN" -> "shn"
+                "MYANMAR" -> "my"
+                else -> "eng"
+            }
+
+            val engineData = getEngineDataForLang(langCode)
+            val targetEngine = engineData.engine ?: englishEngine
+            
+            if (targetEngine != null) {
+                currentInputRate = determineInputRate(engineData.pkgName)
+                AudioProcessor.initSonic(currentInputRate, 1)
+                
+                val speed = getRateValue(engineData.rateKey)
+                val pitch = getPitchValue(engineData.pitchKey)
+                val volume = getVolumeCorrection(engineData.pkgName)
+
+                val sonicSpeed = speed / 100f 
+                val sonicPitch = pitch / 100f
+
+                AudioProcessor.setConfig(sonicSpeed, sonicPitch)
+                
+                val params = Bundle()
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
+
+                processAudioChunk(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString())
+            }
+        }
         
         callback.done()
     }
@@ -144,13 +144,30 @@ class AutoTTSManagerService : TextToSpeechService() {
             
             latch.await(4000, TimeUnit.MILLISECONDS)
 
-            if (destFile.exists()) {
+            if (destFile.exists() && destFile.length() > 0) {
                 val inBuffer: ByteBuffer = ByteBuffer.allocateDirect(4096)
                 val outBuffer: ByteArray = ByteArray(8192)
 
                 FileInputStream(destFile).use { fis ->
                     val channel = fis.channel
                     
+                    if (destFile.length() >= 44) {
+                        val headerCheck = ByteBuffer.allocate(4)
+                        channel.read(headerCheck)
+                        headerCheck.flip()
+
+                        if (headerCheck.remaining() >= 4 &&
+                            headerCheck.get(0) == 0x52.toByte() && 
+                            headerCheck.get(1) == 0x49.toByte() && 
+                            headerCheck.get(2) == 0x46.toByte() && 
+                            headerCheck.get(3) == 0x46.toByte())   
+                        {
+                            channel.position(44)
+                        } else {
+                            channel.position(0)
+                        }
+                    }
+
                     while (!mIsStopped) {
                         inBuffer.clear()
                         val readBytes: Int = channel.read(inBuffer)
