@@ -2,6 +2,7 @@ package com.shan.tts.manager
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
@@ -54,19 +55,38 @@ class AutoTTSManagerService : TextToSpeechService() {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             
-            shanPkgName = prefs.getString("pref_shan_pkg", "com.espeak.ng") ?: "com.espeak.ng"
+            val defaultEngine = try {
+                val tts = TextToSpeech(this, null)
+                val pkg = tts.defaultEngine
+                tts.shutdown()
+                pkg ?: "com.google.android.tts"
+            } catch (e: Exception) { "com.google.android.tts" }
+
+            shanPkgName = resolveEngine(
+                "pref_shan_pkg", 
+                listOf("com.shan.tts", "com.espeak.ng", "org.himnario.espeak"), 
+                defaultEngine
+            )
             initEngine(shanPkgName, Locale("shn", "MM")) { 
                 shanEngine = it 
                 AppLogger.log("Shan Engine Ready: $shanPkgName")
             }
 
-            burmesePkgName = prefs.getString("pref_burmese_pkg", "com.google.android.tts") ?: "com.google.android.tts"
+            burmesePkgName = resolveEngine(
+                "pref_burmese_pkg",
+                listOf("org.saomaicenter.myanmartts", "com.google.android.tts", "com.samsung.SMT"),
+                defaultEngine
+            )
             initEngine(burmesePkgName, Locale("my", "MM")) { 
                 burmeseEngine = it 
                 AppLogger.log("Burmese Engine Ready: $burmesePkgName")
             }
 
-            englishPkgName = prefs.getString("pref_english_pkg", "com.google.android.tts") ?: "com.google.android.tts"
+            englishPkgName = resolveEngine(
+                "pref_english_pkg",
+                listOf("com.google.android.tts", "com.samsung.SMT", "es.codefactory.eloquencetts"),
+                defaultEngine
+            )
             initEngine(englishPkgName, Locale.US) { 
                 englishEngine = it 
                 AppLogger.log("English Engine Ready: $englishPkgName")
@@ -77,6 +97,32 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
+    private fun resolveEngine(prefKey: String, priorityList: List<String>, fallback: String): String {
+        val userPref = prefs.getString(prefKey, "")
+        
+        if (!userPref.isNullOrEmpty() && isPackageInstalled(userPref)) {
+            return userPref
+        }
+
+        for (pkg in priorityList) {
+            if (isPackageInstalled(pkg)) {
+                AppLogger.log("Auto-Selected $pkg for $prefKey")
+                return pkg
+            }
+        }
+
+        return fallback
+    }
+
+    private fun isPackageInstalled(pkgName: String): Boolean {
+        return try {
+            packageManager.getPackageInfo(pkgName, 0)
+            true
+        } catch (e: PackageManager.NameNotFoundException) {
+            false
+        }
+    }
+
     private fun initEngine(pkg: String, locale: Locale, onReady: (TextToSpeech) -> Unit) {
         if (pkg.isEmpty()) return
         var tts: TextToSpeech? = null
@@ -84,12 +130,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             tts = TextToSpeech(this, { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     val result = tts?.setLanguage(locale)
-                    if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                        AppLogger.log("Warning: Language not supported for $pkg")
-                    }
                     onReady(tts!!)
-                } else {
-                    AppLogger.error("Failed to init engine: $pkg (Status: $status)")
                 }
             }, pkg)
         } catch (e: Exception) {
@@ -102,7 +143,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 
     override fun onStop() {
-        AppLogger.log("Service Stopped: Request Cancelled")
         mIsStopped = true
         AudioProcessor.stop()
         lastConfiguredRate = -1 
@@ -113,8 +153,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         mIsStopped = false
 
         val text = request.charSequenceText.toString()
-        // AppLogger.log("Request Received: [${text.take(20)}...] Rate=${request.speechRate}")
-
         val sysRate = request.speechRate
         val sysPitch = request.pitch
         val chunks = TTSUtils.splitHelper(text)
@@ -134,13 +172,16 @@ class AutoTTSManagerService : TextToSpeechService() {
             val targetEngine = engineData.engine ?: englishEngine
             
             if (targetEngine != null) {
-                val detectedRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
-                // AppLogger.log("Processing Chunk: Lang=$langCode, Engine=${engineData.pkgName}, Hz=$detectedRate")
+                var finalRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
                 
-                if (detectedRate != lastConfiguredRate) {
-                    AppLogger.log("Init Sonic: New Hz=$detectedRate")
-                    AudioProcessor.initSonic(detectedRate, 1)
-                    lastConfiguredRate = detectedRate
+                if (engineData.pkgName == "org.saomaicenter.myanmartts") {
+                    finalRate = 22050
+                }
+                
+                if (finalRate != lastConfiguredRate) {
+                    AppLogger.log("Init Sonic: New Hz=$finalRate")
+                    AudioProcessor.initSonic(finalRate, 1)
+                    lastConfiguredRate = finalRate
                 }
                 
                 val rateFloat = sysRate / 100f
@@ -153,8 +194,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
 
                 processAudioChunkInstant(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString())
-            } else {
-                AppLogger.error("Target Engine is NULL for lang: $langCode")
             }
         }
         
@@ -170,15 +209,15 @@ class AutoTTSManagerService : TextToSpeechService() {
             val isDone = AtomicBoolean(false)
 
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {
-                    // AppLogger.log("Engine Started Synthesis...")
-                }
+                override fun onStart(utteranceId: String?) {}
                 override fun onDone(utteranceId: String?) { 
                     isDone.set(true) 
                 }
                 override fun onError(utteranceId: String?) { 
                     isDone.set(true) 
-                    AppLogger.error("Engine Error Callback Triggered")
+                    if (!mIsStopped) {
+                        AppLogger.error("Engine Error Callback Triggered")
+                    }
                 }
             })
 
@@ -191,7 +230,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                 val fc = fis.channel
-                var totalBytesProcessed = 0
                 while (!mIsStopped) {
                     
                     localInBuffer.clear()
@@ -200,7 +238,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (bytesRead == -1) break
 
                     if (bytesRead > 0) {
-                        totalBytesProcessed += bytesRead
                         localInBuffer.flip()
 
                         localOutBuffer.clear()
@@ -221,12 +258,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                 }
-                // AppLogger.log("Chunk Finished. Total Raw Bytes Processed: $totalBytesProcessed")
             }
             AudioProcessor.flush()
             
         } catch (e: Exception) {
-            AppLogger.error("Exception in Pipe Processing", e)
+            if (!mIsStopped) {
+                AppLogger.error("Exception in Pipe Processing", e)
+            }
         } finally {
             try { readFd.close() } catch (e: Exception) {}
             engine.setOnUtteranceProgressListener(null)

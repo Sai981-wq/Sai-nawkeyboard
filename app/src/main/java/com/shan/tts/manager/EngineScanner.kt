@@ -22,7 +22,7 @@ object EngineScanner {
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
         val appContext = context.applicationContext
-        AppLogger.log("Scanner: [STEP 1] Starting Discovery (Saomai Targeted Fix).")
+        AppLogger.log("Scanner: [STEP 1] Starting Discovery")
         
         val intent = Intent("android.intent.action.TTS_SERVICE")
         val resolveInfos = appContext.packageManager.queryIntentServices(intent, 0)
@@ -99,20 +99,16 @@ object EngineScanner {
         var targetLocale = Locale.US
         var useSSML = false
 
-        // *** ၁။ Specific SSML Targeting for Saomai ***
         if (pkg == "org.saomaicenter.myanmartts") {
-            // Saomai အတွက် သီးသန့် SSML
             text = "<speak xml:lang=\"my\">မင်္ဂလာပါခင်ဗျာ</speak>"
             targetLocale = Locale("my", "MM")
             useSSML = true
-            AppLogger.log("Scanner: Targeted Saomai detected. Applying SSML fix.")
         } 
         else if (lower.contains("shan") || lower.contains("shn")) {
             text = "မႂ်ႇသုင်ၶႃႈ"
             targetLocale = Locale("shn", "MM")
         } 
         else if (lower.contains("myanmar") || lower.contains("burmese") || lower.contains("ttsm")) {
-            // အခြားသော မြန်မာ Engine များ
             text = "<speak xml:lang=\"my\">မင်္ဂလာပါခင်ဗျာ</speak>"
             targetLocale = Locale("my", "MM")
             useSSML = true
@@ -208,15 +204,8 @@ object EngineScanner {
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
-        var finalRate = if (rate < 8000) 16000 else rate
+        val finalRate = if (rate < 8000) 16000 else rate
         
-        // *** ၂။ Specific Hz Force for Saomai ***
-        // ဒီ Package Name နဲ့တူနေရင် Header က 16000 လာလည်း 22050 ပဲ ယူမယ်
-        if (pkg == "org.saomaicenter.myanmartts") {
-            AppLogger.log("Scanner: [QUIRK] org.saomaicenter.myanmartts detected. Forcing 22050 Hz (Ignoring detected $rate Hz)")
-            finalRate = 22050
-        }
-
         AppLogger.log("Scanner: [SUCCESS] $pkg -> Final Hz: $finalRate")
         
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
@@ -224,15 +213,8 @@ object EngineScanner {
     }
 
     private fun saveFallback(context: Context, pkg: String) {
-        var defaultRate = 22050
-        
-        // Fallback ဖြစ်ရင်လည်း Saomai ဆို 22050 သေချာပေါက်ထားမယ်
-        if (pkg == "org.saomaicenter.myanmartts") {
-             defaultRate = 22050
-             AppLogger.log("Scanner: [FALLBACK] Targeted Saomai Fallback -> 22050 Hz")
-        } else {
-             AppLogger.log("Scanner: [FALLBACK] $pkg -> Using $defaultRate")
-        }
+        val defaultRate = 22050
+        AppLogger.log("Scanner: [FALLBACK] $pkg -> Using $defaultRate")
 
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", defaultRate).apply()
