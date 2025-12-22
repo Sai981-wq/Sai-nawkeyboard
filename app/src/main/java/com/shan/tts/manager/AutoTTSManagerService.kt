@@ -18,7 +18,6 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -42,11 +41,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     // Thread Pool
     private val executorService: ExecutorService = Executors.newFixedThreadPool(2)
     
-    // Tasks (ရပ်ချင်တဲ့အခါ ချက်ချင်း Cancel လုပ်ဖို့ သိမ်းထားမယ်)
     private var readerTask: Future<*>? = null
     private var processorTask: Future<*>? = null
 
-    // "ကြားခံကန်" ကို Global ကြေညာထားမှ Stop လုပ်ရင် လှမ်းသွန်ပစ်လို့ရမယ်
+    // Queue
     private val audioQueue = LinkedBlockingQueue<ByteArray>()
 
     private val FIXED_OUTPUT_HZ = 24000
@@ -119,28 +117,31 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 
-    // ချက်ချင်းရပ်စေမည့် Function
     override fun onStop() {
         mIsStopped = true
         
-        // ၁။ Queue (ကြားခံကန်) ကို ချက်ချင်း သွန်ပစ်မယ်
+        // ၁။ Queue ကို ရှင်းမယ်
         audioQueue.clear()
         
-        // ၂။ လုပ်လက်စ အလုပ်တွေကို Cancel လုပ်မယ် (Interrupt)
+        // ၂။ Task တွေကို ရပ်မယ်
         readerTask?.cancel(true)
         processorTask?.cancel(true)
         
+        // ၃။ Sonic Native Buffer ကို ရှင်းရန် Stop ခေါ်မယ်
         AudioProcessor.stop()
-        lastConfiguredRate = -1
+        
+        // ၄။ အရေးကြီးဆုံးအချက် - Rate ကို Reset လုပ်မှသာ နောက်တစ်ခေါက်မှာ Sonic ကို အသစ်ပြန်ဆောက်မှာ ဖြစ်သည်
+        // ဒါမလုပ်ရင် Sonic က Stream အဟောင်း (အသံကျန်နေတဲ့ကောင်) ကို ပြန်သုံးမိပြီး "တက်တက်တက်" မြည်တတ်တယ်
+        lastConfiguredRate = -1 
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
-        // စာအသစ်လာရင် အရင်ဆုံး အဟောင်းတွေကို ရှင်းထုတ်မယ်
+        // စလာတာနဲ့ အရင်ရှင်းမယ်
         onStop() 
         mIsStopped = false
-        audioQueue.clear() // သေချာအောင် နောက်တစ်ခေါက် ထပ်ရှင်းမယ်
+        audioQueue.clear()
 
         val text = request.charSequenceText.toString()
         val sysRate = request.speechRate
@@ -162,6 +163,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             if (targetEngine != null) {
                 val finalRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
+                
+                // Sonic ကို Setup လုပ်မယ် (lastConfiguredRate = -1 ဖြစ်နေလို့ အမြဲတမ်း အသစ်ပြန်စမယ်)
                 if (finalRate != lastConfiguredRate) {
                     AudioProcessor.initSonic(finalRate, 1)
                     lastConfiguredRate = finalRate
@@ -197,7 +200,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
-        // Thread 1: Reader (ပိုက်လိုင်းထဲက ဒေတာကို Queue ထဲ အမြန်မောင်းထည့်မည့်သူ)
         readerTask = executorService.submit {
              ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                 val buffer = ByteArray(4096)
@@ -210,10 +212,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     if (bytesRead > 0) {
                         try {
-                            // Queue ထဲထည့်မယ် (InterruptedException တက်ရင် ချက်ချင်းရပ်မယ်)
                             audioQueue.put(buffer.copyOfRange(0, bytesRead))
                         } catch (e: InterruptedException) {
-                            break // Stop နှိပ်လိုက်ရင် ဒီနေရာမှာ Loop ကျိုးသွားမယ်
+                            break 
                         }
                     }
                 }
@@ -221,7 +222,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        // Thread 2: Processor (Queue ထဲကဟာကို ယူပြီး Sonic နဲ့ အသံပြောင်းမည့်သူ)
         processorTask = executorService.submit {
             val localInBuffer = ByteBuffer.allocateDirect(4096)
             val localOutBuffer = outBufferLocal.get()!!
@@ -229,17 +229,17 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             while (!mIsStopped && !Thread.currentThread().isInterrupted) {
                 val data = try {
-                    // Queue ထဲမှာ ဒေတာမရှိရင် စောင့်နေမယ်
                     audioQueue.take() 
                 } catch (e: InterruptedException) {
-                    break // Stop နှိပ်ရင် ဒီနေရာမှာ Loop ကျိုးသွားမယ်
+                    break 
                 }
                 
                 if (data === END_OF_STREAM) break
 
                 localInBuffer.clear()
+                // Buffer Overflow ကာကွယ်ရန်
                 if (localInBuffer.capacity() < data.size) {
-                     // လိုအပ်ရင် Buffer ချဲ့တာမျိုး လုပ်နိုင်သည်
+                    // လိုအပ်ရင် ဒီနေရာမှာ Buffer အသစ်ဆောက်ပါ (လက်ရှိ 4096 က လုံလောက်ပါတယ်)
                 }
                 localInBuffer.put(data)
                 localInBuffer.flip()
@@ -261,7 +261,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             }
-            AudioProcessor.flush()
+            // နောက်စာကြောင်း ကူးရင် Flush မလုပ်တော့ဘူး (onStop မှာ native stop ခေါ်ထားလို့)
+             if (!mIsStopped) {
+                 AudioProcessor.flush()
+             }
         }
 
         val result = engine.synthesizeToFile(text, params, writeFd, uuid)
@@ -270,10 +273,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         if (result == TextToSpeech.SUCCESS) {
             try {
-                // Processor ပြီးတဲ့အထိ စောင့်မယ် (ဒါပေမဲ့ Stop နှိပ်ရင် Cancel လုပ်ထားလို့ ချက်ချင်းထွက်သွားမယ်)
                 processorTask?.get()
             } catch (e: Exception) {
-                // Cancel လုပ်လိုက်ရင် ဒီမှာ Exception တက်မယ်၊ ဘာမှလုပ်စရာမလို၊ ပုံမှန်ပဲ
             }
         } else {
             readerTask?.cancel(true)
@@ -312,7 +313,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        onStop() // သေချာအောင် ခေါ်မယ်
+        onStop()
         executorService.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
