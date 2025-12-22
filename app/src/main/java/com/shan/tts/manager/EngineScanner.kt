@@ -22,7 +22,7 @@ object EngineScanner {
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
         val appContext = context.applicationContext
-        AppLogger.log("Scanner: [STEP 1] Starting Discovery using ApplicationContext.")
+        AppLogger.log("Scanner: [STEP 1] Starting Discovery (SSML Enhanced).")
         
         val intent = Intent("android.intent.action.TTS_SERVICE")
         val resolveInfos = appContext.packageManager.queryIntentServices(intent, 0)
@@ -57,7 +57,7 @@ object EngineScanner {
 
         val pkgName = engines[index]
         AppLogger.log("------------------------------------------------")
-        AppLogger.log("Scanner: [STEP 2] Initializing -> $pkgName (${index + 1}/${engines.size})")
+        AppLogger.log("Scanner: [STEP 2] Initializing -> $pkgName")
         
         var tts: TextToSpeech? = null
 
@@ -65,7 +65,6 @@ object EngineScanner {
             try {
                 tts?.stop()
                 tts?.shutdown()
-                AppLogger.log("Scanner: TTS Shutdown for $pkgName")
             } catch (e: Exception) {}
             
             mainHandler.post {
@@ -76,10 +75,9 @@ object EngineScanner {
         try {
             tts = TextToSpeech(context, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    AppLogger.log("Scanner: Init OK ($pkgName). Starting probe logic...")
                     probeEngine(context, tts!!, pkgName) { onNext() }
                 } else {
-                    AppLogger.error("Scanner: Init FAILED ($pkgName) Status Code: $status")
+                    AppLogger.error("Scanner: Init FAILED ($pkgName)")
                     saveFallback(context, pkgName)
                     onNext()
                 }
@@ -99,39 +97,28 @@ object EngineScanner {
         val lower = pkg.lowercase(Locale.ROOT)
         var text = "Hello, testing frequency."
         var targetLocale = Locale.US
+        var useSSML = false
 
-        // *** ဘာစာသား ဖတ်ခိုင်းလဲဆိုတာ အတိအကျ စစ်မယ် ***
+        // *** SSML Logic: မြန်မာ Engine များအတွက် SSML သုံးမည် ***
         if (lower.contains("shan") || lower.contains("shn")) {
-            text = "မႂ်ႇသုင်ၶႃႈ ၼႆႉပဵၼ် ၶိူင်ႈသဵင်တႆးဢေႃႈ" // ရှမ်းစာ ပိုရှည်ရှည်ထည့်မယ်
+            text = "မႂ်ႇသုင်ၶႃႈ"
             targetLocale = Locale("shn", "MM")
         } else if (lower.contains("myanmar") || lower.contains("burmese") || lower.contains("saomai") || lower.contains("ttsm")) {
-            text = "မင်္ဂလာပါခင်ဗျာ၊ ဒါကတော့ မြန်မာစာ အသံထွက်ကို စမ်းသပ်နေခြင်း ဖြစ်ပါတယ်" // မြန်မာစာ ရှည်ရှည်
+            // Saomai/Myanmar TTS အတွက် SSML Tag ထည့်ပေးလိုက်သည်
+            text = "<speak xml:lang=\"my\">မင်္ဂလာပါခင်ဗျာ</speak>"
             targetLocale = Locale("my", "MM")
+            useSSML = true
         }
         
-        try {
-            val res = tts.setLanguage(targetLocale)
-            val langStatus = when(res) {
-                TextToSpeech.LANG_AVAILABLE -> "Available"
-                TextToSpeech.LANG_MISSING_DATA -> "Missing Data (Voice not installed!)"
-                TextToSpeech.LANG_NOT_SUPPORTED -> "Not Supported"
-                else -> "Status($res)"
-            }
-            AppLogger.log("Scanner: SetLanguage ($targetLocale) -> $langStatus for $pkg")
-        } catch (e: Exception) {
-            AppLogger.error("Scanner: SetLanguage crashed for $pkg")
-        }
+        try { tts.setLanguage(targetLocale) } catch (e: Exception) {}
 
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String?) {
-                AppLogger.log("Scanner: Callback -> onStart ($pkg)")
-            }
+            override fun onStart(id: String?) {}
             override fun onError(id: String?) { 
-                AppLogger.error("Scanner: Callback -> onError ($pkg)")
+                AppLogger.error("Scanner: onError Callback ($pkg)")
                 latch.countDown()
             }
             override fun onDone(id: String?) { 
-                AppLogger.log("Scanner: Callback -> onDone ($pkg)")
                 latch.countDown()
             }
         })
@@ -143,18 +130,16 @@ object EngineScanner {
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
                 
-                AppLogger.log("Scanner: [STEP 3] Synthesizing text: '$text'")
-                val result = tts.synthesizeToFile(text, params, tempFile, uuid)
+                // Log ထုတ်ကြည့်မယ် SSML သုံးလား မသုံးဘူးလား
+                val logText = if (useSSML) "SSML: $text" else "Raw: $text"
+                AppLogger.log("Scanner: [STEP 3] Synthesizing... ($logText)")
                 
-                if (result != TextToSpeech.SUCCESS) {
-                    AppLogger.error("Scanner: synthesizeToFile returned ERROR code.")
-                }
+                tts.synthesizeToFile(text, params, tempFile, uuid)
 
-                // Timeout 6 Seconds
                 val success = latch.await(6, TimeUnit.SECONDS)
                 if (!success) AppLogger.error("Scanner: Timeout waiting for onDone!")
 
-                // File Flush Wait Logic
+                // Disk Flush Wait
                 var waitCount = 0
                 while (tempFile.length() <= 44 && waitCount < 40) {
                     Thread.sleep(50)
@@ -162,30 +147,38 @@ object EngineScanner {
                 }
 
                 val fileSize = tempFile.length()
-                AppLogger.log("Scanner: [STEP 4] File Check. Final Size: $fileSize bytes")
 
-                // *** အသံထွက်/မထွက် စစ်ဆေးခြင်း ***
-                if (fileSize <= 0) {
-                    AppLogger.error("Scanner: RESULT -> NO FILE CREATED. Engine failed completely.")
-                    saveFallback(context, pkg)
-                } else if (fileSize <= 44) {
-                    // 44 Bytes ဆိုတာ Header ပဲရှိပြီး အသံဒေတာ မပါပါ (Silence)
-                    AppLogger.error("Scanner: RESULT -> SILENCE DETECTED (Size=44). Engine ran but didn't speak the text.")
-                    saveFallback(context, pkg)
-                } else {
-                    // 44 ထက်များရင် အသံပါတယ်
-                    AppLogger.log("Scanner: RESULT -> AUDIO DATA FOUND (Size=$fileSize). Parsing Hz...")
-                    val rate = readRate(tempFile)
+                if (fileSize > 44) {
+                    // *** Mismatch Check (အသစ်ထည့်ထားသောအပိုင်း) ***
+                    // File Header ကို ဖတ်ပြီး Data Size နဲ့ File Size ကိုက်မကိုက် စစ်မယ်
+                    val (rate, dataSizeFromHeader) = readHeaderInfo(tempFile)
+                    
+                    val expectedFileSize = dataSizeFromHeader + 44
+                    // Header မှာပြတဲ့ Size နဲ့ လက်တွေ့ Size ကွာဟမှု 10 Bytes ထက်ကျော်ရင် Mismatch လို့သတ်မှတ်မယ်
+                    val diff = kotlin.math.abs(fileSize - expectedFileSize)
+                    
+                    if (diff > 10) {
+                        AppLogger.error("Scanner: [WARNING] HEADER MISMATCH for $pkg!")
+                        AppLogger.error(" -> Header says data is $dataSizeFromHeader bytes (Total ~$expectedFileSize)")
+                        AppLogger.error(" -> Real File Size is $fileSize bytes")
+                        AppLogger.log("Scanner: Using detected Hz anyway, assuming Header Rate is correct.")
+                    } else {
+                        AppLogger.log("Scanner: Header Integrity OK. (Diff: $diff bytes)")
+                    }
+
                     if (rate > 0) {
                         saveRate(context, pkg, rate)
                     } else {
-                        AppLogger.error("Scanner: File exists but Header parsing failed.")
+                        AppLogger.error("Scanner: Header parsing failed (Hz=0).")
                         saveFallback(context, pkg)
                     }
+                } else {
+                    AppLogger.error("Scanner: RESULT -> SILENCE or NO FILE (Size=$fileSize).")
+                    saveFallback(context, pkg)
                 }
 
             } catch (e: Exception) {
-                AppLogger.error("Scanner: CRITICAL EXCEPTION in probe thread ($pkg)", e)
+                AppLogger.error("Scanner: CRITICAL ERROR ($pkg)", e)
                 saveFallback(context, pkg)
             } finally {
                 mainHandler.post { onDone() }
@@ -193,33 +186,36 @@ object EngineScanner {
         }.start()
     }
 
-    private fun readRate(file: File): Int {
+    // Return Pair(SampleRate, DataSize)
+    private fun readHeaderInfo(file: File): Pair<Int, Int> {
         return try {
             FileInputStream(file).use { fis ->
                 val header = ByteArray(44)
                 val bytesRead = fis.read(header)
-                if (bytesRead < 44) return 0
+                if (bytesRead < 44) return Pair(0, 0)
 
                 val buffer = ByteBuffer.wrap(header)
                 buffer.order(ByteOrder.LITTLE_ENDIAN)
 
-                // Debug: Header Bytes Check
-                val b1 = header[24]; val b2 = header[25]; val b3 = header[26]; val b4 = header[27]
+                // Offset 24 = Sample Rate
                 val sampleRate = buffer.getInt(24)
                 
-                AppLogger.log("Scanner: [STEP 5] Header Bytes[24-27]=[$b1, $b2, $b3, $b4] -> Int: $sampleRate")
-                sampleRate
+                // Offset 40 = Subchunk2Size (Data Size)
+                val dataSize = buffer.getInt(40)
+                
+                AppLogger.log("Scanner: [STEP 5] Header Analysis -> Rate: $sampleRate, Declared Data: $dataSize")
+                
+                Pair(sampleRate, dataSize)
             }
         } catch (e: Exception) {
             AppLogger.error("Scanner: Error parsing WAV header", e)
-            0 
+            Pair(0, 0)
         }
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
         val finalRate = if (rate < 8000) 16000 else rate
         AppLogger.log("Scanner: [SUCCESS] $pkg -> Final Hz: $finalRate")
-        
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", finalRate).apply()
     }
@@ -227,7 +223,6 @@ object EngineScanner {
     private fun saveFallback(context: Context, pkg: String) {
         val defaultRate = 22050
         AppLogger.log("Scanner: [FALLBACK] $pkg -> Using $defaultRate")
-
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", defaultRate).apply()
     }
