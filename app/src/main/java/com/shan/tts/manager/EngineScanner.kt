@@ -1,6 +1,7 @@
 package com.shan.tts.manager
 
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -10,15 +11,16 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.UUID
 
 object EngineScanner {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
-        val intent = android.content.Intent("android.intent.action.TTS_SERVICE")
+        val intent = Intent("android.intent.action.TTS_SERVICE")
         val resolveInfos = context.packageManager.queryIntentServices(intent, 0)
-        val engines = resolveInfos.map { it.serviceInfo.packageName }.filter { it != context.packageName }
+        val engines = resolveInfos.map { it.serviceInfo.packageName }.filter { it != context.packageName }.distinct()
 
         if (engines.isEmpty()) {
             onComplete()
@@ -66,19 +68,33 @@ object EngineScanner {
     }
 
     private fun probeEngine(context: Context, tts: TextToSpeech, pkg: String, onDone: () -> Unit) {
-        val tempFile = File(context.cacheDir, "probe.wav")
-        val uuid = "probe"
+        val tempFile = File(context.cacheDir, "probe_$pkg.wav")
+        val uuid = UUID.randomUUID().toString()
         
         val isFinished = AtomicBoolean(false)
         
         fun finishOnce() {
             if (isFinished.compareAndSet(false, true)) {
+                try { if (tempFile.exists()) tempFile.delete() } catch (e: Exception) {}
                 onDone()
             }
         }
 
         val lower = pkg.lowercase(Locale.ROOT)
-        val text = if (lower.contains("myanmar") || lower.contains("saomai") || lower.contains("ttsm")) "က" else "a"
+        var text = "Hello"
+        var targetLocale = Locale.US
+
+        if (lower.contains("shan") || lower.contains("shn")) {
+            text = "မႂ်ႇသုင်ၶႃႈ"
+            targetLocale = Locale("shn", "MM")
+        } else if (lower.contains("myanmar") || lower.contains("ttsm") || lower.contains("burmese")) {
+            text = "မင်္ဂလာပါ"
+            targetLocale = Locale("my", "MM")
+        } 
+        
+        try {
+            val result = tts.setLanguage(targetLocale)
+        } catch (e: Exception) {}
 
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
@@ -91,7 +107,6 @@ object EngineScanner {
         })
 
         try {
-            if (tempFile.exists()) tempFile.delete()
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
 
@@ -100,7 +115,7 @@ object EngineScanner {
             Thread {
                 var wait = 0
                 while (!isFinished.get()) {
-                    if (tempFile.exists() && tempFile.length() > 44) {
+                    if (tempFile.exists() && tempFile.length() > 100) {
                         break
                     }
                     Thread.sleep(50)
@@ -143,12 +158,9 @@ object EngineScanner {
     private fun saveFallback(context: Context, pkg: String) {
         val lower = pkg.lowercase(Locale.ROOT)
         val rate = when {
-            lower.contains("eloquence") -> 11025
-            lower.contains("espeak") || lower.contains("shan") -> 22050
             lower.contains("google") -> 24000
-            lower.contains("samsung") -> 22050
-            lower.contains("vocalizer") -> 22050
-            else -> 16000
+            lower.contains("eloquence") -> 11025
+            else -> 22050 
         }
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", rate).apply()

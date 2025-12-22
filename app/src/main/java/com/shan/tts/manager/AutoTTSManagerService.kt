@@ -4,12 +4,12 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
-import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.util.Locale
@@ -30,8 +30,22 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private lateinit var configPrefs: SharedPreferences
 
+    private var lastConfiguredRate: Int = -1
+
     @Volatile private var mIsStopped = false
     private val FIXED_OUTPUT_HZ = 24000 
+
+    private val inBufferLocal = object : ThreadLocal<ByteBuffer>() {
+        override fun initialValue(): ByteBuffer = ByteBuffer.allocateDirect(4096)
+    }
+
+    private val outBufferLocal = object : ThreadLocal<ByteBuffer>() {
+        override fun initialValue(): ByteBuffer = ByteBuffer.allocateDirect(8192)
+    }
+
+    private val outBufferArrayLocal = object : ThreadLocal<ByteArray>() {
+        override fun initialValue(): ByteArray = ByteArray(8192)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -71,6 +85,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onStop() {
         mIsStopped = true
         AudioProcessor.stop()
+        lastConfiguredRate = -1 
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -99,7 +114,10 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (targetEngine != null) {
                 val detectedRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
                 
-                AudioProcessor.initSonic(detectedRate, 1)
+                if (detectedRate != lastConfiguredRate) {
+                    AudioProcessor.initSonic(detectedRate, 1)
+                    lastConfiguredRate = detectedRate
+                }
                 
                 val rateFloat = sysRate / 100f
                 val pitchFloat = sysPitch / 100f
@@ -118,60 +136,59 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun processAudioChunkInstant(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
-        var tempFile: File? = null
+        val pipe = ParcelFileDescriptor.createPipe()
+        val readFd = pipe[0]
+        val writeFd = pipe[1]
+
         try {
-            tempFile = File.createTempFile("tts_stream", ".wav", cacheDir)
-            val destFile = tempFile
             val isDone = AtomicBoolean(false)
 
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) { isDone.set(true) }
-                override fun onError(utteranceId: String?) { isDone.set(true) }
+                override fun onDone(utteranceId: String?) { 
+                    isDone.set(true) 
+                }
+                override fun onError(utteranceId: String?) { 
+                    isDone.set(true) 
+                }
             })
 
-            engine.synthesizeToFile(text, params, destFile, uuid)
+            engine.synthesizeToFile(text, params, writeFd, uuid)
+            writeFd.close()
 
-            var offset: Long = 0
-            val inBuffer = ByteBuffer.allocateDirect(4096)
-            val outBufferDirect = ByteBuffer.allocateDirect(8192) 
-            val outBufferArray = ByteArray(8192)
+            val localInBuffer = inBufferLocal.get()!!
+            val localOutBuffer = outBufferLocal.get()!!
+            val localByteArray = outBufferArrayLocal.get()!!
 
-            while (!mIsStopped) {
-                val fileLength = destFile.length()
-                
-                if (fileLength > offset) {
-                    FileInputStream(destFile).use { fis ->
-                        fis.channel.position(offset)
-                        val fc = fis.channel
+            ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                val fc = fis.channel
+                while (!mIsStopped) {
+                    
+                    localInBuffer.clear()
+                    val bytesRead = fc.read(localInBuffer)
+                    
+                    if (bytesRead == -1) break
+
+                    if (bytesRead > 0) {
+                        localInBuffer.flip()
+
+                        localOutBuffer.clear()
+                        var processed = AudioProcessor.processAudio(localInBuffer, bytesRead, localOutBuffer, localOutBuffer.capacity())
                         
-                        inBuffer.clear()
-                        val bytesRead = fc.read(inBuffer)
+                        if (processed > 0) {
+                            localOutBuffer.get(localByteArray, 0, processed)
+                            sendAudioToSystem(localByteArray, processed, callback)
+                        }
                         
-                        if (bytesRead > 0) {
-                            offset += bytesRead
-                            
-                            outBufferDirect.clear()
-                            var processed = AudioProcessor.processAudio(inBuffer, bytesRead, outBufferDirect, outBufferDirect.capacity())
-                            
+                        while (processed > 0 && !mIsStopped) {
+                            localOutBuffer.clear()
+                            processed = AudioProcessor.processAudio(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
                             if (processed > 0) {
-                                outBufferDirect.get(outBufferArray, 0, processed)
-                                sendAudioToSystem(outBufferArray, processed, callback)
+                                localOutBuffer.get(localByteArray, 0, processed)
+                                sendAudioToSystem(localByteArray, processed, callback)
                             }
-                            
-                            do {
-                                outBufferDirect.clear()
-                                processed = AudioProcessor.processAudio(inBuffer, 0, outBufferDirect, outBufferDirect.capacity())
-                                if (processed > 0) {
-                                    outBufferDirect.get(outBufferArray, 0, processed)
-                                    sendAudioToSystem(outBufferArray, processed, callback)
-                                }
-                            } while (processed > 0 && !mIsStopped)
                         }
                     }
-                } else {
-                    if (isDone.get()) break
-                    Thread.sleep(1)
                 }
             }
             AudioProcessor.flush()
@@ -179,7 +196,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
-            try { tempFile?.delete() } catch (e: Exception) {}
+            try { readFd.close() } catch (e: Exception) {}
             engine.setOnUtteranceProgressListener(null)
         }
     }
