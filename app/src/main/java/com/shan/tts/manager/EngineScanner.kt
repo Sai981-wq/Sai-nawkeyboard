@@ -18,11 +18,13 @@ object EngineScanner {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
+        AppLogger.log("Scanner: Starting full engine scan...")
         val intent = Intent("android.intent.action.TTS_SERVICE")
         val resolveInfos = context.packageManager.queryIntentServices(intent, 0)
         val engines = resolveInfos.map { it.serviceInfo.packageName }.filter { it != context.packageName }.distinct()
 
         if (engines.isEmpty()) {
+            AppLogger.log("Scanner: No other engines found.")
             onComplete()
             return
         }
@@ -34,11 +36,14 @@ object EngineScanner {
 
     private fun scanRecursive(context: Context, engines: List<String>, index: Int, onComplete: () -> Unit) {
         if (index >= engines.size) {
+            AppLogger.log("Scanner: All engines scanned.")
             onComplete()
             return
         }
 
         val pkgName = engines[index]
+        AppLogger.log("Scanner: Checking $pkgName...")
+        
         var tts: TextToSpeech? = null
 
         val onNext = {
@@ -57,11 +62,13 @@ object EngineScanner {
                 if (status == TextToSpeech.SUCCESS) {
                     probeEngine(context, tts!!, pkgName) { onNext() }
                 } else {
+                    AppLogger.error("Scanner: Init failed for $pkgName")
                     saveFallback(context, pkgName)
                     onNext()
                 }
             }, pkgName)
         } catch (e: Exception) {
+            AppLogger.error("Scanner: Crash on init $pkgName", e)
             saveFallback(context, pkgName)
             onNext()
         }
@@ -81,24 +88,27 @@ object EngineScanner {
         }
 
         val lower = pkg.lowercase(Locale.ROOT)
-        var text = "Hello"
+        
+        // Saomai အတွက် စာသားအရှည် သတ်မှတ်ခြင်း
+        var text = "Hello, this is a test."
         var targetLocale = Locale.US
 
         if (lower.contains("shan") || lower.contains("shn")) {
-            text = "မႂ်ႇသုင်ၶႃႈ"
+            text = "မႂ်ႇသုင်ၶႃႈ ၼႆႉပဵၼ် ၶိူင်ႈသဵင်တႆးဢေႃႈ"
             targetLocale = Locale("shn", "MM")
-        } else if (lower.contains("myanmar") || lower.contains("ttsm") || lower.contains("burmese")) {
-            text = "မင်္ဂလာပါ"
+        } else if (lower.contains("myanmar") || lower.contains("ttsm") || lower.contains("burmese") || lower.contains("saomai")) {
+            text = "မင်္ဂလာပါခင်ဗျာ၊ ဒါကတော့ မြန်မာစာ အသံထွက်ကို စမ်းသပ်နေခြင်း ဖြစ်ပါတယ်"
             targetLocale = Locale("my", "MM")
         } 
         
         try {
-            val result = tts.setLanguage(targetLocale)
+            tts.setLanguage(targetLocale)
         } catch (e: Exception) {}
 
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
             override fun onError(id: String?) { 
+                AppLogger.error("Scanner: Utterance Error for $pkg")
                 saveFallback(context, pkg)
                 finishOnce() 
             }
@@ -120,21 +130,27 @@ object EngineScanner {
                     }
                     Thread.sleep(50)
                     wait++
-                    if (wait > 50) break 
+                    if (wait > 60) break // 3 seconds timeout
                 }
                 
                 if (!isFinished.get()) {
                     if (tempFile.exists() && tempFile.length() > 44) {
                         val rate = readRate(tempFile)
-                        if (rate > 0) saveRate(context, pkg, rate)
-                        else saveFallback(context, pkg)
+                        if (rate > 0) {
+                            saveRate(context, pkg, rate)
+                        } else {
+                            AppLogger.log("Scanner: ReadRate returned 0 for $pkg")
+                            saveFallback(context, pkg)
+                        }
                     } else {
+                        AppLogger.log("Scanner: File too small or missing for $pkg")
                         saveFallback(context, pkg)
                     }
                     finishOnce()
                 }
             }.start()
         } catch (e: Exception) {
+            AppLogger.error("Scanner: Exception probing $pkg", e)
             saveFallback(context, pkg)
             finishOnce()
         }
@@ -151,6 +167,9 @@ object EngineScanner {
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
         val finalRate = if (rate < 8000) 16000 else rate
+        // *** Log ထုတ်မည့်နေရာ ***
+        AppLogger.log("Scanner: SUCCESS -> Detected Hz for $pkg : $finalRate")
+        
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", finalRate).apply()
     }
@@ -160,8 +179,14 @@ object EngineScanner {
         val rate = when {
             lower.contains("google") -> 24000
             lower.contains("eloquence") -> 11025
+            lower.contains("saomai") -> 22050
+            lower.contains("myanmar") -> 22050
             else -> 22050 
         }
+        
+        // *** Log ထုတ်မည့်နေရာ ***
+        AppLogger.log("Scanner: FALLBACK -> Used default Hz for $pkg : $rate")
+
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", rate).apply()
     }
