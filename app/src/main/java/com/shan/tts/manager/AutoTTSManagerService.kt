@@ -11,6 +11,7 @@ import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
@@ -31,8 +32,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var configPrefs: SharedPreferences
 
     private var lastConfiguredRate: Int = -1
-
+    
     @Volatile private var mIsStopped = false
+    private var currentReadFd: ParcelFileDescriptor? = null
+    private val processLock = Any()
+
     private val FIXED_OUTPUT_HZ = 24000
 
     private val inBufferLocal = object : ThreadLocal<ByteBuffer>() {
@@ -128,14 +132,28 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 
     override fun onStop() {
-        mIsStopped = true
-        AudioProcessor.stop()
-        lastConfiguredRate = -1
+        synchronized(processLock) {
+            mIsStopped = true
+            interruptCurrentTask()
+            AudioProcessor.stop()
+            lastConfiguredRate = -1
+        }
+    }
+
+    private fun interruptCurrentTask() {
+        try {
+            currentReadFd?.close()
+        } catch (e: Exception) { }
+        currentReadFd = null
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
-        mIsStopped = false
+
+        synchronized(processLock) {
+            mIsStopped = false
+            interruptCurrentTask() 
+        }
 
         val text = request.charSequenceText.toString()
         val sysRate = request.speechRate
@@ -164,17 +182,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     lastConfiguredRate = finalRate
                 }
 
-                var useRate = sysRate / 100f
-                var usePitch = sysPitch / 100f
-                
-                val lowerPkg = engineData.pkgName.lowercase(Locale.ROOT)
-                if (lowerPkg.contains("myanmar") || lowerPkg.contains("saomai") || lowerPkg.contains("ttsm")) {
-                     useRate = 1.0f
-                     usePitch = 1.0f
-                }
-
-                targetEngine.setSpeechRate(useRate)
-                targetEngine.setPitch(usePitch)
+                val rateFloat = sysRate / 100f
+                val pitchFloat = sysPitch / 100f
+                targetEngine.setSpeechRate(rateFloat)
+                targetEngine.setPitch(pitchFloat)
 
                 val volume = getVolumeCorrection(engineData.pkgName)
                 val params = Bundle()
@@ -192,6 +203,10 @@ class AutoTTSManagerService : TextToSpeechService() {
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
+        synchronized(processLock) {
+            currentReadFd = readFd
+        }
+
         try {
             val isDone = AtomicBoolean(false)
 
@@ -206,7 +221,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             })
 
             engine.synthesizeToFile(text, params, writeFd, uuid)
-            writeFd.close()
+            writeFd.close() 
 
             val localInBuffer = inBufferLocal.get()!!
             val localOutBuffer = outBufferLocal.get()!!
@@ -216,7 +231,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val fc = fis.channel
                 while (!mIsStopped) {
                     localInBuffer.clear()
-                    val bytesRead = fc.read(localInBuffer)
+                    
+                    val bytesRead = try {
+                        fc.read(localInBuffer)
+                    } catch (e: IOException) {
+                        break 
+                    }
                     
                     if (bytesRead == -1) break
 
@@ -245,8 +265,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             AudioProcessor.flush()
             
         } catch (e: Exception) {
-            e.printStackTrace()
+            // Broken pipe or interrupted
         } finally {
+            synchronized(processLock) {
+                if (currentReadFd == readFd) {
+                    currentReadFd = null
+                }
+            }
             try { readFd.close() } catch (e: Exception) {}
             engine.setOnUtteranceProgressListener(null)
         }
