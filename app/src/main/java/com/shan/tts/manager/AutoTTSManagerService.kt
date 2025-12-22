@@ -10,12 +10,10 @@ import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
-import android.speech.tts.UtteranceProgressListener
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -206,38 +204,26 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun processAudioChunkInstant(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
-        val pipe = try {
-            ParcelFileDescriptor.createPipe()
-        } catch (e: IOException) {
-            e.printStackTrace()
-            return
-        }
-
-        val readFd = pipe[0]
-        val writeFd = pipe[1]
-
-        synchronized(processLock) {
-            currentReadFd = readFd
-        }
+        var readFd: ParcelFileDescriptor? = null
+        var writeFd: ParcelFileDescriptor? = null
 
         try {
-            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {}
-                
-                override fun onDone(utteranceId: String?) {
-                    try { writeFd.close() } catch (e: Exception) {}
-                }
-                
-                override fun onError(utteranceId: String?) {
-                    try { writeFd.close() } catch (e: Exception) {}
-                }
-                
-                override fun onError(utteranceId: String?, errorCode: Int) {
-                    try { writeFd.close() } catch (e: Exception) {}
-                }
-            })
+            val pipe = ParcelFileDescriptor.createPipe()
+            readFd = pipe[0]
+            writeFd = pipe[1]
 
-            engine.synthesizeToFile(text, params, writeFd, uuid)
+            synchronized(processLock) {
+                currentReadFd = readFd
+            }
+
+            val result = engine.synthesizeToFile(text, params, writeFd, uuid)
+            
+            try { writeFd.close() } catch (e: Exception) {}
+            writeFd = null
+
+            if (result != TextToSpeech.SUCCESS) {
+                return
+            }
 
             val localInBuffer = inBufferLocal.get()!!
             val localOutBuffer = outBufferLocal.get()!!
@@ -247,12 +233,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val fc = fis.channel
                 while (!mIsStopped) {
                     localInBuffer.clear()
+                    
                     val bytesRead = try {
                         fc.read(localInBuffer)
                     } catch (e: IOException) {
-                        break
+                        break 
                     }
-
+                    
                     if (bytesRead == -1) break
 
                     if (bytesRead > 0) {
@@ -281,15 +268,15 @@ class AutoTTSManagerService : TextToSpeechService() {
             
         } catch (e: Exception) {
             e.printStackTrace()
-            try { writeFd.close() } catch (ex: Exception) {}
         } finally {
+            try { writeFd?.close() } catch (e: Exception) {}
+            
             synchronized(processLock) {
                 if (currentReadFd == readFd) {
                     currentReadFd = null
                 }
             }
-            try { readFd.close() } catch (e: Exception) {}
-            engine.setOnUtteranceProgressListener(null)
+            try { readFd?.close() } catch (e: Exception) {}
         }
     }
 
