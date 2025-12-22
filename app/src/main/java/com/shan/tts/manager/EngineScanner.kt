@@ -22,7 +22,7 @@ object EngineScanner {
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
         val appContext = context.applicationContext
-        AppLogger.log("Scanner: [STEP 1] Starting Discovery (SSML Enhanced).")
+        AppLogger.log("Scanner: [STEP 1] Starting Discovery (Saomai Targeted Fix).")
         
         val intent = Intent("android.intent.action.TTS_SERVICE")
         val resolveInfos = appContext.packageManager.queryIntentServices(intent, 0)
@@ -99,12 +99,20 @@ object EngineScanner {
         var targetLocale = Locale.US
         var useSSML = false
 
-        // *** SSML Logic: မြန်မာ Engine များအတွက် SSML သုံးမည် ***
-        if (lower.contains("shan") || lower.contains("shn")) {
+        // *** ၁။ Specific SSML Targeting for Saomai ***
+        if (pkg == "org.saomaicenter.myanmartts") {
+            // Saomai အတွက် သီးသန့် SSML
+            text = "<speak xml:lang=\"my\">မင်္ဂလာပါခင်ဗျာ</speak>"
+            targetLocale = Locale("my", "MM")
+            useSSML = true
+            AppLogger.log("Scanner: Targeted Saomai detected. Applying SSML fix.")
+        } 
+        else if (lower.contains("shan") || lower.contains("shn")) {
             text = "မႂ်ႇသုင်ၶႃႈ"
             targetLocale = Locale("shn", "MM")
-        } else if (lower.contains("myanmar") || lower.contains("burmese") || lower.contains("saomai") || lower.contains("ttsm")) {
-            // Saomai/Myanmar TTS အတွက် SSML Tag ထည့်ပေးလိုက်သည်
+        } 
+        else if (lower.contains("myanmar") || lower.contains("burmese") || lower.contains("ttsm")) {
+            // အခြားသော မြန်မာ Engine များ
             text = "<speak xml:lang=\"my\">မင်္ဂလာပါခင်ဗျာ</speak>"
             targetLocale = Locale("my", "MM")
             useSSML = true
@@ -130,8 +138,7 @@ object EngineScanner {
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
                 
-                // Log ထုတ်ကြည့်မယ် SSML သုံးလား မသုံးဘူးလား
-                val logText = if (useSSML) "SSML: $text" else "Raw: $text"
+                val logText = if (useSSML) "SSML" else "Raw"
                 AppLogger.log("Scanner: [STEP 3] Synthesizing... ($logText)")
                 
                 tts.synthesizeToFile(text, params, tempFile, uuid)
@@ -139,7 +146,6 @@ object EngineScanner {
                 val success = latch.await(6, TimeUnit.SECONDS)
                 if (!success) AppLogger.error("Scanner: Timeout waiting for onDone!")
 
-                // Disk Flush Wait
                 var waitCount = 0
                 while (tempFile.length() <= 44 && waitCount < 40) {
                     Thread.sleep(50)
@@ -149,21 +155,14 @@ object EngineScanner {
                 val fileSize = tempFile.length()
 
                 if (fileSize > 44) {
-                    // *** Mismatch Check (အသစ်ထည့်ထားသောအပိုင်း) ***
-                    // File Header ကို ဖတ်ပြီး Data Size နဲ့ File Size ကိုက်မကိုက် စစ်မယ်
                     val (rate, dataSizeFromHeader) = readHeaderInfo(tempFile)
                     
                     val expectedFileSize = dataSizeFromHeader + 44
-                    // Header မှာပြတဲ့ Size နဲ့ လက်တွေ့ Size ကွာဟမှု 10 Bytes ထက်ကျော်ရင် Mismatch လို့သတ်မှတ်မယ်
                     val diff = kotlin.math.abs(fileSize - expectedFileSize)
-                    
                     if (diff > 10) {
-                        AppLogger.error("Scanner: [WARNING] HEADER MISMATCH for $pkg!")
-                        AppLogger.error(" -> Header says data is $dataSizeFromHeader bytes (Total ~$expectedFileSize)")
-                        AppLogger.error(" -> Real File Size is $fileSize bytes")
-                        AppLogger.log("Scanner: Using detected Hz anyway, assuming Header Rate is correct.")
+                        AppLogger.log("Scanner: [INFO] Header Mismatch detected (Diff: $diff).")
                     } else {
-                        AppLogger.log("Scanner: Header Integrity OK. (Diff: $diff bytes)")
+                        AppLogger.log("Scanner: Header Integrity OK.")
                     }
 
                     if (rate > 0) {
@@ -186,7 +185,6 @@ object EngineScanner {
         }.start()
     }
 
-    // Return Pair(SampleRate, DataSize)
     private fun readHeaderInfo(file: File): Pair<Int, Int> {
         return try {
             FileInputStream(file).use { fis ->
@@ -197,14 +195,10 @@ object EngineScanner {
                 val buffer = ByteBuffer.wrap(header)
                 buffer.order(ByteOrder.LITTLE_ENDIAN)
 
-                // Offset 24 = Sample Rate
                 val sampleRate = buffer.getInt(24)
-                
-                // Offset 40 = Subchunk2Size (Data Size)
                 val dataSize = buffer.getInt(40)
                 
                 AppLogger.log("Scanner: [STEP 5] Header Analysis -> Rate: $sampleRate, Declared Data: $dataSize")
-                
                 Pair(sampleRate, dataSize)
             }
         } catch (e: Exception) {
@@ -214,15 +208,32 @@ object EngineScanner {
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
-        val finalRate = if (rate < 8000) 16000 else rate
+        var finalRate = if (rate < 8000) 16000 else rate
+        
+        // *** ၂။ Specific Hz Force for Saomai ***
+        // ဒီ Package Name နဲ့တူနေရင် Header က 16000 လာလည်း 22050 ပဲ ယူမယ်
+        if (pkg == "org.saomaicenter.myanmartts") {
+            AppLogger.log("Scanner: [QUIRK] org.saomaicenter.myanmartts detected. Forcing 22050 Hz (Ignoring detected $rate Hz)")
+            finalRate = 22050
+        }
+
         AppLogger.log("Scanner: [SUCCESS] $pkg -> Final Hz: $finalRate")
+        
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", finalRate).apply()
     }
 
     private fun saveFallback(context: Context, pkg: String) {
-        val defaultRate = 22050
-        AppLogger.log("Scanner: [FALLBACK] $pkg -> Using $defaultRate")
+        var defaultRate = 22050
+        
+        // Fallback ဖြစ်ရင်လည်း Saomai ဆို 22050 သေချာပေါက်ထားမယ်
+        if (pkg == "org.saomaicenter.myanmartts") {
+             defaultRate = 22050
+             AppLogger.log("Scanner: [FALLBACK] Targeted Saomai Fallback -> 22050 Hz")
+        } else {
+             AppLogger.log("Scanner: [FALLBACK] $pkg -> Using $defaultRate")
+        }
+
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", defaultRate).apply()
     }
