@@ -157,8 +157,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             val targetEngine = engineData.engine ?: englishEngine
 
             if (targetEngine != null) {
-                // *** ပြင်ဆင်ချက် (၁): Scanner ရှာပေးတဲ့ Hz အတိုင်းပဲ သုံးပါတော့မယ် (Override မလုပ်တော့ပါ) ***
-                // အကယ်၍ Scanner က 16000 ရှာပေးရင် 16000 ပဲ သုံးမယ်
                 val finalRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
 
                 if (finalRate != lastConfiguredRate) {
@@ -166,12 +164,18 @@ class AutoTTSManagerService : TextToSpeechService() {
                     lastConfiguredRate = finalRate
                 }
 
-                val rateFloat = sysRate / 100f
-                val pitchFloat = sysPitch / 100f
-                targetEngine.setSpeechRate(rateFloat)
-                targetEngine.setPitch(pitchFloat)
+                var useRate = sysRate / 100f
+                var usePitch = sysPitch / 100f
+                
+                val lowerPkg = engineData.pkgName.lowercase(Locale.ROOT)
+                if (lowerPkg.contains("myanmar") || lowerPkg.contains("saomai") || lowerPkg.contains("ttsm")) {
+                     useRate = 1.0f
+                     usePitch = 1.0f
+                }
 
-                // *** ပြင်ဆင်ချက် (၂): Myanmar TTS တွေအတွက် Volume ကို 1.0f (အပြည့်) ပေးလိုက်ပါမယ် ***
+                targetEngine.setSpeechRate(useRate)
+                targetEngine.setPitch(usePitch)
+
                 val volume = getVolumeCorrection(engineData.pkgName)
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
@@ -179,7 +183,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 processAudioChunkInstant(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString())
             }
         }
-
+        
         callback.done()
     }
 
@@ -193,11 +197,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) {
-                    isDone.set(true)
+                override fun onDone(utteranceId: String?) { 
+                    isDone.set(true) 
                 }
-                override fun onError(utteranceId: String?) {
-                    isDone.set(true)
+                override fun onError(utteranceId: String?) { 
+                    isDone.set(true) 
                 }
             })
 
@@ -213,7 +217,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 while (!mIsStopped) {
                     localInBuffer.clear()
                     val bytesRead = fc.read(localInBuffer)
-
+                    
                     if (bytesRead == -1) break
 
                     if (bytesRead > 0) {
@@ -221,12 +225,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                         localOutBuffer.clear()
 
                         var processed = AudioProcessor.processAudio(localInBuffer, bytesRead, localOutBuffer, localOutBuffer.capacity())
-
+                        
                         if (processed > 0) {
                             localOutBuffer.get(localByteArray, 0, processed)
                             sendAudioToSystem(localByteArray, processed, callback)
                         }
-
+                        
                         while (processed > 0 && !mIsStopped) {
                             localOutBuffer.clear()
                             processed = AudioProcessor.processAudio(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
@@ -239,7 +243,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
             AudioProcessor.flush()
-
+            
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
@@ -260,7 +264,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     data class EngineData(val engine: TextToSpeech?, val pkgName: String)
-
+    
     private fun getEngineDataForLang(lang: String): EngineData {
         return when (lang) {
             "SHAN", "shn" -> EngineData(if (shanEngine != null) shanEngine else englishEngine, shanPkgName)
@@ -269,10 +273,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    // *** Volume Correction Function ကို ပြင်ဆင်ထားသည် ***
     private fun getVolumeCorrection(pkg: String): Float {
         val l = pkg.lowercase(Locale.ROOT)
-        // Myanmar TTS တွေကိုပါ Volume 1.0f ပေးလိုက်ပါ
         return if (l.contains("espeak") || l.contains("shan") || l.contains("myanmar") || l.contains("saomai")) 1.0f else 0.8f
     }
 
