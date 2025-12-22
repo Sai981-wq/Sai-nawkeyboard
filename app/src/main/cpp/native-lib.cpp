@@ -4,8 +4,7 @@
 
 std::mutex processorMutex;
 static sonicStream stream = NULL;
-
-static int currentInputRate = 22050; 
+static int currentInputRate = 0;
 const int FIXED_OUTPUT_RATE = 24000;
 
 void updateSonicConfig() {
@@ -19,8 +18,12 @@ void updateSonicConfig() {
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint inputRate, jint ch) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    
-    currentInputRate = inputRate; 
+
+    if (stream != NULL && currentInputRate == inputRate) {
+        return;
+    }
+
+    currentInputRate = inputRate;
 
     if (stream) {
         sonicDestroyStream(stream);
@@ -28,16 +31,16 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint in
     }
 
     stream = sonicCreateStream(FIXED_OUTPUT_RATE, ch);
-    sonicSetQuality(stream, 0); 
+    sonicSetQuality(stream, 0);
     sonicSetVolume(stream, 1.0f);
-    
+
     updateSonicConfig();
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_shan_tts_manager_AudioProcessor_processAudio(
-        JNIEnv* env, jobject, 
-        jobject inBuffer, jint len, 
+        JNIEnv* env, jobject,
+        jobject inBuffer, jint len,
         jobject outBuffer, jint maxOutLen
 ) {
     std::lock_guard<std::mutex> lock(processorMutex);
@@ -66,9 +69,10 @@ extern "C" JNIEXPORT void JNICALL Java_com_shan_tts_manager_AudioProcessor_flush
 
 extern "C" JNIEXPORT void JNICALL Java_com_shan_tts_manager_AudioProcessor_stop(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(processorMutex);
-    if (stream) { 
-        sonicDestroyStream(stream); 
-        stream = NULL; 
+    if (stream) {
+        sonicDestroyStream(stream);
+        stream = NULL;
+        currentInputRate = 0;
     }
 }
 

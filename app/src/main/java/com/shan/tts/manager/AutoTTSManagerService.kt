@@ -11,7 +11,6 @@ import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
-import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
@@ -34,7 +33,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var lastConfiguredRate: Int = -1
 
     @Volatile private var mIsStopped = false
-    private val FIXED_OUTPUT_HZ = 24000 
+    private val FIXED_OUTPUT_HZ = 24000
 
     private val inBufferLocal = object : ThreadLocal<ByteBuffer>() {
         override fun initialValue(): ByteBuffer = ByteBuffer.allocateDirect(4096)
@@ -50,11 +49,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created: AutoTTSManagerService started.")
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
             configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
-            
+
             val defaultEngine = try {
                 val tts = TextToSpeech(this, null)
                 val pkg = tts.defaultEngine
@@ -63,54 +61,41 @@ class AutoTTSManagerService : TextToSpeechService() {
             } catch (e: Exception) { "com.google.android.tts" }
 
             shanPkgName = resolveEngine(
-                "pref_shan_pkg", 
-                listOf("com.shan.tts", "com.espeak.ng", "org.himnario.espeak"), 
+                "pref_shan_pkg",
+                listOf("com.shan.tts", "com.espeak.ng", "org.himnario.espeak"),
                 defaultEngine
             )
-            initEngine(shanPkgName, Locale("shn", "MM")) { 
-                shanEngine = it 
-                AppLogger.log("Shan Engine Ready: $shanPkgName")
-            }
+            initEngine(shanPkgName, Locale("shn", "MM")) { shanEngine = it }
 
             burmesePkgName = resolveEngine(
                 "pref_burmese_pkg",
                 listOf("org.saomaicenter.myanmartts", "com.google.android.tts", "com.samsung.SMT"),
                 defaultEngine
             )
-            initEngine(burmesePkgName, Locale("my", "MM")) { 
-                burmeseEngine = it 
-                AppLogger.log("Burmese Engine Ready: $burmesePkgName")
-            }
+            initEngine(burmesePkgName, Locale("my", "MM")) { burmeseEngine = it }
 
             englishPkgName = resolveEngine(
                 "pref_english_pkg",
                 listOf("com.google.android.tts", "com.samsung.SMT", "es.codefactory.eloquencetts"),
                 defaultEngine
             )
-            initEngine(englishPkgName, Locale.US) { 
-                englishEngine = it 
-                AppLogger.log("English Engine Ready: $englishPkgName")
-            }
-            
+            initEngine(englishPkgName, Locale.US) { englishEngine = it }
+
         } catch (e: Exception) {
-            AppLogger.error("Error in onCreate", e)
+            e.printStackTrace()
         }
     }
 
     private fun resolveEngine(prefKey: String, priorityList: List<String>, fallback: String): String {
         val userPref = prefs.getString(prefKey, "")
-        
         if (!userPref.isNullOrEmpty() && isPackageInstalled(userPref)) {
             return userPref
         }
-
         for (pkg in priorityList) {
             if (isPackageInstalled(pkg)) {
-                AppLogger.log("Auto-Selected $pkg for $prefKey")
                 return pkg
             }
         }
-
         return fallback
     }
 
@@ -129,12 +114,12 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             tts = TextToSpeech(this, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    val result = tts?.setLanguage(locale)
+                    tts?.language = locale
                     onReady(tts!!)
                 }
             }, pkg)
         } catch (e: Exception) {
-            AppLogger.error("Crash during initEngine: $pkg", e)
+            e.printStackTrace()
         }
     }
 
@@ -145,7 +130,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onStop() {
         mIsStopped = true
         AudioProcessor.stop()
-        lastConfiguredRate = -1 
+        lastConfiguredRate = -1
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -170,25 +155,25 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             val engineData = getEngineDataForLang(langCode)
             val targetEngine = engineData.engine ?: englishEngine
-            
+
             if (targetEngine != null) {
                 var finalRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
-                
-                if (engineData.pkgName == "org.saomaicenter.myanmartts") {
+                val lowerPkg = engineData.pkgName.lowercase(Locale.ROOT)
+
+                if (lowerPkg.contains("myanmar") || lowerPkg.contains("saomai") || lowerPkg.contains("ttsm")) {
                     finalRate = 22050
                 }
-                
+
                 if (finalRate != lastConfiguredRate) {
-                    AppLogger.log("Init Sonic: New Hz=$finalRate")
                     AudioProcessor.initSonic(finalRate, 1)
                     lastConfiguredRate = finalRate
                 }
-                
+
                 val rateFloat = sysRate / 100f
                 val pitchFloat = sysPitch / 100f
                 targetEngine.setSpeechRate(rateFloat)
                 targetEngine.setPitch(pitchFloat)
-                
+
                 val volume = getVolumeCorrection(engineData.pkgName)
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
@@ -196,7 +181,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 processAudioChunkInstant(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString())
             }
         }
-        
+
         callback.done()
     }
 
@@ -210,14 +195,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) { 
-                    isDone.set(true) 
+                override fun onDone(utteranceId: String?) {
+                    isDone.set(true)
                 }
-                override fun onError(utteranceId: String?) { 
-                    isDone.set(true) 
-                    if (!mIsStopped) {
-                        AppLogger.error("Engine Error Callback Triggered")
-                    }
+                override fun onError(utteranceId: String?) {
+                    isDone.set(true)
                 }
             })
 
@@ -231,23 +213,22 @@ class AutoTTSManagerService : TextToSpeechService() {
             ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                 val fc = fis.channel
                 while (!mIsStopped) {
-                    
                     localInBuffer.clear()
                     val bytesRead = fc.read(localInBuffer)
-                    
+
                     if (bytesRead == -1) break
 
                     if (bytesRead > 0) {
                         localInBuffer.flip()
-
                         localOutBuffer.clear()
+
                         var processed = AudioProcessor.processAudio(localInBuffer, bytesRead, localOutBuffer, localOutBuffer.capacity())
-                        
+
                         if (processed > 0) {
                             localOutBuffer.get(localByteArray, 0, processed)
                             sendAudioToSystem(localByteArray, processed, callback)
                         }
-                        
+
                         while (processed > 0 && !mIsStopped) {
                             localOutBuffer.clear()
                             processed = AudioProcessor.processAudio(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
@@ -260,11 +241,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
             AudioProcessor.flush()
-            
+
         } catch (e: Exception) {
-            if (!mIsStopped) {
-                AppLogger.error("Exception in Pipe Processing", e)
-            }
+            e.printStackTrace()
         } finally {
             try { readFd.close() } catch (e: Exception) {}
             engine.setOnUtteranceProgressListener(null)
@@ -283,7 +262,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     data class EngineData(val engine: TextToSpeech?, val pkgName: String)
-    
+
     private fun getEngineDataForLang(lang: String): EngineData {
         return when (lang) {
             "SHAN", "shn" -> EngineData(if (shanEngine != null) shanEngine else englishEngine, shanPkgName)
@@ -299,7 +278,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        AppLogger.log("Service Destroyed.")
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
