@@ -182,10 +182,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                     lastConfiguredRate = finalRate
                 }
 
-                val rateFloat = sysRate / 100f
-                val pitchFloat = sysPitch / 100f
-                targetEngine.setSpeechRate(rateFloat)
-                targetEngine.setPitch(pitchFloat)
+                var useRate = sysRate / 100f
+                var usePitch = sysPitch / 100f
+                
+                val lowerPkg = engineData.pkgName.lowercase(Locale.ROOT)
+                if (lowerPkg.contains("myanmar") || lowerPkg.contains("saomai") || lowerPkg.contains("ttsm")) {
+                     useRate = 1.0f
+                     usePitch = 1.0f
+                }
+
+                targetEngine.setSpeechRate(useRate)
+                targetEngine.setPitch(usePitch)
 
                 val volume = getVolumeCorrection(engineData.pkgName)
                 val params = Bundle()
@@ -199,7 +206,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun processAudioChunkInstant(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
-        val pipe = ParcelFileDescriptor.createPipe()
+        // (၁) Pipe ဖန်တီးခြင်း - Error ရှိလျှင် ချက်ချင်းရပ်မည်
+        val pipe = try {
+            ParcelFileDescriptor.createPipe()
+        } catch (e: IOException) {
+            e.printStackTrace()
+            return 
+        }
+
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
@@ -220,8 +234,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             })
 
-            engine.synthesizeToFile(text, params, writeFd, uuid)
-            writeFd.close() 
+            // (၂) အရေးကြီးဆုံးအချက် - Write FD ကို ဘာဖြစ်ဖြစ် ပိတ်အောင် Try-Finally ခံခြင်း
+            try {
+                engine.synthesizeToFile(text, params, writeFd, uuid)
+            } finally {
+                // Engine ဆီပို့ပြီးတာနဲ့ ကျွန်တော်တို့ဘက်က Write ပေါက်ကို ပိတ်ကိုပိတ်ရပါမယ်
+                // မပိတ်ရင် Leak ဖြစ်ပြီး ဖုန်းလေးလာပါမယ်
+                try { writeFd.close() } catch (e: Exception) {}
+            }
 
             val localInBuffer = inBufferLocal.get()!!
             val localOutBuffer = outBufferLocal.get()!!
@@ -265,13 +285,14 @@ class AutoTTSManagerService : TextToSpeechService() {
             AudioProcessor.flush()
             
         } catch (e: Exception) {
-            // Broken pipe or interrupted
+            e.printStackTrace()
         } finally {
             synchronized(processLock) {
                 if (currentReadFd == readFd) {
                     currentReadFd = null
                 }
             }
+            // Read FD ကိုလည်း သေချာပေါက် ပြန်ပိတ်ပါမယ်
             try { readFd.close() } catch (e: Exception) {}
             engine.setOnUtteranceProgressListener(null)
         }
