@@ -206,12 +206,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun processAudioChunkInstant(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
-        // (၁) Pipe ဖန်တီးခြင်း - Error ရှိလျှင် ချက်ချင်းရပ်မည်
         val pipe = try {
             ParcelFileDescriptor.createPipe()
         } catch (e: IOException) {
             e.printStackTrace()
-            return 
+            return
         }
 
         val readFd = pipe[0]
@@ -222,26 +221,23 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
 
         try {
-            val isDone = AtomicBoolean(false)
-
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) { 
-                    isDone.set(true) 
+                
+                override fun onDone(utteranceId: String?) {
+                    try { writeFd.close() } catch (e: Exception) {}
                 }
-                override fun onError(utteranceId: String?) { 
-                    isDone.set(true) 
+                
+                override fun onError(utteranceId: String?) {
+                    try { writeFd.close() } catch (e: Exception) {}
+                }
+                
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    try { writeFd.close() } catch (e: Exception) {}
                 }
             })
 
-            // (၂) အရေးကြီးဆုံးအချက် - Write FD ကို ဘာဖြစ်ဖြစ် ပိတ်အောင် Try-Finally ခံခြင်း
-            try {
-                engine.synthesizeToFile(text, params, writeFd, uuid)
-            } finally {
-                // Engine ဆီပို့ပြီးတာနဲ့ ကျွန်တော်တို့ဘက်က Write ပေါက်ကို ပိတ်ကိုပိတ်ရပါမယ်
-                // မပိတ်ရင် Leak ဖြစ်ပြီး ဖုန်းလေးလာပါမယ်
-                try { writeFd.close() } catch (e: Exception) {}
-            }
+            engine.synthesizeToFile(text, params, writeFd, uuid)
 
             val localInBuffer = inBufferLocal.get()!!
             val localOutBuffer = outBufferLocal.get()!!
@@ -251,13 +247,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val fc = fis.channel
                 while (!mIsStopped) {
                     localInBuffer.clear()
-                    
                     val bytesRead = try {
                         fc.read(localInBuffer)
                     } catch (e: IOException) {
-                        break 
+                        break
                     }
-                    
+
                     if (bytesRead == -1) break
 
                     if (bytesRead > 0) {
@@ -286,13 +281,13 @@ class AutoTTSManagerService : TextToSpeechService() {
             
         } catch (e: Exception) {
             e.printStackTrace()
+            try { writeFd.close() } catch (ex: Exception) {}
         } finally {
             synchronized(processLock) {
                 if (currentReadFd == readFd) {
                     currentReadFd = null
                 }
             }
-            // Read FD ကိုလည်း သေချာပေါက် ပြန်ပိတ်ပါမယ်
             try { readFd.close() } catch (e: Exception) {}
             engine.setOnUtteranceProgressListener(null)
         }
