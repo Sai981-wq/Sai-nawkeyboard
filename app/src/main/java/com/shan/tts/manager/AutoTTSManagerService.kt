@@ -157,12 +157,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             val targetEngine = engineData.engine ?: englishEngine
 
             if (targetEngine != null) {
-                var finalRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
-                val lowerPkg = engineData.pkgName.lowercase(Locale.ROOT)
-
-                if (lowerPkg.contains("myanmar") || lowerPkg.contains("saomai") || lowerPkg.contains("ttsm")) {
-                    finalRate = 22050
-                }
+                // *** ပြင်ဆင်ချက် (၁): Scanner ရှာပေးတဲ့ Hz အတိုင်းပဲ သုံးပါတော့မယ် (Override မလုပ်တော့ပါ) ***
+                // အကယ်၍ Scanner က 16000 ရှာပေးရင် 16000 ပဲ သုံးမယ်
+                val finalRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
 
                 if (finalRate != lastConfiguredRate) {
                     AudioProcessor.initSonic(finalRate, 1)
@@ -174,6 +171,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 targetEngine.setSpeechRate(rateFloat)
                 targetEngine.setPitch(pitchFloat)
 
+                // *** ပြင်ဆင်ချက် (၂): Myanmar TTS တွေအတွက် Volume ကို 1.0f (အပြည့်) ပေးလိုက်ပါမယ် ***
                 val volume = getVolumeCorrection(engineData.pkgName)
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
@@ -271,9 +269,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
+    // *** Volume Correction Function ကို ပြင်ဆင်ထားသည် ***
     private fun getVolumeCorrection(pkg: String): Float {
         val l = pkg.lowercase(Locale.ROOT)
-        return if (l.contains("espeak") || l.contains("shan")) 1.0f else 0.8f
+        // Myanmar TTS တွေကိုပါ Volume 1.0f ပေးလိုက်ပါ
+        return if (l.contains("espeak") || l.contains("shan") || l.contains("myanmar") || l.contains("saomai")) 1.0f else 0.8f
     }
 
     override fun onDestroy() {
