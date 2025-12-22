@@ -8,10 +8,13 @@ import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import java.io.File
-import java.io.RandomAccessFile
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 object EngineScanner {
 
@@ -23,9 +26,15 @@ object EngineScanner {
         val intent = Intent("android.intent.action.TTS_SERVICE")
         val resolveInfos = context.packageManager.queryIntentServices(intent, 0)
         
-        // ကိုယ့် Package ကလွဲရင် ကျန်တာအကုန်ယူမယ်
+        // (၁) မစစ်ဆေးချင်သော Engine များ (Block List)
+        val blockedEngines = listOf(
+            context.packageName,       // မိမိ App (Cherry TTS)
+            "com.vnspeak.autotts"      // VN Speak Auto TTS (ကျော်မယ်)
+        )
+
+        // (၂) Block List ဖယ်ထုတ်ပြီး ကျန်တာယူမယ်
         val engines = resolveInfos.map { it.serviceInfo.packageName }
-            .filter { it != context.packageName }
+            .filter { pkgName -> !blockedEngines.contains(pkgName) }
             .distinct()
 
         if (engines.isEmpty()) {
@@ -84,14 +93,9 @@ object EngineScanner {
     private fun probeEngine(context: Context, tts: TextToSpeech, pkg: String, onDone: () -> Unit) {
         val tempFile = File(context.cacheDir, "probe_$pkg.wav")
         val uuid = UUID.randomUUID().toString()
-        val isFinished = AtomicBoolean(false)
         
-        fun finishOnce() {
-            if (isFinished.compareAndSet(false, true)) {
-                try { if (tempFile.exists()) tempFile.delete() } catch (e: Exception) {}
-                onDone()
-            }
-        }
+        // Timeout စောင့်မည့် Lock
+        val latch = CountDownLatch(1)
 
         val lower = pkg.lowercase(Locale.ROOT)
         var text = "Hello, testing frequency."
@@ -115,74 +119,84 @@ object EngineScanner {
             override fun onStart(id: String?) {}
             override fun onError(id: String?) { 
                 AppLogger.error("Scanner: Engine reported error during synthesis ($pkg)")
-                saveFallback(context, pkg)
-                finishOnce() 
+                latch.countDown()
             }
-            override fun onDone(id: String?) { }
+            override fun onDone(id: String?) { 
+                // Engine ပြီးမှ Lock ဖွင့်မယ်
+                latch.countDown()
+            }
         })
 
-        try {
-            val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
+        Thread {
+            try {
+                if (tempFile.exists()) tempFile.delete()
 
-            tts.synthesizeToFile(text, params, tempFile, uuid)
-
-            Thread {
-                var wait = 0
-                while (!isFinished.get()) {
-                    if (tempFile.exists() && tempFile.length() > 200) break
-                    Thread.sleep(50)
-                    wait++
-                    if (wait > 60) break // 3 seconds timeout
-                }
+                val params = Bundle()
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
                 
-                if (!isFinished.get()) {
-                    if (tempFile.exists() && tempFile.length() > 44) {
-                        val rate = readRate(tempFile)
-                        if (rate > 0) {
-                            saveRate(context, pkg, rate)
-                        } else {
-                            AppLogger.error("Scanner: File exists but readRate failed (0) for $pkg")
-                            saveFallback(context, pkg)
-                        }
+                tts.synthesizeToFile(text, params, tempFile, uuid)
+
+                // ၆ စက္ကန့်ထိ စောင့်မယ် (Google တို့အတွက်)
+                val success = latch.await(6, TimeUnit.SECONDS)
+
+                if (!success) {
+                    AppLogger.error("Scanner: Timeout waiting for onDone ($pkg)")
+                }
+
+                if (tempFile.exists() && tempFile.length() > 44) {
+                    val rate = readRate(tempFile)
+                    if (rate > 0) {
+                        saveRate(context, pkg, rate)
                     } else {
-                        AppLogger.error("Scanner: Timeout or File missing for $pkg")
+                        AppLogger.error("Scanner: ReadRate failed (Got 0) for $pkg. FileSize: ${tempFile.length()}")
                         saveFallback(context, pkg)
                     }
-                    finishOnce()
+                } else {
+                    AppLogger.error("Scanner: File missing or too small for $pkg")
+                    saveFallback(context, pkg)
                 }
-            }.start()
-        } catch (e: Exception) {
-            AppLogger.error("Scanner: Exception in probe logic for $pkg", e)
-            saveFallback(context, pkg)
-            finishOnce()
-        }
+
+            } catch (e: Exception) {
+                AppLogger.error("Scanner: Critical error probing $pkg", e)
+                saveFallback(context, pkg)
+            } finally {
+                mainHandler.post { onDone() }
+            }
+        }.start()
     }
 
     private fun readRate(file: File): Int {
         return try {
-            RandomAccessFile(file, "r").use { raf ->
-                raf.seek(24) 
-                Integer.reverseBytes(raf.readInt())
+            FileInputStream(file).use { fis ->
+                val header = ByteArray(44)
+                val bytesRead = fis.read(header)
+                if (bytesRead < 44) return 0
+
+                val buffer = ByteBuffer.wrap(header)
+                buffer.order(ByteOrder.LITTLE_ENDIAN)
+
+                // Offset 24 မှာ Hz ပါတယ်
+                val sampleRate = buffer.getInt(24)
+                sampleRate
             }
-        } catch (e: Exception) { 0 }
+        } catch (e: Exception) {
+            AppLogger.error("Scanner: Error parsing WAV header", e)
+            0 
+        }
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
         val finalRate = if (rate < 8000) 16000 else rate
-        
-        // အောင်မြင်ကြောင်း LOG
+        // *** အောင်မြင်ကြောင်း Log ***
         AppLogger.log("Scanner: [SUCCESS] $pkg -> Detected Rate: $finalRate Hz")
-        
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", finalRate).apply()
     }
 
     private fun saveFallback(context: Context, pkg: String) {
-        // မအောင်မြင်၍ Fallback သုံးကြောင်း LOG
         val defaultRate = 22050
+        // *** မအောင်မြင်ကြောင်း (Fallback) Log ***
         AppLogger.log("Scanner: [FALLBACK] $pkg -> Using Standard $defaultRate Hz")
-
         context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
             .edit().putInt("RATE_$pkg", defaultRate).apply()
     }
