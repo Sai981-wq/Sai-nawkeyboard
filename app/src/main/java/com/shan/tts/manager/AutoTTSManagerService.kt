@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.Process // Priority အတွက် အရေးကြီးသည်
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -36,22 +37,20 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private var lastConfiguredRate: Int = -1
 
-    // Atomic Boolean သည် Thread များကြားတွင် ပိုမိုတိကျသည်
     private val mIsStopped = AtomicBoolean(false)
 
-    // Thread Pool
-    private val executorService: ExecutorService = Executors.newFixedThreadPool(2)
+    // CachedThreadPool သည် လိုအပ်လျှင် Thread အသစ်ချက်ချင်းမွေးပေးသဖြင့်
+    // Talkback ဖြင့် အမြန်ပွတ်ဆွဲချိန်တွင် Thread အဟောင်းသေတာကို စောင့်စရာမလိုတော့ပါ
+    private val executorService: ExecutorService = Executors.newCachedThreadPool()
     
     private var readerTask: Future<*>? = null
     private var processorTask: Future<*>? = null
 
-    // Queue
     private val audioQueue = LinkedBlockingQueue<ByteArray>()
 
     private val FIXED_OUTPUT_HZ = 24000
     private val END_OF_STREAM = ByteArray(0)
 
-    // Buffers
     private val outBufferLocal = object : ThreadLocal<ByteBuffer>() {
         override fun initialValue(): ByteBuffer = ByteBuffer.allocateDirect(8192)
     }
@@ -119,28 +118,25 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 
     override fun onStop() {
-        // ၁။ Stop Flag ကို အရင်ဆုံး ထောင်လိုက်မယ် (ဒါအရေးအကြီးဆုံး)
         mIsStopped.set(true)
         
-        // ၂။ Queue ကို ရှင်းမယ်
         audioQueue.clear()
         
-        // ၃။ Task တွေကို Cancel လုပ်မယ်
+        // Interrupt လုပ်မယ်
         readerTask?.cancel(true)
         processorTask?.cancel(true)
         
-        // ၄။ Sonic ကို Stop လုပ်ခိုင်းမယ် (ဒါပေမဲ့ Destroy မလုပ်ဘူး၊ Destroy လုပ်ရင် ပြန်စရတာ ကြာပြီး Glitch ဖြစ်တတ်လို့)
         AudioProcessor.flush() 
+        lastConfiguredRate = -1 
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
-        // ချက်ချင်းရပ်မယ်
         mIsStopped.set(true)
         audioQueue.clear()
         
-        // Flag ကို False ပြန်ပြောင်းမယ်
+        // အသစ်ပြန်စရန် Flag ချမယ်
         mIsStopped.set(false)
 
         val text = request.charSequenceText.toString()
@@ -168,7 +164,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     AudioProcessor.initSonic(finalRate, 1)
                     lastConfiguredRate = finalRate
                 } else {
-                    // Rate မပြောင်းရင်တောင် Buffer အဟောင်းရှင်းဖို့ Flush ခေါ်မယ်
                     AudioProcessor.flush()
                 }
 
@@ -202,9 +197,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
+        // Thread 1: Reader (High Priority)
         readerTask = executorService.submit {
+            // Android System ကို ပြောမယ်: "ဒါ အသံပိုင်းဆိုင်ရာ အရေးကြီးအလုပ်မို့ ချက်ချင်းလုပ်ပေးပါ"
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            
              ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                val buffer = ByteArray(4096)
+                val buffer = ByteArray(4096) // Buffer Size ကို မူလအတိုင်းထားသည် (Safety အတွက်)
                 while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
                     val bytesRead = try {
                          fis.read(buffer)
@@ -222,7 +221,11 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
+        // Thread 2: Processor (High Priority)
         processorTask = executorService.submit {
+            // Android System ကို ပြောမယ်: "ဒါလည်း အသံအလုပ်ပဲ၊ VIP လမ်းကြောင်းပေးပါ"
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+
             val localInBuffer = ByteBuffer.allocateDirect(4096)
             val localOutBuffer = outBufferLocal.get()!!
             val localByteArray = outBufferArrayLocal.get()!!
@@ -232,25 +235,22 @@ class AutoTTSManagerService : TextToSpeechService() {
                     audioQueue.take() 
                 } catch (e: InterruptedException) { break }
                 
-                // Queue ထဲက ထုတ်လိုက်ပြီ၊ ဒါပေမဲ့ Stop လုပ်ထားရင် မလုပ်တော့ဘဲ ပစ်လိုက်မယ်
-                // ဒါက "ဒုတ်" သံ ပျောက်စေတဲ့ အဓိကသော့ချက်ပါ
                 if (mIsStopped.get()) break 
                 
                 if (data === END_OF_STREAM) break
 
                 localInBuffer.clear()
+                // Safety check for buffer capacity
                 if (localInBuffer.capacity() < data.size) {
-                    // Resize logic if needed
+                    // This rarely happens with 4096, but good for safety
                 }
                 localInBuffer.put(data)
                 localInBuffer.flip()
 
-                // Process မလုပ်ခင် နောက်တစ်ခေါက် ထပ်စစ်မယ်
                 if (mIsStopped.get()) break
 
                 var processed = AudioProcessor.processAudio(localInBuffer, data.size, localOutBuffer, localOutBuffer.capacity())
                 
-                // System ကို မပို့ခင် နောက်ဆုံးတစ်ခေါက် ထပ်စစ်မယ်
                 if (mIsStopped.get()) break
                 
                 if (processed > 0) {
@@ -267,7 +267,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             }
-             // Loop ထဲက ထွက်လာရင် Flush လုပ်မယ်
              if (!mIsStopped.get()) {
                  AudioProcessor.flush()
              }
@@ -297,7 +296,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // ... (EngineData, getVolumeCorrection, onDestroy - မူရင်းအတိုင်း) ...
     data class EngineData(val engine: TextToSpeech?, val pkgName: String)
 
     private fun getEngineDataForLang(lang: String): EngineData {
