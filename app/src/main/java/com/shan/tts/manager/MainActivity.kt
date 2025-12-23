@@ -84,13 +84,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupEngineUI(spinnerId: Int, pkgKey: String, defPkg: String, rateId: Int, rateKey: String, pitchId: Int, pitchKey: String) {
-        setSpinnerSelection(findViewById(spinnerId), pkgKey, defPkg)
+        val spinner = findViewById<Spinner>(spinnerId)
+        setSpinnerSelection(spinner, pkgKey, defPkg)
+
+        spinner.setOnLongClickListener {
+            try {
+                val intent = Intent()
+                intent.action = "com.android.settings.TTS_SETTINGS"
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+                Toast.makeText(this, "Opening System Settings...", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "Cannot open settings directly", Toast.LENGTH_SHORT).show()
+            }
+            true
+        }
 
         val seekRate = findViewById<SeekBar>(rateId)
         val seekPitch = findViewById<SeekBar>(pitchId)
 
-        seekRate.max = 250 
-        seekPitch.max = 250 
+        seekRate.max = 200 
+        seekPitch.max = 200 
 
         seekRate.progress = configPrefs.getInt(rateKey, 100)
         seekPitch.progress = configPrefs.getInt(pitchKey, 100)
@@ -102,7 +116,8 @@ class MainActivity : AppCompatActivity() {
     private fun getSeekListener(key: String): SeekBar.OnSeekBarChangeListener {
         return object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser) configPrefs.edit().putInt(key, progress).apply()
+                val safeProgress = if (progress < 10) 10 else progress
+                if (fromUser) configPrefs.edit().putInt(key, safeProgress).apply()
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
