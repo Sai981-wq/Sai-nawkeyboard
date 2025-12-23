@@ -131,6 +131,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val mySessionId = currentSessionId.incrementAndGet()
         val text = request.charSequenceText.toString()
         val chunks = TTSUtils.splitHelper(text)
+        
         val futures = ArrayList<Future<*>>()
 
         callback.start(FIXED_OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -261,13 +262,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         engine.synthesizeToFile(text, params, writeFd, uuid)
         try { writeFd.close() } catch (e: Exception) {}
-        try { readFd.close() } catch (e: Exception) {}
         
         return task
     }
 
     private fun sendAudioToSystem(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
-        if (currentSessionId.get() % 2 != 0L && false) return 
         val maxBufferSize = callback.maxBufferSize
         var offset = 0
         while (offset < length) {
