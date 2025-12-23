@@ -19,9 +19,9 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.Future
 import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -39,12 +39,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     @Volatile private var lastConfiguredRate: Int = -1
 
-    private val mIsStopped = AtomicBoolean(false)
+    private val currentSessionId = AtomicLong(0)
     private val executorService: ExecutorService = Executors.newCachedThreadPool()
     
-    private var readerTask: Future<*>? = null
-    private var processorTask: Future<*>? = null
-
     private val audioQueue = LinkedBlockingQueue<ByteArray>()
     private val FIXED_OUTPUT_HZ = 24000
     private val END_OF_STREAM = ByteArray(0)
@@ -121,18 +118,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        mIsStopped.set(true)
+        currentSessionId.incrementAndGet()
         audioQueue.clear()
-        readerTask?.cancel(true)
-        processorTask?.cancel(true)
+        AudioProcessor.flush()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
-        mIsStopped.set(true)
+        val mySessionId = currentSessionId.incrementAndGet()
         audioQueue.clear()
-        mIsStopped.set(false)
 
         val text = request.charSequenceText.toString()
         val chunks = TTSUtils.splitHelper(text)
@@ -140,7 +135,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         callback.start(FIXED_OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         for (chunk in chunks) {
-            if (mIsStopped.get()) break
+            if (currentSessionId.get() != mySessionId) break
 
             val langCode = when (chunk.lang) {
                 "SHAN" -> "shn"
@@ -170,33 +165,35 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
 
-                processStreamBuffered(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString(), sonicSampleRate)
+                processStreamBuffered(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString(), sonicSampleRate, mySessionId)
             }
         }
         callback.done()
     }
 
-    private fun processStreamBuffered(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String, sonicSampleRate: Int) {
+    private fun processStreamBuffered(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String, sonicSampleRate: Int, sessionId: Long) {
         val pipe = try { ParcelFileDescriptor.createPipe() } catch (e: IOException) { return }
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
-        readerTask = executorService.submit {
+        executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
              ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                 val buffer = ByteArray(4096)
-                while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
+                while (currentSessionId.get() == sessionId && !Thread.currentThread().isInterrupted) {
                     val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
                     if (bytesRead == -1) break 
                     if (bytesRead > 0) {
                         try { audioQueue.put(buffer.copyOfRange(0, bytesRead)) } catch (e: InterruptedException) { break }
                     }
                 }
-                try { audioQueue.put(END_OF_STREAM) } catch (e: InterruptedException) {}
+                if (currentSessionId.get() == sessionId) {
+                    try { audioQueue.put(END_OF_STREAM) } catch (e: InterruptedException) {}
+                }
             }
         }
 
-        processorTask = executorService.submit {
+        executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             
             if (sonicSampleRate != lastConfiguredRate) {
@@ -210,9 +207,11 @@ class AutoTTSManagerService : TextToSpeechService() {
             val localOutBuffer = outBufferLocal.get()!!
             val localByteArray = outBufferArrayLocal.get()!!
 
-            while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
-                val data = try { audioQueue.take() } catch (e: InterruptedException) { break }
-                if (mIsStopped.get()) break 
+            while (currentSessionId.get() == sessionId && !Thread.currentThread().isInterrupted) {
+                val data = try { audioQueue.poll(50, TimeUnit.MILLISECONDS) } catch (e: InterruptedException) { null }
+                
+                if (currentSessionId.get() != sessionId) break
+                if (data == null) continue 
                 if (data === END_OF_STREAM) break
 
                 localInBuffer.clear()
@@ -220,18 +219,18 @@ class AutoTTSManagerService : TextToSpeechService() {
                 localInBuffer.put(data)
                 localInBuffer.flip()
 
-                if (mIsStopped.get()) break
+                if (currentSessionId.get() != sessionId) break
 
                 var processed = AudioProcessor.processAudio(localInBuffer, data.size, localOutBuffer, localOutBuffer.capacity())
                 
-                if (mIsStopped.get()) break
+                if (currentSessionId.get() != sessionId) break
                 
                 if (processed > 0) {
                     localOutBuffer.get(localByteArray, 0, processed)
                     sendAudioToSystem(localByteArray, processed, callback)
                 }
 
-                while (processed > 0 && !mIsStopped.get()) {
+                while (processed > 0 && currentSessionId.get() == sessionId) {
                     localOutBuffer.clear()
                     processed = AudioProcessor.processAudio(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
                     if (processed > 0) {
@@ -240,28 +239,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             }
-             if (!mIsStopped.get()) {
+             if (currentSessionId.get() == sessionId) {
                  AudioProcessor.flush()
              }
         }
 
-        val result = engine.synthesizeToFile(text, params, writeFd, uuid)
+        engine.synthesizeToFile(text, params, writeFd, uuid)
         try { writeFd.close() } catch (e: Exception) {}
-
-        if (result == TextToSpeech.SUCCESS) {
-            try { processorTask?.get() } catch (e: Exception) {}
-        } else {
-            readerTask?.cancel(true)
-            processorTask?.cancel(true)
-        }
         try { readFd.close() } catch (e: Exception) {}
     }
 
     private fun sendAudioToSystem(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
-        if (mIsStopped.get()) return
         val maxBufferSize = callback.maxBufferSize
         var offset = 0
-        while (offset < length && !mIsStopped.get()) {
+        while (offset < length) {
             val chunk = min(length - offset, maxBufferSize)
             callback.audioAvailable(buffer, offset, chunk)
             offset += chunk
@@ -285,7 +276,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        mIsStopped.set(true)
+        currentSessionId.incrementAndGet()
         executorService.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
