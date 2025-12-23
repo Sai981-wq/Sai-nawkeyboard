@@ -15,7 +15,8 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var configPrefs: SharedPreferences
+    // ConfigPrefs သည် Rate/Pitch အတွက် မလိုတော့သော်လည်း သိမ်းဆည်းထားခြင်းမရှိပါက Error တက်နိုင်၍ ထားရှိသည်
+    private lateinit var configPrefs: SharedPreferences 
     private val engineNames = ArrayList<String>()
     private val enginePackages = ArrayList<String>()
 
@@ -28,20 +29,22 @@ class MainActivity : AppCompatActivity() {
 
         loadInstalledEngines()
 
-        setupEngineUI(R.id.spinnerShan, "pref_shan_pkg", "com.espeak.ng", 
-            R.id.seekShanRate, "SHAN_RATE", 
-            R.id.seekShanPitch, "SHAN_PITCH")
+        // Rate နှင့် Pitch Slider များကို ဖယ်ရှားလိုက်ပါပြီ
+        // Engine ရွေးချယ်ရန်အတွက်သာ Setup လုပ်ပါတော့မည်
+        setupEngineUI(R.id.spinnerShan, "pref_shan_pkg", "com.espeak.ng")
             
-        setupEngineUI(R.id.spinnerBurmese, "pref_burmese_pkg", "com.google.android.tts", 
-            R.id.seekBurmeseRate, "MYANMAR_RATE", 
-            R.id.seekBurmesePitch, "MYANMAR_PITCH")
+        setupEngineUI(R.id.spinnerBurmese, "pref_burmese_pkg", "com.google.android.tts")
             
-        setupEngineUI(R.id.spinnerEnglish, "pref_english_pkg", "com.google.android.tts", 
-            R.id.seekEnglishRate, "ENGLISH_RATE", 
-            R.id.seekEnglishPitch, "ENGLISH_PITCH")
+        setupEngineUI(R.id.spinnerEnglish, "pref_english_pkg", "com.google.android.tts")
 
         setupDonation(R.id.btnKpay, "09750091817", "KBZ Pay Number Copied")
         setupDonation(R.id.btnWave, "09750091817", "Wave Pay Number Copied")
+
+        // System TTS Settings ကို ဖွင့်ရန် Button (ရှိလျှင်) သို့မဟုတ် Menu ထည့်သွင်းနိုင်သည်
+        // ဥပမာ - Engine နာမည်များကို နှိပ်လျှင် System Settings ပွင့်အောင် လုပ်ပေးထားသည်
+        setupOpenSystemSettings(R.id.spinnerShan)
+        setupOpenSystemSettings(R.id.spinnerBurmese)
+        setupOpenSystemSettings(R.id.spinnerEnglish)
 
         performFullSystemScan()
     }
@@ -83,44 +86,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupEngineUI(spinnerId: Int, pkgKey: String, defPkg: String, rateId: Int, rateKey: String, pitchId: Int, pitchKey: String) {
-        val spinner = findViewById<Spinner>(spinnerId)
-        setSpinnerSelection(spinner, pkgKey, defPkg)
+    // Rate နှင့် Pitch Logic များကို ဖယ်ရှားပြီး Engine ရွေးရန်သီးသန့် ပြင်ထားသည်
+    private fun setupEngineUI(spinnerId: Int, pkgKey: String, defPkg: String) {
+        setSpinnerSelection(findViewById(spinnerId), pkgKey, defPkg)
+    }
 
-        spinner.setOnLongClickListener {
+    // Spinner ကို Long Click နှိပ်လျှင် Android System TTS Settings ကို ဖွင့်ပေးမည့် Function
+    private fun setupOpenSystemSettings(viewId: Int) {
+        val view = findViewById<View>(viewId)
+        view?.setOnLongClickListener {
             try {
                 val intent = Intent()
                 intent.action = "com.android.settings.TTS_SETTINGS"
                 intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 startActivity(intent)
-                Toast.makeText(this, "Opening System Settings...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Opening System TTS Settings...", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
-                Toast.makeText(this, "Cannot open settings directly", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Cannot open settings", Toast.LENGTH_SHORT).show()
             }
             true
-        }
-
-        val seekRate = findViewById<SeekBar>(rateId)
-        val seekPitch = findViewById<SeekBar>(pitchId)
-
-        seekRate.max = 200 
-        seekPitch.max = 200 
-
-        seekRate.progress = configPrefs.getInt(rateKey, 100)
-        seekPitch.progress = configPrefs.getInt(pitchKey, 100)
-
-        seekRate.setOnSeekBarChangeListener(getSeekListener(rateKey))
-        seekPitch.setOnSeekBarChangeListener(getSeekListener(pitchKey))
-    }
-
-    private fun getSeekListener(key: String): SeekBar.OnSeekBarChangeListener {
-        return object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val safeProgress = if (progress < 10) 10 else progress
-                if (fromUser) configPrefs.edit().putInt(key, safeProgress).apply()
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         }
     }
 
