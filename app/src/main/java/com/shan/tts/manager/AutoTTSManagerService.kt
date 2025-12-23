@@ -39,7 +39,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     @Volatile private var lastConfiguredRate: Int = -1
 
+    // Session Token System (အသံမထပ်စေရန်နှင့် ချက်ချင်းရပ်တန့်နိုင်ရန်)
     private val currentSessionId = AtomicLong(0)
+    
     private val executorService: ExecutorService = Executors.newCachedThreadPool()
     
     private val audioQueue = LinkedBlockingQueue<ByteArray>()
@@ -118,6 +120,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
+        // ID ကို တိုးလိုက်တာနဲ့ Loop တွေအကုန် ချက်ချင်းရပ်သွားပါမယ်
         currentSessionId.incrementAndGet()
         audioQueue.clear()
         AudioProcessor.flush()
@@ -176,7 +179,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
-        executorService.submit {
+        // Thread 1: Reader
+        val readerFuture = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
              ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                 val buffer = ByteArray(4096)
@@ -193,7 +197,8 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        executorService.submit {
+        // Thread 2: Processor
+        val processorFuture = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             
             if (sonicSampleRate != lastConfiguredRate) {
@@ -244,8 +249,21 @@ class AutoTTSManagerService : TextToSpeechService() {
              }
         }
 
+        // Engine Write (Synchronous)
         engine.synthesizeToFile(text, params, writeFd, uuid)
         try { writeFd.close() } catch (e: Exception) {}
+
+        // အရေးကြီးဆုံးအပိုင်း - Processor ပြီးတဲ့အထိ စောင့်မည်
+        // Talkback ပွတ်ဆွဲလိုက်ရင် ID ပြောင်းသွားပြီး Processor က ချက်ချင်းရပ်သွားမှာမို့ ဒီကောင်က မလေးပါဘူး
+        try {
+            if (currentSessionId.get() == sessionId) {
+                processorFuture.get()
+            } else {
+                processorFuture.cancel(true)
+                readerFuture.cancel(true)
+            }
+        } catch (e: Exception) {}
+        
         try { readFd.close() } catch (e: Exception) {}
     }
 
