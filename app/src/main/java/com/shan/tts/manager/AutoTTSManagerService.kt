@@ -61,6 +61,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onCreate() {
         super.onCreate()
         try {
+            AudioProcessor.initSonic(100, 1)
+
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
 
             val defaultEngine = try {
