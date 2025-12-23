@@ -61,7 +61,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onCreate() {
         super.onCreate()
         try {
-            AudioProcessor.initSonic(100, 1)
+            AudioProcessor.initSonic(24000, 1)
 
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
 
