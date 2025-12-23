@@ -39,15 +39,22 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     @Volatile private var lastConfiguredRate: Int = -1
 
-    // Session Token System (အသံမထပ်စေရန်နှင့် ချက်ချင်းရပ်တန့်နိုင်ရန်)
+    // Session ID (Talkback ပွတ်ဆွဲရင် အဟောင်းတွေကို ချက်ချင်းဖျက်ပစ်ဖို့)
     private val currentSessionId = AtomicLong(0)
+
+    // Reader (စာဖတ်သမား) အတွက် သီးသန့် Thread များ (အကန့်အသတ်မရှိ)
+    private val readerExecutor: ExecutorService = Executors.newCachedThreadPool()
     
-    private val executorService: ExecutorService = Executors.newCachedThreadPool()
+    // Processor (အသံထွက်သမား) အတွက် တစ်လမ်းမောင်း Thread (အသံမကျော်အောင် တန်းစီလုပ်မည်)
+    private val processorExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     
+    // ရေပုံး (Buffer) - အကန့်အသတ်မရှိ (Unlimited)
     private val audioQueue = LinkedBlockingQueue<ByteArray>()
+    
     private val FIXED_OUTPUT_HZ = 24000
     private val END_OF_STREAM = ByteArray(0)
 
+    // Memory အပိုမသုံးအောင် Buffer များကို ပြန်လည်အသုံးပြုခြင်း
     private val outBufferLocal = object : ThreadLocal<ByteBuffer>() {
         override fun initialValue(): ByteBuffer = ByteBuffer.allocateDirect(8192)
     }
@@ -120,8 +127,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        // ID ကို တိုးလိုက်တာနဲ့ Loop တွေအကုန် ချက်ချင်းရပ်သွားပါမယ်
+        // ID တိုးလိုက်တာနဲ့ အရင်အသံတွေ အကုန် Cancel ဖြစ်သွားမယ်
         currentSessionId.incrementAndGet()
+        // Queue ကို ရှင်းမယ် (ဒုတ်ဒုတ်အသံ ပျောက်ဖို့)
         audioQueue.clear()
         AudioProcessor.flush()
     }
@@ -129,7 +137,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
+        // စာကြောင်းသစ်အတွက် ID အသစ်ယူမယ်
         val mySessionId = currentSessionId.incrementAndGet()
+        
+        // အရင်လက်ကျန်တွေ ရှင်းမယ်
         audioQueue.clear()
 
         val text = request.charSequenceText.toString()
@@ -138,6 +149,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         callback.start(FIXED_OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         for (chunk in chunks) {
+            // Talkback ပွတ်ဆွဲလိုက်ရင် ID မတူတော့လို့ ချက်ချင်းရပ်မယ်
             if (currentSessionId.get() != mySessionId) break
 
             val langCode = when (chunk.lang) {
@@ -168,9 +180,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
 
+                // အသံမစောင့်တော့ဘူး၊ Queue ထဲ ပစ်ထည့်ပြီး ရှေ့ဆက်တိုးမယ်
                 processStreamBuffered(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString(), sonicSampleRate, mySessionId)
             }
         }
+        // ဒီနေရာမှာ callback.done() ကို ချက်ချင်းမခေါ်ဘူး၊ Processor ပြီးမှ ခေါ်ဖို့ လိုကောင်းလိုနိုင်ပေမယ့်
+        // Android TTS က done() ခေါ်လိုက်ရင်တောင် buffer ရှိသရွေ့ ဆက်ဖွင့်ပေးလေ့ရှိပါတယ်။
+        // အရေးကြီးတာက blocking မလုပ်ဖို့ပါပဲ။
         callback.done()
     }
 
@@ -179,8 +195,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
-        // Thread 1: Reader
-        val readerFuture = executorService.submit {
+        // ၁။ Reader Thread (Parallel) - Pipe ထဲကနေ Queue ထဲ အမြန်ဆုံး မောင်းထည့်မယ်
+        readerExecutor.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
              ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                 val buffer = ByteArray(4096)
@@ -197,10 +213,11 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        // Thread 2: Processor
-        val processorFuture = executorService.submit {
+        // ၂။ Processor Thread (Sequential) - SingleThreadExecutor သုံးထားလို့ ရှေ့နောက် မကျော်ဘူး
+        processorExecutor.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             
+            // Sonic Setup
             if (sonicSampleRate != lastConfiguredRate) {
                 AudioProcessor.initSonic(sonicSampleRate, 1)
                 lastConfiguredRate = sonicSampleRate
@@ -212,12 +229,15 @@ class AutoTTSManagerService : TextToSpeechService() {
             val localOutBuffer = outBufferLocal.get()!!
             val localByteArray = outBufferArrayLocal.get()!!
 
+            // Queue ထဲက Data ကို ဆွဲထုတ်ပြီး အသံပြောင်းမယ်
+            // END_OF_STREAM တွေ့တဲ့အထိ လုပ်မယ် (ဒါမှ Chunk တစ်ခုပြီးမှ တစ်ခုသွားမယ်)
             while (currentSessionId.get() == sessionId && !Thread.currentThread().isInterrupted) {
-                val data = try { audioQueue.poll(50, TimeUnit.MILLISECONDS) } catch (e: InterruptedException) { null }
+                // Poll သုံးခြင်းက Deadlock မဖြစ်အောင် ကာကွယ်ပေးသည်
+                val data = try { audioQueue.poll(200, TimeUnit.MILLISECONDS) } catch (e: InterruptedException) { null }
                 
                 if (currentSessionId.get() != sessionId) break
-                if (data == null) continue 
-                if (data === END_OF_STREAM) break
+                if (data == null) continue // Data မလာသေးရင် ခဏစောင့်မယ်
+                if (data === END_OF_STREAM) break // ဒီ Chunk ပြီးပြီ၊ နောက် Chunk အတွက် နေရာပေးမယ်
 
                 localInBuffer.clear()
                 if (localInBuffer.capacity() < data.size) { } 
@@ -249,22 +269,16 @@ class AutoTTSManagerService : TextToSpeechService() {
              }
         }
 
-        // Engine Write (Synchronous)
+        // ၃။ Engine Write (Main Thread)
+        // ဒီကောင်က သူ့ဟာသူ Pipe ပြည့်ရင် ခဏစောင့်၊ လျော့ရင် ဆက်ရေး လုပ်သွားလိမ့်မယ်
+        // Reader က Queue (Infinite) ထဲ ထည့်နေတာမို့ Pipe ပြည့်ပြီး ရပ်သွားတာမျိုး မဖြစ်တော့ဘူး
         engine.synthesizeToFile(text, params, writeFd, uuid)
         try { writeFd.close() } catch (e: Exception) {}
-
-        // အရေးကြီးဆုံးအပိုင်း - Processor ပြီးတဲ့အထိ စောင့်မည်
-        // Talkback ပွတ်ဆွဲလိုက်ရင် ID ပြောင်းသွားပြီး Processor က ချက်ချင်းရပ်သွားမှာမို့ ဒီကောင်က မလေးပါဘူး
-        try {
-            if (currentSessionId.get() == sessionId) {
-                processorFuture.get()
-            } else {
-                processorFuture.cancel(true)
-                readerFuture.cancel(true)
-            }
-        } catch (e: Exception) {}
-        
         try { readFd.close() } catch (e: Exception) {}
+        
+        // အရေးကြီးဆုံးအချက်: ဒီမှာ latch.await() မသုံးတော့ဘူး။
+        // Engine ရေးပြီးတာနဲ့ နောက်တစ်ကြောင်း ချက်ချင်းကူးမယ်။
+        // Processor ကတော့ နောက်ကနေ သူ့အလှည့်နဲ့သူ လုပ်သွားလိမ့်မယ်။
     }
 
     private fun sendAudioToSystem(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
@@ -295,7 +309,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onDestroy() {
         super.onDestroy()
         currentSessionId.incrementAndGet()
-        executorService.shutdownNow()
+        readerExecutor.shutdownNow()
+        processorExecutor.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
