@@ -37,12 +37,13 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var configPrefs: SharedPreferences
 
     private val mIsStopped = AtomicBoolean(false)
-    private val generationId = AtomicLong(0)
+    // ID စနစ်ကို ခဏဖယ်ပြီး ရိုးရှင်းတဲ့ Stop Flag နဲ့သွားပါမယ်
     private val executorService = Executors.newCachedThreadPool()
 
     private val audioQueue = LinkedBlockingQueue<ByteArray>()
     private val END_OF_STREAM = ByteArray(0)
     
+    // Pipe အဟောင်းကို သိမ်းထားမယ့်နေရာ
     @Volatile private var currentReadFd: ParcelFileDescriptor? = null
 
     private val outBufferLocal = object : ThreadLocal<ByteBuffer>() {
@@ -78,10 +79,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onGetVoices(): List<Voice>? {
         val voices = ArrayList<Voice>()
-        val features = HashSet<String>()
-        features.add("networkTimeoutMs")
-        features.add("networkRetriesCount")
-        voices.add(Voice("AutoTTS_Universal", Locale.US, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, features))
+        voices.add(Voice("AutoTTS_Universal", Locale.US, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, null))
         return voices
     }
 
@@ -105,8 +103,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private fun initEngine(pkg: String, locale: Locale, onReady: (TextToSpeech) -> Unit) {
         if (pkg.isEmpty()) return
-        var tts: TextToSpeech? = null
         try {
+            var tts: TextToSpeech? = null
             tts = TextToSpeech(this, { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     tts?.language = locale
@@ -118,13 +116,12 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         mIsStopped.set(true)
-        generationId.incrementAndGet()
-        
+        // Force Close Pipe (အသံတုံ့ပြန်မှု မြန်စေရန်)
         try {
             currentReadFd?.close()
         } catch (e: Exception) {}
         currentReadFd = null
-
+        
         audioQueue.clear()
         AudioProcessor.stop()
     }
@@ -133,17 +130,16 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (request == null || callback == null) return
 
         mIsStopped.set(false)
-        val myGenId = generationId.incrementAndGet()
         audioQueue.clear()
 
         val text = request.charSequenceText.toString()
         val chunks = TTSUtils.splitHelper(text)
 
-        var outputRate = 24000
-        callback.start(outputRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+        // Default output rate (24000Hz is standard for Android)
+        callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         for (chunk in chunks) {
-            if (mIsStopped.get() || generationId.get() != myGenId) break
+            if (mIsStopped.get()) break
 
             val langCode = when (chunk.lang) {
                 "SHAN" -> "shn"
@@ -156,11 +152,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (targetEngine != null) {
                 val sysRate = request.speechRate / 100f 
                 val sysPitch = request.pitch / 100f
-                val (savedRate, savedPitch) = when (langCode) {
-                    "shn" -> Pair(configPrefs.getInt("SHAN_RATE", 100), configPrefs.getInt("SHAN_PITCH", 100))
-                    "my" -> Pair(configPrefs.getInt("MYANMAR_RATE", 100), configPrefs.getInt("MYANMAR_PITCH", 100))
-                    else -> Pair(configPrefs.getInt("ENGLISH_RATE", 100), configPrefs.getInt("ENGLISH_PITCH", 100))
-                }
+                // Slider တွေဖြုတ်ထားလို့ Default 100% ပဲ ထားပါမယ်
+                val savedRate = 100
+                val savedPitch = 100
                 
                 var finalRate = sysRate * (savedRate / 100f)
                 var finalPitch = sysPitch * (savedPitch / 100f)
@@ -183,50 +177,34 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
                 
-                val sonicSampleRate = configPrefs.getInt("RATE_${engineData.pkgName}", if(isEspeak) 22050 else 24000)
+                // eSpeak ဆို 22050, Google ဆို 24000
+                val sonicSampleRate = if(isEspeak) 22050 else 24000
 
-                processStreamBuffered(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString(), sonicSampleRate, myGenId)
+                processStreamBuffered(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString(), sonicSampleRate)
             }
         }
         callback.done()
     }
 
-    private fun processStreamBuffered(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String, sonicSampleRate: Int, myGenId: Long) {
+    private fun processStreamBuffered(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String, sonicSampleRate: Int) {
         val pipe = try { ParcelFileDescriptor.createPipe() } catch (e: IOException) { return }
         val readFd = pipe[0]
         val writeFd = pipe[1]
         
         currentReadFd = readFd
 
-        executorService.submit {
+        val reader = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+             // Header Skipping Logic ကို ဖယ်လိုက်ပါပြီ (အသံပျောက်စေလို့)
              ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                 val buffer = ByteArray(4096)
-                var totalBytesRead = 0
-                
-                while (!mIsStopped.get() && generationId.get() == myGenId && !Thread.currentThread().isInterrupted) {
+                while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
                     val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
                     if (bytesRead == -1) break 
                     if (bytesRead > 0) {
-                        var offset = 0
-                        var length = bytesRead
-
-                        if (totalBytesRead < 44) {
-                            val remainingHeader = 44 - totalBytesRead
-                            if (bytesRead > remainingHeader) {
-                                offset = remainingHeader
-                                length = bytesRead - remainingHeader
-                            } else {
-                                length = 0
-                            }
-                        }
-                        totalBytesRead += bytesRead
-
-                        if (length > 0) {
-                            try { 
-                                audioQueue.put(buffer.copyOfRange(offset, offset + length)) 
-                            } catch (e: InterruptedException) { break }
-                        }
+                        try { 
+                            audioQueue.put(buffer.copyOfRange(0, bytesRead)) 
+                        } catch (e: InterruptedException) { break }
                     }
                 }
                 try { audioQueue.put(END_OF_STREAM) } catch (e: InterruptedException) {}
@@ -236,22 +214,23 @@ class AutoTTSManagerService : TextToSpeechService() {
         val processor = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             
+            // Sonic ကို အမြဲ Reset လုပ်ပေးခြင်း (Buffer ရှင်းရန်)
             AudioProcessor.initSonic(sonicSampleRate, 1)
 
             val localInBuffer = ByteBuffer.allocateDirect(4096)
             val localOutBuffer = outBufferLocal.get()!!
             val localByteArray = outBufferArrayLocal.get()!!
 
-            while (!mIsStopped.get() && generationId.get() == myGenId && !Thread.currentThread().isInterrupted) {
+            while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
                 val data = try { audioQueue.take() } catch (e: InterruptedException) { break }
-                if (mIsStopped.get() || generationId.get() != myGenId) break 
+                if (mIsStopped.get()) break 
                 if (data === END_OF_STREAM) break
 
                 localInBuffer.clear()
                 localInBuffer.put(data)
                 localInBuffer.flip()
 
-                while (localInBuffer.hasRemaining() && !mIsStopped.get() && generationId.get() == myGenId) {
+                while (localInBuffer.hasRemaining() && !mIsStopped.get()) {
                     val processed = AudioProcessor.processAudio(localInBuffer, if(localInBuffer.hasRemaining()) data.size else 0, localOutBuffer, localOutBuffer.capacity())
                     
                     if (processed > 0) {
@@ -263,15 +242,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             }
-             if (!mIsStopped.get() && generationId.get() == myGenId) {
+             if (!mIsStopped.get()) {
                  AudioProcessor.flush()
              }
         }
 
         try {
+            // Engine ကို စာဖတ်ခိုင်းမယ်
             engine.synthesizeToFile(text, params, writeFd, uuid)
-        } catch (e: Exception) { }
+        } catch (e: Exception) { e.printStackTrace() }
         
+        // Write Side ကို ပိတ်ပေးမှ Reader က ပြီးပြီဆိုတာ သိမှာ
         try { writeFd.close() } catch (e: Exception) {}
 
         try {
@@ -310,7 +291,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onDestroy() {
         super.onDestroy()
         mIsStopped.set(true)
-        generationId.incrementAndGet()
         executorService.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
