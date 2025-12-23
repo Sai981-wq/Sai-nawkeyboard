@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var configPrefs: SharedPreferences
     private val engineNames = ArrayList<String>()
     private val enginePackages = ArrayList<String>()
 
@@ -23,12 +24,21 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
         loadInstalledEngines()
 
-        setupEngineUI(R.id.spinnerShan, "pref_shan_pkg", "com.espeak.ng", R.id.seekShanRate, "rate_shan", R.id.seekShanPitch, "pitch_shan")
-        setupEngineUI(R.id.spinnerBurmese, "pref_burmese_pkg", "com.google.android.tts", R.id.seekBurmeseRate, "rate_burmese", R.id.seekBurmesePitch, "pitch_burmese")
-        setupEngineUI(R.id.spinnerEnglish, "pref_english_pkg", "com.google.android.tts", R.id.seekEnglishRate, "rate_english", R.id.seekEnglishPitch, "pitch_english")
+        setupEngineUI(R.id.spinnerShan, "pref_shan_pkg", "com.espeak.ng", 
+            R.id.seekShanRate, "SHAN_RATE", 
+            R.id.seekShanPitch, "SHAN_PITCH")
+            
+        setupEngineUI(R.id.spinnerBurmese, "pref_burmese_pkg", "com.google.android.tts", 
+            R.id.seekBurmeseRate, "MYANMAR_RATE", 
+            R.id.seekBurmesePitch, "MYANMAR_PITCH")
+            
+        setupEngineUI(R.id.spinnerEnglish, "pref_english_pkg", "com.google.android.tts", 
+            R.id.seekEnglishRate, "ENGLISH_RATE", 
+            R.id.seekEnglishPitch, "ENGLISH_PITCH")
 
         setupDonation(R.id.btnKpay, "09750091817", "KBZ Pay Number Copied")
         setupDonation(R.id.btnWave, "09750091817", "Wave Pay Number Copied")
@@ -43,7 +53,6 @@ class MainActivity : AppCompatActivity() {
         progress.setCancelable(false) 
         progress.show()
 
-        // FIXED: Removed onProgress parameter
         EngineScanner.scanAllEngines(this) {
             runOnUiThread {
                 try {
@@ -75,24 +84,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupEngineUI(spinnerId: Int, pkgKey: String, defPkg: String, rateId: Int, rateKey: String, pitchId: Int, pitchKey: String) {
-        val spinner = findViewById<Spinner>(spinnerId)
+        setSpinnerSelection(findViewById(spinnerId), pkgKey, defPkg)
+
         val seekRate = findViewById<SeekBar>(rateId)
         val seekPitch = findViewById<SeekBar>(pitchId)
 
-        // Default to 50 (which is 1.0x or Normal speed)
-        seekRate.progress = prefs.getInt(rateKey, 50)
-        seekPitch.progress = prefs.getInt(pitchKey, 50)
+        seekRate.max = 250 
+        seekPitch.max = 250 
+
+        seekRate.progress = configPrefs.getInt(rateKey, 100)
+        seekPitch.progress = configPrefs.getInt(pitchKey, 100)
 
         seekRate.setOnSeekBarChangeListener(getSeekListener(rateKey))
         seekPitch.setOnSeekBarChangeListener(getSeekListener(pitchKey))
-
-        // Spinner logic handled in loadInstalledEngines
     }
 
     private fun getSeekListener(key: String): SeekBar.OnSeekBarChangeListener {
         return object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser) prefs.edit().putInt(key, progress).apply()
+                if (fromUser) configPrefs.edit().putInt(key, progress).apply()
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
@@ -127,10 +137,6 @@ class MainActivity : AppCompatActivity() {
         spShan?.adapter = adapter
         spBur?.adapter = adapter
         spEng?.adapter = adapter
-
-        setSpinnerSelection(spShan, "pref_shan_pkg", "com.espeak.ng")
-        setSpinnerSelection(spBur, "pref_burmese_pkg", "com.google.android.tts")
-        setSpinnerSelection(spEng, "pref_english_pkg", "com.google.android.tts")
     }
 
     private fun setSpinnerSelection(spinner: Spinner?, key: String, def: String) {

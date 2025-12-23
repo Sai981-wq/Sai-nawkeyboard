@@ -6,13 +6,15 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.Process // Priority အတွက် အရေးကြီးသည်
+import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
+import android.speech.tts.Voice
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.util.HashSet
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ExecutorService
@@ -39,8 +41,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val mIsStopped = AtomicBoolean(false)
 
-    // CachedThreadPool သည် လိုအပ်လျှင် Thread အသစ်ချက်ချင်းမွေးပေးသဖြင့်
-    // Talkback ဖြင့် အမြန်ပွတ်ဆွဲချိန်တွင် Thread အဟောင်းသေတာကို စောင့်စရာမလိုတော့ပါ
     private val executorService: ExecutorService = Executors.newCachedThreadPool()
     
     private var readerTask: Future<*>? = null
@@ -86,6 +86,36 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
+    override fun onGetVoices(): List<Voice>? {
+        val voices = ArrayList<Voice>()
+        val features = HashSet<String>()
+        features.add("networkTimeoutMs")
+        features.add("networkRetriesCount")
+        
+        val voice = Voice(
+            "AutoTTS_Universal",
+            Locale.US,
+            Voice.QUALITY_HIGH,
+            Voice.LATENCY_NORMAL,
+            false,
+            features
+        )
+        voices.add(voice)
+        return voices
+    }
+
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+    }
+
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+    }
+
+    override fun onGetLanguage(): Array<String> {
+        return arrayOf("eng", "USA", "")
+    }
+
     private fun resolveEngine(prefKey: String, priorityList: List<String>, fallback: String): String {
         val userPref = prefs.getString(prefKey, "")
         if (!userPref.isNullOrEmpty() && isPackageInstalled(userPref)) return userPref
@@ -113,19 +143,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
-
     override fun onStop() {
         mIsStopped.set(true)
-        
         audioQueue.clear()
-        
-        // Interrupt လုပ်မယ်
         readerTask?.cancel(true)
         processorTask?.cancel(true)
-        
         AudioProcessor.flush() 
         lastConfiguredRate = -1 
     }
@@ -135,13 +157,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         mIsStopped.set(true)
         audioQueue.clear()
-        
-        // အသစ်ပြန်စရန် Flag ချမယ်
         mIsStopped.set(false)
 
         val text = request.charSequenceText.toString()
-        val sysRate = request.speechRate
-        val sysPitch = request.pitch
         val chunks = TTSUtils.splitHelper(text)
 
         callback.start(FIXED_OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -158,24 +176,41 @@ class AutoTTSManagerService : TextToSpeechService() {
             val targetEngine = engineData.engine ?: englishEngine
 
             if (targetEngine != null) {
-                val finalRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
+                val sysRate = request.speechRate / 100f 
+                val sysPitch = request.pitch / 100f
+
+                val (savedRate, savedPitch) = when (langCode) {
+                    "shn" -> Pair(
+                        configPrefs.getInt("SHAN_RATE", 100),
+                        configPrefs.getInt("SHAN_PITCH", 100)
+                    )
+                    "my" -> Pair(
+                        configPrefs.getInt("MYANMAR_RATE", 100),
+                        configPrefs.getInt("MYANMAR_PITCH", 100)
+                    )
+                    else -> Pair(
+                        configPrefs.getInt("ENGLISH_RATE", 100),
+                        configPrefs.getInt("ENGLISH_PITCH", 100)
+                    )
+                }
                 
-                if (finalRate != lastConfiguredRate) {
-                    AudioProcessor.initSonic(finalRate, 1)
-                    lastConfiguredRate = finalRate
+                val appRate = savedRate / 100f
+                val appPitch = savedPitch / 100f
+
+                val finalRate = sysRate * appRate
+                val finalPitch = sysPitch * appPitch
+                
+                val sonicSampleRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
+                if (sonicSampleRate != lastConfiguredRate) {
+                    AudioProcessor.initSonic(sonicSampleRate, 1)
+                    lastConfiguredRate = sonicSampleRate
                 } else {
                     AudioProcessor.flush()
                 }
 
-                var useRate = sysRate / 100f
-                var usePitch = sysPitch / 100f
-                val lowerPkg = engineData.pkgName.lowercase(Locale.ROOT)
-                if (lowerPkg.contains("myanmar") || lowerPkg.contains("saomai") || lowerPkg.contains("ttsm")) {
-                    useRate = 1.0f
-                    usePitch = 1.0f
-                }
-                targetEngine.setSpeechRate(useRate)
-                targetEngine.setPitch(usePitch)
+                targetEngine.setSpeechRate(finalRate)
+                targetEngine.setPitch(finalPitch)
+                
                 val volume = getVolumeCorrection(engineData.pkgName)
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
@@ -197,20 +232,16 @@ class AutoTTSManagerService : TextToSpeechService() {
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
-        // Thread 1: Reader (High Priority)
         readerTask = executorService.submit {
-            // Android System ကို ပြောမယ်: "ဒါ အသံပိုင်းဆိုင်ရာ အရေးကြီးအလုပ်မို့ ချက်ချင်းလုပ်ပေးပါ"
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-            
              ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                val buffer = ByteArray(4096) // Buffer Size ကို မူလအတိုင်းထားသည် (Safety အတွက်)
+                val buffer = ByteArray(4096)
                 while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
                     val bytesRead = try {
                          fis.read(buffer)
                     } catch (e: IOException) { -1 }
 
                     if (bytesRead == -1) break 
-
                     if (bytesRead > 0) {
                         try {
                             audioQueue.put(buffer.copyOfRange(0, bytesRead))
@@ -221,29 +252,20 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        // Thread 2: Processor (High Priority)
         processorTask = executorService.submit {
-            // Android System ကို ပြောမယ်: "ဒါလည်း အသံအလုပ်ပဲ၊ VIP လမ်းကြောင်းပေးပါ"
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-
             val localInBuffer = ByteBuffer.allocateDirect(4096)
             val localOutBuffer = outBufferLocal.get()!!
             val localByteArray = outBufferArrayLocal.get()!!
 
             while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
-                val data = try {
-                    audioQueue.take() 
-                } catch (e: InterruptedException) { break }
+                val data = try { audioQueue.take() } catch (e: InterruptedException) { break }
                 
                 if (mIsStopped.get()) break 
-                
                 if (data === END_OF_STREAM) break
 
                 localInBuffer.clear()
-                // Safety check for buffer capacity
-                if (localInBuffer.capacity() < data.size) {
-                    // This rarely happens with 4096, but good for safety
-                }
+                if (localInBuffer.capacity() < data.size) { } 
                 localInBuffer.put(data)
                 localInBuffer.flip()
 
@@ -283,7 +305,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
         try { readFd.close() } catch (e: Exception) {}
     }
-
 
     private fun sendAudioToSystem(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
         if (mIsStopped.get()) return
