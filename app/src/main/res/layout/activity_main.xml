@@ -72,15 +72,6 @@
                 android:paddingStart="10dp"
                 android:layout_marginBottom="12dp"
                 android:contentDescription="Select Shan Engine"/>
-            
-            <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
-                <TextView android:text="Speed" android:textColor="#424242" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-                <SeekBar android:id="@+id/seekShanRate" android:progressTint="#C2185B" android:thumbTint="#C2185B" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="Shan Speech Rate"/>
-            </LinearLayout>
-            <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                <TextView android:text="Pitch" android:textColor="#424242" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-                <SeekBar android:id="@+id/seekShanPitch" android:progressTint="#C2185B" android:thumbTint="#C2185B" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="Shan Voice Pitch"/>
-            </LinearLayout>
         </LinearLayout>
 
         <LinearLayout
@@ -110,15 +101,6 @@
                 android:paddingStart="10dp"
                 android:layout_marginBottom="12dp"
                 android:contentDescription="Select Burmese Engine"/>
-            
-            <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
-                <TextView android:text="Speed" android:textColor="#424242" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-                <SeekBar android:id="@+id/seekBurmeseRate" android:progressTint="#1976D2" android:thumbTint="#1976D2" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="Burmese Speech Rate"/>
-            </LinearLayout>
-            <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                <TextView android:text="Pitch" android:textColor="#424242" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-                <SeekBar android:id="@+id/seekBurmesePitch" android:progressTint="#1976D2" android:thumbTint="#1976D2" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="Burmese Voice Pitch"/>
-            </LinearLayout>
         </LinearLayout>
 
         <LinearLayout
@@ -148,15 +130,6 @@
                 android:paddingStart="10dp"
                 android:layout_marginBottom="12dp"
                 android:contentDescription="Select English Engine"/>
-            
-            <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
-                <TextView android:text="Speed" android:textColor="#424242" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-                <SeekBar android:id="@+id/seekEnglishRate" android:progressTint="#388E3C" android:thumbTint="#388E3C" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="English Speech Rate"/>
-            </LinearLayout>
-            <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="8dp">
-                <TextView android:text="Pitch" android:textColor="#424242" android:layout_width="60dp" android:layout_height="wrap_content" android:importantForAccessibility="no"/>
-                <SeekBar android:id="@+id/seekEnglishPitch" android:progressTint="#388E3C" android:thumbTint="#388E3C" android:max="200" android:progress="100" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:contentDescription="English Voice Pitch"/>
-            </LinearLayout>
         </LinearLayout>
 
         <LinearLayout

@@ -33,9 +33,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var configPrefs: SharedPreferences
-
-    private var lastConfiguredRate: Int = -1
+    
+    private var mCurrentLanguage: String = "eng"
+    private var mCurrentCountry: String = "USA"
+    private var mCurrentVariant: String = ""
 
     private val mIsStopped = AtomicBoolean(false)
 
@@ -61,7 +62,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onCreate()
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-            configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
             val defaultEngine = try {
                 val tts = TextToSpeech(this, null)
@@ -111,9 +111,20 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    override fun onGetLanguage(): Array<String> {
+        return arrayOf(mCurrentLanguage, mCurrentCountry, mCurrentVariant)
+    }
+
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+    }
+
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
+        mCurrentLanguage = lang ?: "eng"
+        mCurrentCountry = country ?: ""
+        mCurrentVariant = variant ?: ""
+        return TextToSpeech.LANG_COUNTRY_AVAILABLE
+    }
 
     override fun onStop() {
         mIsStopped.set(true)
@@ -123,7 +134,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         processorTask?.cancel(true)
         
         AudioProcessor.flush() 
-        lastConfiguredRate = -1 
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -153,19 +163,10 @@ class AutoTTSManagerService : TextToSpeechService() {
             val targetEngine = engineData.engine ?: englishEngine
 
             if (targetEngine != null) {
-                val finalRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
-                
-                if (finalRate != lastConfiguredRate) {
-                    AudioProcessor.initSonic(finalRate, 1)
-                    lastConfiguredRate = finalRate
-                } else {
-                    AudioProcessor.flush()
-                }
+                AudioProcessor.flush()
 
                 val useRate = sysRate / 100f
                 val usePitch = sysPitch / 100f
-                
-                // Fixed rate/pitch logic removed for Myanmar engines
                 
                 targetEngine.setSpeechRate(useRate)
                 targetEngine.setPitch(usePitch)
@@ -190,7 +191,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
-        // Thread 1: Reader (High Priority)
         readerTask = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             
@@ -213,7 +213,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        // Thread 2: Processor (High Priority)
         processorTask = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
 
@@ -233,7 +232,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 localInBuffer.clear()
                 
                 if (localInBuffer.capacity() < data.size) {
-                    // Buffer safety
                 }
                 localInBuffer.put(data)
                 localInBuffer.flip()
