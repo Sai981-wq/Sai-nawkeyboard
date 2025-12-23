@@ -15,8 +15,6 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: SharedPreferences
-    // ConfigPrefs သည် Rate/Pitch အတွက် မလိုတော့သော်လည်း သိမ်းဆည်းထားခြင်းမရှိပါက Error တက်နိုင်၍ ထားရှိသည်
-    private lateinit var configPrefs: SharedPreferences 
     private val engineNames = ArrayList<String>()
     private val enginePackages = ArrayList<String>()
 
@@ -25,23 +23,16 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-        configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
         loadInstalledEngines()
 
-        // Rate နှင့် Pitch Slider များကို ဖယ်ရှားလိုက်ပါပြီ
-        // Engine ရွေးချယ်ရန်အတွက်သာ Setup လုပ်ပါတော့မည်
         setupEngineUI(R.id.spinnerShan, "pref_shan_pkg", "com.espeak.ng")
-            
         setupEngineUI(R.id.spinnerBurmese, "pref_burmese_pkg", "com.google.android.tts")
-            
         setupEngineUI(R.id.spinnerEnglish, "pref_english_pkg", "com.google.android.tts")
 
         setupDonation(R.id.btnKpay, "09750091817", "KBZ Pay Number Copied")
         setupDonation(R.id.btnWave, "09750091817", "Wave Pay Number Copied")
 
-        // System TTS Settings ကို ဖွင့်ရန် Button (ရှိလျှင်) သို့မဟုတ် Menu ထည့်သွင်းနိုင်သည်
-        // ဥပမာ - Engine နာမည်များကို နှိပ်လျှင် System Settings ပွင့်အောင် လုပ်ပေးထားသည်
         setupOpenSystemSettings(R.id.spinnerShan)
         setupOpenSystemSettings(R.id.spinnerBurmese)
         setupOpenSystemSettings(R.id.spinnerEnglish)
@@ -53,7 +44,7 @@ class MainActivity : AppCompatActivity() {
         val progress = ProgressDialog(this)
         progress.setTitle("System Preparation")
         progress.setMessage("Initializing all TTS Engines...\nPlease wait, this may take a while.")
-        progress.setCancelable(false) 
+        progress.setCancelable(false)
         progress.show()
 
         EngineScanner.scanAllEngines(this) {
@@ -86,12 +77,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Rate နှင့် Pitch Logic များကို ဖယ်ရှားပြီး Engine ရွေးရန်သီးသန့် ပြင်ထားသည်
     private fun setupEngineUI(spinnerId: Int, pkgKey: String, defPkg: String) {
         setSpinnerSelection(findViewById(spinnerId), pkgKey, defPkg)
     }
 
-    // Spinner ကို Long Click နှိပ်လျှင် Android System TTS Settings ကို ဖွင့်ပေးမည့် Function
     private fun setupOpenSystemSettings(viewId: Int) {
         val view = findViewById<View>(viewId)
         view?.setOnLongClickListener {
