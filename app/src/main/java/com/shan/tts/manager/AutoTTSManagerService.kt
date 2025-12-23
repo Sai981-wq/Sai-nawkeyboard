@@ -37,24 +37,21 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private lateinit var configPrefs: SharedPreferences
 
-    private var lastConfiguredRate: Int = -1
+    @Volatile private var lastConfiguredRate: Int = -1
 
     private val mIsStopped = AtomicBoolean(false)
-
     private val executorService: ExecutorService = Executors.newCachedThreadPool()
     
     private var readerTask: Future<*>? = null
     private var processorTask: Future<*>? = null
 
     private val audioQueue = LinkedBlockingQueue<ByteArray>()
-
     private val FIXED_OUTPUT_HZ = 24000
     private val END_OF_STREAM = ByteArray(0)
 
     private val outBufferLocal = object : ThreadLocal<ByteBuffer>() {
         override fun initialValue(): ByteBuffer = ByteBuffer.allocateDirect(8192)
     }
-
     private val outBufferArrayLocal = object : ThreadLocal<ByteArray>() {
         override fun initialValue(): ByteArray = ByteArray(8192)
     }
@@ -80,10 +77,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "com.samsung.SMT", "es.codefactory.eloquencetts"), defaultEngine)
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     override fun onGetVoices(): List<Voice>? {
@@ -91,30 +85,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         val features = HashSet<String>()
         features.add("networkTimeoutMs")
         features.add("networkRetriesCount")
-        
-        val voice = Voice(
-            "AutoTTS_Universal",
-            Locale.US,
-            Voice.QUALITY_HIGH,
-            Voice.LATENCY_NORMAL,
-            false,
-            features
-        )
-        voices.add(voice)
+        voices.add(Voice("AutoTTS_Universal", Locale.US, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, features))
         return voices
     }
 
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE
-    }
-
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE
-    }
-
-    override fun onGetLanguage(): Array<String> {
-        return arrayOf("eng", "USA", "")
-    }
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
 
     private fun resolveEngine(prefKey: String, priorityList: List<String>, fallback: String): String {
         val userPref = prefs.getString(prefKey, "")
@@ -148,8 +125,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         audioQueue.clear()
         readerTask?.cancel(true)
         processorTask?.cancel(true)
-        AudioProcessor.flush() 
-        lastConfiguredRate = -1 
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -178,35 +153,15 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (targetEngine != null) {
                 val sysRate = request.speechRate / 100f 
                 val sysPitch = request.pitch / 100f
-
                 val (savedRate, savedPitch) = when (langCode) {
-                    "shn" -> Pair(
-                        configPrefs.getInt("SHAN_RATE", 100),
-                        configPrefs.getInt("SHAN_PITCH", 100)
-                    )
-                    "my" -> Pair(
-                        configPrefs.getInt("MYANMAR_RATE", 100),
-                        configPrefs.getInt("MYANMAR_PITCH", 100)
-                    )
-                    else -> Pair(
-                        configPrefs.getInt("ENGLISH_RATE", 100),
-                        configPrefs.getInt("ENGLISH_PITCH", 100)
-                    )
+                    "shn" -> Pair(configPrefs.getInt("SHAN_RATE", 100), configPrefs.getInt("SHAN_PITCH", 100))
+                    "my" -> Pair(configPrefs.getInt("MYANMAR_RATE", 100), configPrefs.getInt("MYANMAR_PITCH", 100))
+                    else -> Pair(configPrefs.getInt("ENGLISH_RATE", 100), configPrefs.getInt("ENGLISH_PITCH", 100))
                 }
                 
-                val appRate = savedRate / 100f
-                val appPitch = savedPitch / 100f
-
-                val finalRate = sysRate * appRate
-                val finalPitch = sysPitch * appPitch
-                
+                val finalRate = sysRate * (savedRate / 100f)
+                val finalPitch = sysPitch * (savedPitch / 100f)
                 val sonicSampleRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
-                if (sonicSampleRate != lastConfiguredRate) {
-                    AudioProcessor.initSonic(sonicSampleRate, 1)
-                    lastConfiguredRate = sonicSampleRate
-                } else {
-                    AudioProcessor.flush()
-                }
 
                 targetEngine.setSpeechRate(finalRate)
                 targetEngine.setPitch(finalPitch)
@@ -215,20 +170,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
 
-                processStreamBuffered(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString())
+                processStreamBuffered(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString(), sonicSampleRate)
             }
         }
         callback.done()
     }
 
-    private fun processStreamBuffered(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
-        
-        val pipe = try {
-            ParcelFileDescriptor.createPipe()
-        } catch (e: IOException) {
-            e.printStackTrace()
-            return
-        }
+    private fun processStreamBuffered(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String, sonicSampleRate: Int) {
+        val pipe = try { ParcelFileDescriptor.createPipe() } catch (e: IOException) { return }
         val readFd = pipe[0]
         val writeFd = pipe[1]
 
@@ -237,15 +186,10 @@ class AutoTTSManagerService : TextToSpeechService() {
              ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                 val buffer = ByteArray(4096)
                 while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
-                    val bytesRead = try {
-                         fis.read(buffer)
-                    } catch (e: IOException) { -1 }
-
+                    val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
                     if (bytesRead == -1) break 
                     if (bytesRead > 0) {
-                        try {
-                            audioQueue.put(buffer.copyOfRange(0, bytesRead))
-                        } catch (e: InterruptedException) { break }
+                        try { audioQueue.put(buffer.copyOfRange(0, bytesRead)) } catch (e: InterruptedException) { break }
                     }
                 }
                 try { audioQueue.put(END_OF_STREAM) } catch (e: InterruptedException) {}
@@ -254,13 +198,20 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         processorTask = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            
+            if (sonicSampleRate != lastConfiguredRate) {
+                AudioProcessor.initSonic(sonicSampleRate, 1)
+                lastConfiguredRate = sonicSampleRate
+            } else {
+                AudioProcessor.flush()
+            }
+
             val localInBuffer = ByteBuffer.allocateDirect(4096)
             val localOutBuffer = outBufferLocal.get()!!
             val localByteArray = outBufferArrayLocal.get()!!
 
             while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
                 val data = try { audioQueue.take() } catch (e: InterruptedException) { break }
-                
                 if (mIsStopped.get()) break 
                 if (data === END_OF_STREAM) break
 
