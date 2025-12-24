@@ -74,7 +74,12 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         mIsStopped.set(true)
-        AudioProcessor.flush()
+        try {
+            // Stop လုပ်ရင် Sonic ကိုလည်း Reset ချပေးရမယ်
+            synchronized(AudioProcessor) {
+                AudioProcessor.flush()
+            }
+        } catch (e: Exception) {}
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -120,39 +125,48 @@ class AutoTTSManagerService : TextToSpeechService() {
             val readFd = pipe[0]
             val writeFd = pipe[1]
 
+            // ၁။ Engine ကို စာဖတ်ခိုင်း (Engine Lock)
             synchronized(targetEngine) {
                 targetEngine.synthesizeToFile(chunk.text, params, writeFd, UUID.randomUUID().toString())
             }
             writeFd.close()
 
-            ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                val engineHz = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
-                AudioProcessor.initSonic(engineHz, 1)
-
-                val buffer = ByteArray(4096)
-                val sonicInBuffer = inputBufferPool.get()!!
-                val sonicOutBuffer = outputBufferPool.get()!!
-                val sonicOutArray = ByteArray(8192)
-
-                var bytesRead: Int
-                while (fis.read(buffer).also { bytesRead = it } != -1) {
-                    if (mIsStopped.get()) break
+            // ၂။ Sonic ကို Lock ခတ်ပြီး အသံပြောင်း (AudioProcessor Lock)
+            // ဒီနေရာက အရေးကြီးဆုံးပါ - Sonic ကို တစ်ယောက်ပြီးမှ တစ်ယောက် ပေးသုံးတာပါ
+            synchronized(AudioProcessor) {
+                
+                ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                    val engineHz = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
                     
-                    sonicInBuffer.clear()
-                    sonicInBuffer.put(buffer, 0, bytesRead)
-                    sonicInBuffer.flip()
+                    try { AudioProcessor.flush() } catch (e: Exception) {}
+                    AudioProcessor.initSonic(engineHz, 1)
 
-                    sonicOutBuffer.clear()
-                    val processedBytes = AudioProcessor.processAudio(
-                        sonicInBuffer, bytesRead, sonicOutBuffer, sonicOutBuffer.capacity()
-                    )
+                    val buffer = ByteArray(4096)
+                    val sonicInBuffer = inputBufferPool.get()!!
+                    val sonicOutBuffer = outputBufferPool.get()!!
+                    val sonicOutArray = ByteArray(8192)
 
-                    if (processedBytes > 0) {
-                        sonicOutBuffer.get(sonicOutArray, 0, processedBytes)
-                        sendToCallback(sonicOutArray, processedBytes, callback)
+                    var bytesRead: Int
+                    
+                    while (fis.read(buffer).also { bytesRead = it } != -1) {
+                        if (mIsStopped.get()) break
+                        
+                        sonicInBuffer.clear()
+                        sonicInBuffer.put(buffer, 0, bytesRead)
+                        sonicInBuffer.flip()
+
+                        sonicOutBuffer.clear()
+                        val processedBytes = AudioProcessor.processAudio(
+                            sonicInBuffer, bytesRead, sonicOutBuffer, sonicOutBuffer.capacity()
+                        )
+
+                        if (processedBytes > 0) {
+                            sonicOutBuffer.get(sonicOutArray, 0, processedBytes)
+                            sendToCallback(sonicOutArray, processedBytes, callback)
+                        }
                     }
+                    try { AudioProcessor.flush() } catch (e: Exception) {}
                 }
-                AudioProcessor.flush()
             }
         } catch (e: Exception) { e.printStackTrace() }
     }
