@@ -2,7 +2,6 @@ package com.shan.tts.manager
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
@@ -21,10 +20,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var shanEngine: TextToSpeech? = null
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
-
-    private var shanPkgName: String = ""
-    private var burmesePkgName: String = ""
-    private var englishPkgName: String = ""
 
     private lateinit var prefs: SharedPreferences
     private lateinit var configPrefs: SharedPreferences
@@ -54,34 +49,18 @@ class AutoTTSManagerService : TextToSpeechService() {
                 pkg ?: "com.google.android.tts"
             } catch (e: Exception) { "com.google.android.tts" }
 
-            shanPkgName = resolveEngine("pref_shan_pkg", listOf("com.shan.tts", "com.espeak.ng"), defaultEngine)
-            initEngine(shanPkgName, Locale("shn", "MM")) { shanEngine = it }
+            val shanPkg = prefs.getString("pref_shan_pkg", defaultEngine) ?: defaultEngine
+            val burmesePkg = prefs.getString("pref_burmese_pkg", defaultEngine) ?: defaultEngine
+            val englishPkg = prefs.getString("pref_english_pkg", defaultEngine) ?: defaultEngine
 
-            burmesePkgName = resolveEngine("pref_burmese_pkg", listOf("org.saomaicenter.myanmartts", "com.google.android.tts"), defaultEngine)
-            initEngine(burmesePkgName, Locale("my", "MM")) { burmeseEngine = it }
-
-            englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "com.samsung.SMT"), defaultEngine)
-            initEngine(englishPkgName, Locale.US) { englishEngine = it }
+            initEngine(shanPkg, Locale("shn", "MM")) { shanEngine = it }
+            initEngine(burmesePkg, Locale("my", "MM")) { burmeseEngine = it }
+            initEngine(englishPkg, Locale.US) { englishEngine = it }
 
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    private fun resolveEngine(prefKey: String, priorityList: List<String>, fallback: String): String {
-        val userPref = prefs.getString(prefKey, "")
-        if (!userPref.isNullOrEmpty() && isPackageInstalled(userPref)) return userPref
-        for (pkg in priorityList) if (isPackageInstalled(pkg)) return pkg
-        return fallback
-    }
-
-    private fun isPackageInstalled(pkgName: String): Boolean {
-        return try {
-            packageManager.getPackageInfo(pkgName, 0)
-            true
-        } catch (e: PackageManager.NameNotFoundException) { false }
-    }
-
     private fun initEngine(pkg: String, locale: Locale, onReady: (TextToSpeech) -> Unit) {
-        if (pkg.isEmpty()) return
         var tts: TextToSpeech? = null
         try {
             tts = TextToSpeech(this, { status ->
@@ -109,9 +88,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val pendingTasks = ArrayList<Future<*>>()
         for (chunk in chunks) {
-            val task = Callable {
-                synthesizeAndStream(chunk, request, callback)
-            }
+            val task = Callable { synthesizeAndStream(chunk, request, callback) }
             pendingTasks.add(synthesisExecutor.submit(task))
         }
 
@@ -175,8 +152,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         sendToCallback(sonicOutArray, processedBytes, callback)
                     }
                 }
-                
-                flushRemainingAudio(callback)
+                AudioProcessor.flush()
             }
         } catch (e: Exception) { e.printStackTrace() }
     }
@@ -195,23 +171,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun flushRemainingAudio(callback: SynthesisCallback) {
-        val sonicOutBuffer = outputBufferPool.get()!!
-        val sonicOutArray = ByteArray(8192)
-        sonicOutBuffer.clear()
-        
-        val remaining = AudioProcessor.flushStream(sonicOutBuffer, sonicOutBuffer.capacity())
-        if (remaining > 0) {
-            sonicOutBuffer.get(sonicOutArray, 0, remaining)
-            sendToCallback(sonicOutArray, remaining, callback)
-        }
-    }
-
     private fun getEngineDataForLang(lang: String): EngineData {
         return when (lang) {
-            "SHAN" -> EngineData(shanEngine ?: burmeseEngine ?: englishEngine, shanPkgName)
-            "MYANMAR" -> EngineData(burmeseEngine ?: englishEngine, burmesePkgName)
-            else -> EngineData(englishEngine, englishPkgName)
+            "SHAN" -> EngineData(shanEngine ?: burmeseEngine ?: englishEngine, prefs.getString("pref_shan_pkg", "") ?: "")
+            "MYANMAR" -> EngineData(burmeseEngine ?: englishEngine, prefs.getString("pref_burmese_pkg", "") ?: "")
+            else -> EngineData(englishEngine, prefs.getString("pref_english_pkg", "") ?: "")
         }
     }
 
