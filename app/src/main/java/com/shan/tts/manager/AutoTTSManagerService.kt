@@ -152,19 +152,18 @@ class AutoTTSManagerService : TextToSpeechService() {
         val sysPitch = request.pitch / 100f
 
         synchronized(targetEngine) {
-            targetEngine.speechRate = sysRate
-            targetEngine.pitch = sysPitch
+            targetEngine.setSpeechRate(sysRate)
+            targetEngine.setPitch(sysPitch)
         }
 
         val params = Bundle()
         val vol = if (engineData.pkgName.lowercase().contains("espeak")) 1.0f else 0.8f
         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, vol)
 
-        var pfd: ParcelFileDescriptor? = null
         try {
-            pfd = ParcelFileDescriptor.createPipe()
-            val writeFd = pfd[1]
-            val readFd = pfd[0]
+            val pipe = ParcelFileDescriptor.createPipe()
+            val readFd = pipe[0]
+            val writeFd = pipe[1]
 
             targetEngine.synthesizeToFile(chunk.text, params, writeFd, UUID.randomUUID().toString())
             writeFd.close()
