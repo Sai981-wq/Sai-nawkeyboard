@@ -6,7 +6,7 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.Process 
+import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -15,11 +15,10 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -33,21 +32,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var configPrefs: SharedPreferences
-
-    private var lastConfiguredRate: Int = -1
-
-    private val mIsStopped = AtomicBoolean(false)
-
-    private val executorService: ExecutorService = Executors.newCachedThreadPool()
     
-    private var readerTask: Future<*>? = null
-    private var processorTask: Future<*>? = null
-
-    private val audioQueue = LinkedBlockingQueue<ByteArray>()
-
-    private val FIXED_OUTPUT_HZ = 24000
-    private val END_OF_STREAM = ByteArray(0)
+    private val mIsStopped = AtomicBoolean(false)
+    private val executorService = Executors.newCachedThreadPool()
+    private val currentReadFd = AtomicReference<ParcelFileDescriptor?>(null)
 
     private val outBufferLocal = object : ThreadLocal<ByteBuffer>() {
         override fun initialValue(): ByteBuffer = ByteBuffer.allocateDirect(8192)
@@ -61,7 +49,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onCreate()
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
-            configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
             val defaultEngine = try {
                 val tts = TextToSpeech(this, null)
@@ -78,6 +65,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "com.samsung.SMT", "es.codefactory.eloquencetts"), defaultEngine)
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
+
+            AudioProcessor.initSonic(24000, 1)
 
         } catch (e: Exception) {
             e.printStackTrace()
@@ -104,39 +93,56 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             tts = TextToSpeech(this, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    tts?.language = locale
-                    onReady(tts!!)
+                    try {
+                        tts?.language = locale
+                        onReady(tts!!)
+                    } catch (e: Exception) { }
                 }
             }, pkg)
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    override fun onGetLanguage(): Array<String> {
+        val locale = Locale.US
+        return arrayOf(locale.language, locale.country, "")
+    }
+
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
+        val iso3 = try { Locale(lang ?: "eng").isO3Language } catch (e: Exception) { "eng" }
+        return when (iso3) {
+            "shn" -> if (shanEngine != null) TextToSpeech.LANG_COUNTRY_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
+            "mya", "bur" -> if (burmeseEngine != null) TextToSpeech.LANG_COUNTRY_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
+            "eng" -> if (englishEngine != null) TextToSpeech.LANG_COUNTRY_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
+            else -> TextToSpeech.LANG_NOT_SUPPORTED
+        }
+    }
+
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
+        return onIsLanguageAvailable(lang, country, variant)
+    }
 
     override fun onStop() {
         mIsStopped.set(true)
-        audioQueue.clear()
-        readerTask?.cancel(true)
-        processorTask?.cancel(true)
-        AudioProcessor.flush() 
-        lastConfiguredRate = -1 
+        val fd = currentReadFd.getAndSet(null)
+        try {
+            fd?.close()
+        } catch (e: IOException) { }
+        
+        AudioProcessor.flush()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
-        mIsStopped.set(true)
-        audioQueue.clear()
         mIsStopped.set(false)
-
+        
         val text = request.charSequenceText.toString()
-        val sysRate = request.speechRate
-        val sysPitch = request.pitch
+        val sysRate = request.speechRate / 100f
+        val sysPitch = request.pitch / 100f
+        
         val chunks = TTSUtils.splitHelper(text)
 
-        callback.start(FIXED_OUTPUT_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+        callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         for (chunk in chunks) {
             if (mIsStopped.get()) break
@@ -146,127 +152,99 @@ class AutoTTSManagerService : TextToSpeechService() {
                 "MYANMAR" -> "my"
                 else -> "eng"
             }
+            
             val engineData = getEngineDataForLang(langCode)
             val targetEngine = engineData.engine ?: englishEngine
 
             if (targetEngine != null) {
-                val finalRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
-                
-                if (finalRate != lastConfiguredRate) {
-                    AudioProcessor.initSonic(finalRate, 1)
-                    lastConfiguredRate = finalRate
-                } else {
-                    AudioProcessor.flush()
+                synchronized(targetEngine) {
+                    targetEngine.setSpeechRate(sysRate)
+                    targetEngine.setPitch(sysPitch)
+                    processSafeStream(targetEngine, chunk.text, callback)
                 }
-
-                val useRate = sysRate / 100f
-                val usePitch = sysPitch / 100f
-                
-                targetEngine.setSpeechRate(useRate)
-                targetEngine.setPitch(usePitch)
-                
-                val volume = getVolumeCorrection(engineData.pkgName)
-                val params = Bundle()
-                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume)
-
-                processStreamBuffered(targetEngine, params, chunk.text, callback, UUID.randomUUID().toString())
             }
         }
-        callback.done()
+        
+        if (!mIsStopped.get()) {
+            callback.done()
+        }
     }
 
-    private fun processStreamBuffered(engine: TextToSpeech, params: Bundle, text: String, callback: SynthesisCallback, uuid: String) {
-        
+    private fun processSafeStream(engine: TextToSpeech, text: String, callback: SynthesisCallback) {
         val pipe = try {
             ParcelFileDescriptor.createPipe()
         } catch (e: IOException) {
-            e.printStackTrace()
             return
         }
         val readFd = pipe[0]
         val writeFd = pipe[1]
+        val uuid = UUID.randomUUID().toString()
 
-        readerTask = executorService.submit {
+        currentReadFd.set(readFd)
+
+        val readerTask: Future<*> = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
             
-             ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                val buffer = ByteArray(4096)
-                while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
-                    val bytesRead = try {
-                         fis.read(buffer)
-                    } catch (e: IOException) { -1 }
-
-                    if (bytesRead == -1) break 
-
-                    if (bytesRead > 0) {
-                        try {
-                            audioQueue.put(buffer.copyOfRange(0, bytesRead))
-                        } catch (e: InterruptedException) { break }
-                    }
-                }
-                try { audioQueue.put(END_OF_STREAM) } catch (e: InterruptedException) {}
-            }
-        }
-
-        processorTask = executorService.submit {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-
+            val buffer = ByteArray(4096)
             val localInBuffer = ByteBuffer.allocateDirect(4096)
             val localOutBuffer = outBufferLocal.get()!!
             val localByteArray = outBufferArrayLocal.get()!!
 
-            while (!mIsStopped.get() && !Thread.currentThread().isInterrupted) {
-                val data = try {
-                    audioQueue.take() 
-                } catch (e: InterruptedException) { break }
-                
-                if (mIsStopped.get()) break 
-                
-                if (data === END_OF_STREAM) break
+            try {
+                ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                    while (!mIsStopped.get()) {
+                        val bytesRead = try {
+                            fis.read(buffer)
+                        } catch (e: IOException) { -1 }
 
-                localInBuffer.clear()
-                if (localInBuffer.capacity() < data.size) {
-                }
-                localInBuffer.put(data)
-                localInBuffer.flip()
+                        if (bytesRead == -1) break
 
-                if (mIsStopped.get()) break
+                        if (bytesRead > 0) {
+                            localInBuffer.clear()
+                            if (localInBuffer.capacity() < bytesRead) {
+                                // Implicit guard
+                            }
+                            localInBuffer.put(buffer, 0, bytesRead)
+                            localInBuffer.flip()
 
-                var processed = AudioProcessor.processAudio(localInBuffer, data.size, localOutBuffer, localOutBuffer.capacity())
-                
-                if (mIsStopped.get()) break
-                
-                if (processed > 0) {
-                    localOutBuffer.get(localByteArray, 0, processed)
-                    sendAudioToSystem(localByteArray, processed, callback)
-                }
+                            var processed = AudioProcessor.processAudio(localInBuffer, bytesRead, localOutBuffer, localOutBuffer.capacity())
+                            
+                            if (processed > 0) {
+                                localOutBuffer.get(localByteArray, 0, processed)
+                                sendAudioToSystem(localByteArray, processed, callback)
+                            }
 
-                while (processed > 0 && !mIsStopped.get()) {
-                    localOutBuffer.clear()
-                    processed = AudioProcessor.processAudio(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
-                    if (processed > 0) {
-                        localOutBuffer.get(localByteArray, 0, processed)
-                        sendAudioToSystem(localByteArray, processed, callback)
+                            while (processed > 0 && !mIsStopped.get()) {
+                                localOutBuffer.clear()
+                                processed = AudioProcessor.processAudio(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
+                                if (processed > 0) {
+                                    localOutBuffer.get(localByteArray, 0, processed)
+                                    sendAudioToSystem(localByteArray, processed, callback)
+                                }
+                            }
+                        }
                     }
                 }
-            }
-             if (!mIsStopped.get()) {
-                 AudioProcessor.flush()
-             }
+            } catch (e: Exception) { }
         }
 
+        val params = Bundle()
         val result = engine.synthesizeToFile(text, params, writeFd, uuid)
-        try { writeFd.close() } catch (e: Exception) {}
+        
+        try {
+            writeFd.close()
+        } catch (e: IOException) { }
 
         if (result == TextToSpeech.SUCCESS) {
-            try { processorTask?.get() } catch (e: Exception) {}
+            try {
+                readerTask.get()
+            } catch (e: Exception) { }
         } else {
-            readerTask?.cancel(true)
-            processorTask?.cancel(true)
+            readerTask.cancel(true)
         }
-        try { readFd.close() } catch (e: Exception) {}
+        
+        currentReadFd.set(null)
     }
-
 
     private fun sendAudioToSystem(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
         if (mIsStopped.get()) return
@@ -289,18 +267,15 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun getVolumeCorrection(pkg: String): Float {
-        val l = pkg.lowercase(Locale.ROOT)
-        return if (l.contains("espeak") || l.contains("shan") || l.contains("myanmar") || l.contains("saomai")) 1.0f else 0.8f
-    }
-
     override fun onDestroy() {
         super.onDestroy()
         mIsStopped.set(true)
         executorService.shutdownNow()
+        
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
+        
         AudioProcessor.stop()
     }
 }
