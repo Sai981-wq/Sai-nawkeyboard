@@ -32,6 +32,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
 
     private lateinit var prefs: SharedPreferences
+    // EngineScanner ဒေတာဖတ်ဖို့အတွက် ထပ်ထည့်ထားပါတယ်
+    private lateinit var configPrefs: SharedPreferences
     
     private val mIsStopped = AtomicBoolean(false)
     private val executorService = Executors.newCachedThreadPool()
@@ -49,6 +51,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         super.onCreate()
         try {
             prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+            // EngineScanner က သိမ်းထားတဲ့ Config ကိုဖတ်ဖို့ပါ
+            configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
             val defaultEngine = try {
                 val tts = TextToSpeech(this, null)
@@ -65,8 +69,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "com.samsung.SMT", "es.codefactory.eloquencetts"), defaultEngine)
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
-
-            AudioProcessor.initSonic(24000, 1)
 
         } catch (e: Exception) {
             e.printStackTrace()
@@ -153,6 +155,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 else -> "eng"
             }
             
+            // EngineData ကိုသုံးပြီး Package Name ပါသယ်သွားပါတယ်
             val engineData = getEngineDataForLang(langCode)
             val targetEngine = engineData.engine ?: englishEngine
 
@@ -160,7 +163,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                 synchronized(targetEngine) {
                     targetEngine.setSpeechRate(sysRate)
                     targetEngine.setPitch(sysPitch)
-                    processSafeStream(targetEngine, chunk.text, callback)
+                    // EngineData ကို processSafeStream ဆီ ပို့လိုက်ပါတယ်
+                    processSafeStream(engineData, chunk.text, callback)
                 }
             }
         }
@@ -170,7 +174,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun processSafeStream(engine: TextToSpeech, text: String, callback: SynthesisCallback) {
+    // EngineData object လက်ခံအောင် ပြင်ထားပါတယ်
+    private fun processSafeStream(engineData: EngineData, text: String, callback: SynthesisCallback) {
+        val engine = engineData.engine ?: return
+        
+        // ★ EngineScanner က သိမ်းထားတဲ့ Rate ကို ဆွဲထုတ်ပြီး Sonic ကို ပို့ပေးတဲ့အပိုင်းပါ
+        val inputRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
+        AudioProcessor.initSonic(inputRate, 1)
+
         val pipe = try {
             ParcelFileDescriptor.createPipe()
         } catch (e: IOException) {
@@ -207,6 +218,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                             localInBuffer.put(buffer, 0, bytesRead)
                             localInBuffer.flip()
 
+                            // WAV Header Skip မပါတော့ပါဘူး။ မူရင်း Logic အတိုင်းပါပဲ။
                             var processed = AudioProcessor.processAudio(localInBuffer, bytesRead, localOutBuffer, localOutBuffer.capacity())
                             
                             if (processed > 0) {
@@ -257,6 +269,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
+    // Engine နဲ့ Package Name တွဲသိမ်းမယ့် Data Class
     data class EngineData(val engine: TextToSpeech?, val pkgName: String)
 
     private fun getEngineDataForLang(lang: String): EngineData {

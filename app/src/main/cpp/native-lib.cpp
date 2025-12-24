@@ -5,11 +5,14 @@
 std::mutex processorMutex;
 static sonicStream stream = NULL;
 static int currentInputRate = 0;
+// Output ကို 24000Hz အသေ သတ်မှတ်ခြင်း
 const int FIXED_OUTPUT_RATE = 24000;
 
 void updateSonicConfig() {
     if (!stream) return;
+    // Input Rate ပေါ်မူတည်ပြီး Ratio တွက်ချက်ခြင်း
     float resampleRatio = (float)currentInputRate / (float)FIXED_OUTPUT_RATE;
+    
     sonicSetRate(stream, resampleRatio);
     sonicSetSpeed(stream, 1.0f);
     sonicSetPitch(stream, 1.0f);
@@ -30,6 +33,7 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(JNIEnv* env, jobject, jint in
         stream = NULL;
     }
 
+    // Output Rate 24000 နဲ့ Stream ဆောက်ခြင်း
     stream = sonicCreateStream(FIXED_OUTPUT_RATE, ch);
     sonicSetQuality(stream, 0);
     sonicSetVolume(stream, 1.0f);
