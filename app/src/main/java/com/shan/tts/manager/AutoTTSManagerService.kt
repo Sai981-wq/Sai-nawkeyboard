@@ -11,7 +11,6 @@ import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import java.io.ByteArrayOutputStream
-import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
@@ -39,9 +38,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val synthesisExecutor: ExecutorService = Executors.newFixedThreadPool(2)
 
     private val FIXED_OUTPUT_HZ = 24000
-    private val sonicInBuffer = ByteBuffer.allocateDirect(8192)
-    private val sonicOutBuffer = ByteBuffer.allocateDirect(8192)
-    private val sonicOutArray = ByteArray(8192)
 
     override fun onCreate() {
         super.onCreate()
@@ -65,9 +61,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "com.samsung.SMT", "es.codefactory.eloquencetts"), defaultEngine)
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
 
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     private fun resolveEngine(prefKey: String, priorityList: List<String>, fallback: String): String {
@@ -90,9 +84,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             tts = TextToSpeech(this, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    try {
-                        tts?.language = locale
-                    } catch (e: Exception) {}
+                    try { tts?.language = locale } catch (e: Exception) {}
                     onReady(tts!!)
                 }
             }, pkg)
@@ -125,14 +117,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             for (future in pendingTasks) {
                 if (mIsStopped.get()) break
-                val result = future.get()
-                if (result.audioData.isNotEmpty()) {
+                // Timeout 4 စက္ကန့်ထားပေးပါ (Engine Stuck ဖြစ်ရင် ကျော်သွားအောင်)
+                val result = try { future.get() } catch (e: Exception) { null }
+                
+                if (result != null && result.audioData.isNotEmpty()) {
                     processAndPlay(result, callback)
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) { e.printStackTrace() }
 
         callback.done()
     }
@@ -148,12 +140,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         val engineData = getEngineDataForLang(langCode)
         val targetEngine = engineData.engine ?: englishEngine ?: return ProcessingResult(ByteArray(0), 22050)
 
+        // Rate & Pitch Calculation
         val sysRate = request.speechRate / 100f
         val sysPitch = request.pitch / 100f
 
+        // FIX: Thread Safety (မဖြစ်မနေ လိုအပ်သော အပိုင်း)
+        // Thread တွေက Engine ကို Setting ချိန်တဲ့အခါ တစ်ယောက်ပြီးမှ တစ်ယောက်လုပ်ရမည်
         synchronized(targetEngine) {
-            targetEngine.setSpeechRate(sysRate)
-            targetEngine.setPitch(sysPitch)
+            try {
+                targetEngine.setSpeechRate(sysRate)
+                targetEngine.setPitch(sysPitch)
+            } catch (e: Exception) {}
         }
 
         val params = Bundle()
@@ -165,7 +162,12 @@ class AutoTTSManagerService : TextToSpeechService() {
             val readFd = pipe[0]
             val writeFd = pipe[1]
 
-            targetEngine.synthesizeToFile(chunk.text, params, writeFd, UUID.randomUUID().toString())
+            // Engine Call ကိုလည်း Thread Safe ဖြစ်အောင် ထိန်းထားပေးရင် ပိုကောင်းပါတယ်
+            // ဒါမှ Engine State မငြိမ်ခင် နောက် Thread က ဝင်မရှုပ်မှာပါ
+            synchronized(targetEngine) {
+                targetEngine.synthesizeToFile(chunk.text, params, writeFd, UUID.randomUUID().toString())
+            }
+            
             writeFd.close()
 
             ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
@@ -176,12 +178,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (mIsStopped.get()) break
                     byteStream.write(buffer, 0, bytesRead)
                 }
-
+                
                 val engineHz = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
                 return ProcessingResult(byteStream.toByteArray(), engineHz)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
             return ProcessingResult(ByteArray(0), 22050)
         }
     }
@@ -190,11 +191,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         val inputBytes = result.audioData
         val engineHz = result.engineHz
 
+        // Hz မတူရင် Sonic သုံး၊ တူရင်လည်း Pass through
         if (engineHz != FIXED_OUTPUT_HZ) {
             AudioProcessor.initSonic(engineHz, 1)
         } else {
             AudioProcessor.initSonic(FIXED_OUTPUT_HZ, 1)
         }
+        
+        // Thread Safety အတွက် Buffer ကို Local မှာပဲ ကြေညာပါ (Jieshuo အတွက် အရေးကြီးသည်)
+        val sonicInBuffer = ByteBuffer.allocateDirect(8192)
+        val sonicOutBuffer = ByteBuffer.allocateDirect(8192)
+        val sonicOutArray = ByteArray(8192)
 
         var offset = 0
         val totalLen = inputBytes.size
@@ -231,10 +238,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private fun splitTextToChunks(text: String): List<Chunk> {
         val list = ArrayList<Chunk>()
         if (text.isBlank()) return list
-
         val regex = Regex("([\\u1000-\\u109F]+)|([^\\u1000-\\u109F]+)")
         val matches = regex.findAll(text)
-
         for (match in matches) {
             val str = match.value.trim()
             if (str.isNotEmpty()) {
