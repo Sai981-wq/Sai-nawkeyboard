@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -36,6 +35,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
 
+    // Dispatchers.IO + SupervisorJob (Service မသေမချင်း အလုပ်လုပ်မည့် Scope)
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var currentJob: Job? = null
 
@@ -44,7 +44,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentActiveEngine: TextToSpeech? = null
 
     private val SYSTEM_OUTPUT_RATE = 24000
-    private val BUFFER_SIZE = 65536
+    private val BUFFER_SIZE = 65536 
 
     override fun onCreate() {
         super.onCreate()
@@ -183,8 +183,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val synthesisLatch = CountDownLatch(1)
 
+        // ★ Reader Job (Dispatchers.IO)
+        // Thread Priority ကို ဖယ်ရှားထားသည် (Coroutine ကို အနှောင့်အယှက်မဖြစ်စေရန်)
         val readerJob = launch(Dispatchers.IO) {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             
             val buffer = ByteArray(BUFFER_SIZE)
             val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
@@ -194,6 +195,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                     while (isActive) {
+                        // Blocking Read on IO Dispatcher
                         val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
 
                         if (bytesRead == -1) break 
@@ -203,17 +205,21 @@ class AutoTTSManagerService : TextToSpeechService() {
                             inputBuffer.put(buffer, 0, bytesRead)
                             inputBuffer.flip()
 
+                            // ★ AudioProcessor Loop Logic Fix
+                            // Input ထည့်ပြီးတာနဲ့ Output ကုန်တဲ့အထိ (input=0 နဲ့) ဆွဲထုတ်ရမည်
                             var processed = audioProcessor.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity())
-                            
+
                             while (processed > 0 && isActive) {
                                 outputBuffer.get(outputArray, 0, processed)
                                 sendAudioToSystem(outputArray, processed, callback)
                                 outputBuffer.clear()
+                                // Input 0 ထည့်ပြီး ကျန်တာတွေ ဆက်ထုတ်
                                 processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
                             }
                         }
                     }
                     
+                    // Flush Queue
                     if (isActive) {
                         audioProcessor.flushQueue()
                         outputBuffer.clear()
@@ -232,6 +238,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
+        // ★ Writer Job
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
@@ -246,9 +253,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val result = engine.synthesizeToFile(text, params, writeFd, uuid)
                 if (result == TextToSpeech.SUCCESS) {
                     synthesisLatch.await(30, TimeUnit.SECONDS)
+                    // ★ Important Fix: Engine က Pipe ထဲကို Data အကုန်မရေးခင် 
+                    // Pipe ပိတ်မသွားအောင် အချိန်ခဏပေးလိုက်ခြင်း (150ms Delay)
+                    delay(150)
                 }
             } catch (e: Exception) {
             } finally {
+                // Delay ပြီးမှ ပိတ်တဲ့အတွက် Data Loss မဖြစ်တော့ပါ
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
