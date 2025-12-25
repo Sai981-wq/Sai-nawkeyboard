@@ -87,9 +87,12 @@ Java_com_shan_tts_manager_AudioProcessor_stop(
 
     auto* session = reinterpret_cast<SonicSession*>(handle);
 
-    if (session->stream) {
-        sonicDestroyStream(session->stream);
-        session->stream = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        if (session->stream) {
+            sonicDestroyStream(session->stream);
+            session->stream = nullptr;
+        }
     }
 
     delete session;
@@ -116,3 +119,4 @@ Java_com_shan_tts_manager_AudioProcessor_setSonicPitch(
     std::lock_guard<std::mutex> lock(session->mutex);
     if (session->stream) sonicSetPitch(session->stream, pitch);
 }
+

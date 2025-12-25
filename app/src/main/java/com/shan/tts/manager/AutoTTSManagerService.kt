@@ -119,9 +119,18 @@ class AutoTTSManagerService : TextToSpeechService() {
         
         val chunks = TTSUtils.splitHelper(text)
 
-        // Output rate is fixed at 24000Hz for high quality output
-        val OUTPUT_RATE = 24000
-        callback.start(OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+        var outputRate = 24000
+        if (chunks.isNotEmpty()) {
+            val firstLang = when (chunks[0].lang) {
+                "SHAN" -> "shn"
+                "MYANMAR" -> "my"
+                else -> "eng"
+            }
+            val firstEngineData = getEngineDataForLang(firstLang)
+            outputRate = prefs.getInt("RATE_${firstEngineData.pkgName}", 24000)
+        }
+        
+        callback.start(outputRate, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         for (chunk in chunks) {
             if (mIsStopped.get()) break
@@ -140,7 +149,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 synchronized(targetEngine) {
                     targetEngine.setSpeechRate(sysRate)
                     targetEngine.setPitch(sysPitch)
-                    processSafeStream(targetEngine, targetPkg, chunk.text, OUTPUT_RATE, callback)
+                    processSafeStream(targetEngine, targetPkg, chunk.text, outputRate, callback)
                 }
             }
         }
@@ -159,7 +168,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReadFd.set(readFd)
 
         val engineInputRate = prefs.getInt("RATE_$pkgName", 24000)
-        val audioProcessor = AudioProcessor(engineInputRate, outputRate)
+        val audioProcessor = AudioProcessor(engineInputRate, 1)
 
         val readerTask: Future<*> = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
@@ -178,7 +187,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         if (bytesRead > 0) {
                             localInBuffer.clear()
                             if (localInBuffer.capacity() < bytesRead) { 
-                                // Should suffice as buffer is 4096
+                                
                             }
                             localInBuffer.put(buffer, 0, bytesRead)
                             localInBuffer.flip()
@@ -196,7 +205,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                     
                     if (!mIsStopped.get()) {
-                         audioProcessor.flush()
+                         audioProcessor.flushQueue()
                          localOutBuffer.clear()
                          var processed = audioProcessor.process(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
                          while (processed > 0 && !mIsStopped.get()) {
