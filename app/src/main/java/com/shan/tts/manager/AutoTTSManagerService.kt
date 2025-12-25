@@ -87,13 +87,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: PackageManager.NameNotFoundException) { false }
     }
 
+    // ပြင်ဆင်ထားသော အပိုင်း
     private fun initEngine(pkg: String, locale: Locale, onReady: (TextToSpeech) -> Unit) {
         if (pkg.isEmpty()) return
         try {
-            TextToSpeech(this, { status ->
+            var tts: TextToSpeech? = null
+            tts = TextToSpeech(this, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    onReady(it as TextToSpeech)
-                    try { (it as TextToSpeech).language = locale } catch (e: Exception) {}
+                    tts?.let { engine ->
+                        onReady(engine)
+                        try { engine.language = locale } catch (e: Exception) {}
+                    }
                 }
             }, pkg)
         } catch (e: Exception) { }
@@ -187,7 +191,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         if (bytesRead > 0) {
                             localInBuffer.clear()
                             if (localInBuffer.capacity() < bytesRead) { 
-                                
+                                // DirectBuffer capacity check skipped as 4096 is enough
                             }
                             localInBuffer.put(buffer, 0, bytesRead)
                             localInBuffer.flip()
