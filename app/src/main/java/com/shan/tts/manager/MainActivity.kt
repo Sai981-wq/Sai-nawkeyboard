@@ -22,7 +22,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+        prefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
         loadInstalledEngines()
 

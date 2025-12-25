@@ -1,122 +1,73 @@
 #include <jni.h>
+#include <string>
 #include "sonic.h"
-#include <mutex>
 
-struct SonicSession {
-    sonicStream stream;
-    std::mutex mutex;
-};
+#define TARGET_OUTPUT_RATE 24000
 
-extern "C"
-JNIEXPORT jlong JNICALL
+extern "C" JNIEXPORT jlong JNICALL
 Java_com_shan_tts_manager_AudioProcessor_initSonic(
-        JNIEnv*, jobject, jint sampleRate, jint channels) {
+        JNIEnv* env,
+        jobject,
+        jint sampleRate,
+        jint channels) {
 
-    auto* session = new SonicSession();
-    session->stream = sonicCreateStream(sampleRate, channels);
+    sonicStream stream = sonicCreateStream(sampleRate, channels);
 
-    if (!session->stream) {
-        delete session;
-        return 0;
-    }
+    float resamplingRate = (float)sampleRate / (float)TARGET_OUTPUT_RATE;
+    sonicSetRate(stream, resamplingRate);
 
-    sonicSetSpeed(session->stream, 1.0f);
-    sonicSetPitch(session->stream, 1.0f);
-    sonicSetRate(session->stream, 1.0f);
-    sonicSetVolume(session->stream, 1.0f);
-    sonicSetQuality(session->stream, 1);
+    sonicSetSpeed(stream, 1.0f);
+    sonicSetPitch(stream, 1.0f);
+    
+    sonicSetQuality(stream, 1);
 
-    return reinterpret_cast<jlong>(session);
+    return (jlong) stream;
 }
 
-extern "C"
-JNIEXPORT jint JNICALL
+extern "C" JNIEXPORT jint JNICALL
 Java_com_shan_tts_manager_AudioProcessor_processAudio(
-        JNIEnv* env, jobject,
+        JNIEnv* env,
+        jobject,
         jlong handle,
-        jobject inBuffer, jint len,
-        jobject outBuffer, jint maxOutLen) {
+        jobject inBuffer,
+        jint len,
+        jobject outBuffer,
+        jint maxOut) {
 
-    if (handle == 0) return 0;
+    sonicStream stream = (sonicStream) handle;
+    if (stream == NULL) return 0;
 
-    auto* session = reinterpret_cast<SonicSession*>(handle);
-    std::lock_guard<std::mutex> lock(session->mutex);
+    char* inputData = (char*) env->GetDirectBufferAddress(inBuffer);
+    char* outputData = (char*) env->GetDirectBufferAddress(outBuffer);
 
-    if (!session->stream) return 0;
+    if (inputData == NULL || outputData == NULL) return 0;
 
-    if (inBuffer && len > 0) {
-        auto* inAddr = static_cast<short*>(env->GetDirectBufferAddress(inBuffer));
-        if (inAddr) {
-            sonicWriteShortToStream(session->stream, inAddr, len / 2);
-        }
-    }
+    int samplesWritten = len / 2;
+    int ret = sonicWriteShortToStream(stream, (short*) inputData, samplesWritten);
 
-    auto* outAddr = static_cast<short*>(env->GetDirectBufferAddress(outBuffer));
-    if (!outAddr) return 0;
+    if (ret == 0) { }
 
-    int samples = sonicReadShortFromStream(
-            session->stream,
-            outAddr,
-            maxOutLen / 2
-    );
+    int availableShorts = maxOut / 2;
+    int samplesRead = sonicReadShortFromStream(stream, (short*) outputData, availableShorts);
 
-    return samples * 2;
+    return samplesRead * 2;
 }
 
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_flush(
-        JNIEnv*, jobject, jlong handle) {
-
-    if (handle == 0) return;
-
-    auto* session = reinterpret_cast<SonicSession*>(handle);
-    std::lock_guard<std::mutex> lock(session->mutex);
-
-    if (session->stream) {
-        sonicFlushStream(session->stream);
-    }
+extern "C" JNIEXPORT void JNICALL
+Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv* env, jobject, jlong handle) {
+    sonicStream stream = (sonicStream) handle;
+    if (stream != NULL) sonicFlushStream(stream);
 }
 
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_stop(
-        JNIEnv*, jobject, jlong handle) {
-
-    if (handle == 0) return;
-
-    auto* session = reinterpret_cast<SonicSession*>(handle);
-
-    {
-        std::lock_guard<std::mutex> lock(session->mutex);
-        if (session->stream) {
-            sonicDestroyStream(session->stream);
-            session->stream = nullptr;
-        }
-    }
-
-    delete session;
+extern "C" JNIEXPORT void JNICALL
+Java_com_shan_tts_manager_AudioProcessor_stop(JNIEnv* env, jobject, jlong handle) {
+    sonicStream stream = (sonicStream) handle;
+    if (stream != NULL) sonicDestroyStream(stream);
 }
 
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_setSonicSpeed(
-        JNIEnv*, jobject, jlong handle, jfloat speed) {
+extern "C" JNIEXPORT void JNICALL
+Java_com_shan_tts_manager_AudioProcessor_setSonicSpeed(JNIEnv* env, jobject, jlong handle, jfloat speed) {}
 
-    if (handle == 0) return;
-    auto* session = reinterpret_cast<SonicSession*>(handle);
-    std::lock_guard<std::mutex> lock(session->mutex);
-    if (session->stream) sonicSetSpeed(session->stream, speed);
-}
-
-extern "C"
-JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_setSonicPitch(
-        JNIEnv*, jobject, jlong handle, jfloat pitch) {
-
-    if (handle == 0) return;
-    auto* session = reinterpret_cast<SonicSession*>(handle);
-    std::lock_guard<std::mutex> lock(session->mutex);
-    if (session->stream) sonicSetPitch(session->stream, pitch);
-}
+extern "C" JNIEXPORT void JNICALL
+Java_com_shan_tts_manager_AudioProcessor_setSonicPitch(JNIEnv* env, jobject, jlong handle, jfloat pitch) {}
 

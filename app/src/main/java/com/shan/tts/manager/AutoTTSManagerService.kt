@@ -51,7 +51,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service Created ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defaultEngine = getDefaultEngineFallback()
@@ -66,7 +65,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
 
         } catch (e: Exception) {
-            AppLogger.error("Error in onCreate", e)
+            e.printStackTrace()
         }
     }
 
@@ -113,14 +112,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 
     override fun onStop() {
-        AppLogger.log("=== Request STOP ===")
         mIsStopped.set(true)
         val fd = currentReadFd.getAndSet(null)
         try { fd?.close() } catch (e: IOException) { }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
-        // ★★★ CRITICAL: Try-Catch Block added to prevent Crash ★★★
         try {
             if (request == null || callback == null) return
 
@@ -128,8 +125,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             val text = request.charSequenceText.toString()
             val sysRate = request.speechRate / 100f
             val sysPitch = request.pitch / 100f
-            
-            AppLogger.log("Synthesize Request: ${text.take(20)}...")
             
             val chunks = TTSUtils.splitHelper(text)
 
@@ -160,8 +155,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (!mIsStopped.get()) {
                 callback.done()
             }
-        } catch (e: Throwable) { // Catch both Exception and Error (like LinkageError)
-            AppLogger.error("CRITICAL CRASH PREVENTED in onSynthesizeText", e as? Exception)
+        } catch (e: Throwable) {
             callback?.error() 
         }
     }
@@ -177,20 +171,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             val engineInputRate = prefs.getInt("RATE_$pkgName", 24000)
             
-            // ★ ဒီနေရာမှာ JNI Error တက်ရင် App ပိတ်မကျအောင် ကာကွယ်ထားပါတယ်
             val audioProcessor = try {
                 AudioProcessor(engineInputRate, 1)
             } catch (e: Throwable) {
-                AppLogger.error("Failed to create AudioProcessor (JNI Issue?)", e as? Exception)
-                // Clean up resources if JNI fails
                 try { writeFd.close() } catch (ex: IOException) {}
                 try { readFd.close() } catch (ex: IOException) {}
                 currentReadFd.set(null)
                 return 
             }
-
-            val resampleRatio = engineInputRate.toFloat() / SYSTEM_OUTPUT_RATE.toFloat()
-            audioProcessor.setSpeed(resampleRatio)
 
             val readerTask: Future<*> = executorService.submit {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
@@ -235,7 +223,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                 } catch (e: Exception) { 
-                    AppLogger.error("Reader Task Error", e)
                 } finally {
                     audioProcessor.release()
                 }
@@ -254,7 +241,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 audioProcessor.release()
             }
         } catch (e: Exception) {
-             AppLogger.error("Error inside processSafeStream", e)
         } finally {
              currentReadFd.set(null)
         }
