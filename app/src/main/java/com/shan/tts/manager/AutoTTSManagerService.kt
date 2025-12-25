@@ -10,15 +10,18 @@ import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.TextToSpeechService
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
@@ -36,9 +39,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
 
-    // ★ STABILITY: Thread တွေကို သီးသန့်ခွဲထုတ်လိုက်ပါတယ်
-    // writerExecutor -> Google/Espeak ကနေ Pipe ထဲ ရေးထည့်မယ့် Thread
-    // readerExecutor -> Pipe ထဲကနေ ဖတ်ပြီး Sonic နဲ့ ပြင်မယ့် Thread
+    // Thread Executors (စာရေးမည့်သူ နှင့် စာဖတ်မည့်သူကို ခွဲထားသည်)
     private val writerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val readerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
@@ -49,13 +50,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val mIsStopped = AtomicBoolean(false)
     private var currentActiveEngine: TextToSpeech? = null
 
-    // Pipe References (Deadlock မဖြစ်အောင် သိမ်းထားမည်)
+    // Pipe References
     private val currentReadFd = AtomicReference<ParcelFileDescriptor?>(null)
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
 
     private val SYSTEM_OUTPUT_RATE = 24000
-    // ★ PERFORMANCE: Buffer ကို 16KB ထားလိုက်ပါ (latency နဲ့ performance မျှတအောင်)
-    private val BUFFER_SIZE = 16384 
+    
+    // ★ HUGE BUFFER: 64KB (Buffer မလောက်လို့ အသံပြတ်တာမျိုး မဖြစ်စေရ)
+    private val BUFFER_SIZE = 65536 
 
     override fun onCreate() {
         super.onCreate()
@@ -119,21 +121,19 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 
-    // ★ AGGRESSIVE STOP IMPLEMENTATION ★
-    // TalkBack ပွတ်လိုက်ရင် ၁.၅ စက္ကန့် မကြာအောင် ဖြေရှင်းသည့်နည်းလမ်း
+    // ★ AGGRESSIVE STOP: ၁.၅ စက္ကန့် ကြာတာကို ဖြေရှင်းခြင်း
     override fun onStop() {
         mIsStopped.set(true)
 
-        // 1. Thread တွေကို အတင်းရပ်ခိုင်းမယ်
+        // 1. Thread တွေကို အတင်းရပ်
         currentReaderTask?.cancel(true)
         currentWriterTask?.cancel(true)
 
-        // 2. Pipe တွေကို "ရိုက်ချိုး" မယ် (Close Immediately)
-        // Write Pipe ကို ပိတ်လိုက်ရင် Engine က စာရေးလို့မရတော့ဘဲ "Broken Pipe" Error တက်ပြီး ချက်ချင်းရပ်သွားမယ်
+        // 2. Pipe တွေကို ချက်ချင်းရိုက်ချိုး (Engine ရော Reader ပါ Error တက်ပြီး ရပ်သွားမယ်)
         closeQuietly(currentWriteFd.getAndSet(null))
         closeQuietly(currentReadFd.getAndSet(null))
 
-        // 3. Engine ကိုပါ Stop လှမ်းလုပ်မယ် (Double Lock)
+        // 3. Engine ကိုပါ Stop လှမ်းလုပ် (Double Lock)
         try {
             currentActiveEngine?.stop()
         } catch (e: Exception) { }
@@ -142,8 +142,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
-        // အသစ်မစခင် အဟောင်းတွေကို ရှင်းထုတ်
         mIsStopped.set(false)
+        // အဟောင်းရှင်းထုတ်
         currentReaderTask?.cancel(true)
         currentWriterTask?.cancel(true)
 
@@ -153,7 +153,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitHelper(text)
 
-        // Start Audio Stream
         callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         for (chunk in chunks) {
@@ -172,14 +171,12 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (targetEngine != null) {
                 currentActiveEngine = targetEngine
                 
-                // Engine Configuration
                 synchronized(targetEngine) {
                     if (mIsStopped.get()) return@synchronized
                     targetEngine.setSpeechRate(sysRate)
                     targetEngine.setPitch(sysPitch)
                     
-                    // Process Audio Stream
-                    processStreamRobust(targetEngine, targetPkg, chunk.text, callback)
+                    processStreamWithHugeBuffer(targetEngine, targetPkg, chunk.text, callback)
                 }
             }
         }
@@ -189,8 +186,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun processStreamRobust(engine: TextToSpeech, pkgName: String, text: String, callback: SynthesisCallback) {
-        // Create Pipe
+    private fun processStreamWithHugeBuffer(engine: TextToSpeech, pkgName: String, text: String, callback: SynthesisCallback) {
         val pipe = try { ParcelFileDescriptor.createPipe() } catch (e: IOException) { return }
         val readFd = pipe[0]
         val writeFd = pipe[1]
@@ -202,7 +198,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         var engineInputRate = prefs.getInt("RATE_$pkgName", 24000)
         if (engineInputRate < 8000) engineInputRate = 24000
 
-        // Init Sonic Processor
+        // Init Sonic
         val audioProcessor = try {
             AudioProcessor(engineInputRate, 1)
         } catch (e: Throwable) {
@@ -211,12 +207,15 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
 
+        // Latch to wait for Engine completion (စာဖတ်လို့မပြီးမချင်း Pipe မပိတ်အောင် စောင့်မယ်)
+        val synthesisLatch = CountDownLatch(1)
+
         // ★ THREAD 1: READER (Consumer)
-        // Pipe ထဲက အသံကို စုပ်ယူပြီး Sonic နဲ့ ပြင်၊ ပြီးရင် System ကို ပို့
+        // Pipe ထဲက အသံကို စုပ်ယူပြီး Sonic နဲ့ ပြင်
         val readerFuture = readerExecutor.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             
-            // Allocate New Buffers (No Cache - More RAM but Safer)
+            // ★ HUGE BUFFER ALLOCATION (64KB)
             val buffer = ByteArray(BUFFER_SIZE)
             val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
             val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN)
@@ -225,8 +224,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                     while (!mIsStopped.get()) {
-                        // Read from Pipe (Blocking Call)
-                        // Pipe ပိတ်သွားရင် IOException တက်ပြီး Loop ထဲက ထွက်သွားမယ်
+                        // Read blocking
                         val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
 
                         if (bytesRead == -1) break 
@@ -236,7 +234,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                             inputBuffer.put(buffer, 0, bytesRead)
                             inputBuffer.flip()
 
-                            // Process with Sonic
+                            // Sonic Process
                             var processed = audioProcessor.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity())
 
                             // Send to System
@@ -263,7 +261,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             } catch (e: Exception) {
-                // Pipe broken or thread interrupted - safe to ignore
             } finally {
                 audioProcessor.release()
             }
@@ -271,32 +268,41 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReaderTask = readerFuture
 
         // ★ THREAD 2: WRITER (Producer)
-        // Engine ကို Pipe ထဲ စာရေးထည့်ခိုင်း (သီးသန့် Thread နဲ့ မောင်းမယ်)
+        // Engine ကို Pipe ထဲ စာရေးထည့်ခိုင်း
         val writerFuture = writerExecutor.submit {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
             
+            // Set Listener to know when DONE
+            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(id: String) {}
+                override fun onDone(id: String) { synthesisLatch.countDown() }
+                override fun onError(id: String) { synthesisLatch.countDown() }
+            })
+            
             try {
-                // Synthesize to Pipe
-                engine.synthesizeToFile(text, params, writeFd, uuid)
+                // Synthesize (Async call)
+                val result = engine.synthesizeToFile(text, params, writeFd, uuid)
+                
+                if (result == TextToSpeech.SUCCESS) {
+                    // ★ WAIT: Engine က ရေးလို့မပြီးမချင်း စောင့်မယ် (Timeout 30s)
+                    // ဒါမှ စာမဆုံးခင် Pipe ပိတ်လိုက်တာမျိုး မဖြစ်တော့မှာ
+                    synthesisLatch.await(30, TimeUnit.SECONDS)
+                }
             } catch (e: Exception) {
-                // Engine error
             } finally {
-                // အရေးကြီး: ရေးပြီးတာနဲ့ Write ပိုက်ကို ပိတ်ကိုပိတ်ရမယ်
-                // ဒါမှ Reader က စာဆုံးပြီဆိုတာ သိပြီး ရပ်မှာ
+                // ပြီးမှ Write ပိုက်ကို ပိတ် (Reader က EOF သိသွားမယ်)
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
         }
         currentWriterTask = writerFuture
 
-        // Main thread က Reader ပြီးတဲ့အထိ စောင့်မယ်
+        // Main thread waits for Reader
         try {
-            readerFuture.get() // Wait for reader to finish
+            readerFuture.get()
         } catch (e: Exception) {
-            // Interrupted
         } finally {
-            // Cleanup
             closeQuietly(readFd)
             closeQuietly(writeFd)
             currentReadFd.set(null)
@@ -312,11 +318,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         
         while (offset < length && !mIsStopped.get()) {
             val chunk = min(length - offset, maxBufferSize)
-            
-            // Audio System သို့ ပို့ခြင်း
             val result = callback.audioAvailable(buffer, offset, chunk)
-            
-            // System က လက်မခံရင် (ဥပမာ - User က Stop နှိပ်လိုက်ရင်) Error ပြန်လာတတ်တယ်
             if (result == TextToSpeech.ERROR) {
                 mIsStopped.set(true)
                 break
@@ -325,7 +327,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // Helper to close streams safely
     private fun closeQuietly(fd: ParcelFileDescriptor?) {
         try { fd?.close() } catch (e: Exception) { }
     }
