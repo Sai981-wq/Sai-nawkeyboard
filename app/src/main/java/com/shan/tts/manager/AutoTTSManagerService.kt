@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -19,6 +20,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
 
@@ -35,10 +37,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
 
-    // Dispatchers.IO + SupervisorJob (Service မသေမချင်း အလုပ်လုပ်မည့် Scope)
-    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var currentJob: Job? = null
-
+    private val mIsStopped = AtomicBoolean(false)
+    
     private val currentReadFd = AtomicReference<ParcelFileDescriptor?>(null)
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
@@ -109,7 +109,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
 
     override fun onStop() {
-        currentJob?.cancel()
+        mIsStopped.set(true)
         closeQuietly(currentWriteFd.getAndSet(null))
         closeQuietly(currentReadFd.getAndSet(null))
         try { currentActiveEngine?.stop() } catch (e: Exception) { }
@@ -118,7 +118,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
-        currentJob?.cancel()
+        mIsStopped.set(false)
 
         val text = request.charSequenceText.toString()
         val sysRate = request.speechRate / 100f
@@ -128,9 +128,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        currentJob = serviceScope.launch {
+        runBlocking {
             for (chunk in chunks) {
-                if (!isActive) break
+                if (mIsStopped.get()) break
 
                 val langCode = when (chunk.lang) {
                     "SHAN" -> "shn"
@@ -146,16 +146,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                     currentActiveEngine = targetEngine
                     targetEngine.setSpeechRate(sysRate)
                     targetEngine.setPitch(sysPitch)
-                    processStreamCoroutine(targetEngine, targetPkg, chunk.text, callback)
+                    
+                    processStreamBlocking(targetEngine, targetPkg, chunk.text, callback)
                 }
             }
-            if (isActive) {
+            if (!mIsStopped.get()) {
                 callback.done()
             }
         }
     }
 
-    private suspend fun processStreamCoroutine(
+    private suspend fun processStreamBlocking(
         engine: TextToSpeech, 
         pkgName: String, 
         text: String, 
@@ -183,10 +184,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val synthesisLatch = CountDownLatch(1)
 
-        // ★ Reader Job (Dispatchers.IO)
-        // Thread Priority ကို ဖယ်ရှားထားသည် (Coroutine ကို အနှောင့်အယှက်မဖြစ်စေရန်)
         val readerJob = launch(Dispatchers.IO) {
-            
             val buffer = ByteArray(BUFFER_SIZE)
             val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
             val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN)
@@ -194,8 +192,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                    while (isActive) {
-                        // Blocking Read on IO Dispatcher
+                    while (!mIsStopped.get()) {
                         val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
 
                         if (bytesRead == -1) break 
@@ -205,26 +202,22 @@ class AutoTTSManagerService : TextToSpeechService() {
                             inputBuffer.put(buffer, 0, bytesRead)
                             inputBuffer.flip()
 
-                            // ★ AudioProcessor Loop Logic Fix
-                            // Input ထည့်ပြီးတာနဲ့ Output ကုန်တဲ့အထိ (input=0 နဲ့) ဆွဲထုတ်ရမည်
                             var processed = audioProcessor.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity())
 
-                            while (processed > 0 && isActive) {
+                            while (processed > 0 && !mIsStopped.get()) {
                                 outputBuffer.get(outputArray, 0, processed)
                                 sendAudioToSystem(outputArray, processed, callback)
                                 outputBuffer.clear()
-                                // Input 0 ထည့်ပြီး ကျန်တာတွေ ဆက်ထုတ်
                                 processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
                             }
                         }
                     }
                     
-                    // Flush Queue
-                    if (isActive) {
+                    if (!mIsStopped.get()) {
                         audioProcessor.flushQueue()
                         outputBuffer.clear()
                         var processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                        while (processed > 0 && isActive) {
+                        while (processed > 0 && !mIsStopped.get()) {
                             outputBuffer.get(outputArray, 0, processed)
                             sendAudioToSystem(outputArray, processed, callback)
                             outputBuffer.clear()
@@ -238,7 +231,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        // ★ Writer Job
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
@@ -253,13 +245,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val result = engine.synthesizeToFile(text, params, writeFd, uuid)
                 if (result == TextToSpeech.SUCCESS) {
                     synthesisLatch.await(30, TimeUnit.SECONDS)
-                    // ★ Important Fix: Engine က Pipe ထဲကို Data အကုန်မရေးခင် 
-                    // Pipe ပိတ်မသွားအောင် အချိန်ခဏပေးလိုက်ခြင်း (150ms Delay)
                     delay(150)
                 }
             } catch (e: Exception) {
             } finally {
-                // Delay ပြီးမှ ပိတ်တဲ့အတွက် Data Loss မဖြစ်တော့ပါ
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
@@ -276,7 +265,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     private fun sendAudioToSystem(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
-        if (!serviceScope.isActive) return 
+        if (mIsStopped.get()) return 
         
         val maxBufferSize = callback.maxBufferSize
         var offset = 0
@@ -285,7 +274,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             val chunk = min(length - offset, maxBufferSize)
             val result = callback.audioAvailable(buffer, offset, chunk)
             if (result == TextToSpeech.ERROR) {
-                currentJob?.cancel()
+                mIsStopped.set(true)
                 break
             }
             offset += chunk
@@ -308,7 +297,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        serviceScope.cancel() 
+        mIsStopped.set(true)
         EngineScanner.stop()
         
         shanEngine?.shutdown()

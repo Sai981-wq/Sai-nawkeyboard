@@ -8,11 +8,6 @@ object TTSUtils {
         val list = ArrayList<LangChunk>()
         if (text.isBlank()) return list
 
-        if (text.contains("<") && text.contains(">")) {
-            list.add(LangChunk(text, detectLanguage(text)))
-            return list
-        }
-
         val rawParts = text.split(Regex("(?<=[\\s\\p{Punct}])|(?=[\\s\\p{Punct}])"))
 
         var currentBuffer = StringBuilder()
