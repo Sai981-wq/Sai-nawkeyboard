@@ -19,6 +19,7 @@ class AudioProcessor(sampleRate: Int, channels: Int) {
     private val handle = AtomicLong(0)
 
     init {
+        // Sonic ကို Engine ရဲ့ Sample Rate (ဥပမာ 22050) နဲ့ စတင်ပါတယ်
         val h = initSonic(sampleRate, channels)
         if (h == 0L) throw IllegalStateException("Sonic init failed")
         handle.set(h)
