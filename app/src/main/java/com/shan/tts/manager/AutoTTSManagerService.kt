@@ -32,7 +32,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var englishPkgName: String = ""
 
     private lateinit var prefs: SharedPreferences
-    private val PREF_NAME = "TTS_CONFIG"
+    // EngineScanner ဒေတာဖတ်ဖို့အတွက် ထပ်ထည့်ထားပါတယ်
+    private lateinit var configPrefs: SharedPreferences
     
     private val mIsStopped = AtomicBoolean(false)
     private val executorService = Executors.newCachedThreadPool()
@@ -49,28 +50,29 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onCreate() {
         super.onCreate()
         try {
-            prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-            val defaultEngine = getDefaultEngineFallback()
+            prefs = getSharedPreferences("TTS_SETTINGS", Context.MODE_PRIVATE)
+            // EngineScanner က သိမ်းထားတဲ့ Config ကိုဖတ်ဖို့ပါ
+            configPrefs = getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
 
-            shanPkgName = resolveEngine("pref_shan_pkg", listOf("com.shan.tts", "com.espeak.ng"), defaultEngine)
+            val defaultEngine = try {
+                val tts = TextToSpeech(this, null)
+                val pkg = tts.defaultEngine
+                tts.shutdown()
+                pkg ?: "com.google.android.tts"
+            } catch (e: Exception) { "com.google.android.tts" }
+
+            shanPkgName = resolveEngine("pref_shan_pkg", listOf("com.shan.tts", "com.espeak.ng", "org.himnario.espeak"), defaultEngine)
             initEngine(shanPkgName, Locale("shn", "MM")) { shanEngine = it }
 
-            burmesePkgName = resolveEngine("pref_burmese_pkg", listOf("org.saomaicenter.myanmartts", "com.google.android.tts"), defaultEngine)
+            burmesePkgName = resolveEngine("pref_burmese_pkg", listOf("org.saomaicenter.myanmartts", "com.google.android.tts", "com.samsung.SMT"), defaultEngine)
             initEngine(burmesePkgName, Locale("my", "MM")) { burmeseEngine = it }
 
-            englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defaultEngine)
+            englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "com.samsung.SMT", "es.codefactory.eloquencetts"), defaultEngine)
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
 
-        } catch (e: Exception) { e.printStackTrace() }
-    }
-
-    private fun getDefaultEngineFallback(): String {
-        return try {
-            val tts = TextToSpeech(this, null)
-            val pkg = tts.defaultEngine
-            tts.shutdown()
-            pkg ?: "com.google.android.tts"
-        } catch (e: Exception) { "com.google.android.tts" }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun resolveEngine(prefKey: String, priorityList: List<String>, fallback: String): String {
@@ -87,54 +89,62 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: PackageManager.NameNotFoundException) { false }
     }
 
-    // ပြင်ဆင်ထားသော အပိုင်း
     private fun initEngine(pkg: String, locale: Locale, onReady: (TextToSpeech) -> Unit) {
         if (pkg.isEmpty()) return
+        var tts: TextToSpeech? = null
         try {
-            var tts: TextToSpeech? = null
             tts = TextToSpeech(this, { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    tts?.let { engine ->
-                        onReady(engine)
-                        try { engine.language = locale } catch (e: Exception) {}
-                    }
+                    try {
+                        tts?.language = locale
+                        onReady(tts!!)
+                    } catch (e: Exception) { }
                 }
             }, pkg)
-        } catch (e: Exception) { }
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
-    override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
-    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    override fun onGetLanguage(): Array<String> {
+        val locale = Locale.US
+        return arrayOf(locale.language, locale.country, "")
+    }
+
+    override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
+        val iso3 = try { Locale(lang ?: "eng").isO3Language } catch (e: Exception) { "eng" }
+        return when (iso3) {
+            "shn" -> if (shanEngine != null) TextToSpeech.LANG_COUNTRY_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
+            "mya", "bur" -> if (burmeseEngine != null) TextToSpeech.LANG_COUNTRY_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
+            "eng" -> if (englishEngine != null) TextToSpeech.LANG_COUNTRY_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
+            else -> TextToSpeech.LANG_NOT_SUPPORTED
+        }
+    }
+
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
+        return onIsLanguageAvailable(lang, country, variant)
+    }
 
     override fun onStop() {
         mIsStopped.set(true)
         val fd = currentReadFd.getAndSet(null)
-        try { fd?.close() } catch (e: IOException) { }
+        try {
+            fd?.close()
+        } catch (e: IOException) { }
+        
+        AudioProcessor.flush()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
         mIsStopped.set(false)
+        
         val text = request.charSequenceText.toString()
         val sysRate = request.speechRate / 100f
         val sysPitch = request.pitch / 100f
         
         val chunks = TTSUtils.splitHelper(text)
 
-        var outputRate = 24000
-        if (chunks.isNotEmpty()) {
-            val firstLang = when (chunks[0].lang) {
-                "SHAN" -> "shn"
-                "MYANMAR" -> "my"
-                else -> "eng"
-            }
-            val firstEngineData = getEngineDataForLang(firstLang)
-            outputRate = prefs.getInt("RATE_${firstEngineData.pkgName}", 24000)
-        }
-        
-        callback.start(outputRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+        callback.start(24000, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         for (chunk in chunks) {
             if (mIsStopped.get()) break
@@ -145,15 +155,16 @@ class AutoTTSManagerService : TextToSpeechService() {
                 else -> "eng"
             }
             
+            // EngineData ကိုသုံးပြီး Package Name ပါသယ်သွားပါတယ်
             val engineData = getEngineDataForLang(langCode)
             val targetEngine = engineData.engine ?: englishEngine
-            val targetPkg = engineData.pkgName
 
             if (targetEngine != null) {
                 synchronized(targetEngine) {
                     targetEngine.setSpeechRate(sysRate)
                     targetEngine.setPitch(sysPitch)
-                    processSafeStream(targetEngine, targetPkg, chunk.text, outputRate, callback)
+                    // EngineData ကို processSafeStream ဆီ ပို့လိုက်ပါတယ်
+                    processSafeStream(engineData, chunk.text, callback)
                 }
             }
         }
@@ -163,16 +174,24 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun processSafeStream(engine: TextToSpeech, pkgName: String, text: String, outputRate: Int, callback: SynthesisCallback) {
-        val pipe = try { ParcelFileDescriptor.createPipe() } catch (e: IOException) { return }
+    // EngineData object လက်ခံအောင် ပြင်ထားပါတယ်
+    private fun processSafeStream(engineData: EngineData, text: String, callback: SynthesisCallback) {
+        val engine = engineData.engine ?: return
+        
+        // ★ EngineScanner က သိမ်းထားတဲ့ Rate ကို ဆွဲထုတ်ပြီး Sonic ကို ပို့ပေးတဲ့အပိုင်းပါ
+        val inputRate = configPrefs.getInt("RATE_${engineData.pkgName}", 22050)
+        AudioProcessor.initSonic(inputRate, 1)
+
+        val pipe = try {
+            ParcelFileDescriptor.createPipe()
+        } catch (e: IOException) {
+            return
+        }
         val readFd = pipe[0]
         val writeFd = pipe[1]
         val uuid = UUID.randomUUID().toString()
 
         currentReadFd.set(readFd)
-
-        val engineInputRate = prefs.getInt("RATE_$pkgName", 24000)
-        val audioProcessor = AudioProcessor(engineInputRate, 1)
 
         val readerTask: Future<*> = executorService.submit {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
@@ -185,57 +204,55 @@ class AutoTTSManagerService : TextToSpeechService() {
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                     while (!mIsStopped.get()) {
-                        val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
+                        val bytesRead = try {
+                            fis.read(buffer)
+                        } catch (e: IOException) { -1 }
+
                         if (bytesRead == -1) break
 
                         if (bytesRead > 0) {
                             localInBuffer.clear()
-                            if (localInBuffer.capacity() < bytesRead) { 
-                                // DirectBuffer capacity check skipped as 4096 is enough
+                            if (localInBuffer.capacity() < bytesRead) {
+                                // Implicit guard
                             }
                             localInBuffer.put(buffer, 0, bytesRead)
                             localInBuffer.flip()
 
-                            var processed = audioProcessor.process(localInBuffer, bytesRead, localOutBuffer, localOutBuffer.capacity())
+                            // WAV Header Skip မပါတော့ပါဘူး။ မူရင်း Logic အတိုင်းပါပဲ။
+                            var processed = AudioProcessor.processAudio(localInBuffer, bytesRead, localOutBuffer, localOutBuffer.capacity())
                             
-                            while (processed > 0 && !mIsStopped.get()) {
+                            if (processed > 0) {
                                 localOutBuffer.get(localByteArray, 0, processed)
                                 sendAudioToSystem(localByteArray, processed, callback)
-                                
+                            }
+
+                            while (processed > 0 && !mIsStopped.get()) {
                                 localOutBuffer.clear()
-                                processed = audioProcessor.process(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
+                                processed = AudioProcessor.processAudio(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
+                                if (processed > 0) {
+                                    localOutBuffer.get(localByteArray, 0, processed)
+                                    sendAudioToSystem(localByteArray, processed, callback)
+                                }
                             }
                         }
                     }
-                    
-                    if (!mIsStopped.get()) {
-                         audioProcessor.flushQueue()
-                         localOutBuffer.clear()
-                         var processed = audioProcessor.process(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
-                         while (processed > 0 && !mIsStopped.get()) {
-                             localOutBuffer.get(localByteArray, 0, processed)
-                             sendAudioToSystem(localByteArray, processed, callback)
-                             localOutBuffer.clear()
-                             processed = audioProcessor.process(localInBuffer, 0, localOutBuffer, localOutBuffer.capacity())
-                         }
-                    }
                 }
-            } catch (e: Exception) { 
-            } finally {
-                audioProcessor.release()
-            }
+            } catch (e: Exception) { }
         }
 
         val params = Bundle()
         val result = engine.synthesizeToFile(text, params, writeFd, uuid)
         
-        try { writeFd.close() } catch (e: IOException) { }
+        try {
+            writeFd.close()
+        } catch (e: IOException) { }
 
         if (result == TextToSpeech.SUCCESS) {
-            try { readerTask.get() } catch (e: Exception) { }
+            try {
+                readerTask.get()
+            } catch (e: Exception) { }
         } else {
             readerTask.cancel(true)
-            audioProcessor.release()
         }
         
         currentReadFd.set(null)
@@ -252,6 +269,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
+    // Engine နဲ့ Package Name တွဲသိမ်းမယ့် Data Class
     data class EngineData(val engine: TextToSpeech?, val pkgName: String)
 
     private fun getEngineDataForLang(lang: String): EngineData {
@@ -265,12 +283,13 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onDestroy() {
         super.onDestroy()
         mIsStopped.set(true)
-        EngineScanner.stop()
         executorService.shutdownNow()
         
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
+        
+        AudioProcessor.stop()
     }
 }
 
