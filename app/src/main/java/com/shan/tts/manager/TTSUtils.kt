@@ -27,17 +27,18 @@ object TTSUtils {
             val detected = detectLanguage(part)
 
             if (currentBuffer.isEmpty()) {
-                currentLang = if (detected == "NEUTRAL") "ENGLISH" else detected
+                currentLang = detected
                 currentBuffer.append(part)
                 continue
             }
 
-            if (detected == "NEUTRAL" || detected == currentLang) {
+            if (detected == "NEUTRAL" || currentLang == "NEUTRAL" || detected == currentLang) {
                 currentBuffer.append(part)
-            } else {
-                if (currentBuffer.isNotBlank()) {
-                    list.add(LangChunk(currentBuffer.toString(), currentLang))
+                if (currentLang == "NEUTRAL" && detected != "NEUTRAL") {
+                    currentLang = detected
                 }
+            } else {
+                list.add(LangChunk(currentBuffer.toString(), currentLang))
                 currentBuffer = StringBuilder(part)
                 currentLang = detected
             }

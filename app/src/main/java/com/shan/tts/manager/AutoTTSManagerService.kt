@@ -204,7 +204,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                             inputBuffer.flip()
 
                             var processed = audioProcessor.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity())
-
+                            
                             while (processed > 0 && isActive) {
                                 outputBuffer.get(outputArray, 0, processed)
                                 sendAudioToSystem(outputArray, processed, callback)
