@@ -14,167 +14,170 @@ import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 object EngineScanner {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val scanExecutor = Executors.newSingleThreadExecutor()
+    private val isRunning = AtomicBoolean(false)
+    private const val PREF_NAME = "TTS_CONFIG"
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
-        val appContext = context.applicationContext
-        val intent = Intent("android.intent.action.TTS_SERVICE")
-        val resolveInfos = appContext.packageManager.queryIntentServices(intent, 0)
+        if (isRunning.getAndSet(true)) return
 
-        val blockedEngines = listOf(
-            appContext.packageName,
-            "com.vnspeak.autotts"
-        )
+        scanExecutor.execute {
+            val appContext = context.applicationContext
+            val intent = Intent("android.intent.action.TTS_SERVICE")
+            val resolveInfos = appContext.packageManager.queryIntentServices(intent, 0)
 
-        val engines = resolveInfos.map { it.serviceInfo.packageName }
-            .filter { pkgName -> !blockedEngines.contains(pkgName) }
-            .distinct()
+            val blockedEngines = listOf(appContext.packageName, "com.vnspeak.autotts")
+            val engines = resolveInfos.map { it.serviceInfo.packageName }
+                .filter { !blockedEngines.contains(it) }
+                .distinct()
 
-        if (engines.isEmpty()) {
-            onComplete()
-            return
-        }
+            if (engines.isEmpty()) {
+                finishScan(onComplete)
+                return@execute
+            }
 
-        mainHandler.post {
             scanRecursive(appContext, engines, 0, onComplete)
         }
     }
 
+    private fun finishScan(onComplete: () -> Unit) {
+        isRunning.set(false)
+        mainHandler.post { onComplete() }
+    }
+
     private fun scanRecursive(context: Context, engines: List<String>, index: Int, onComplete: () -> Unit) {
-        if (index >= engines.size) {
-            onComplete()
+        if (index >= engines.size || !isRunning.get()) {
+            finishScan(onComplete)
             return
         }
 
         val pkgName = engines[index]
         var tts: TextToSpeech? = null
-
-        val onNext = {
-            try {
-                tts?.stop()
-                tts?.shutdown()
-            } catch (e: Exception) {}
-
-            mainHandler.post {
-                scanRecursive(context, engines, index + 1, onComplete)
-            }
+        
+        val nextStep = {
+            tts?.shutdown()
+            scanRecursive(context, engines, index + 1, onComplete)
         }
 
         try {
+            val initLatch = CountDownLatch(1)
+            var initialized = false
+            
             tts = TextToSpeech(context, { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    probeEngine(context, tts!!, pkgName) { onNext() }
-                } else {
-                    saveFallback(context, pkgName)
-                    onNext()
-                }
+                initialized = (status == TextToSpeech.SUCCESS)
+                initLatch.countDown()
             }, pkgName)
+
+            if (initLatch.await(5, TimeUnit.SECONDS) && initialized) {
+                probeEngine(context, tts!!, pkgName, nextStep)
+            } else {
+                saveFallback(context, pkgName)
+                nextStep()
+            }
         } catch (e: Exception) {
             saveFallback(context, pkgName)
-            onNext()
+            nextStep()
         }
     }
 
     private fun probeEngine(context: Context, tts: TextToSpeech, pkg: String, onDone: () -> Unit) {
         val tempFile = File(context.cacheDir, "probe_$pkg.wav")
         val uuid = UUID.randomUUID().toString()
-        val latch = CountDownLatch(1)
+        val synthesisLatch = CountDownLatch(1)
 
         val lower = pkg.lowercase(Locale.ROOT)
-        var text = "Hello, testing frequency."
-        var targetLocale = Locale.US
-
-        if (lower.contains("shan") || lower.contains("shn")) {
-            text = "မႂ်ႇသုင်ၶႃႈ"
-            targetLocale = Locale("shn", "MM")
-        } else if (lower.contains("myanmar") || lower.contains("burmese") || lower.contains("saomai") || lower.contains("ttsm")) {
-            text = "မင်္ဂလာပါ ခင်ဗျာ"
-            targetLocale = Locale("my", "MM")
+        val (text, targetLocale) = when {
+            lower.contains("shan") || lower.contains("shn") -> "မႂ်ႇသုင်ၶႃႈ" to Locale("shn", "MM")
+            lower.contains("myanmar") || lower.contains("burmese") -> "မင်္ဂလာပါ" to Locale("my", "MM")
+            else -> "Hello test" to Locale.US
         }
 
         try {
-            val available = tts.isLanguageAvailable(targetLocale)
-            if (available >= TextToSpeech.LANG_AVAILABLE) {
+            if (tts.isLanguageAvailable(targetLocale) >= TextToSpeech.LANG_AVAILABLE) {
                 tts.language = targetLocale
             } else {
                 tts.language = Locale.US
-                text = "Hello fallback."
             }
         } catch (e: Exception) {}
 
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
-            override fun onError(id: String?) { latch.countDown() }
-            override fun onDone(id: String?) { latch.countDown() }
+            override fun onError(id: String?) { synthesisLatch.countDown() }
+            override fun onDone(id: String?) { synthesisLatch.countDown() }
         })
 
-        Thread {
-            try {
-                if (tempFile.exists()) tempFile.delete()
+        try { Thread.sleep(150) } catch (e: Exception) {}
 
-                val params = Bundle()
-                params.putString(TextToSpeech.Engine.KEY_FEATURE_NETWORK_SYNTHESIS, "false")
-                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.0f)
+        try {
+            if (tempFile.exists()) tempFile.delete()
+            
+            val params = Bundle()
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.1f) 
 
-                tts.synthesizeToFile(text, params, tempFile, uuid)
+            tts.synthesizeToFile(text, params, tempFile, uuid)
+            
+            synthesisLatch.await(6, TimeUnit.SECONDS)
 
-                val success = latch.await(6, TimeUnit.SECONDS)
-
-                var retries = 0
-                val MAX_RETRIES = 40
-                while (tempFile.length() < 44 && retries < MAX_RETRIES) {
-                    Thread.sleep(50)
-                    retries++
-                }
-
-                if (tempFile.exists() && tempFile.length() > 44) {
-                    val rate = readRate(tempFile)
-                    if (rate in 8000..48000) {
-                        saveRate(context, pkg, rate)
-                    } else {
-                        saveFallback(context, pkg)
-                    }
-                } else {
-                    saveFallback(context, pkg)
-                }
-
-            } catch (e: Exception) {
-                saveFallback(context, pkg)
-            } finally {
-                try { if (tempFile.exists()) tempFile.delete() } catch (e: Exception) {}
-                mainHandler.post { onDone() }
+            var retries = 0
+            while (tempFile.length() < 44 && retries < 20) {
+                Thread.sleep(50)
+                retries++
             }
-        }.start()
+
+            if (tempFile.length() > 44) {
+                val rate = readRate(tempFile)
+                if (rate > 0) saveRate(context, pkg, rate) else saveFallback(context, pkg)
+            } else {
+                saveFallback(context, pkg)
+            }
+        } catch (e: Exception) {
+            saveFallback(context, pkg)
+        } finally {
+            try { tempFile.delete() } catch (e: Exception) {}
+            onDone()
+        }
     }
 
     private fun readRate(file: File): Int {
         return try {
             FileInputStream(file).use { fis ->
                 val header = ByteArray(44)
-                val bytesRead = fis.read(header)
-                if (bytesRead < 44) return 0
+                if (fis.read(header) < 44) return 0
+                
+                if (header[0] != 'R'.code.toByte() || header[1] != 'I'.code.toByte() || 
+                    header[8] != 'W'.code.toByte() || header[9] != 'A'.code.toByte()) {
+                    return 0
+                }
 
                 val buffer = ByteBuffer.wrap(header)
                 buffer.order(ByteOrder.LITTLE_ENDIAN)
-                buffer.getInt(24)
+                val rate = buffer.getInt(24)
+                if (rate in 8000..48000) rate else 0
             }
         } catch (e: Exception) { 0 }
     }
 
     private fun saveRate(context: Context, pkg: String, rate: Int) {
-        val finalRate = if (rate < 8000) 16000 else rate
-        context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
-            .edit().putInt("RATE_$pkg", finalRate).apply()
+        val validRate = if (rate < 8000) 16000 else rate
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            .edit().putInt("RATE_$pkg", validRate).apply()
     }
 
     private fun saveFallback(context: Context, pkg: String) {
-        val defaultRate = 22050
-        context.getSharedPreferences("TTS_CONFIG", Context.MODE_PRIVATE)
-            .edit().putInt("RATE_$pkg", defaultRate).apply()
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            .edit().putInt("RATE_$pkg", 22050).apply()
+    }
+
+    fun stop() {
+        isRunning.set(false)
+        scanExecutor.shutdownNow()
     }
 }
 
