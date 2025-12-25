@@ -40,13 +40,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val currentReadFd = AtomicReference<ParcelFileDescriptor?>(null)
 
     private val SYSTEM_OUTPUT_RATE = 24000
+    private val BUFFER_SIZE = 16384 
 
     private val outBufferLocal = object : ThreadLocal<ByteBuffer>() {
-        override fun initialValue(): ByteBuffer = ByteBuffer.allocateDirect(8192).order(ByteOrder.LITTLE_ENDIAN)
+        override fun initialValue(): ByteBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
     }
 
     private val outBufferArrayLocal = object : ThreadLocal<ByteArray>() {
-        override fun initialValue(): ByteArray = ByteArray(8192)
+        override fun initialValue(): ByteArray = ByteArray(BUFFER_SIZE * 4)
     }
 
     override fun onCreate() {
@@ -171,6 +172,29 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             val engineInputRate = prefs.getInt("RATE_$pkgName", 24000)
             
+            if (engineInputRate == SYSTEM_OUTPUT_RATE) {
+                 val readerTask: Future<*> = executorService.submit {
+                    Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+                    val buffer = ByteArray(BUFFER_SIZE)
+                    try {
+                        ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                            while (!mIsStopped.get()) {
+                                val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
+                                if (bytesRead == -1) break
+                                if (bytesRead > 0) sendAudioToSystem(buffer, bytesRead, callback)
+                            }
+                        }
+                    } catch (e: Exception) {}
+                }
+                val params = Bundle()
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                val result = engine.synthesizeToFile(text, params, writeFd, uuid)
+                try { writeFd.close() } catch (e: IOException) { }
+                if (result == TextToSpeech.SUCCESS) try { readerTask.get() } catch (e: Exception) { }
+                else readerTask.cancel(true)
+                return
+            }
+
             val audioProcessor = try {
                 AudioProcessor(engineInputRate, 1)
             } catch (e: Throwable) {
@@ -181,22 +205,28 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
             val readerTask: Future<*> = executorService.submit {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
                 
-                val buffer = ByteArray(4096)
-                val localInBuffer = ByteBuffer.allocateDirect(4096).order(ByteOrder.LITTLE_ENDIAN)
+                val localInBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
                 val localOutBuffer = outBufferLocal.get()!!
                 val localByteArray = outBufferArrayLocal.get()!!
 
                 try {
                     ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                        var isFirstChunk = true
+                        
                         while (!mIsStopped.get()) {
-                            val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
+                            val targetReadSize = if (isFirstChunk) 512 else BUFFER_SIZE
+                            val tempBuffer = ByteArray(targetReadSize)
+                            
+                            val bytesRead = try { fis.read(tempBuffer) } catch (e: IOException) { -1 }
                             if (bytesRead == -1) break
 
                             if (bytesRead > 0) {
+                                isFirstChunk = false
+
                                 localInBuffer.clear()
-                                localInBuffer.put(buffer, 0, bytesRead)
+                                localInBuffer.put(tempBuffer, 0, bytesRead)
                                 localInBuffer.flip()
 
                                 var processed = audioProcessor.process(localInBuffer, bytesRead, localOutBuffer, localOutBuffer.capacity())
