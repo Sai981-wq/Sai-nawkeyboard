@@ -14,8 +14,14 @@ class CheckVoiceData : Activity() {
         val unavailableVoices = ArrayList<String>()
 
         availableVoices.add("shn-MM")
+        availableVoices.add("shn_MM")
         availableVoices.add("my-MM")
+        availableVoices.add("my_MM")
+        availableVoices.add("mya-MM")
+        availableVoices.add("bur-MM")
         availableVoices.add("en-US")
+        availableVoices.add("en_US")
+        availableVoices.add("eng-USA")
 
         val returnIntent = Intent()
         returnIntent.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, availableVoices)
