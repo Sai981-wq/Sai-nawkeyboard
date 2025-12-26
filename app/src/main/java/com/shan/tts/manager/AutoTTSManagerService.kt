@@ -6,20 +6,19 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.consumeEach
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
@@ -126,52 +125,51 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitHelper(text)
 
-        callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+        // Native Processor Initialization
+        val audioProcessor = try {
+            AudioProcessor(SYSTEM_OUTPUT_RATE, 1)
+        } catch (e: Throwable) {
+            return
+        }
 
-        runBlocking {
-            for (chunk in chunks) {
-                if (mIsStopped.get()) break
+        try {
+            callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-                val langCode = when (chunk.lang) {
-                    "SHAN" -> "shn"
-                    "MYANMAR" -> "my"
-                    else -> "eng"
-                }
+            runBlocking {
+                for (chunk in chunks) {
+                    if (mIsStopped.get()) break
 
-                val engineData = getEngineDataForLang(langCode)
-                val targetEngine = engineData.engine ?: englishEngine
-                val targetPkg = engineData.pkgName
-
-                if (targetEngine != null) {
-                    currentActiveEngine = targetEngine
-                    
-                    var engineInputRate = prefs.getInt("RATE_$targetPkg", 24000)
-                    if (engineInputRate < 8000) engineInputRate = 24000
-
-                    val audioProcessor = try {
-                        AudioProcessor(engineInputRate, 1)
-                    } catch (e: Throwable) {
-                        continue
+                    val langCode = when (chunk.lang) {
+                        "SHAN" -> "shn"
+                        "MYANMAR" -> "my"
+                        else -> "eng"
                     }
 
-                    try {
+                    val engineData = getEngineDataForLang(langCode)
+                    val targetEngine = engineData.engine ?: englishEngine
+                    val targetPkg = engineData.pkgName
+
+                    if (targetEngine != null) {
+                        currentActiveEngine = targetEngine
                         targetEngine.setSpeechRate(sysRate)
                         targetEngine.setPitch(sysPitch)
                         
-                        processStreamBlocking(targetEngine, chunk.text, callback, audioProcessor)
-                    } finally {
-                        audioProcessor.release()
+                        // Process Chunk with Deadlock-Free Channel
+                        processStreamViaChannel(targetEngine, targetPkg, chunk.text, callback, audioProcessor)
                     }
                 }
+                if (!mIsStopped.get()) {
+                    callback.done()
+                }
             }
-            if (!mIsStopped.get()) {
-                callback.done()
-            }
+        } finally {
+            audioProcessor.release()
         }
     }
 
-    private suspend fun processStreamBlocking(
+    private suspend fun processStreamViaChannel(
         engine: TextToSpeech, 
+        pkgName: String, 
         text: String, 
         callback: SynthesisCallback,
         audioProcessor: AudioProcessor
@@ -185,79 +183,101 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReadFd.set(readFd)
         currentWriteFd.set(writeFd)
 
-        val synthesisLatch = CountDownLatch(1)
+        // ★ The Solution: Unlimited Channel acts as a dynamic RAM buffer.
+        // Pipe won't clog because we drain it immediately to this channel.
+        val audioChannel = Channel<ByteArray>(Channel.UNLIMITED)
 
-        val readerJob = launch(Dispatchers.IO) {
+        // 1. DRAINER (Pipe -> Channel)
+        // This runs strictly on IO thread and does ONLY reading. It's fast.
+        // It ensures the Engine never blocks on 'write'.
+        val drainerJob = launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
-            val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN)
-            val outputArray = ByteArray(BUFFER_SIZE * 2)
-
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                    while (!mIsStopped.get()) {
+                    while (isActive) {
                         val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
-
                         if (bytesRead == -1) break 
-
                         if (bytesRead > 0) {
-                            inputBuffer.clear()
-                            inputBuffer.put(buffer, 0, bytesRead)
-                            inputBuffer.flip()
-
-                            var processed = audioProcessor.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity())
-
-                            while (processed > 0 && !mIsStopped.get()) {
-                                outputBuffer.get(outputArray, 0, processed)
-                                sendAudioToSystem(outputArray, processed, callback)
-                                outputBuffer.clear()
-                                processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                            }
-                        }
-                    }
-                    
-                    if (!mIsStopped.get()) {
-                        audioProcessor.flushQueue()
-                        outputBuffer.clear()
-                        var processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                        while (processed > 0 && !mIsStopped.get()) {
-                            outputBuffer.get(outputArray, 0, processed)
-                            sendAudioToSystem(outputArray, processed, callback)
-                            outputBuffer.clear()
-                            processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                            // Copy data and send to channel
+                            audioChannel.send(buffer.copyOfRange(0, bytesRead))
                         }
                     }
                 }
             } catch (e: Exception) {
+            } finally {
+                audioChannel.close() // Signal EOF to consumer
             }
         }
 
+        // 2. WRITER (Engine -> Pipe)
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
             
+            // We use Listener only to close the Write Pipe properly
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(id: String) {}
-                override fun onDone(id: String) { synthesisLatch.countDown() }
-                override fun onError(id: String) { synthesisLatch.countDown() }
+                override fun onDone(id: String) { 
+                    closeQuietly(writeFd)
+                    currentWriteFd.set(null)
+                }
+                override fun onError(id: String) { 
+                    closeQuietly(writeFd)
+                    currentWriteFd.set(null)
+                }
             })
             
             try {
-                val result = engine.synthesizeToFile(text, params, writeFd, uuid)
-                if (result == TextToSpeech.SUCCESS) {
-                    synthesisLatch.await(30, TimeUnit.SECONDS)
-                    delay(150)
-                }
+                engine.synthesizeToFile(text, params, writeFd, uuid)
+                // Note: We don't wait here. We rely on the Listener to close the pipe.
             } catch (e: Exception) {
-            } finally {
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
         }
 
+        // 3. PROCESSOR (Channel -> Sonic -> System)
+        // This runs on the current thread (runBlocking scope)
+        val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+        val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN)
+        val outputArray = ByteArray(BUFFER_SIZE * 2)
+
         try {
-            joinAll(readerJob, writerJob)
+            // Receive data as soon as it arrives in RAM
+            audioChannel.consumeEach { bytes ->
+                if (mIsStopped.get()) return@consumeEach
+
+                inputBuffer.clear()
+                inputBuffer.put(bytes)
+                inputBuffer.flip()
+
+                var processed = audioProcessor.process(inputBuffer, bytes.size, outputBuffer, outputBuffer.capacity())
+
+                while (processed > 0 && !mIsStopped.get()) {
+                    outputBuffer.get(outputArray, 0, processed)
+                    sendAudioToSystem(outputArray, processed, callback)
+                    outputBuffer.clear()
+                    processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                }
+            }
+
+            // Flush Sonic after channel is empty (EOF)
+            if (!mIsStopped.get()) {
+                audioProcessor.flushQueue()
+                outputBuffer.clear()
+                var processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                while (processed > 0 && !mIsStopped.get()) {
+                    outputBuffer.get(outputArray, 0, processed)
+                    sendAudioToSystem(outputArray, processed, callback)
+                    outputBuffer.clear()
+                    processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                }
+            }
+
         } finally {
+            // Cleanup
+            drainerJob.cancel()
+            writerJob.cancel()
             closeQuietly(readFd)
             closeQuietly(writeFd)
             currentReadFd.set(null)
