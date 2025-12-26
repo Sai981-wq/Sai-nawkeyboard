@@ -12,8 +12,6 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.consumeEach
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -43,6 +41,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentActiveEngine: TextToSpeech? = null
 
     private val SYSTEM_OUTPUT_RATE = 24000
+    
+    // Buffer ကို အသေးဆုံးထားမယ် (4KB) - Typing Latency မရှိအောင်
     private val BUFFER_SIZE = 4096 
 
     override fun onCreate() {
@@ -59,7 +59,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defaultEngine)
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
-
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -158,8 +157,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                             targetEngine.setSpeechRate(sysRate)
                             targetEngine.setPitch(sysPitch)
                             
-                            // Decoupled Processing
-                            processStreamDecoupled(targetEngine, targetPkg, chunk.text, callback, audioProcessor)
+                            processStreamDirect(targetEngine, targetPkg, chunk.text, callback, audioProcessor)
                         } finally {
                             audioProcessor.release()
                         }
@@ -173,7 +171,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private suspend fun processStreamDecoupled(
+    private suspend fun processStreamDirect(
         engine: TextToSpeech, 
         pkgName: String, 
         text: String, 
@@ -189,96 +187,80 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReadFd.set(readFd)
         currentWriteFd.set(writeFd)
 
-        // ★ Unlimited Channel: RAM ပေါ်မှာ Buffer လုပ်ပေးသောကြောင့် 
-        // Engine က Pipe ပြည့်ပြီး Block ဖြစ်မသွားစေပါ (Deadlock Fix)
-        val audioChannel = Channel<ByteArray>(Channel.UNLIMITED)
-
-        // 1. DRAINER (Pipe -> RAM Channel)
-        // Pipe ထဲက ဒေတာကို ချက်ချင်းစုပ်ထုတ်ပေးသူ (အလွန်မြန်သည်)
-        val drainerJob = launch(Dispatchers.IO) {
-            val buffer = ByteArray(BUFFER_SIZE)
-            try {
-                ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                    while (isActive) {
-                        val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
-                        if (bytesRead == -1) break 
-                        if (bytesRead > 0) {
-                            audioChannel.send(buffer.copyOfRange(0, bytesRead))
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-            } finally {
-                audioChannel.close()
-            }
-        }
-
-        // 2. WRITER (Engine -> Pipe)
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
             
+            // Listener ကိုအသုံးပြုပြီး Writer ပြီးဆုံးကြောင်းသေချာစေမယ်
+            val latch = java.util.concurrent.CountDownLatch(1)
+            
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(id: String) {}
-                override fun onDone(id: String) { 
-                    closeQuietly(writeFd)
-                    currentWriteFd.set(null)
-                }
-                override fun onError(id: String) { 
-                    closeQuietly(writeFd)
-                    currentWriteFd.set(null)
-                }
+                override fun onDone(id: String) { latch.countDown() }
+                override fun onError(id: String) { latch.countDown() }
             })
             
             try {
                 engine.synthesizeToFile(text, params, writeFd, uuid)
+                latch.await() // Engine အလုပ်ပြီးတဲ့အထိ စောင့်မယ်
             } catch (e: Exception) {
+            } finally {
+                // Writer ပိတ်မှ Reader က EOF သိမှာ
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
         }
 
-        // 3. CONSUMER (RAM Channel -> Audio System)
-        // Engine ပြီးမပြီး စောင့်စရာမလို၊ Channel ထဲရောက်တာနဲ့ ချက်ချင်းအသံထွက်မည်
-        val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
-        val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN)
-        val outputArray = ByteArray(BUFFER_SIZE * 2)
+        val readerJob = launch(Dispatchers.IO) {
+            val buffer = ByteArray(BUFFER_SIZE)
+            val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+            val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN) // Output Buffer ကြီးကြီးထားမယ်
+            val outputArray = ByteArray(BUFFER_SIZE * 4)
+
+            try {
+                ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                    while (isActive && !mIsStopped.get()) {
+                        val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
+
+                        if (bytesRead == -1) {
+                            // EOF ရောက်ရင် လက်ကျန်ရှင်းမယ် (Typing Fix & Cutoff Fix)
+                            audioProcessor.flushQueue()
+                            outputBuffer.clear()
+                            var processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                            while (processed > 0 && !mIsStopped.get()) {
+                                outputBuffer.get(outputArray, 0, processed)
+                                sendAudioToSystem(outputArray, processed, callback)
+                                outputBuffer.clear()
+                                processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                            }
+                            break
+                        }
+
+                        if (bytesRead > 0) {
+                            inputBuffer.clear()
+                            inputBuffer.put(buffer, 0, bytesRead)
+                            inputBuffer.flip()
+
+                            // Data ဝင်လာတာနဲ့ ချက်ချင်း Process လုပ်မယ်
+                            var processed = audioProcessor.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity())
+
+                            while (processed > 0 && !mIsStopped.get()) {
+                                outputBuffer.get(outputArray, 0, processed)
+                                sendAudioToSystem(outputArray, processed, callback)
+                                outputBuffer.clear()
+                                processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+            }
+        }
 
         try {
-            audioChannel.consumeEach { bytes ->
-                if (mIsStopped.get()) return@consumeEach
-
-                inputBuffer.clear()
-                inputBuffer.put(bytes)
-                inputBuffer.flip()
-
-                var processed = audioProcessor.process(inputBuffer, bytes.size, outputBuffer, outputBuffer.capacity())
-
-                while (processed > 0 && !mIsStopped.get()) {
-                    outputBuffer.get(outputArray, 0, processed)
-                    sendAudioToSystem(outputArray, processed, callback)
-                    outputBuffer.clear()
-                    processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                }
-            }
-
-            // Flush Logic (Typing Fix)
-            if (!mIsStopped.get()) {
-                audioProcessor.flushQueue()
-                outputBuffer.clear()
-                var processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                while (processed > 0 && !mIsStopped.get()) {
-                    outputBuffer.get(outputArray, 0, processed)
-                    sendAudioToSystem(outputArray, processed, callback)
-                    outputBuffer.clear()
-                    processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                }
-            }
-
+            // နှစ်ယောက်လုံးပြီးမှ ရှေ့ဆက်မယ်
+            joinAll(writerJob, readerJob)
         } finally {
-            // Consumer ပြီးမှ ကျန်တာတွေကို ပိတ်မည်
-            drainerJob.cancel()
-            writerJob.cancel()
             closeQuietly(readFd)
             closeQuietly(writeFd)
             currentReadFd.set(null)
