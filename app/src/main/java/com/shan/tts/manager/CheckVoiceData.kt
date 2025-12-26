@@ -13,14 +13,13 @@ class CheckVoiceData : Activity() {
         val availableVoices = ArrayList<String>()
         val unavailableVoices = ArrayList<String>()
 
+        // 1. Shan (shn)
         availableVoices.add("shn-MM")
-        availableVoices.add("shn_MM")
-        availableVoices.add("my-MM")
-        availableVoices.add("my_MM")
+
+        // 2. Burmese (mya)
         availableVoices.add("mya-MM")
-        availableVoices.add("bur-MM")
-        availableVoices.add("en-US")
-        availableVoices.add("en_US")
+
+        // 3. English (eng)
         availableVoices.add("eng-USA")
 
         val returnIntent = Intent()
