@@ -224,10 +224,18 @@ class AutoTTSManagerService : TextToSpeechService() {
                     closeQuietly(writeFd)
                     currentWriteFd.set(null)
                 }
+                override fun onError(id: String, errorCode: Int) {
+                    closeQuietly(writeFd)
+                    currentWriteFd.set(null)
+                }
             })
             
             try {
-                engine.synthesizeToFile(text, params, writeFd, uuid)
+                val result = engine.synthesizeToFile(text, params, writeFd, uuid)
+                if (result == TextToSpeech.ERROR) {
+                    closeQuietly(writeFd)
+                    currentWriteFd.set(null)
+                }
             } catch (e: Exception) {
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
@@ -242,17 +250,19 @@ class AutoTTSManagerService : TextToSpeechService() {
             audioChannel.consumeEach { bytes ->
                 if (mIsStopped.get()) return@consumeEach
 
-                inputBuffer.clear()
-                inputBuffer.put(bytes)
-                inputBuffer.flip()
+                if (bytes.size <= inputBuffer.capacity()) {
+                    inputBuffer.clear()
+                    inputBuffer.put(bytes)
+                    inputBuffer.flip()
 
-                var processed = audioProcessor.process(inputBuffer, bytes.size, outputBuffer, outputBuffer.capacity())
+                    var processed = audioProcessor.process(inputBuffer, bytes.size, outputBuffer, outputBuffer.capacity())
 
-                while (processed > 0 && !mIsStopped.get()) {
-                    outputBuffer.get(outputArray, 0, processed)
-                    sendAudioToSystem(outputArray, processed, callback)
-                    outputBuffer.clear()
-                    processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                    while (processed > 0 && !mIsStopped.get()) {
+                        outputBuffer.get(outputArray, 0, processed)
+                        sendAudioToSystem(outputArray, processed, callback)
+                        outputBuffer.clear()
+                        processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                    }
                 }
             }
 
