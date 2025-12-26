@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -125,13 +126,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitHelper(text)
 
-        // Native Processor Initialization
-        val audioProcessor = try {
-            AudioProcessor(SYSTEM_OUTPUT_RATE, 1)
-        } catch (e: Throwable) {
-            return
-        }
-
         try {
             callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
@@ -151,19 +145,32 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     if (targetEngine != null) {
                         currentActiveEngine = targetEngine
-                        targetEngine.setSpeechRate(sysRate)
-                        targetEngine.setPitch(sysPitch)
                         
-                        // Process Chunk with Deadlock-Free Channel
-                        processStreamViaChannel(targetEngine, targetPkg, chunk.text, callback, audioProcessor)
+                        var engineInputRate = prefs.getInt("RATE_$targetPkg", 24000)
+                        if (engineInputRate < 8000) engineInputRate = 24000
+
+                        val audioProcessor = try {
+                            AudioProcessor(engineInputRate, 1)
+                        } catch (e: Throwable) {
+                            continue
+                        }
+
+                        try {
+                            targetEngine.setSpeechRate(sysRate)
+                            targetEngine.setPitch(sysPitch)
+                            
+                            processStreamViaChannel(targetEngine, targetPkg, chunk.text, callback, audioProcessor)
+                        } finally {
+                            audioProcessor.release()
+                        }
                     }
                 }
                 if (!mIsStopped.get()) {
                     callback.done()
                 }
             }
-        } finally {
-            audioProcessor.release()
+        } catch (e: Exception) {
+            // Ignore
         }
     }
 
@@ -183,13 +190,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReadFd.set(readFd)
         currentWriteFd.set(writeFd)
 
-        // ★ The Solution: Unlimited Channel acts as a dynamic RAM buffer.
-        // Pipe won't clog because we drain it immediately to this channel.
         val audioChannel = Channel<ByteArray>(Channel.UNLIMITED)
 
-        // 1. DRAINER (Pipe -> Channel)
-        // This runs strictly on IO thread and does ONLY reading. It's fast.
-        // It ensures the Engine never blocks on 'write'.
         val drainerJob = launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
             try {
@@ -198,23 +200,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                         val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
                         if (bytesRead == -1) break 
                         if (bytesRead > 0) {
-                            // Copy data and send to channel
                             audioChannel.send(buffer.copyOfRange(0, bytesRead))
                         }
                     }
                 }
             } catch (e: Exception) {
             } finally {
-                audioChannel.close() // Signal EOF to consumer
+                audioChannel.close()
             }
         }
 
-        // 2. WRITER (Engine -> Pipe)
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
             
-            // We use Listener only to close the Write Pipe properly
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(id: String) {}
                 override fun onDone(id: String) { 
@@ -229,21 +228,17 @@ class AutoTTSManagerService : TextToSpeechService() {
             
             try {
                 engine.synthesizeToFile(text, params, writeFd, uuid)
-                // Note: We don't wait here. We rely on the Listener to close the pipe.
             } catch (e: Exception) {
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
         }
 
-        // 3. PROCESSOR (Channel -> Sonic -> System)
-        // This runs on the current thread (runBlocking scope)
         val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
         val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN)
         val outputArray = ByteArray(BUFFER_SIZE * 2)
 
         try {
-            // Receive data as soon as it arrives in RAM
             audioChannel.consumeEach { bytes ->
                 if (mIsStopped.get()) return@consumeEach
 
@@ -261,7 +256,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
 
-            // Flush Sonic after channel is empty (EOF)
             if (!mIsStopped.get()) {
                 audioProcessor.flushQueue()
                 outputBuffer.clear()
@@ -275,7 +269,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
 
         } finally {
-            // Cleanup
             drainerJob.cancel()
             writerJob.cancel()
             closeQuietly(readFd)
