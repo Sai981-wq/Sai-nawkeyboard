@@ -126,49 +126,52 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitHelper(text)
 
-        val audioProcessor = try {
-            AudioProcessor(SYSTEM_OUTPUT_RATE, 1)
-        } catch (e: Throwable) {
-            return
-        }
+        callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        try {
-            callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+        runBlocking {
+            for (chunk in chunks) {
+                if (mIsStopped.get()) break
 
-            runBlocking {
-                for (chunk in chunks) {
-                    if (mIsStopped.get()) break
+                val langCode = when (chunk.lang) {
+                    "SHAN" -> "shn"
+                    "MYANMAR" -> "my"
+                    else -> "eng"
+                }
 
-                    val langCode = when (chunk.lang) {
-                        "SHAN" -> "shn"
-                        "MYANMAR" -> "my"
-                        else -> "eng"
+                val engineData = getEngineDataForLang(langCode)
+                val targetEngine = engineData.engine ?: englishEngine
+                val targetPkg = engineData.pkgName
+
+                if (targetEngine != null) {
+                    currentActiveEngine = targetEngine
+                    
+                    var engineInputRate = prefs.getInt("RATE_$targetPkg", 24000)
+                    if (engineInputRate < 8000) engineInputRate = 24000
+
+                    val audioProcessor = try {
+                        AudioProcessor(engineInputRate, 1)
+                    } catch (e: Throwable) {
+                        continue
                     }
 
-                    val engineData = getEngineDataForLang(langCode)
-                    val targetEngine = engineData.engine ?: englishEngine
-                    val targetPkg = engineData.pkgName
-
-                    if (targetEngine != null) {
-                        currentActiveEngine = targetEngine
+                    try {
                         targetEngine.setSpeechRate(sysRate)
                         targetEngine.setPitch(sysPitch)
                         
-                        processStreamBlocking(targetEngine, targetPkg, chunk.text, callback, audioProcessor)
+                        processStreamBlocking(targetEngine, chunk.text, callback, audioProcessor)
+                    } finally {
+                        audioProcessor.release()
                     }
                 }
-                if (!mIsStopped.get()) {
-                    callback.done()
-                }
             }
-        } finally {
-            audioProcessor.release()
+            if (!mIsStopped.get()) {
+                callback.done()
+            }
         }
     }
 
     private suspend fun processStreamBlocking(
         engine: TextToSpeech, 
-        pkgName: String, 
         text: String, 
         callback: SynthesisCallback,
         audioProcessor: AudioProcessor
