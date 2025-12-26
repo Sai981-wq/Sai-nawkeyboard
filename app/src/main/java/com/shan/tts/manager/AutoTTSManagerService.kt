@@ -126,33 +126,43 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitHelper(text)
 
-        callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+        val audioProcessor = try {
+            AudioProcessor(SYSTEM_OUTPUT_RATE, 1)
+        } catch (e: Throwable) {
+            return
+        }
 
-        runBlocking {
-            for (chunk in chunks) {
-                if (mIsStopped.get()) break
+        try {
+            callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-                val langCode = when (chunk.lang) {
-                    "SHAN" -> "shn"
-                    "MYANMAR" -> "my"
-                    else -> "eng"
+            runBlocking {
+                for (chunk in chunks) {
+                    if (mIsStopped.get()) break
+
+                    val langCode = when (chunk.lang) {
+                        "SHAN" -> "shn"
+                        "MYANMAR" -> "my"
+                        else -> "eng"
+                    }
+
+                    val engineData = getEngineDataForLang(langCode)
+                    val targetEngine = engineData.engine ?: englishEngine
+                    val targetPkg = engineData.pkgName
+
+                    if (targetEngine != null) {
+                        currentActiveEngine = targetEngine
+                        targetEngine.setSpeechRate(sysRate)
+                        targetEngine.setPitch(sysPitch)
+                        
+                        processStreamBlocking(targetEngine, targetPkg, chunk.text, callback, audioProcessor)
+                    }
                 }
-
-                val engineData = getEngineDataForLang(langCode)
-                val targetEngine = engineData.engine ?: englishEngine
-                val targetPkg = engineData.pkgName
-
-                if (targetEngine != null) {
-                    currentActiveEngine = targetEngine
-                    targetEngine.setSpeechRate(sysRate)
-                    targetEngine.setPitch(sysPitch)
-                    
-                    processStreamBlocking(targetEngine, targetPkg, chunk.text, callback)
+                if (!mIsStopped.get()) {
+                    callback.done()
                 }
             }
-            if (!mIsStopped.get()) {
-                callback.done()
-            }
+        } finally {
+            audioProcessor.release()
         }
     }
 
@@ -160,7 +170,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         engine: TextToSpeech, 
         pkgName: String, 
         text: String, 
-        callback: SynthesisCallback
+        callback: SynthesisCallback,
+        audioProcessor: AudioProcessor
     ) = coroutineScope {
 
         val pipe = try { ParcelFileDescriptor.createPipe() } catch (e: IOException) { return@coroutineScope }
@@ -170,17 +181,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         currentReadFd.set(readFd)
         currentWriteFd.set(writeFd)
-
-        var engineInputRate = prefs.getInt("RATE_$pkgName", 24000)
-        if (engineInputRate < 8000) engineInputRate = 24000
-
-        val audioProcessor = try {
-            AudioProcessor(engineInputRate, 1)
-        } catch (e: Throwable) {
-            closeQuietly(writeFd)
-            closeQuietly(readFd)
-            return@coroutineScope
-        }
 
         val synthesisLatch = CountDownLatch(1)
 
@@ -226,8 +226,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             } catch (e: Exception) {
-            } finally {
-                audioProcessor.release()
             }
         }
 
