@@ -18,7 +18,6 @@ import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
@@ -38,11 +37,14 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val mIsStopped = AtomicBoolean(false)
     
+    // Engine Pointer များ
     private val currentReadFd = AtomicReference<ParcelFileDescriptor?>(null)
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
 
-    private val BUFFER_SIZE = 65536 
+    private val SYSTEM_OUTPUT_RATE = 24000
+    // Buffer ကို အသေးဆုံး ထားမယ် (Typing Latency လုံးဝမရှိအောင်)
+    private val BUFFER_SIZE = 4096 
 
     override fun onCreate() {
         super.onCreate()
@@ -58,7 +60,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defaultEngine)
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
-
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -116,7 +117,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
-        mIsStopped.set(false)
+        mIsStopped.set(false) // Reset Flag
 
         val text = request.charSequenceText.toString()
         val sysRate = request.speechRate / 100f
@@ -124,11 +125,12 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitHelper(text)
 
-        runBlocking {
-            var sharedAudioProcessor: AudioProcessor? = null
-            var currentProcessorRate = 0
+        try {
+            callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            try {
+            // runBlocking သည် အလုပ်အားလုံး မပြီးမချင်း Main Thread ကို စောင့်ခိုင်းထားသည်
+            // ဒါမှ စာဆုံးခါနီး အသံပြတ်သွားတာမျိုး မဖြစ်မှာပါ
+            runBlocking {
                 for (chunk in chunks) {
                     if (mIsStopped.get()) break
 
@@ -145,43 +147,40 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (targetEngine != null) {
                         currentActiveEngine = targetEngine
                         
-                        var realEngineRate = prefs.getInt("RATE_$targetPkg", 24000)
-                        if (realEngineRate < 8000) realEngineRate = 24000
+                        var engineInputRate = prefs.getInt("RATE_$targetPkg", 24000)
+                        if (engineInputRate < 8000) engineInputRate = 24000
 
-                        if (sharedAudioProcessor == null || currentProcessorRate != realEngineRate) {
-                            sharedAudioProcessor?.release()
-                            try {
-                                sharedAudioProcessor = AudioProcessor(realEngineRate, 1)
-                                currentProcessorRate = realEngineRate
-                            } catch (e: Throwable) {
-                                sharedAudioProcessor = null
-                            }
+                        val audioProcessor = try {
+                            AudioProcessor(engineInputRate, 1)
+                        } catch (e: Throwable) {
+                            continue
                         }
 
-                        if (sharedAudioProcessor != null) {
-                            sharedAudioProcessor.setSpeed(sysRate)
-                            sharedAudioProcessor.setPitch(sysPitch)
-
+                        try {
                             targetEngine.setSpeechRate(sysRate)
                             targetEngine.setPitch(sysPitch)
                             
-                            callback.start(realEngineRate, AudioFormat.ENCODING_PCM_16BIT, 1)
-                            
-                            processStreamBlocking(targetEngine, chunk.text, callback, sharedAudioProcessor!!)
+                            // Streaming Process ကို ခေါ်မည်
+                            processStreamSynchronized(targetEngine, targetPkg, chunk.text, callback, audioProcessor)
+                        } finally {
+                            audioProcessor.release()
                         }
                     }
                 }
+                
+                // အားလုံးပြီးမှ Done ခေါ်မည်
                 if (!mIsStopped.get()) {
                     callback.done()
                 }
-            } finally {
-                sharedAudioProcessor?.release()
             }
+        } catch (e: Exception) {
+            // Error handling
         }
     }
 
-    private suspend fun processStreamBlocking(
+    private suspend fun processStreamSynchronized(
         engine: TextToSpeech, 
+        pkgName: String, 
         text: String, 
         callback: SynthesisCallback,
         audioProcessor: AudioProcessor
@@ -195,26 +194,30 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReadFd.set(readFd)
         currentWriteFd.set(writeFd)
 
-        val synthesisLatch = CountDownLatch(1)
+        // Engine အလုပ်ပြီးမပြီး စောင့်ရန် Latch
+        val engineDoneLatch = CountDownLatch(1)
 
+        // 1. READER JOB (အသံဖတ်ပြီး System ကိုပို့)
         val readerJob = launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
             val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN)
+            val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 2).order(ByteOrder.LITTLE_ENDIAN) // Output Buffer needs to be larger
             val outputArray = ByteArray(BUFFER_SIZE * 2)
 
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                    while (isActive && !mIsStopped.get()) {
+                    while (isActive) {
+                        // Pipe ထဲက Data လာမလာ စောင့်ဖတ်မယ်
                         val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
 
-                        if (bytesRead == -1) break 
+                        if (bytesRead == -1) break // End of Stream (EOF)
 
                         if (bytesRead > 0) {
                             inputBuffer.clear()
                             inputBuffer.put(buffer, 0, bytesRead)
                             inputBuffer.flip()
 
+                            // ★ Typing Fix: Data ဝင်လာတာနဲ့ ချက်ချင်း Process လုပ်မယ်
                             var processed = audioProcessor.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity())
 
                             while (processed > 0 && !mIsStopped.get()) {
@@ -226,6 +229,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                     
+                    // ★ Important Flush: Loop ပြီးသွားရင် Sonic ထဲမှာ ကျန်တာရှိသမျှ အကုန်ညှစ်ထုတ်မယ်
+                    // ဒါမှ 'က', 'ခ' လို စာတိုလေးတွေ အသံထွက်မှာပါ
                     if (!mIsStopped.get()) {
                         audioProcessor.flushQueue()
                         outputBuffer.clear()
@@ -242,28 +247,38 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
+        // 2. WRITER JOB (Engine ကို စာရေးခိုင်း)
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
             
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(id: String) {}
-                override fun onDone(id: String) { synthesisLatch.countDown() }
-                override fun onError(id: String) { synthesisLatch.countDown() }
-                override fun onError(id: String, errorCode: Int) { synthesisLatch.countDown() }
+                override fun onDone(id: String) { 
+                    engineDoneLatch.countDown()
+                }
+                override fun onError(id: String) { 
+                    engineDoneLatch.countDown()
+                }
             })
             
             try {
-                val result = engine.synthesizeToFile(text, params, writeFd, uuid)
+                // Engine ကို File Descriptor ထဲ ရေးခိုင်းမယ်
+                engine.synthesizeToFile(text, params, writeFd, uuid)
+                // Engine ပြီးတဲ့အထိ စောင့်မယ် (Writer မပိတ်ခင်)
+                engineDoneLatch.await()
             } catch (e: Exception) {
             } finally {
+                // Writer ပိတ်မှ Reader က EOF (-1) ရပြီး Loop ထွက်မှာ
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
         }
 
         try {
-            joinAll(readerJob, writerJob)
+            // ★ Critical: Writer ရော Reader ရော ပြီးတဲ့အထိ ဒီ Function က မထွက်ဘူး
+            // ဒါကြောင့် စာမဆုံးခင် အသံပြတ်သွားတဲ့ ပြဿနာ (Cutoff) လုံးဝ မရှိတော့ဘူး
+            joinAll(writerJob, readerJob)
         } finally {
             closeQuietly(readFd)
             closeQuietly(writeFd)
