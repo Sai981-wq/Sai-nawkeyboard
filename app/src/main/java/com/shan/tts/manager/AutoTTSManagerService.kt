@@ -43,7 +43,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentActiveEngine: TextToSpeech? = null
 
     private val SYSTEM_OUTPUT_RATE = 24000
-    private val BUFFER_SIZE = 1024 
+    private val BUFFER_SIZE = 8192 
 
     override fun onCreate() {
         super.onCreate()
@@ -156,6 +156,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                         try {
                             targetEngine.setSpeechRate(sysRate)
                             targetEngine.setPitch(sysPitch)
+                            
+                            audioProcessor.setSpeed(1.0f)
+                            audioProcessor.setPitch(1.0f)
                             
                             processFully(targetEngine, chunk.text, callback, audioProcessor)
                         } finally {
