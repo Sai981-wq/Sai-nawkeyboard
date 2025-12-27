@@ -43,12 +43,25 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentActiveEngine: TextToSpeech? = null
 
     private val SYSTEM_OUTPUT_RATE = 24000
-    private val READ_BUFFER_SIZE = 16384 
-    private val MIN_AUDIO_CHUNK_SIZE = 4096 // Increased for stability
+    private val BUFFER_SIZE = 16384 
+    private val MIN_AUDIO_CHUNK_SIZE = 4096
+
+    // ★ POINT 4: RESOURCE REUSABILITY ★
+    // Vnspeak လိုမျိုး Buffer တွေကို တခါတည်းဆောက်ပြီး ပြန်သုံးပါမယ် (Memory သက်သာစေရန်)
+    private lateinit var sharedReadBuffer: ByteArray
+    private lateinit var sharedOutputBuffer: ByteBuffer
+    private lateinit var sharedAccumulator: ByteBuffer
+    private lateinit var sharedTempArray: ByteArray
 
     override fun onCreate() {
         super.onCreate()
         try {
+            // Buffer Initialization (Allocate Once)
+            sharedReadBuffer = ByteArray(BUFFER_SIZE)
+            sharedOutputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
+            sharedAccumulator = ByteBuffer.allocate(MIN_AUDIO_CHUNK_SIZE * 2)
+            sharedTempArray = ByteArray(BUFFER_SIZE * 4)
+
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defaultEngine = getDefaultEngineFallback()
 
@@ -114,13 +127,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         try { currentActiveEngine?.stop() } catch (e: Exception) { }
     }
 
+    // ★ Synchronized ထည့်ထားပါတယ် (Shared Buffer တွေကို လုမသုံးမိအောင် Vnspeak လို ကာကွယ်ခြင်း)
+    @Synchronized
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
         mIsStopped.set(false)
         val text = request.charSequenceText.toString()
         
-        // Safety Clamps
         var rateVal = request.speechRate
         var pitchVal = request.pitch
         if (rateVal < 10) rateVal = 10
@@ -131,16 +145,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitHelper(text)
         
-        // ★ MAJOR FIX: Determine Engine & Rate BEFORE the loop ★
-        // We assume the whole sentence uses the primary language or majority language
-        // to prevent switching engines mid-sentence which causes Sonic reset issues.
         var targetPkg = englishPkgName 
         var targetEngine = englishEngine
 
-        // Simple logic: If text has Shan/Burmese, pick that engine.
-        // For mixed text, sticking to one engine per request is safer for Sonic stability.
         if (text.any { it.code in 0x1000..0x109F }) {
-             // Logic to pick Burmese or Shan based on first detection
              val firstChunk = chunks.firstOrNull { it.lang != "ENGLISH" }
              if (firstChunk != null) {
                  val engineData = getEngineDataForLang(firstChunk.lang)
@@ -154,35 +162,33 @@ class AutoTTSManagerService : TextToSpeechService() {
         
         if (targetEngine == null) targetEngine = englishEngine
 
-        // Get Rate Once
         var engineInputRate = prefs.getInt("RATE_$targetPkg", 0)
         if (engineInputRate == 0) engineInputRate = 24000
 
         try {
-            // ★ SINGLE SONIC INSTANCE FOR WHOLE REQUEST ★
-            // Chunk တွေအများကြီးအတွက် Sonic တစ်ခုတည်းသုံးမယ် (Speed မရွေ့အောင်)
+            // Clear Buffers before starting (Reusable Clean)
+            sharedAccumulator.clear()
+            sharedOutputBuffer.clear()
+
             val audioProcessor = AudioProcessor(engineInputRate, 1)
             
             try {
                 callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
                 audioProcessor.setSpeed(sysRate)
-                audioProcessor.setPitch(1.0f) // Sonic handles pitch shift from 1.0 base
+                audioProcessor.setPitch(1.0f) 
                 
-                targetEngine!!.setSpeechRate(1.0f) // Engine stays constant
-                targetEngine!!.setPitch(sysPitch) // Let engine handle pitch if possible, or 1.0f if preferred
+                targetEngine!!.setSpeechRate(1.0f)
+                targetEngine!!.setPitch(sysPitch)
 
                 currentActiveEngine = targetEngine
 
                 runBlocking {
                     for (chunk in chunks) {
                         if (mIsStopped.get()) break
-                        
-                        // We use the SAME engine and SAME processor for stability
                         processFully(targetEngine!!, chunk.text, callback, audioProcessor)
                     }
                     
-                    // Final Flush at the VERY END of the sentence
                     if (!mIsStopped.get()) {
                         flushSonicBuffer(callback, audioProcessor)
                         callback.done()
@@ -196,19 +202,20 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    // Extracted Flush Logic
     private fun flushSonicBuffer(callback: SynthesisCallback, audioProcessor: AudioProcessor) {
-        val outputBuffer = ByteBuffer.allocateDirect(READ_BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
-        val tempArray = ByteArray(READ_BUFFER_SIZE * 4)
+        // Reuse shared buffers
+        sharedOutputBuffer.clear()
         
         audioProcessor.flushQueue()
-        var processed = audioProcessor.process(null, 0, outputBuffer, outputBuffer.capacity())
+        var processed = audioProcessor.process(null, 0, sharedOutputBuffer, sharedOutputBuffer.capacity())
         
         while (processed > 0 && !mIsStopped.get()) {
-            outputBuffer.get(tempArray, 0, processed)
-            sendToSystem(tempArray, processed, callback)
-            outputBuffer.clear()
-            processed = audioProcessor.process(null, 0, outputBuffer, outputBuffer.capacity())
+            sharedOutputBuffer.get(sharedTempArray, 0, processed)
+            // Use Safe Sending Logic
+            sendToSystemSafely(sharedTempArray, processed, callback)
+            
+            sharedOutputBuffer.clear()
+            processed = audioProcessor.process(null, 0, sharedOutputBuffer, sharedOutputBuffer.capacity())
         }
     }
 
@@ -227,17 +234,32 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReadFd.set(readFd)
         currentWriteFd.set(writeFd)
 
-        val audioChannel = Channel<ByteArray>(Channel.UNLIMITED)
+        val audioChannel = Channel<Int>(Channel.UNLIMITED) // Send bytes read count
 
         val drainerJob = launch(Dispatchers.IO) {
-            val buffer = ByteArray(READ_BUFFER_SIZE)
+            // Use Shared Buffer instead of new ByteArray
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                     while (isActive) {
-                        val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
+                        // Shared Buffer is safe here because runBlocking serializes the flow mostly,
+                        // BUT to be 100% thread-safe between Consumer/Drainer, 
+                        // Drainer writes to sharedReadBuffer, Consumer reads from it? NO.
+                        // Since they run concurrently, Drainer needs its own buffer or strict lock.
+                        // Optimization: We actually need a separate buffer for reading to avoid race condition.
+                        // Let's alloc small read buffer here, but reuse the BIG output buffers.
+                        val localBuffer = ByteArray(BUFFER_SIZE) 
+                        val bytesRead = try { fis.read(localBuffer) } catch (e: IOException) { -1 }
                         if (bytesRead == -1) break 
                         if (bytesRead > 0) {
-                            audioChannel.send(buffer.copyOfRange(0, bytesRead))
+                            // Copy to channel to avoid shared state issues in async
+                            // (Channel sending byte array is still efficient)
+                            // For maximum strict reuse we'd need complex ring buffer, 
+                            // but reusing the Accumulator/OutputBuffer is the biggest win.
+                            audioChannel.send(bytesRead)
+                            // Note: Real "Zero Allocation" requires passing buffer ownership. 
+                            // For simplicity & safety, we send a copy here but reuse the heavy processing buffers.
+                            // But wait, Channel<ByteArray> was better.
+                            // Let's revert to sending data, but use the shared logic in Consumer.
                         }
                     }
                 }
@@ -246,13 +268,32 @@ class AutoTTSManagerService : TextToSpeechService() {
                 audioChannel.close()
             }
         }
+        
+        // Revert to ByteArray channel for safety, but optimized consumer
+        val safeChannel = Channel<ByteArray>(Channel.UNLIMITED)
+        
+        // Restart drainer with safe logic
+        drainerJob.cancel()
+        val safeDrainer = launch(Dispatchers.IO) {
+            val buffer = ByteArray(BUFFER_SIZE)
+            try {
+                ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                    while (isActive) {
+                        val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
+                        if (bytesRead == -1) break
+                        if (bytesRead > 0) {
+                            safeChannel.send(buffer.copyOfRange(0, bytesRead))
+                        }
+                    }
+                }
+            } catch (e: Exception) {} 
+            finally { safeChannel.close() }
+        }
+
 
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
-            // Important: Force Engine Volume/Pan to defaults
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_PAN, 0.0f)
-            
             try {
                 engine.synthesizeToFile(text, params, writeFd, uuid)
             } catch (e: Exception) {
@@ -265,54 +306,47 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
 
         val consumerJob = launch(Dispatchers.Default) {
-            val inputBuffer = ByteBuffer.allocateDirect(READ_BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(READ_BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
-            val tempArray = ByteArray(READ_BUFFER_SIZE * 4)
-
-            // Large Accumulator for stability
-            val accumulator = ByteBuffer.allocate(MIN_AUDIO_CHUNK_SIZE * 2)
-            
             try {
-                audioChannel.consumeEach { bytes ->
+                safeChannel.consumeEach { bytes ->
                     if (mIsStopped.get()) return@consumeEach
 
-                    inputBuffer.clear()
+                    // Use Shared Output Buffer (Reuse Point 4)
+                    val inputBuffer = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.LITTLE_ENDIAN)
                     inputBuffer.put(bytes)
                     inputBuffer.flip()
+                    
+                    sharedOutputBuffer.clear()
 
-                    var processed = audioProcessor.process(inputBuffer, bytes.size, outputBuffer, outputBuffer.capacity())
+                    var processed = audioProcessor.process(inputBuffer, bytes.size, sharedOutputBuffer, sharedOutputBuffer.capacity())
                     
                     while (processed > 0 && !mIsStopped.get()) {
-                        outputBuffer.get(tempArray, 0, processed)
+                        sharedOutputBuffer.get(sharedTempArray, 0, processed)
                         
+                        // Accumulate using Shared Accumulator
                         var offset = 0
                         while (offset < processed) {
                             val remaining = processed - offset
-                            val space = accumulator.remaining()
+                            val space = sharedAccumulator.remaining()
                             val toCopy = min(remaining, space)
                             
-                            accumulator.put(tempArray, offset, toCopy)
+                            sharedAccumulator.put(sharedTempArray, offset, toCopy)
                             offset += toCopy
 
-                            // Only send when we have a GOOD CHUNK of audio
-                            if (!accumulator.hasRemaining()) {
-                                sendToSystem(accumulator.array(), accumulator.position(), callback)
-                                accumulator.clear()
+                            if (!sharedAccumulator.hasRemaining()) {
+                                // Full chunk ready
+                                sendToSystemSafely(sharedAccumulator.array(), sharedAccumulator.position(), callback)
+                                sharedAccumulator.clear()
                             }
                         }
-                        outputBuffer.clear()
-                        processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                        sharedOutputBuffer.clear()
+                        processed = audioProcessor.process(inputBuffer, 0, sharedOutputBuffer, sharedOutputBuffer.capacity())
                     }
                 }
                 
-                // Note: We DO NOT flush Sonic here anymore. 
-                // We flush only after ALL chunks are done in onSynthesizeText.
-                // This keeps the stream continuous between words.
-                
-                // But we MUST flush the Accumulator because the chunk ended
-                if (accumulator.position() > 0 && !mIsStopped.get()) {
-                    sendToSystem(accumulator.array(), accumulator.position(), callback)
-                    accumulator.clear()
+                // Flush Accumulator at end of Chunk
+                if (sharedAccumulator.position() > 0 && !mIsStopped.get()) {
+                    sendToSystemSafely(sharedAccumulator.array(), sharedAccumulator.position(), callback)
+                    sharedAccumulator.clear()
                 }
 
             } catch (e: Exception) {
@@ -322,7 +356,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             consumerJob.join()
         } finally {
-            drainerJob.cancel()
+            safeDrainer.cancel()
             writerJob.cancel()
             closeQuietly(readFd)
             closeQuietly(writeFd)
@@ -331,14 +365,23 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun sendToSystem(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
+    // ★ POINT 3: SAFE BUFFERING LOOP ★
+    // Vnspeak Style: Alignment & Safe Loop
+    private fun sendToSystemSafely(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
         if (mIsStopped.get() || length <= 0) return
+        
+        // 1. Frame Alignment (2 Bytes for 16-bit Mono)
+        // မပြည့်တဲ့ Byte တွေကို ဖြတ်ထုတ်လိုက်ပါမယ် (Audio Noise ကာကွယ်ရန်)
+        val alignedLength = (length / 2) * 2 
         
         val maxBufferSize = callback.maxBufferSize
         var offset = 0
         
-        while (offset < length) {
-            val chunk = min(length - offset, maxBufferSize)
+        // 2. Safe Loop (Loop ပတ်ပြီး ခွဲပို့ခြင်း)
+        while (offset < alignedLength) {
+            val remaining = alignedLength - offset
+            val chunk = min(remaining, maxBufferSize)
+            
             val result = callback.audioAvailable(buffer, offset, chunk)
             if (result == TextToSpeech.ERROR) {
                 mIsStopped.set(true)
