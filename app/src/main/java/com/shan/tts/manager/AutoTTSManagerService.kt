@@ -22,6 +22,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
+import kotlin.math.max
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -43,8 +44,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentActiveEngine: TextToSpeech? = null
 
     private val SYSTEM_OUTPUT_RATE = 24000
-    // Rate အမြင့်မှာ Stable ဖြစ်စေရန် Buffer ကြီးကြီးထားပါသည်
     private val BUFFER_SIZE = 8192 
+
+    // ★ eSpeak Logic: Engine Limits (Min/Max) သတ်မှတ်ခြင်း
+    // Engine အများစုသည် 3.0x (၃ ဆ) ထက်ကျော်ရင် အသံကွဲတတ်သည်
+    private val ENGINE_MIN_RATE = 0.1f
+    private val ENGINE_MAX_RATE = 3.0f
 
     override fun onCreate() {
         super.onCreate()
@@ -123,6 +128,21 @@ class AutoTTSManagerService : TextToSpeechService() {
         val sysRate = request.speechRate / 100f
         val sysPitch = request.pitch / 100f
 
+        // ★ eSpeak Logic Implemented Here ★
+        // 1. Calculate Target Rate
+        // 2. Clamp Rate (Limit within Min/Max)
+        
+        var engineTargetRate = sysRate
+        
+        // Safety Check (Code from VoiceSettings.java logic applied here)
+        if (engineTargetRate > ENGINE_MAX_RATE) engineTargetRate = ENGINE_MAX_RATE
+        if (engineTargetRate < ENGINE_MIN_RATE) engineTargetRate = ENGINE_MIN_RATE
+
+        // ★ Hybrid Logic:
+        // Engine က မနိုင်လို့ လျှော့ချလိုက်ရတဲ့ Speed ကို Sonic က ပြန်ဖြည့်ပေးမယ်
+        // ဥပမာ: User wants 5.0x -> Engine does 3.0x -> Sonic does 1.66x (Total = 5.0)
+        val sonicSpeed = if (sysRate > ENGINE_MAX_RATE) (sysRate / ENGINE_MAX_RATE) else 1.0f
+
         val chunks = TTSUtils.splitHelper(text)
 
         try {
@@ -155,14 +175,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         try {
-                            // ★ STANDARD APPROACH:
-                            // ၁. Engine ကို Normal Speed (1.0) အတိုင်းပဲ ဖတ်ခိုင်းမယ် (Stable ဖြစ်စေရန်)
-                            targetEngine.setSpeechRate(1.0f)
+                            // Engine gets the CLAMPED rate (Safe)
+                            targetEngine.setSpeechRate(engineTargetRate)
                             targetEngine.setPitch(sysPitch)
                             
-                            // ၂. Sonic ကို User လိုချင်တဲ့ Speed (sysRate) အတိုင်း လုပ်ခိုင်းမယ်
-                            // Jieshuo လို Fast Rate တွေမှာ Sonic က ပိုပြီး Smooth ဖြစ်စေပါတယ်
-                            audioProcessor.setSpeed(sysRate)
+                            // Sonic gets the REMAINING speed (Fast)
+                            audioProcessor.setSpeed(sonicSpeed)
                             audioProcessor.setPitch(1.0f)
                             
                             processFully(targetEngine, chunk.text, callback, audioProcessor)
