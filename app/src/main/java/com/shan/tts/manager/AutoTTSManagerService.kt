@@ -43,6 +43,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentActiveEngine: TextToSpeech? = null
 
     private val SYSTEM_OUTPUT_RATE = 24000
+    // Rate အမြင့်မှာ Stable ဖြစ်စေရန် Buffer ကြီးကြီးထားပါသည်
     private val BUFFER_SIZE = 8192 
 
     override fun onCreate() {
@@ -154,10 +155,14 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         try {
-                            targetEngine.setSpeechRate(sysRate)
+                            // ★ STANDARD APPROACH:
+                            // ၁. Engine ကို Normal Speed (1.0) အတိုင်းပဲ ဖတ်ခိုင်းမယ် (Stable ဖြစ်စေရန်)
+                            targetEngine.setSpeechRate(1.0f)
                             targetEngine.setPitch(sysPitch)
                             
-                            audioProcessor.setSpeed(1.0f)
+                            // ၂. Sonic ကို User လိုချင်တဲ့ Speed (sysRate) အတိုင်း လုပ်ခိုင်းမယ်
+                            // Jieshuo လို Fast Rate တွေမှာ Sonic က ပိုပြီး Smooth ဖြစ်စေပါတယ်
+                            audioProcessor.setSpeed(sysRate)
                             audioProcessor.setPitch(1.0f)
                             
                             processFully(targetEngine, chunk.text, callback, audioProcessor)
