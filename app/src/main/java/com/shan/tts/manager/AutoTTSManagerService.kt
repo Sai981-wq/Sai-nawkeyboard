@@ -22,7 +22,6 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
-import kotlin.math.max
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -43,18 +42,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
 
-    // System Output (Speaker) fixed at 24000Hz
     private val SYSTEM_OUTPUT_RATE = 24000
-    
-    // Read Buffer 16KB to prevent Underrun
     private val READ_BUFFER_SIZE = 16384 
-    
-    // Minimum 2KB chunks to send to AudioTrack (prevents "bad cable" sound)
-    private val MIN_AUDIO_CHUNK_SIZE = 2048
-
-    // Default Pitch/Rate constants
-    private val DEFAULT_ANDROID_RATE = 100
-    private val DEFAULT_ANDROID_PITCH = 100
+    private val MIN_AUDIO_CHUNK_SIZE = 4096 // Increased for stability
 
     override fun onCreate() {
         super.onCreate()
@@ -128,85 +118,97 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (request == null || callback == null) return
 
         mIsStopped.set(false)
-
         val text = request.charSequenceText.toString()
         
-        // ★ ROBUST PITCH & RATE CALCULATION ★
-        // Using standard Android conversion but with safety clamps similar to logic implied in Vnspeak
+        // Safety Clamps
         var rateVal = request.speechRate
         var pitchVal = request.pitch
-
-        // Prevent Zero or Negative values which cause Native Crashes
         if (rateVal < 10) rateVal = 10
         if (pitchVal < 10) pitchVal = 10
 
-        // Convert to Float Multiplier (100 -> 1.0f)
         val sysRate = rateVal / 100.0f
         val sysPitch = pitchVal / 100.0f
 
         val chunks = TTSUtils.splitHelper(text)
+        
+        // ★ MAJOR FIX: Determine Engine & Rate BEFORE the loop ★
+        // We assume the whole sentence uses the primary language or majority language
+        // to prevent switching engines mid-sentence which causes Sonic reset issues.
+        var targetPkg = englishPkgName 
+        var targetEngine = englishEngine
+
+        // Simple logic: If text has Shan/Burmese, pick that engine.
+        // For mixed text, sticking to one engine per request is safer for Sonic stability.
+        if (text.any { it.code in 0x1000..0x109F }) {
+             // Logic to pick Burmese or Shan based on first detection
+             val firstChunk = chunks.firstOrNull { it.lang != "ENGLISH" }
+             if (firstChunk != null) {
+                 val engineData = getEngineDataForLang(firstChunk.lang)
+                 targetEngine = engineData.engine
+                 targetPkg = engineData.pkgName
+             } else {
+                 targetEngine = burmeseEngine
+                 targetPkg = burmesePkgName
+             }
+        }
+        
+        if (targetEngine == null) targetEngine = englishEngine
+
+        // Get Rate Once
+        var engineInputRate = prefs.getInt("RATE_$targetPkg", 0)
+        if (engineInputRate == 0) engineInputRate = 24000
 
         try {
-            callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+            // ★ SINGLE SONIC INSTANCE FOR WHOLE REQUEST ★
+            // Chunk တွေအများကြီးအတွက် Sonic တစ်ခုတည်းသုံးမယ် (Speed မရွေ့အောင်)
+            val audioProcessor = AudioProcessor(engineInputRate, 1)
+            
+            try {
+                callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            runBlocking {
-                for (chunk in chunks) {
-                    if (mIsStopped.get()) break
+                audioProcessor.setSpeed(sysRate)
+                audioProcessor.setPitch(1.0f) // Sonic handles pitch shift from 1.0 base
+                
+                targetEngine!!.setSpeechRate(1.0f) // Engine stays constant
+                targetEngine!!.setPitch(sysPitch) // Let engine handle pitch if possible, or 1.0f if preferred
 
-                    val langCode = when (chunk.lang) {
-                        "SHAN" -> "shn"
-                        "MYANMAR" -> "my"
-                        else -> "eng"
-                    }
+                currentActiveEngine = targetEngine
 
-                    val engineData = getEngineDataForLang(langCode)
-                    val targetEngine = engineData.engine ?: englishEngine
-                    val targetPkg = engineData.pkgName
-
-                    if (targetEngine != null) {
-                        currentActiveEngine = targetEngine
+                runBlocking {
+                    for (chunk in chunks) {
+                        if (mIsStopped.get()) break
                         
-                        // ★ STRICT HZ LOGIC ★
-                        // Strictly use scanned rate if available
-                        var engineInputRate = prefs.getInt("RATE_$targetPkg", 0)
-
-                        if (engineInputRate == 0) {
-                             engineInputRate = 24000 // Fallback
-                        }
-
-                        val audioProcessor = try {
-                            AudioProcessor(engineInputRate, 1)
-                        } catch (e: Throwable) {
-                            continue
-                        }
-
-                        try {
-                            // 1. Engine stays at Normal Speed (1.0) & Pitch (Normal Pitch for Engine)
-                            // Note: Vnspeak logic suggests varying pitch at generation, 
-                            // but for stability with Sonic, let Sonic handle pitch shifting.
-                            // However, some engines sound robotic if we force Pitch 1.0.
-                            // We will trust Sonic for Pitch shifting.
-                            targetEngine.setSpeechRate(1.0f)
-                            
-                            // We set Engine Pitch to 1.0 to get raw clean audio, 
-                            // then Sonic shifts it. This prevents double-pitching artifacts.
-                            targetEngine.setPitch(1.0f) 
-                            
-                            // 2. Sonic handles ALL Speed and Pitch
-                            audioProcessor.setSpeed(sysRate)
-                            audioProcessor.setPitch(sysPitch)
-                            
-                            processFully(targetEngine, chunk.text, callback, audioProcessor)
-                        } finally {
-                            audioProcessor.release()
-                        }
+                        // We use the SAME engine and SAME processor for stability
+                        processFully(targetEngine!!, chunk.text, callback, audioProcessor)
+                    }
+                    
+                    // Final Flush at the VERY END of the sentence
+                    if (!mIsStopped.get()) {
+                        flushSonicBuffer(callback, audioProcessor)
+                        callback.done()
                     }
                 }
-                if (!mIsStopped.get()) {
-                    callback.done()
-                }
+            } finally {
+                audioProcessor.release()
             }
         } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    // Extracted Flush Logic
+    private fun flushSonicBuffer(callback: SynthesisCallback, audioProcessor: AudioProcessor) {
+        val outputBuffer = ByteBuffer.allocateDirect(READ_BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
+        val tempArray = ByteArray(READ_BUFFER_SIZE * 4)
+        
+        audioProcessor.flushQueue()
+        var processed = audioProcessor.process(null, 0, outputBuffer, outputBuffer.capacity())
+        
+        while (processed > 0 && !mIsStopped.get()) {
+            outputBuffer.get(tempArray, 0, processed)
+            sendToSystem(tempArray, processed, callback)
+            outputBuffer.clear()
+            processed = audioProcessor.process(null, 0, outputBuffer, outputBuffer.capacity())
         }
     }
 
@@ -247,7 +249,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
+            // Important: Force Engine Volume/Pan to defaults
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_PAN, 0.0f)
+            
             try {
                 engine.synthesizeToFile(text, params, writeFd, uuid)
             } catch (e: Exception) {
@@ -264,7 +269,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             val outputBuffer = ByteBuffer.allocateDirect(READ_BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
             val tempArray = ByteArray(READ_BUFFER_SIZE * 4)
 
-            // Accumulator to fix "Bad Cable" / Stuttering sound
+            // Large Accumulator for stability
             val accumulator = ByteBuffer.allocate(MIN_AUDIO_CHUNK_SIZE * 2)
             
             try {
@@ -284,51 +289,27 @@ class AutoTTSManagerService : TextToSpeechService() {
                         while (offset < processed) {
                             val remaining = processed - offset
                             val space = accumulator.remaining()
-                            
                             val toCopy = min(remaining, space)
+                            
                             accumulator.put(tempArray, offset, toCopy)
                             offset += toCopy
 
-                            // Send only when Accumulator is full (prevents tiny chunk stutter)
+                            // Only send when we have a GOOD CHUNK of audio
                             if (!accumulator.hasRemaining()) {
                                 sendToSystem(accumulator.array(), accumulator.position(), callback)
                                 accumulator.clear()
                             }
                         }
-
                         outputBuffer.clear()
                         processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
                     }
                 }
-
-                // Flush Sonic Queue
-                if (!mIsStopped.get()) {
-                    audioProcessor.flushQueue()
-                    outputBuffer.clear()
-                    var processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                    while (processed > 0 && !mIsStopped.get()) {
-                        outputBuffer.get(tempArray, 0, processed)
-                        
-                        var offset = 0
-                        while (offset < processed) {
-                            val remaining = processed - offset
-                            val space = accumulator.remaining()
-                            val toCopy = min(remaining, space)
-                            accumulator.put(tempArray, offset, toCopy)
-                            offset += toCopy
-                            
-                            if (!accumulator.hasRemaining()) {
-                                sendToSystem(accumulator.array(), accumulator.position(), callback)
-                                accumulator.clear()
-                            }
-                        }
-                        
-                        outputBuffer.clear()
-                        processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                    }
-                }
-
-                // Final Flush of Accumulator
+                
+                // Note: We DO NOT flush Sonic here anymore. 
+                // We flush only after ALL chunks are done in onSynthesizeText.
+                // This keeps the stream continuous between words.
+                
+                // But we MUST flush the Accumulator because the chunk ended
                 if (accumulator.position() > 0 && !mIsStopped.get()) {
                     sendToSystem(accumulator.array(), accumulator.position(), callback)
                     accumulator.clear()
