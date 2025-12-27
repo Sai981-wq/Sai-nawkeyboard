@@ -12,12 +12,13 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.consumeEach
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
@@ -41,8 +42,11 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
 
+    // System Output Rate (Fixed to prevent Hz errors)
     private val SYSTEM_OUTPUT_RATE = 24000
-    private val BUFFER_SIZE = 4096 // Typing Latency အတွက် Buffer အသေးသုံးထားသည်
+    
+    // Typing Latency အတွက် Buffer ကို 1KB သာ ထားပါမည်
+    private val BUFFER_SIZE = 1024 
 
     override fun onCreate() {
         super.onCreate()
@@ -58,7 +62,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkgName = resolveEngine("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defaultEngine)
             initEngine(englishPkgName, Locale.US) { englishEngine = it }
-
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -124,60 +127,57 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitHelper(text)
 
-        // ★ HZ FIX: System ကို 24000Hz (Fixed) နဲ့ပဲ စမယ်လို့ တစ်ကြိမ်တည်း ပြောမယ်
-        // Loop ထဲမှာ ခဏခဏ Rate မပြောင်းတော့ဘူး
-        callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
+        try {
+            // Hz Fix: Start callback only once
+            callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-        runBlocking {
-            for (chunk in chunks) {
-                if (mIsStopped.get()) break
+            runBlocking {
+                for (chunk in chunks) {
+                    if (mIsStopped.get()) break
 
-                val langCode = when (chunk.lang) {
-                    "SHAN" -> "shn"
-                    "MYANMAR" -> "my"
-                    else -> "eng"
-                }
-
-                val engineData = getEngineDataForLang(langCode)
-                val targetEngine = engineData.engine ?: englishEngine
-                val targetPkg = engineData.pkgName
-
-                if (targetEngine != null) {
-                    currentActiveEngine = targetEngine
-                    
-                    // Engine ရဲ့ Rate အမှန်ကို ယူမယ်
-                    var realEngineRate = prefs.getInt("RATE_$targetPkg", 24000)
-                    if (realEngineRate < 8000) realEngineRate = 24000
-
-                    // ★ Processor ကို Engine Rate အတိုင်းဆောက်မယ်
-                    // (Processor က 22050 -> 24000 ပြောင်းပေးလိမ့်မယ်)
-                    val audioProcessor = try {
-                         AudioProcessor(realEngineRate, 1)
-                    } catch (e: Throwable) {
-                         continue
+                    val langCode = when (chunk.lang) {
+                        "SHAN" -> "shn"
+                        "MYANMAR" -> "my"
+                        else -> "eng"
                     }
 
-                    try {
-                        audioProcessor.setSpeed(sysRate)
-                        audioProcessor.setPitch(sysPitch)
+                    val engineData = getEngineDataForLang(langCode)
+                    val targetEngine = engineData.engine ?: englishEngine
+                    val targetPkg = engineData.pkgName
 
-                        targetEngine.setSpeechRate(sysRate)
-                        targetEngine.setPitch(sysPitch)
+                    if (targetEngine != null) {
+                        currentActiveEngine = targetEngine
                         
-                        // Blocking Method ကိုခေါ်မယ် (Deadlock Fix)
-                        processStreamBlocking(targetEngine, chunk.text, callback, audioProcessor)
-                    } finally {
-                        audioProcessor.release()
+                        var engineInputRate = prefs.getInt("RATE_$targetPkg", 24000)
+                        if (engineInputRate < 8000) engineInputRate = 24000
+
+                        val audioProcessor = try {
+                            AudioProcessor(engineInputRate, 1)
+                        } catch (e: Throwable) {
+                            continue
+                        }
+
+                        try {
+                            targetEngine.setSpeechRate(sysRate)
+                            targetEngine.setPitch(sysPitch)
+                            
+                            // Call the full logic
+                            processFully(targetEngine, chunk.text, callback, audioProcessor)
+                        } finally {
+                            audioProcessor.release()
+                        }
                     }
                 }
+                if (!mIsStopped.get()) {
+                    callback.done()
+                }
             }
-            if (!mIsStopped.get()) {
-                callback.done()
-            }
+        } catch (e: Exception) {
+            // Ignore
         }
     }
 
-    private suspend fun processStreamBlocking(
+    private suspend fun processFully(
         engine: TextToSpeech, 
         text: String, 
         callback: SynthesisCallback,
@@ -192,79 +192,94 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReadFd.set(readFd)
         currentWriteFd.set(writeFd)
 
-        val synthesisLatch = CountDownLatch(1)
+        // ★ UNLIMITED CHANNEL: Deadlock Fix (Engine writes to RAM and exits)
+        val audioChannel = Channel<ByteArray>(Channel.UNLIMITED)
 
-        val readerJob = launch(Dispatchers.IO) {
+        // 1. DRAINER (Input) - Reads from Engine, Puts into RAM
+        val drainerJob = launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
-            val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
-            val outputArray = ByteArray(BUFFER_SIZE * 4)
-
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                    while (isActive && !mIsStopped.get()) {
+                    while (isActive) {
                         val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
-
                         if (bytesRead == -1) break 
-
                         if (bytesRead > 0) {
-                            inputBuffer.clear()
-                            inputBuffer.put(buffer, 0, bytesRead)
-                            inputBuffer.flip()
-
-                            var processed = audioProcessor.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity())
-
-                            while (processed > 0 && !mIsStopped.get()) {
-                                outputBuffer.get(outputArray, 0, processed)
-                                sendAudioToSystem(outputArray, processed, callback)
-                                outputBuffer.clear()
-                                processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                            }
-                        }
-                    }
-                    
-                    // Flush Logic (Typing Fix)
-                    if (!mIsStopped.get()) {
-                        audioProcessor.flushQueue()
-                        outputBuffer.clear()
-                        var processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                        while (processed > 0 && !mIsStopped.get()) {
-                            outputBuffer.get(outputArray, 0, processed)
-                            sendAudioToSystem(outputArray, processed, callback)
-                            outputBuffer.clear()
-                            processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                            audioChannel.send(buffer.copyOfRange(0, bytesRead))
                         }
                     }
                 }
             } catch (e: Exception) {
+            } finally {
+                audioChannel.close() // Signal EOF to consumer
             }
         }
 
+        // 2. WRITER (Engine)
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-            
-            engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(id: String) {}
-                override fun onDone(id: String) { synthesisLatch.countDown() }
-                override fun onError(id: String) { synthesisLatch.countDown() }
-                override fun onError(id: String, errorCode: Int) { synthesisLatch.countDown() }
-            })
-            
+            // No listeners needed for flow control here, just write and finish
             try {
                 engine.synthesizeToFile(text, params, writeFd, uuid)
-                synthesisLatch.await() // Engine ပြီးတဲ့အထိ စောင့်မယ်
             } catch (e: Exception) {
+                closeQuietly(writeFd)
+                currentWriteFd.set(null)
             } finally {
+                // Ensure Pipe is closed so Drainer knows to stop
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
         }
 
+        // 3. CONSUMER (Output) - Reads from RAM, Plays Audio
+        // ★ CUTOFF FIX: We will wait for THIS job to finish specifically
+        val consumerJob = launch(Dispatchers.Default) {
+            val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+            val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
+            val outputArray = ByteArray(BUFFER_SIZE * 4)
+
+            try {
+                audioChannel.consumeEach { bytes ->
+                    if (mIsStopped.get()) return@consumeEach
+
+                    inputBuffer.clear()
+                    inputBuffer.put(bytes)
+                    inputBuffer.flip()
+
+                    // Normal Processing
+                    var processed = audioProcessor.process(inputBuffer, bytes.size, outputBuffer, outputBuffer.capacity())
+                    while (processed > 0 && !mIsStopped.get()) {
+                        outputBuffer.get(outputArray, 0, processed)
+                        sendAudioToSystem(outputArray, processed, callback)
+                        outputBuffer.clear()
+                        processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                    }
+                }
+
+                // ★ TYPING & END FIX: Flush Queue immediately after channel closes
+                if (!mIsStopped.get()) {
+                    audioProcessor.flushQueue()
+                    outputBuffer.clear()
+                    var processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                    while (processed > 0 && !mIsStopped.get()) {
+                        outputBuffer.get(outputArray, 0, processed)
+                        sendAudioToSystem(outputArray, processed, callback)
+                        outputBuffer.clear()
+                        processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                    }
+                }
+
+            } catch (e: Exception) {
+            }
+        }
+
         try {
-            // Deadlock Fix: Writer ရော Reader ရော ပြီးမှ ရှေ့ဆက်မယ်
-            joinAll(readerJob, writerJob)
+            // ★ MAIN FIX: Wait for the CONSUMER (Speaker) to finish, not the WRITER (Engine).
+            // This ensures long text plays to the end even if engine finishes early.
+            consumerJob.join()
         } finally {
+            drainerJob.cancel()
+            writerJob.cancel()
             closeQuietly(readFd)
             closeQuietly(writeFd)
             currentReadFd.set(null)
