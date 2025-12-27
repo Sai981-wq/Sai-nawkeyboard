@@ -1,38 +1,38 @@
 package com.shan.tts.manager
 
 object TTSUtils {
-    private val SHAN_PATTERN = Regex("[ႉႄႇႈၽၶၺႃၸၼဢၵႁဵႅၢႆႂႊ]")
-    private val MYANMAR_PATTERN = Regex("[\\u1000-\\u109F]")
-
-    fun detectLanguage(text: CharSequence?): String {
-        if (text.isNullOrBlank()) return "NEUTRAL"
-        val input = text.toString()
-        if (SHAN_PATTERN.containsMatchIn(input)) return "SHAN"
-        if (MYANMAR_PATTERN.containsMatchIn(input)) return "MYANMAR"
-        return "ENGLISH"
-    }
+    private val SHAN_MARKERS = Regex("[\\u1075-\\u108F\\u1090-\\u1099\\uAA60-\\uAA7F]")
+    private val MYANMAR_BLOCK = Regex("[\\u1000-\\u109F]")
 
     fun splitHelper(text: String): List<LangChunk> {
         val list = ArrayList<LangChunk>()
         if (text.isBlank()) return list
 
-        val rawParts = text.split(Regex("(?<=[\\s\\p{Punct}])|(?=[\\s\\p{Punct}])|(?<=\\d)|(?=\\d)"))
+        if (text.contains("<") && text.contains(">")) {
+            list.add(LangChunk(text, detectWordLanguage(text)))
+            return list
+        }
+
+        val parts = text.split(Regex("(?<=\\s)|(?=\\s)"))
 
         var currentBuffer = StringBuilder()
         var currentLang = ""
 
-        for (part in rawParts) {
-            if (part.isEmpty()) continue
-
-            var detected = detectLanguage(part)
-
-            if (currentBuffer.isEmpty()) {
-                currentLang = if (detected == "NEUTRAL") "ENGLISH" else detected
+        for (part in parts) {
+            if (part.isBlank()) {
                 currentBuffer.append(part)
                 continue
             }
 
-            if (detected == "NEUTRAL" || detected == currentLang) {
+            val detected = detectWordLanguage(part)
+
+            if (currentBuffer.isEmpty()) {
+                currentLang = detected
+                currentBuffer.append(part)
+                continue
+            }
+
+            if (detected == currentLang) {
                 currentBuffer.append(part)
             } else {
                 list.add(LangChunk(currentBuffer.toString(), currentLang))
@@ -45,6 +45,12 @@ object TTSUtils {
             list.add(LangChunk(currentBuffer.toString(), currentLang))
         }
         return list
+    }
+
+    private fun detectWordLanguage(word: String): String {
+        if (SHAN_MARKERS.containsMatchIn(word)) return "SHAN"
+        if (MYANMAR_BLOCK.containsMatchIn(word)) return "MYANMAR"
+        return "ENGLISH"
     }
 }
 

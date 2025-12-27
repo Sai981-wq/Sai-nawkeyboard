@@ -42,10 +42,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
 
-    // System Output Rate (Fixed to prevent Hz errors)
     private val SYSTEM_OUTPUT_RATE = 24000
-    
-    // Typing Latency အတွက် Buffer ကို 1KB သာ ထားပါမည်
     private val BUFFER_SIZE = 1024 
 
     override fun onCreate() {
@@ -128,7 +125,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         val chunks = TTSUtils.splitHelper(text)
 
         try {
-            // Hz Fix: Start callback only once
             callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
             runBlocking {
@@ -161,7 +157,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                             targetEngine.setSpeechRate(sysRate)
                             targetEngine.setPitch(sysPitch)
                             
-                            // Call the full logic
                             processFully(targetEngine, chunk.text, callback, audioProcessor)
                         } finally {
                             audioProcessor.release()
@@ -173,7 +168,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
         } catch (e: Exception) {
-            // Ignore
         }
     }
 
@@ -192,10 +186,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReadFd.set(readFd)
         currentWriteFd.set(writeFd)
 
-        // ★ UNLIMITED CHANNEL: Deadlock Fix (Engine writes to RAM and exits)
         val audioChannel = Channel<ByteArray>(Channel.UNLIMITED)
 
-        // 1. DRAINER (Input) - Reads from Engine, Puts into RAM
         val drainerJob = launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
             try {
@@ -210,29 +202,24 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             } catch (e: Exception) {
             } finally {
-                audioChannel.close() // Signal EOF to consumer
+                audioChannel.close()
             }
         }
 
-        // 2. WRITER (Engine)
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-            // No listeners needed for flow control here, just write and finish
             try {
                 engine.synthesizeToFile(text, params, writeFd, uuid)
             } catch (e: Exception) {
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             } finally {
-                // Ensure Pipe is closed so Drainer knows to stop
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
         }
 
-        // 3. CONSUMER (Output) - Reads from RAM, Plays Audio
-        // ★ CUTOFF FIX: We will wait for THIS job to finish specifically
         val consumerJob = launch(Dispatchers.Default) {
             val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
             val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
@@ -246,7 +233,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     inputBuffer.put(bytes)
                     inputBuffer.flip()
 
-                    // Normal Processing
                     var processed = audioProcessor.process(inputBuffer, bytes.size, outputBuffer, outputBuffer.capacity())
                     while (processed > 0 && !mIsStopped.get()) {
                         outputBuffer.get(outputArray, 0, processed)
@@ -256,7 +242,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
 
-                // ★ TYPING & END FIX: Flush Queue immediately after channel closes
                 if (!mIsStopped.get()) {
                     audioProcessor.flushQueue()
                     outputBuffer.clear()
@@ -274,8 +259,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
 
         try {
-            // ★ MAIN FIX: Wait for the CONSUMER (Speaker) to finish, not the WRITER (Engine).
-            // This ensures long text plays to the end even if engine finishes early.
             consumerJob.join()
         } finally {
             drainerJob.cancel()
