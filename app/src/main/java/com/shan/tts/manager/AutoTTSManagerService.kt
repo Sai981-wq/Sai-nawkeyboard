@@ -43,7 +43,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var currentActiveEngine: TextToSpeech? = null
 
     private val SYSTEM_OUTPUT_RATE = 24000
-    private val BUFFER_SIZE = 8192 
+    private val BUFFER_SIZE = 4096 
 
     override fun onCreate() {
         super.onCreate()
@@ -119,8 +119,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         mIsStopped.set(false)
 
         val text = request.charSequenceText.toString()
-        val systemRate = request.speechRate / 100f
-        val systemPitch = request.pitch / 100f
+        val sysRate = request.speechRate / 100f
+        val sysPitch = request.pitch / 100f
 
         val chunks = TTSUtils.splitHelper(text)
 
@@ -150,24 +150,19 @@ class AutoTTSManagerService : TextToSpeechService() {
                         val audioProcessor = try {
                             AudioProcessor(engineInputRate, 1)
                         } catch (e: Throwable) {
-                            null
+                            continue
                         }
 
                         try {
-                            if (audioProcessor != null) {
-                                targetEngine.setSpeechRate(1.0f)
-                                targetEngine.setPitch(systemPitch)
-                                
-                                audioProcessor.setSpeed(systemRate)
-                                audioProcessor.setPitch(1.0f)
-                                
-                                processFully(targetEngine, chunk.text, callback, audioProcessor)
-                            } else {
-                                targetEngine.setSpeechRate(systemRate)
-                                targetEngine.setPitch(systemPitch)
-                            }
+                            targetEngine.setSpeechRate(1.0f)
+                            targetEngine.setPitch(sysPitch)
+                            
+                            audioProcessor.setSpeed(sysRate)
+                            audioProcessor.setPitch(1.0f)
+                            
+                            processFully(targetEngine, chunk.text, callback, audioProcessor)
                         } finally {
-                            audioProcessor?.release()
+                            audioProcessor.release()
                         }
                     }
                 }
@@ -176,7 +171,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 

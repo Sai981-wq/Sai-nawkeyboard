@@ -66,8 +66,18 @@ Java_com_shan_tts_manager_AudioProcessor_stop(JNIEnv* env, jobject, jlong handle
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_setSonicSpeed(JNIEnv* env, jobject, jlong handle, jfloat speed) {}
+Java_com_shan_tts_manager_AudioProcessor_setSonicSpeed(JNIEnv* env, jobject, jlong handle, jfloat speed) {
+    sonicStream stream = (sonicStream) handle;
+    if (stream != NULL) {
+        sonicSetSpeed(stream, speed);
+    }
+}
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_shan_tts_manager_AudioProcessor_setSonicPitch(JNIEnv* env, jobject, jlong handle, jfloat pitch) {}
+Java_com_shan_tts_manager_AudioProcessor_setSonicPitch(JNIEnv* env, jobject, jlong handle, jfloat pitch) {
+    sonicStream stream = (sonicStream) handle;
+    if (stream != NULL) {
+        sonicSetPitch(stream, pitch);
+    }
+}
 

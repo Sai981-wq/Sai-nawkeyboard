@@ -1,6 +1,5 @@
 package com.shan.tts.manager
 
-import android.util.Log
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 
