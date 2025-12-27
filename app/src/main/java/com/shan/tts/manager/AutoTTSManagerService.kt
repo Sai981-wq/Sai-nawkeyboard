@@ -42,9 +42,13 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
 
-    // System Output (Speaker) အတွက် 24000Hz အသေထားပါမယ်
     private val SYSTEM_OUTPUT_RATE = 24000
-    private val BUFFER_SIZE = 4096 
+    
+    // Buffer Underrun မဖြစ်စေရန် Read Buffer ကို 16KB ထားပါမည်
+    private val READ_BUFFER_SIZE = 16384 
+    
+    // "ကြိုးလွတ်သလိုဖြစ်ခြင်း" ကို ကာကွယ်ရန် အနည်းဆုံး 2KB ရှိမှ AudioTrack ကို ပို့ပါမည်
+    private val MIN_AUDIO_CHUNK_SIZE = 2048
 
     override fun onCreate() {
         super.onCreate()
@@ -145,12 +149,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (targetEngine != null) {
                         currentActiveEngine = targetEngine
                         
-                        // ★ STRICT HZ LOGIC ★
-                        // Scan ဖတ်ထားသော Rate အတိုင်း အတိအကျယူမည်
                         var engineInputRate = prefs.getInt("RATE_$targetPkg", 0)
-
-                        // Scan မဖတ်ရသေးလို့ (0) ဖြစ်နေမှသာ 24000 ကို ယာယီသုံးမယ်
-                        // Scan ဖတ်ပြီးသားဆိုရင် (ဥပမာ 22050, 16000) အဲဒီအတိုင်း အတိအကျသုံးမယ်
                         if (engineInputRate == 0) {
                             engineInputRate = 24000
                         }
@@ -162,12 +161,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         try {
-                            // ၁. Engine ကို Normal Speed (1.0) အတိုင်းပဲ ပေးမယ် (Data Flow ငြိမ်အောင်)
                             targetEngine.setSpeechRate(1.0f)
                             targetEngine.setPitch(sysPitch)
                             
-                            // ၂. Speed အားလုံးကို Sonic ဆီ ပို့မယ်
-                            // Sonic က Input Hz (engineInputRate) ကို System Hz (24000) အဖြစ် Resample လုပ်ပေးပါလိမ့်မယ်
                             audioProcessor.setSpeed(sysRate)
                             audioProcessor.setPitch(1.0f)
                             
@@ -203,7 +199,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val audioChannel = Channel<ByteArray>(Channel.UNLIMITED)
 
         val drainerJob = launch(Dispatchers.IO) {
-            val buffer = ByteArray(BUFFER_SIZE)
+            val buffer = ByteArray(READ_BUFFER_SIZE)
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                     while (isActive) {
@@ -235,10 +231,15 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
 
         val consumerJob = launch(Dispatchers.Default) {
-            val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
-            val outputArray = ByteArray(BUFFER_SIZE * 4)
+            val inputBuffer = ByteBuffer.allocateDirect(READ_BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+            // Sonic output can be larger if slowed down, so we use a larger output buffer
+            val outputBuffer = ByteBuffer.allocateDirect(READ_BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
+            val tempArray = ByteArray(READ_BUFFER_SIZE * 4)
 
+            // Accumulator Buffer (Audio Stutter Fix)
+            // Tiny chunks တွေကို ချက်ချင်းမပို့ဘဲ ဒီထဲမှာ စုထားပါမယ်
+            val accumulator = ByteBuffer.allocate(MIN_AUDIO_CHUNK_SIZE * 2)
+            
             try {
                 audioChannel.consumeEach { bytes ->
                     if (mIsStopped.get()) return@consumeEach
@@ -248,24 +249,64 @@ class AutoTTSManagerService : TextToSpeechService() {
                     inputBuffer.flip()
 
                     var processed = audioProcessor.process(inputBuffer, bytes.size, outputBuffer, outputBuffer.capacity())
+                    
                     while (processed > 0 && !mIsStopped.get()) {
-                        outputBuffer.get(outputArray, 0, processed)
-                        sendAudioToSystem(outputArray, processed, callback)
+                        outputBuffer.get(tempArray, 0, processed)
+                        
+                        // Batching Logic: Accumulate data
+                        var offset = 0
+                        while (offset < processed) {
+                            val remaining = processed - offset
+                            val space = accumulator.remaining()
+                            
+                            val toCopy = min(remaining, space)
+                            accumulator.put(tempArray, offset, toCopy)
+                            offset += toCopy
+
+                            // If Buffer full, send to system
+                            if (!accumulator.hasRemaining()) {
+                                sendToSystem(accumulator.array(), accumulator.position(), callback)
+                                accumulator.clear()
+                            }
+                        }
+
                         outputBuffer.clear()
                         processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
                     }
                 }
 
+                // Flush Sonic Queue
                 if (!mIsStopped.get()) {
                     audioProcessor.flushQueue()
                     outputBuffer.clear()
                     var processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
                     while (processed > 0 && !mIsStopped.get()) {
-                        outputBuffer.get(outputArray, 0, processed)
-                        sendAudioToSystem(outputArray, processed, callback)
+                        outputBuffer.get(tempArray, 0, processed)
+                        
+                        // Copy remaining sonic output to accumulator
+                        var offset = 0
+                        while (offset < processed) {
+                            val remaining = processed - offset
+                            val space = accumulator.remaining()
+                            val toCopy = min(remaining, space)
+                            accumulator.put(tempArray, offset, toCopy)
+                            offset += toCopy
+                            
+                            if (!accumulator.hasRemaining()) {
+                                sendToSystem(accumulator.array(), accumulator.position(), callback)
+                                accumulator.clear()
+                            }
+                        }
+                        
                         outputBuffer.clear()
                         processed = audioProcessor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
                     }
+                }
+
+                // Final Flush: Send whatever is left in the accumulator
+                if (accumulator.position() > 0 && !mIsStopped.get()) {
+                    sendToSystem(accumulator.array(), accumulator.position(), callback)
+                    accumulator.clear()
                 }
 
             } catch (e: Exception) {
@@ -284,8 +325,8 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun sendAudioToSystem(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
-        if (mIsStopped.get()) return 
+    private fun sendToSystem(buffer: ByteArray, length: Int, callback: SynthesisCallback) {
+        if (mIsStopped.get() || length <= 0) return
         
         val maxBufferSize = callback.maxBufferSize
         var offset = 0
