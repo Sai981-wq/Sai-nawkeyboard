@@ -22,6 +22,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
+import kotlin.math.max
 
 class AutoTTSManagerService : TextToSpeechService() {
 
@@ -42,13 +43,18 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
 
+    // System Output (Speaker) fixed at 24000Hz
     private val SYSTEM_OUTPUT_RATE = 24000
     
-    // Buffer Underrun မဖြစ်စေရန် Read Buffer ကို 16KB ထားပါမည်
+    // Read Buffer 16KB to prevent Underrun
     private val READ_BUFFER_SIZE = 16384 
     
-    // "ကြိုးလွတ်သလိုဖြစ်ခြင်း" ကို ကာကွယ်ရန် အနည်းဆုံး 2KB ရှိမှ AudioTrack ကို ပို့ပါမည်
+    // Minimum 2KB chunks to send to AudioTrack (prevents "bad cable" sound)
     private val MIN_AUDIO_CHUNK_SIZE = 2048
+
+    // Default Pitch/Rate constants
+    private val DEFAULT_ANDROID_RATE = 100
+    private val DEFAULT_ANDROID_PITCH = 100
 
     override fun onCreate() {
         super.onCreate()
@@ -124,8 +130,19 @@ class AutoTTSManagerService : TextToSpeechService() {
         mIsStopped.set(false)
 
         val text = request.charSequenceText.toString()
-        val sysRate = request.speechRate / 100f
-        val sysPitch = request.pitch / 100f
+        
+        // ★ ROBUST PITCH & RATE CALCULATION ★
+        // Using standard Android conversion but with safety clamps similar to logic implied in Vnspeak
+        var rateVal = request.speechRate
+        var pitchVal = request.pitch
+
+        // Prevent Zero or Negative values which cause Native Crashes
+        if (rateVal < 10) rateVal = 10
+        if (pitchVal < 10) pitchVal = 10
+
+        // Convert to Float Multiplier (100 -> 1.0f)
+        val sysRate = rateVal / 100.0f
+        val sysPitch = pitchVal / 100.0f
 
         val chunks = TTSUtils.splitHelper(text)
 
@@ -149,9 +166,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (targetEngine != null) {
                         currentActiveEngine = targetEngine
                         
+                        // ★ STRICT HZ LOGIC ★
+                        // Strictly use scanned rate if available
                         var engineInputRate = prefs.getInt("RATE_$targetPkg", 0)
+
                         if (engineInputRate == 0) {
-                            engineInputRate = 24000
+                             engineInputRate = 24000 // Fallback
                         }
 
                         val audioProcessor = try {
@@ -161,11 +181,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         try {
+                            // 1. Engine stays at Normal Speed (1.0) & Pitch (Normal Pitch for Engine)
+                            // Note: Vnspeak logic suggests varying pitch at generation, 
+                            // but for stability with Sonic, let Sonic handle pitch shifting.
+                            // However, some engines sound robotic if we force Pitch 1.0.
+                            // We will trust Sonic for Pitch shifting.
                             targetEngine.setSpeechRate(1.0f)
-                            targetEngine.setPitch(sysPitch)
                             
+                            // We set Engine Pitch to 1.0 to get raw clean audio, 
+                            // then Sonic shifts it. This prevents double-pitching artifacts.
+                            targetEngine.setPitch(1.0f) 
+                            
+                            // 2. Sonic handles ALL Speed and Pitch
                             audioProcessor.setSpeed(sysRate)
-                            audioProcessor.setPitch(1.0f)
+                            audioProcessor.setPitch(sysPitch)
                             
                             processFully(targetEngine, chunk.text, callback, audioProcessor)
                         } finally {
@@ -232,12 +261,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val consumerJob = launch(Dispatchers.Default) {
             val inputBuffer = ByteBuffer.allocateDirect(READ_BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
-            // Sonic output can be larger if slowed down, so we use a larger output buffer
             val outputBuffer = ByteBuffer.allocateDirect(READ_BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
             val tempArray = ByteArray(READ_BUFFER_SIZE * 4)
 
-            // Accumulator Buffer (Audio Stutter Fix)
-            // Tiny chunks တွေကို ချက်ချင်းမပို့ဘဲ ဒီထဲမှာ စုထားပါမယ်
+            // Accumulator to fix "Bad Cable" / Stuttering sound
             val accumulator = ByteBuffer.allocate(MIN_AUDIO_CHUNK_SIZE * 2)
             
             try {
@@ -253,7 +280,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     while (processed > 0 && !mIsStopped.get()) {
                         outputBuffer.get(tempArray, 0, processed)
                         
-                        // Batching Logic: Accumulate data
                         var offset = 0
                         while (offset < processed) {
                             val remaining = processed - offset
@@ -263,7 +289,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                             accumulator.put(tempArray, offset, toCopy)
                             offset += toCopy
 
-                            // If Buffer full, send to system
+                            // Send only when Accumulator is full (prevents tiny chunk stutter)
                             if (!accumulator.hasRemaining()) {
                                 sendToSystem(accumulator.array(), accumulator.position(), callback)
                                 accumulator.clear()
@@ -283,7 +309,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     while (processed > 0 && !mIsStopped.get()) {
                         outputBuffer.get(tempArray, 0, processed)
                         
-                        // Copy remaining sonic output to accumulator
                         var offset = 0
                         while (offset < processed) {
                             val remaining = processed - offset
@@ -303,7 +328,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
 
-                // Final Flush: Send whatever is left in the accumulator
+                // Final Flush of Accumulator
                 if (accumulator.position() > 0 && !mIsStopped.get()) {
                     sendToSystem(accumulator.array(), accumulator.position(), callback)
                     accumulator.clear()
