@@ -2,6 +2,7 @@
 #include <string>
 #include "sonic.h"
 
+// Output Hz ကို 24000Hz မှာပဲ ငြိမ်ငြိမ်ထားပါမယ်
 #define TARGET_OUTPUT_RATE 24000
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -13,6 +14,7 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(
 
     sonicStream stream = sonicCreateStream(sampleRate, channels);
 
+    // Hz မတူရင် Sonic က Resampling (Hz ညှိခြင်း) လုပ်ပေးပါမယ်
     float resamplingRate = (float)sampleRate / (float)TARGET_OUTPUT_RATE;
     sonicSetRate(stream, resamplingRate);
 
@@ -65,6 +67,7 @@ Java_com_shan_tts_manager_AudioProcessor_stop(JNIEnv* env, jobject, jlong handle
     if (stream != NULL) sonicDestroyStream(stream);
 }
 
+// Speed Function ကို ပြင်ထားသည် (Empty မဟုတ်တော့ပါ)
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setSonicSpeed(JNIEnv* env, jobject, jlong handle, jfloat speed) {
     sonicStream stream = (sonicStream) handle;
@@ -73,6 +76,7 @@ Java_com_shan_tts_manager_AudioProcessor_setSonicSpeed(JNIEnv* env, jobject, jlo
     }
 }
 
+// Pitch Function ကို ပြင်ထားသည် (Empty မဟုတ်တော့ပါ)
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setSonicPitch(JNIEnv* env, jobject, jlong handle, jfloat pitch) {
     sonicStream stream = (sonicStream) handle;

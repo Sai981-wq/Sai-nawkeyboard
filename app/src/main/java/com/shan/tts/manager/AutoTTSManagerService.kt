@@ -42,6 +42,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
 
+    // System Output (Speaker) အတွက် 24000Hz အသေထားပါမယ်
     private val SYSTEM_OUTPUT_RATE = 24000
     private val BUFFER_SIZE = 4096 
 
@@ -144,8 +145,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                     if (targetEngine != null) {
                         currentActiveEngine = targetEngine
                         
-                        var engineInputRate = prefs.getInt("RATE_$targetPkg", 24000)
-                        if (engineInputRate < 8000) engineInputRate = 24000
+                        // ★ STRICT HZ LOGIC ★
+                        // Scan ဖတ်ထားသော Rate အတိုင်း အတိအကျယူမည်
+                        var engineInputRate = prefs.getInt("RATE_$targetPkg", 0)
+
+                        // Scan မဖတ်ရသေးလို့ (0) ဖြစ်နေမှသာ 24000 ကို ယာယီသုံးမယ်
+                        // Scan ဖတ်ပြီးသားဆိုရင် (ဥပမာ 22050, 16000) အဲဒီအတိုင်း အတိအကျသုံးမယ်
+                        if (engineInputRate == 0) {
+                            engineInputRate = 24000
+                        }
 
                         val audioProcessor = try {
                             AudioProcessor(engineInputRate, 1)
@@ -154,9 +162,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         try {
+                            // ၁. Engine ကို Normal Speed (1.0) အတိုင်းပဲ ပေးမယ် (Data Flow ငြိမ်အောင်)
                             targetEngine.setSpeechRate(1.0f)
                             targetEngine.setPitch(sysPitch)
                             
+                            // ၂. Speed အားလုံးကို Sonic ဆီ ပို့မယ်
+                            // Sonic က Input Hz (engineInputRate) ကို System Hz (24000) အဖြစ် Resample လုပ်ပေးပါလိမ့်မယ်
                             audioProcessor.setSpeed(sysRate)
                             audioProcessor.setPitch(1.0f)
                             
