@@ -12,14 +12,12 @@ import android.speech.tts.TextToSpeechService
 import java.io.IOException
 import java.util.Locale
 import java.util.UUID
-import kotlin.concurrent.thread
 
 class AutoTTSManagerService : TextToSpeechService() {
 
     private var shanEngine: TextToSpeech? = null
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
-
     private var shanPkg: String = ""
     private var burmesePkg: String = ""
     private var englishPkg: String = ""
@@ -27,12 +25,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
 
-    // ပိုက်လိုင်းများကို ထိန်းချုပ်ရန် (Stop လုပ်ရင် ပိတ်ပစ်မယ်)
-    @Volatile private var currentReadFd: ParcelFileDescriptor? = null
-    @Volatile private var currentWriteFd: ParcelFileDescriptor? = null
-    
-    // Stop Flag
+    // Thread Lock
+    private val lock = Any()
     @Volatile private var isStopped = false
+    
+    // Pipe Control
+    private var currentReadFd: ParcelFileDescriptor? = null
+    private var currentWriteFd: ParcelFileDescriptor? = null
+    private var writerThread: Thread? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -40,7 +40,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defaultEngine = getDefaultEngineFallback()
 
-            // Engine Setup (ရိုးရှင်းအောင် Package Name ရှာပြီး တန်းချိတ်မယ်)
             shanPkg = getPkg("pref_shan_pkg", listOf("com.shan.tts", "com.espeak.ng"), defaultEngine)
             initTTS(shanPkg, Locale("shn", "MM")) { shanEngine = it }
 
@@ -52,35 +51,40 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    // ★ SIMPLE STOP LOGIC ★
     override fun onStop() {
-        isStopped = true
-        // Pipe တွေကို ချက်ချင်းပိတ်မယ် (Engine က ရေးမရတော့လို့ ချက်ချင်းရပ်သွားမယ်)
-        try { currentReadFd?.close() } catch (e: Exception) {}
-        try { currentWriteFd?.close() } catch (e: Exception) {}
-        currentReadFd = null
-        currentWriteFd = null
+        synchronized(lock) {
+            isStopped = true
+            // Stop လုပ်တာနဲ့ Pipe ကို ချက်ချင်း ရိုက်ချိုးမယ် (Deadlock ဖြေရှင်းရန်)
+            try { currentReadFd?.close() } catch (e: Exception) {}
+            currentReadFd = null
+            
+            try { currentWriteFd?.close() } catch (e: Exception) {}
+            currentWriteFd = null
+            
+            try { writerThread?.interrupt() } catch (e: Exception) {}
+        }
+        
+        // Engine တွေကိုလည်း Stop ခိုင်းမယ်
+        try { shanEngine?.stop() } catch (e: Exception) {}
+        try { burmeseEngine?.stop() } catch (e: Exception) {}
+        try { englishEngine?.stop() } catch (e: Exception) {}
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
-        isStopped = false
+        synchronized(lock) { isStopped = false }
         val text = request.charSequenceText.toString()
-        
-        // ★ 1. RATE CONTROL (အသံမြန်တာကို ထိန်းချုပ်ခြင်း) ★
-        // Jieshuo က 500% ပို့လည်း 2.5x (Safe Zone) ထက် ပိုမပေးပါ
-        var rate = request.speechRate / 100.0f
-        if (rate < 0.1f) rate = 0.1f
-        if (rate > 2.5f) rate = 2.5f // MAX CAP
 
+        // ★ UNLOCKED CONTROLS (ကန့်သတ်ချက်များ ဖြုတ်လိုက်ပြီ) ★
+        // TalkBack သို့မဟုတ် Jieshuo က ပို့တဲ့ Rate/Pitch အတိုင်း အတိအကျ သုံးပါမယ်
+        // 100 = 1.0x (Normal)
+        val rate = request.speechRate / 100.0f
         val pitch = request.pitch / 100.0f
 
-        // ★ 2. ENGINE SELECTION (ရိုးရှင်းသော ရွေးချယ်မှု) ★
+        // Engine Selection logic
         var targetEngine = englishEngine
         var targetPkg = englishPkg
-        
-        // Check for Shan/Burmese Characters
         if (text.any { it.code in 0x1000..0x109F }) {
             if (text.any { it.code in 0x1075..0x108F }) { 
                 targetEngine = shanEngine
@@ -92,92 +96,89 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
         if (targetEngine == null) { targetEngine = englishEngine; targetPkg = englishPkg }
 
-        // ★ 3. HZ SELECTION (Hz မှန်အောင် Scan တန်ဖိုးယူခြင်း) ★
+        // Hz Selection (Default Safe Values)
         var hz = prefs.getInt("RATE_$targetPkg", 0)
         if (hz == 0) hz = if (targetPkg.contains("google")) 24000 else 22050
 
-        // Process Audio
         try {
+            // ★ APPLY SETTINGS INSTANTLY (ချက်ချင်း သက်ရောက်စေရန်) ★
             targetEngine!!.setSpeechRate(rate)
             targetEngine!!.setPitch(pitch)
 
+            // Start Audio
             callback.start(hz, AudioFormat.ENCODING_PCM_16BIT, 1)
-            
-            // Simple Chunking to prevent blocking on long text
-            val chunks = text.split(Regex("(?<=[\\n.?!])\\s+"))
-            
-            for (chunk in chunks) {
-                if (isStopped) break
-                if (chunk.isBlank()) continue
-                processChunk(targetEngine!!, chunk, callback)
+
+            // Create Pipe
+            val pipe = ParcelFileDescriptor.createPipe()
+            val readFd = pipe[0]
+            val writeFd = pipe[1]
+            val uuid = UUID.randomUUID().toString()
+
+            synchronized(lock) {
+                if (isStopped) {
+                    readFd.close()
+                    writeFd.close()
+                    return
+                }
+                currentReadFd = readFd
+                currentWriteFd = writeFd
             }
-            
-            if (!isStopped) callback.done()
+
+            // Writer Thread
+            writerThread = Thread {
+                val params = Bundle()
+                // Volume ကို Bundle ထဲမှာပါ ထည့်ပေးလိုက်တာက ပိုသေချာစေပါတယ်
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                try {
+                    targetEngine!!.synthesizeToFile(text, params, writeFd, uuid)
+                } catch (e: Exception) {
+                    // Stop လုပ်ရင် ဒီမှာ Error တက်ပြီး ရပ်သွားမယ်
+                } finally {
+                    try { writeFd.close() } catch (e: Exception) {}
+                }
+            }
+            writerThread?.start()
+
+            // Reader Loop
+            val buffer = ByteArray(8192)
+            try {
+                ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                    while (!isStopped) {
+                        val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
+                        if (bytesRead == -1) break 
+                        
+                        if (bytesRead > 0) {
+                            val max = callback.maxBufferSize
+                            var offset = 0
+                            while (offset < bytesRead) {
+                                if (isStopped) break
+                                val chunk = Math.min(bytesRead - offset, max)
+                                val ret = callback.audioAvailable(buffer, offset, chunk)
+                                if (ret == TextToSpeech.ERROR) {
+                                    synchronized(lock) { isStopped = true }
+                                    break
+                                }
+                                offset += chunk
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+            } finally {
+                synchronized(lock) {
+                    try { readFd.close() } catch (e: Exception) {}
+                    currentReadFd = null
+                    if (writerThread != null && writerThread!!.isAlive) {
+                         try { targetEngine!!.stop() } catch (e: Exception) {}
+                    }
+                }
+                if (!isStopped) callback.done()
+            }
 
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    // ★ 4. DIRECT PIPE (အရှင်းဆုံး ပိုက်လိုင်းစနစ်) ★
-    private fun processChunk(engine: TextToSpeech, text: String, callback: SynthesisCallback) {
-        val pipe = try { ParcelFileDescriptor.createPipe() } catch (e: IOException) { return }
-        val readFd = pipe[0]
-        val writeFd = pipe[1]
-        val uuid = UUID.randomUUID().toString()
-
-        currentReadFd = readFd
-        currentWriteFd = writeFd
-
-        // Writer Thread (Engine writes to Pipe)
-        val writerThread = thread(start = true) {
-            val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-            try {
-                // This blocks until done or pipe broken
-                engine.synthesizeToFile(text, params, writeFd, uuid)
-            } catch (e: Exception) { 
-                // Ignore "Broken Pipe" errors on Stop
-            } finally {
-                try { writeFd.close() } catch (e: Exception) {}
-            }
-        }
-
-        // Reader Loop (Main Thread reads from Pipe and sends to System)
-        val buffer = ByteArray(8192)
-        try {
-            ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                while (!isStopped) {
-                    val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
-                    if (bytesRead == -1) break // EOF
-                    
-                    if (bytesRead > 0) {
-                        // Safe Send with Loop (Vnspeak Style)
-                        val max = callback.maxBufferSize
-                        var offset = 0
-                        while (offset < bytesRead && !isStopped) {
-                            val chunk = Math.min(bytesRead - offset, max)
-                            val ret = callback.audioAvailable(buffer, offset, chunk)
-                            if (ret == TextToSpeech.ERROR) {
-                                isStopped = true
-                                break
-                            }
-                            offset += chunk
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-        } finally {
-            // Cleanup
-            try { readFd.close() } catch (e: Exception) {}
-            currentReadFd = null
-            currentWriteFd = null
-            if (writerThread.isAlive) {
-                try { engine.stop() } catch (e: Exception) {}
-            }
-        }
-    }
-
-    // --- Helper Functions (Boilerplate) ---
+    // --- Helpers ---
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
@@ -207,7 +208,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onDestroy() {
         super.onDestroy()
-        isStopped = true
+        onStop()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 }
