@@ -10,10 +10,11 @@ import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
-import kotlinx.coroutines.*
 import java.io.IOException
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
@@ -33,11 +34,14 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val mIsStopped = AtomicBoolean(false)
     
+    // Executor for background processing (Prevents Deadlock)
+    private val writerExecutor = Executors.newSingleThreadExecutor()
+    private var currentTask: Future<*>? = null
+
     private val currentReadFd = AtomicReference<ParcelFileDescriptor?>(null)
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
 
-    // ★ REMOVED FIXED RATE: 24000Hz အသေကို ဖြုတ်လိုက်ပါပြီ
     private val BUFFER_SIZE = 8192 
 
     override fun onCreate() {
@@ -102,6 +106,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         mIsStopped.set(true)
+        currentTask?.cancel(true)
         closeQuietly(currentWriteFd.getAndSet(null))
         closeQuietly(currentReadFd.getAndSet(null))
         try { currentActiveEngine?.stop() } catch (e: Exception) { }
@@ -119,10 +124,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (rateVal < 10) rateVal = 10
         if (pitchVal < 10) pitchVal = 10
 
-        val engineRate = rateVal / 100.0f
+        // ★ SPEED LIMITER (အဓိက ပြင်ဆင်ချက်) ★
+        // Jieshuo က 500 (5x) ပို့ရင်တောင် Engine ကို 2.5x ထက် ပိုမပေးပါဘူး
+        // ဒါမှ အသံမပျက်ဘဲ နားထောင်ကောင်းမှာပါ
+        var rawRate = rateVal / 100.0f
+        if (rawRate > 2.5f) rawRate = 2.5f 
+        
         val enginePitch = pitchVal / 100.0f
 
-        // Determine Target Engine & Package
+        // Split text to prevent Deadlock on long sentences
+        val sentenceChunks = fullText.split(Regex("(?<=[\\n.?!])\\s+"))
+
         var targetEngine = englishEngine
         var targetPkg = englishPkgName
 
@@ -142,24 +154,20 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         currentActiveEngine = targetEngine
 
-        // ★ DYNAMIC HZ SELECTION ( Hz ပြဿနာ ဖြေရှင်းချက် ) ★
-        // Engine Scan ဖတ်ထားတဲ့ Rate ကို ယူသုံးပါမယ်
-        var nativeRate = prefs.getInt("RATE_$targetPkg", 0)
-        
-        // Scan မဖတ်ရသေးရင် Default ခန့်မှန်းမယ်
-        if (nativeRate == 0) {
-            nativeRate = if (targetPkg.contains("google")) 24000 else 22050
+        // Use scanned rate or fallback
+        var outputRate = prefs.getInt("RATE_$targetPkg", 0)
+        if (outputRate == 0) {
+            outputRate = if (targetPkg.contains("google")) 24000 else 22050
         }
 
         try {
-            targetEngine!!.setSpeechRate(engineRate)
+            targetEngine!!.setSpeechRate(rawRate)
             targetEngine!!.setPitch(enginePitch)
 
-            // ★ CRITICAL: Pass the REAL Native Rate to System ★
-            // Engine က 22050 ထုတ်ရင် System ကို 22050 လို့ပြောမှ အသံမှန်ပါမယ်
-            callback.start(nativeRate, AudioFormat.ENCODING_PCM_16BIT, 1)
+            callback.start(outputRate, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            processDirectly(targetEngine!!, fullText, callback)
+            // Process chunks in background thread
+            processWithExecutor(targetEngine!!, sentenceChunks, callback)
             
             if (!mIsStopped.get()) {
                 callback.done()
@@ -170,9 +178,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
 
-    private fun processDirectly(
+    private fun processWithExecutor(
         engine: TextToSpeech, 
-        text: String, 
+        sentences: List<String>, 
         callback: SynthesisCallback
     ) {
         val pipe = try { ParcelFileDescriptor.createPipe() } catch (e: IOException) { return }
@@ -183,19 +191,26 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentReadFd.set(readFd)
         currentWriteFd.set(writeFd)
 
-        val writerThread = Thread {
+        // Background Writer
+        currentTask = writerExecutor.submit {
             val params = Bundle()
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
             try {
-                engine.synthesizeToFile(text, params, writeFd, uuid)
+                for (sentence in sentences) {
+                    if (Thread.currentThread().isInterrupted) break
+                    if (sentence.isBlank()) continue
+                    
+                    // Synthesize chunk by chunk
+                    engine.synthesizeToFile(sentence, params, writeFd, uuid)
+                }
             } catch (e: Exception) {
             } finally {
                 closeQuietly(writeFd)
                 currentWriteFd.set(null)
             }
         }
-        writerThread.start()
 
+        // Main Reader Loop
         val buffer = ByteArray(BUFFER_SIZE)
         try {
             ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
@@ -212,9 +227,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         } finally {
             closeQuietly(readFd)
             currentReadFd.set(null)
-            if (writerThread.isAlive) {
-                try { engine.stop() } catch (e: Exception) {}
-            }
+            currentTask?.cancel(true)
         }
     }
 
@@ -245,6 +258,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onDestroy() {
         super.onDestroy()
         mIsStopped.set(true)
+        writerExecutor.shutdownNow()
         shanEngine?.shutdown()
         burmeseEngine?.shutdown()
         englishEngine?.shutdown()
