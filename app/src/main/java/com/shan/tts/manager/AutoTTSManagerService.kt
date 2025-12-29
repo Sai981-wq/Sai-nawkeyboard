@@ -35,10 +35,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
 
-    // Stop Flag
     private val mIsStopped = AtomicBoolean(false)
     
-    // Active Pipe Control
+    // Pipe Control
     private val currentReadFd = AtomicReference<ParcelFileDescriptor?>(null)
     private val currentWriteFd = AtomicReference<ParcelFileDescriptor?>(null)
     private var currentActiveEngine: TextToSpeech? = null
@@ -110,42 +109,41 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         mIsStopped.set(true)
-        
-        // ★ PIPE KILLER: Close FDs immediately to break any blocked IO ★
         closeQuietly(currentWriteFd.getAndSet(null))
         closeQuietly(currentReadFd.getAndSet(null))
-        
         try { currentActiveEngine?.stop() } catch (e: Exception) { }
     }
 
+    @Synchronized
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
 
         mIsStopped.set(false)
         val fullText = request.charSequenceText.toString()
         
+        // ★ FIXED RATE/PITCH CALCULATION ★
+        // Jieshuo/System values (e.g. 100, 200, 50)
         var rateVal = request.speechRate
         var pitchVal = request.pitch
+        
+        // Safety: Prevent 0 or Negative (Crash Prevention)
         if (rateVal < 10) rateVal = 10
         if (pitchVal < 10) pitchVal = 10
 
+        // Normalize to Float (100 -> 1.0f)
         val sysRate = rateVal / 100.0f
         val sysPitch = pitchVal / 100.0f
 
-        // ★ VNSPEAK STRATEGY: Split huge text into small manageable sentences ★
-        // This prevents the Pipe from filling up and blocking (The "Long Text Stops" Fix)
-        // Splits by Newline, Dot, Question mark, Exclamation
+        // ★ CHUNKING (Vnspeak Style) ★
+        // Prevents Pipe Deadlock on long text
         val sentenceChunks = fullText.split(Regex("(?<=[\\n.?!])\\s+"))
 
         try {
-            // Determine Engine (Assuming primary language for the whole request for stability)
             var targetPkg = englishPkgName 
             var targetEngine = englishEngine
             
-            // Basic detection: if contains Shan/Burmese block
             if (fullText.any { it.code in 0x1000..0x109F }) {
-                 // Check deeper if Shan or Burmese
-                 if (fullText.any { it.code in 0x1075..0x108F }) { // Simplified Shan check
+                 if (fullText.any { it.code in 0x1075..0x108F }) { 
                      targetEngine = shanEngine
                      targetPkg = shanPkgName
                  } else {
@@ -158,43 +156,39 @@ class AutoTTSManagerService : TextToSpeechService() {
             var engineInputRate = prefs.getInt("RATE_$targetPkg", 0)
             if (engineInputRate == 0) engineInputRate = 24000
 
-            // Start Audio Track
+            // Start Audio
             callback.start(SYSTEM_OUTPUT_RATE, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            // We create ONE Sonic instance for the session
             val audioProcessor = AudioProcessor(engineInputRate, 1)
-            audioProcessor.setSpeed(sysRate)
-            audioProcessor.setPitch(1.0f)
-
-            currentActiveEngine = targetEngine
-            targetEngine!!.setSpeechRate(1.0f)
-            targetEngine!!.setPitch(sysPitch)
-
+            
             try {
-                // ★ LOOP PER SENTENCE (Sequential Processing) ★
-                // Process one sentence at a time. This keeps memory usage low and prevents locking.
-                for (sentence in sentenceChunks) {
-                    if (mIsStopped.get()) break
-                    if (sentence.isBlank()) continue
+                // ★ CENTRALIZED CONTROL (The Key Fix) ★
+                // 1. Sonic handles EVERYTHING (Rate AND Pitch)
+                audioProcessor.setSpeed(sysRate)
+                audioProcessor.setPitch(sysPitch) 
 
-                    // Process this small chunk completely
-                    // Using runBlocking here ensures we finish one chunk before starting next
-                    // This is safe because we are on a background thread provided by Android Service
-                    runBlocking {
+                // 2. Engine does NOTHING (Raw Audio Only)
+                // This ensures clean source audio for Sonic to process
+                targetEngine!!.setSpeechRate(1.0f)
+                targetEngine!!.setPitch(1.0f) // Force Normal Pitch
+
+                currentActiveEngine = targetEngine
+
+                runBlocking {
+                    for (sentence in sentenceChunks) {
+                        if (mIsStopped.get()) break
+                        if (sentence.isBlank()) continue
                         processSentence(targetEngine!!, sentence, callback, audioProcessor)
                     }
+                    
+                    if (!mIsStopped.get()) {
+                        flushSonicBuffer(callback, audioProcessor)
+                        callback.done()
+                    }
                 }
-                
-                // Final Flush
-                if (!mIsStopped.get()) {
-                    flushSonicBuffer(callback, audioProcessor)
-                    callback.done()
-                }
-
             } finally {
                 audioProcessor.release()
             }
-
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -217,7 +211,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         val audioChannel = Channel<ByteArray>(Channel.UNLIMITED)
 
-        // 1. Drainer (Reads from Engine)
         val drainerJob = launch(Dispatchers.IO) {
             val buffer = ByteArray(BUFFER_SIZE)
             try {
@@ -234,12 +227,12 @@ class AutoTTSManagerService : TextToSpeechService() {
             finally { audioChannel.close() }
         }
 
-        // 2. Writer (Engine Writes)
         val writerJob = launch(Dispatchers.IO) {
             val params = Bundle()
+            // Reset Engine params to ensure raw output
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+            params.putFloat(TextToSpeech.Engine.KEY_PARAM_PAN, 0.0f)
             try {
-                // This is a blocking call. Because text is short (Sentence), it won't block forever.
                 engine.synthesizeToFile(text, params, writeFd, uuid)
             } catch (e: Exception) { } 
             finally {
@@ -248,7 +241,6 @@ class AutoTTSManagerService : TextToSpeechService() {
             }
         }
 
-        // 3. Consumer (Sonic & Playback)
         val consumerJob = launch(Dispatchers.Default) {
             val inputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
             val outputBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE * 4).order(ByteOrder.LITTLE_ENDIAN)
@@ -287,7 +279,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
                 
-                // End of Sentence: Flush Accumulator (But NOT Sonic, keep state)
                 if (accumulator.position() > 0 && !mIsStopped.get()) {
                     sendToSystemSafely(accumulator.array(), accumulator.position(), callback)
                     accumulator.clear()
