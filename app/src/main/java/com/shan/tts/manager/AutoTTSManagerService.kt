@@ -18,53 +18,37 @@ class AutoTTSManagerService : TextToSpeechService() {
     private var shanEngine: TextToSpeech? = null
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
-    private var shanPkg: String = ""
-    private var burmesePkg: String = ""
-    private var englishPkg: String = ""
+    
+    private var shanPkg = ""
+    private var burmesePkg = ""
+    private var englishPkg = ""
 
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
 
-    // Thread Lock
-    private val lock = Any()
+    // Stop Flag (ရိုးရိုး Flag ပဲ သုံးပါတော့မယ်)
     @Volatile private var isStopped = false
-    
-    // Pipe Control
-    private var currentReadFd: ParcelFileDescriptor? = null
-    private var currentWriteFd: ParcelFileDescriptor? = null
-    private var writerThread: Thread? = null
 
     override fun onCreate() {
         super.onCreate()
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-            val defaultEngine = getDefaultEngineFallback()
+            val defEngine = getDefaultEngineFallback()
 
-            shanPkg = getPkg("pref_shan_pkg", listOf("com.shan.tts", "com.espeak.ng"), defaultEngine)
+            shanPkg = getPkg("pref_shan_pkg", listOf("com.shan.tts", "com.espeak.ng"), defEngine)
             initTTS(shanPkg, Locale("shn", "MM")) { shanEngine = it }
 
-            burmesePkg = getPkg("pref_burmese_pkg", listOf("org.saomaicenter.myanmartts", "com.google.android.tts"), defaultEngine)
+            burmesePkg = getPkg("pref_burmese_pkg", listOf("org.saomaicenter.myanmartts", "com.google.android.tts"), defEngine)
             initTTS(burmesePkg, Locale("my", "MM")) { burmeseEngine = it }
 
-            englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defaultEngine)
+            englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defEngine)
             initTTS(englishPkg, Locale.US) { englishEngine = it }
         } catch (e: Exception) { e.printStackTrace() }
     }
 
+    // ★ CLEAN STOP (ရိုက်ချိုးစရာမလို၊ Flag တင်ပြီး Engine ရပ်ရုံပဲ) ★
     override fun onStop() {
-        synchronized(lock) {
-            isStopped = true
-            // Stop လုပ်တာနဲ့ Pipe ကို ချက်ချင်း ရိုက်ချိုးမယ် (Deadlock ဖြေရှင်းရန်)
-            try { currentReadFd?.close() } catch (e: Exception) {}
-            currentReadFd = null
-            
-            try { currentWriteFd?.close() } catch (e: Exception) {}
-            currentWriteFd = null
-            
-            try { writerThread?.interrupt() } catch (e: Exception) {}
-        }
-        
-        // Engine တွေကိုလည်း Stop ခိုင်းမယ်
+        isStopped = true
         try { shanEngine?.stop() } catch (e: Exception) {}
         try { burmeseEngine?.stop() } catch (e: Exception) {}
         try { englishEngine?.stop() } catch (e: Exception) {}
@@ -72,74 +56,74 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
-
-        synchronized(lock) { isStopped = false }
+        isStopped = false
         val text = request.charSequenceText.toString()
 
-        // ★ UNLOCKED CONTROLS (ကန့်သတ်ချက်များ ဖြုတ်လိုက်ပြီ) ★
-        // TalkBack သို့မဟုတ် Jieshuo က ပို့တဲ့ Rate/Pitch အတိုင်း အတိအကျ သုံးပါမယ်
-        // 100 = 1.0x (Normal)
+        // 1. Get Rate/Pitch from System (TalkBack/Jieshuo)
         val rate = request.speechRate / 100.0f
         val pitch = request.pitch / 100.0f
 
-        // Engine Selection logic
-        var targetEngine = englishEngine
-        var targetPkg = englishPkg
-        if (text.any { it.code in 0x1000..0x109F }) {
-            if (text.any { it.code in 0x1075..0x108F }) { 
-                targetEngine = shanEngine
-                targetPkg = shanPkg
-            } else {
-                targetEngine = burmeseEngine
-                targetPkg = burmesePkg
-            }
+        // 2. Split Text using TTSUtils (Deadlock မဖြစ်စေတဲ့ အဓိကသော့ချက်)
+        // စာကို အပိုင်းသေးလေးတွေ ခွဲလိုက်လို့ Engine က ခဏလေးနဲ့ ရေးပြီးသွားမယ်
+        val chunks = TTSUtils.splitHelper(text)
+        if (chunks.isEmpty()) {
+            callback.done()
+            return
         }
-        if (targetEngine == null) { targetEngine = englishEngine; targetPkg = englishPkg }
 
-        // Hz Selection (Default Safe Values)
+        // 3. Determine Hz from the first chunk's language
+        val firstLang = chunks[0].lang
+        var targetPkg = when (firstLang) {
+            "SHAN" -> shanPkg
+            "MYANMAR" -> burmesePkg
+            else -> englishPkg
+        }
+        
         var hz = prefs.getInt("RATE_$targetPkg", 0)
         if (hz == 0) hz = if (targetPkg.contains("google")) 24000 else 22050
 
         try {
-            // ★ APPLY SETTINGS INSTANTLY (ချက်ချင်း သက်ရောက်စေရန်) ★
-            targetEngine!!.setSpeechRate(rate)
-            targetEngine!!.setPitch(pitch)
-
             // Start Audio
             callback.start(hz, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            // Create Pipe
             val pipe = ParcelFileDescriptor.createPipe()
             val readFd = pipe[0]
             val writeFd = pipe[1]
             val uuid = UUID.randomUUID().toString()
 
-            synchronized(lock) {
-                if (isStopped) {
-                    readFd.close()
-                    writeFd.close()
-                    return
-                }
-                currentReadFd = readFd
-                currentWriteFd = writeFd
-            }
-
-            // Writer Thread
-            writerThread = Thread {
+            // ★ WRITER THREAD ★
+            val writerThread = Thread {
                 val params = Bundle()
-                // Volume ကို Bundle ထဲမှာပါ ထည့်ပေးလိုက်တာက ပိုသေချာစေပါတယ်
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                
                 try {
-                    targetEngine!!.synthesizeToFile(text, params, writeFd, uuid)
+                    for (chunk in chunks) {
+                        // Clean Check: ရပ်ခိုင်းရင် Loop ထဲက ထွက်မယ် (Pipe ချိုးစရာမလို)
+                        if (isStopped) break
+
+                        val engine = when (chunk.lang) {
+                            "SHAN" -> shanEngine
+                            "MYANMAR" -> burmeseEngine
+                            else -> englishEngine
+                        } ?: englishEngine
+
+                        engine?.setSpeechRate(rate)
+                        engine?.setPitch(pitch)
+
+                        // Write to Pipe
+                        // Chunk သေးလို့ ဒီအဆင့်က မြန်မြန်ပြီးတယ်၊ Block မဖြစ်ဘူး
+                        engine?.synthesizeToFile(chunk.text, params, writeFd, uuid)
+                    }
                 } catch (e: Exception) {
-                    // Stop လုပ်ရင် ဒီမှာ Error တက်ပြီး ရပ်သွားမယ်
+                    // Ignore errors
                 } finally {
+                    // Writing ပြီးရင် Pipe ပိတ်ပေးရမယ်
                     try { writeFd.close() } catch (e: Exception) {}
                 }
             }
-            writerThread?.start()
+            writerThread.start()
 
-            // Reader Loop
+            // ★ READER LOOP ★
             val buffer = ByteArray(8192)
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
@@ -155,7 +139,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                                 val chunk = Math.min(bytesRead - offset, max)
                                 val ret = callback.audioAvailable(buffer, offset, chunk)
                                 if (ret == TextToSpeech.ERROR) {
-                                    synchronized(lock) { isStopped = true }
+                                    isStopped = true
                                     break
                                 }
                                 offset += chunk
@@ -165,12 +149,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             } catch (e: Exception) {
             } finally {
-                synchronized(lock) {
-                    try { readFd.close() } catch (e: Exception) {}
-                    currentReadFd = null
-                    if (writerThread != null && writerThread!!.isAlive) {
-                         try { targetEngine!!.stop() } catch (e: Exception) {}
-                    }
+                // Ensure writer stops if reader exits early
+                if (writerThread.isAlive) {
+                    try { shanEngine?.stop() } catch (e: Exception) {}
+                    try { burmeseEngine?.stop() } catch (e: Exception) {}
+                    try { englishEngine?.stop() } catch (e: Exception) {}
                 }
                 if (!isStopped) callback.done()
             }
