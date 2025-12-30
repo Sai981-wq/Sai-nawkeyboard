@@ -9,16 +9,21 @@ import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
+import android.speech.tts.UtteranceProgressListener
 import java.io.IOException
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.math.max
+import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
 
     private var shanEngine: TextToSpeech? = null
     private var burmeseEngine: TextToSpeech? = null
     private var englishEngine: TextToSpeech? = null
-    
+
     private var shanPkg = ""
     private var burmesePkg = ""
     private var englishPkg = ""
@@ -50,9 +55,38 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped = true
         try { currentReadFd?.close() } catch (e: Exception) {}
         currentReadFd = null
-        try { shanEngine?.stop() } catch (e: Exception) {}
-        try { burmeseEngine?.stop() } catch (e: Exception) {}
-        try { englishEngine?.stop() } catch (e: Exception) {}
+        stopEngineSafe(shanEngine)
+        stopEngineSafe(burmeseEngine)
+        stopEngineSafe(englishEngine)
+    }
+
+    private fun stopEngineSafe(engine: TextToSpeech?) {
+        try { engine?.stop() } catch (e: Exception) {}
+    }
+
+    // ★ SMART RATE/PITCH CALCULATOR ★
+    private fun getSafeRate(rawRate: Int): Float {
+        // Android Standard: 100 = 1.0 (Normal)
+        var rate = rawRate / 100.0f
+        
+        // Error Check: တချို့ဖုန်းတွေမှာ 100 မလာဘဲ 1 လို့လာရင် 0.01 ဖြစ်ပြီး အရမ်းနှေးသွားတတ်တယ်
+        // ဒါကြောင့် အရမ်းနည်းနေရင် (0.1 အောက်) ဆိုရင် 100 နဲ့ မစားဘဲ ဒီအတိုင်းယူမယ်
+        if (rate < 0.1f && rawRate > 0) {
+            rate = rawRate.toFloat()
+        }
+
+        // Clamping: အရမ်းမြန်လွန်းရင် (ဥပမာ - Jieshuo 600%) နားထောင်မရဖြစ်မယ်
+        // ဒါကြောင့် 3.5x (၃ ဆခွဲ) ထက်မပိုအောင် ထိန်းထားမယ်
+        return rate.coerceIn(0.25f, 3.5f)
+    }
+
+    private fun getSafePitch(rawPitch: Int): Float {
+        var pitch = rawPitch / 100.0f
+        if (pitch < 0.1f && rawPitch > 0) {
+            pitch = rawPitch.toFloat()
+        }
+        // Pitch အရမ်းများရင် ကလေးသံပေါက်ပြီး နားထောင်ရဆိုးတယ် (0.5 - 2.0 ကြားက အဆင်အပြေဆုံးပါ)
+        return pitch.coerceIn(0.5f, 2.0f)
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
@@ -60,11 +94,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped = false
         val text = request.charSequenceText.toString()
 
-        // ★ FIX FOR JIESHUO: Convert 100-based scale to 1.0-based float ★
-        // Jieshuo sends 100 for normal, 300 for 3x.
-        // We must divide by 100.0f to get 1.0, 3.0 etc.
-        val rate = request.speechRate / 100.0f
-        val pitch = request.pitch / 100.0f
+        // တွက်ချက်မှု အသစ်ဖြင့် Rate/Pitch ကို ယူမည်
+        val rate = getSafeRate(request.speechRate)
+        val pitch = getSafePitch(request.pitch)
 
         val chunks = TTSUtils.splitHelper(text)
         if (chunks.isEmpty()) {
@@ -105,13 +137,31 @@ class AutoTTSManagerService : TextToSpeechService() {
                             else -> englishEngine
                         } ?: englishEngine
 
-                        // Apply the calculated Float values
-                        engine?.setSpeechRate(rate)
-                        engine?.setPitch(pitch)
+                        if (engine == null) continue
 
-                        engine?.synthesizeToFile(chunk.text, params, writeFd, uuid)
+                        // Apply the calculated Safe Rate/Pitch
+                        engine.setSpeechRate(rate)
+                        engine.setPitch(pitch)
+
+                        // ★ SYNCHRONIZATION FIX (အသံမထပ်အောင် စောင့်သည့်စနစ်) ★
+                        val latch = CountDownLatch(1)
+                        
+                        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                            override fun onStart(id: String?) {}
+                            override fun onDone(id: String?) { latch.countDown() }
+                            override fun onError(id: String?) { latch.countDown() }
+                            override fun onError(id: String?, code: Int) { latch.countDown() }
+                        })
+
+                        val result = engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
+                        
+                        // အောင်မြင်ရင် ပြီးတဲ့အထိ စောင့်မယ် (Max 8 seconds)
+                        if (result == TextToSpeech.SUCCESS) {
+                            latch.await(8, TimeUnit.SECONDS)
+                        }
                     }
                 } catch (e: Exception) {
+                    e.printStackTrace()
                 } finally {
                     try { writeFd.close() } catch (e: Exception) {}
                 }
@@ -143,9 +193,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             } catch (e: Exception) {
             } finally {
                 if (writerThread.isAlive) {
-                    try { shanEngine?.stop() } catch (e: Exception) {}
-                    try { burmeseEngine?.stop() } catch (e: Exception) {}
-                    try { englishEngine?.stop() } catch (e: Exception) {}
+                    stopEngineSafe(shanEngine)
+                    stopEngineSafe(burmeseEngine)
+                    stopEngineSafe(englishEngine)
                 }
                 if (!isStopped) callback.done()
             }
@@ -153,7 +203,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    // ... (Helpers: getDefaultEngineFallback, getPkg, isInstalled, initTTS, onDestroy are same as before) ...
+    // Helpers remain unchanged
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
