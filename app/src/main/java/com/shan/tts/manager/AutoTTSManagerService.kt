@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -52,8 +53,10 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         isStopped = true
+        // Close FD immediately to break the Reader Loop
         try { currentReadFd?.close() } catch (e: Exception) {}
         currentReadFd = null
+        
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
         stopSafe(englishEngine)
@@ -103,6 +106,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             currentReadFd = readFd
 
             val writerThread = Thread {
+                // Priority မြှင့်ထားခြင်းဖြင့် Pipe မပြည့်ခင် အမြန်ရေးနိုင်အောင် ကူညီပါမယ်
+                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+                
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                 
@@ -140,32 +146,45 @@ class AutoTTSManagerService : TextToSpeechService() {
                             override fun onError(id: String?, code: Int) { latch.countDown() }
                         })
 
+                        // Engine writes to Pipe (Writer Side)
                         val res = engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
                         
                         if (res == TextToSpeech.SUCCESS) {
-                            latch.await(4000, TimeUnit.MILLISECONDS)
+                            // Wait for this chunk to finish before sending next
+                            // Timeout increased slightly to prevent cutting off long sentences
+                            latch.await(5000, TimeUnit.MILLISECONDS)
                         }
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
                 } finally {
+                    // Critical: Close Write FD so Reader knows stream is done
                     try { writeFd.close() } catch (e: Exception) {}
                 }
             }
             writerThread.start()
 
-            val buffer = ByteArray(4096)
+            // ★ BUFFER FIX: Increased to 16KB (Standard Android Audio Chunk is usually 4KB-16KB)
+            // 4096 is too small and might cause Pipe Overflow on fast engines
+            val buffer = ByteArray(16384) 
+            
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                     while (!isStopped) {
+                        // Read from Pipe (Reader Side)
                         val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
+                        
+                        // -1 means Writer closed the pipe (Done)
                         if (bytesRead == -1) break 
+                        
                         if (bytesRead > 0) {
                             val max = callback.maxBufferSize
                             var offset = 0
                             while (offset < bytesRead) {
                                 if (isStopped) break
                                 val chunkLen = Math.min(bytesRead - offset, max)
+                                
+                                // Send to System Audio
                                 val ret = callback.audioAvailable(buffer, offset, chunkLen)
                                 if (ret == TextToSpeech.ERROR) {
                                     isStopped = true
@@ -177,6 +196,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             } catch (e: Exception) {
+                e.printStackTrace()
             } finally {
                 if (writerThread.isAlive) {
                    stopSafe(shanEngine)
