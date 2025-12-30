@@ -26,8 +26,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
 
-    // Stop Flag (ရိုးရိုး Flag ပဲ သုံးပါတော့မယ်)
     @Volatile private var isStopped = false
+    private var currentReadFd: ParcelFileDescriptor? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -46,9 +46,10 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    // ★ CLEAN STOP (ရိုက်ချိုးစရာမလို၊ Flag တင်ပြီး Engine ရပ်ရုံပဲ) ★
     override fun onStop() {
         isStopped = true
+        try { currentReadFd?.close() } catch (e: Exception) {}
+        currentReadFd = null
         try { shanEngine?.stop() } catch (e: Exception) {}
         try { burmeseEngine?.stop() } catch (e: Exception) {}
         try { englishEngine?.stop() } catch (e: Exception) {}
@@ -59,21 +60,20 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped = false
         val text = request.charSequenceText.toString()
 
-        // 1. Get Rate/Pitch from System (TalkBack/Jieshuo)
+        // ★ FIX FOR JIESHUO: Convert 100-based scale to 1.0-based float ★
+        // Jieshuo sends 100 for normal, 300 for 3x.
+        // We must divide by 100.0f to get 1.0, 3.0 etc.
         val rate = request.speechRate / 100.0f
         val pitch = request.pitch / 100.0f
 
-        // 2. Split Text using TTSUtils (Deadlock မဖြစ်စေတဲ့ အဓိကသော့ချက်)
-        // စာကို အပိုင်းသေးလေးတွေ ခွဲလိုက်လို့ Engine က ခဏလေးနဲ့ ရေးပြီးသွားမယ်
         val chunks = TTSUtils.splitHelper(text)
         if (chunks.isEmpty()) {
             callback.done()
             return
         }
 
-        // 3. Determine Hz from the first chunk's language
         val firstLang = chunks[0].lang
-        var targetPkg = when (firstLang) {
+        val targetPkg = when (firstLang) {
             "SHAN" -> shanPkg
             "MYANMAR" -> burmesePkg
             else -> englishPkg
@@ -83,22 +83,20 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (hz == 0) hz = if (targetPkg.contains("google")) 24000 else 22050
 
         try {
-            // Start Audio
             callback.start(hz, AudioFormat.ENCODING_PCM_16BIT, 1)
 
             val pipe = ParcelFileDescriptor.createPipe()
             val readFd = pipe[0]
             val writeFd = pipe[1]
             val uuid = UUID.randomUUID().toString()
+            currentReadFd = readFd
 
-            // ★ WRITER THREAD ★
             val writerThread = Thread {
                 val params = Bundle()
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                 
                 try {
                     for (chunk in chunks) {
-                        // Clean Check: ရပ်ခိုင်းရင် Loop ထဲက ထွက်မယ် (Pipe ချိုးစရာမလို)
                         if (isStopped) break
 
                         val engine = when (chunk.lang) {
@@ -107,30 +105,25 @@ class AutoTTSManagerService : TextToSpeechService() {
                             else -> englishEngine
                         } ?: englishEngine
 
+                        // Apply the calculated Float values
                         engine?.setSpeechRate(rate)
                         engine?.setPitch(pitch)
 
-                        // Write to Pipe
-                        // Chunk သေးလို့ ဒီအဆင့်က မြန်မြန်ပြီးတယ်၊ Block မဖြစ်ဘူး
                         engine?.synthesizeToFile(chunk.text, params, writeFd, uuid)
                     }
                 } catch (e: Exception) {
-                    // Ignore errors
                 } finally {
-                    // Writing ပြီးရင် Pipe ပိတ်ပေးရမယ်
                     try { writeFd.close() } catch (e: Exception) {}
                 }
             }
             writerThread.start()
 
-            // ★ READER LOOP ★
-            val buffer = ByteArray(8192)
+            val buffer = ByteArray(4096)
             try {
                 ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                     while (!isStopped) {
                         val bytesRead = try { fis.read(buffer) } catch (e: IOException) { -1 }
                         if (bytesRead == -1) break 
-                        
                         if (bytesRead > 0) {
                             val max = callback.maxBufferSize
                             var offset = 0
@@ -149,7 +142,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             } catch (e: Exception) {
             } finally {
-                // Ensure writer stops if reader exits early
                 if (writerThread.isAlive) {
                     try { shanEngine?.stop() } catch (e: Exception) {}
                     try { burmeseEngine?.stop() } catch (e: Exception) {}
@@ -161,7 +153,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    // --- Helpers ---
+    // ... (Helpers: getDefaultEngineFallback, getPkg, isInstalled, initTTS, onDestroy are same as before) ...
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
@@ -169,7 +161,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         } catch (e: Exception) { "com.google.android.tts" }
     }
     private fun getPkg(key: String, list: List<String>, def: String): String {
-        val p = prefs.getString(key, ""); 
+        val p = prefs.getString(key, "")
         if (!p.isNullOrEmpty() && isInstalled(p)) return p
         for (i in list) if (isInstalled(i)) return i
         return def
@@ -184,11 +176,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             t = TextToSpeech(this, { if (it == TextToSpeech.SUCCESS) onReady(t!!) }, pkg)
         } catch (e: Exception) {}
     }
-    
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    
     override fun onDestroy() {
         super.onDestroy()
         onStop()
