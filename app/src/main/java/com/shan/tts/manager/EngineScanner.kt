@@ -2,7 +2,6 @@ package com.shan.tts.manager
 
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -32,7 +31,11 @@ object EngineScanner {
     private const val TEST_ENG = "Hello this is a test for speed calibration"
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
-        if (isRunning.getAndSet(true)) return
+        if (isRunning.getAndSet(true)) {
+            AppLogger.log("Scan already running")
+            return
+        }
+        AppLogger.log("Starting Engine Scan...")
 
         scanExecutor.execute {
             val appContext = context.applicationContext
@@ -44,6 +47,8 @@ object EngineScanner {
                 .filter { !blockedEngines.contains(it) }
                 .distinct()
 
+            AppLogger.log("Found Engines: $engines")
+
             if (engines.isEmpty()) {
                 finishScan(onComplete)
                 return@execute
@@ -54,6 +59,7 @@ object EngineScanner {
     }
 
     private fun finishScan(onComplete: () -> Unit) {
+        AppLogger.log("Scan Finished.")
         isRunning.set(false)
         mainHandler.post { onComplete() }
     }
@@ -65,6 +71,7 @@ object EngineScanner {
         }
 
         val pkgName = engines[index]
+        AppLogger.log("Scanning: $pkgName")
         var tts: TextToSpeech? = null
         
         val nextStep = {
@@ -84,10 +91,12 @@ object EngineScanner {
             if (initLatch.await(5, TimeUnit.SECONDS) && initialized) {
                 probeEngine(context, tts!!, pkgName, nextStep)
             } else {
+                AppLogger.error("Failed to init $pkgName")
                 saveFallback(context, pkgName)
                 nextStep()
             }
         } catch (e: Exception) {
+            AppLogger.error("Exception scanning $pkgName", e)
             saveFallback(context, pkgName)
             nextStep()
         }
@@ -104,6 +113,8 @@ object EngineScanner {
             lower.contains("myan") || lower.contains("burm") -> TEST_BURMESE to Locale("my", "MM")
             else -> TEST_ENG to Locale.US
         }
+        
+        AppLogger.log("Probing $pkg with lang: $targetLocale")
 
         try {
             if (tts.isLanguageAvailable(targetLocale) >= TextToSpeech.LANG_AVAILABLE) {
@@ -113,7 +124,9 @@ object EngineScanner {
             }
             tts.setSpeechRate(1.0f)
             tts.setPitch(1.0f)
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            AppLogger.error("Error setting lang for $pkg", e)
+        }
 
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
@@ -129,13 +142,16 @@ object EngineScanner {
             val params = Bundle()
             tts.synthesizeToFile(text, params, tempFile, uuid)
             
-            synthesisLatch.await(8, TimeUnit.SECONDS)
+            val finished = synthesisLatch.await(8, TimeUnit.SECONDS)
+            if (!finished) AppLogger.error("Probe timeout for $pkg")
 
             var retries = 0
             while (tempFile.length() < 100 && retries < 20) {
                 Thread.sleep(100)
                 retries++
             }
+            
+            AppLogger.log("Probe file size: ${tempFile.length()}")
 
             if (tempFile.length() > 100) {
                 val rateHz = readRate(tempFile)
@@ -147,11 +163,13 @@ object EngineScanner {
                 val actualCPS = if (durationSec > 0) text.length / durationSec else TARGET_CPS
                 val multiplier = (TARGET_CPS / actualCPS).coerceIn(0.5f, 1.5f)
 
+                AppLogger.log("Result $pkg: Hz=$safeHz, Dur=$durationSec, Mult=$multiplier")
                 saveConfig(context, pkg, safeHz, multiplier)
             } else {
                 saveFallback(context, pkg)
             }
         } catch (e: Exception) {
+            AppLogger.error("Probe Exception $pkg", e)
             saveFallback(context, pkg)
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
@@ -179,6 +197,7 @@ object EngineScanner {
     }
 
     private fun saveFallback(context: Context, pkg: String) {
+        AppLogger.log("Saving Fallback for $pkg")
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
             .putInt("RATE_$pkg", 22050)
             .putFloat("MULT_$pkg", 1.0f)
