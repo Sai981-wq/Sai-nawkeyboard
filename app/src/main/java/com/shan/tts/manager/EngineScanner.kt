@@ -2,6 +2,7 @@ package com.shan.tts.manager
 
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -24,6 +25,11 @@ object EngineScanner {
     private val scanExecutor = Executors.newSingleThreadExecutor()
     private val isRunning = AtomicBoolean(false)
     private const val PREF_NAME = "TTS_CONFIG"
+    private const val TARGET_CPS = 12.0f
+
+    private const val TEST_SHAN = "မႂ်ႇသုင်ၶႃႈ ယူႇလီယူႇႁႃႈ ၵိၼ်ၶဝ်ႈယဝ်ႉႁႃႈ"
+    private const val TEST_BURMESE = "မင်္ဂလာပါ ခင်ဗျာ နေကောင်းလား ထမင်းစားပြီးပြီလား"
+    private const val TEST_ENG = "Hello this is a test for speed calibration"
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
         if (isRunning.getAndSet(true)) return
@@ -94,9 +100,9 @@ object EngineScanner {
 
         val lower = pkg.lowercase(Locale.ROOT)
         val (text, targetLocale) = when {
-            lower.contains("shan") || lower.contains("shn") -> "မႂ်ႇသုင်ၶႃႈ" to Locale("shn", "MM")
-            lower.contains("myanmar") || lower.contains("burmese") -> "မင်္ဂလာပါ" to Locale("my", "MM")
-            else -> "Hello test" to Locale.US
+            lower.contains("shan") || lower.contains("shn") || lower.contains("espeak") -> TEST_SHAN to Locale("shn", "MM")
+            lower.contains("myan") || lower.contains("burm") -> TEST_BURMESE to Locale("my", "MM")
+            else -> TEST_ENG to Locale.US
         }
 
         try {
@@ -105,6 +111,8 @@ object EngineScanner {
             } else {
                 tts.language = Locale.US
             }
+            tts.setSpeechRate(1.0f)
+            tts.setPitch(1.0f)
         } catch (e: Exception) {}
 
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -113,27 +121,33 @@ object EngineScanner {
             override fun onDone(id: String?) { synthesisLatch.countDown() }
         })
 
-        try { Thread.sleep(150) } catch (e: Exception) {}
+        try { Thread.sleep(200) } catch (e: Exception) {}
 
         try {
             if (tempFile.exists()) tempFile.delete()
             
             val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.1f) 
-
             tts.synthesizeToFile(text, params, tempFile, uuid)
             
-            synthesisLatch.await(6, TimeUnit.SECONDS)
+            synthesisLatch.await(8, TimeUnit.SECONDS)
 
             var retries = 0
-            while (tempFile.length() < 44 && retries < 20) {
-                Thread.sleep(50)
+            while (tempFile.length() < 100 && retries < 20) {
+                Thread.sleep(100)
                 retries++
             }
 
-            if (tempFile.length() > 44) {
-                val rate = readRate(tempFile)
-                if (rate > 0) saveRate(context, pkg, rate) else saveFallback(context, pkg)
+            if (tempFile.length() > 100) {
+                val rateHz = readRate(tempFile)
+                val safeHz = if (rateHz < 8000) 16000 else rateHz
+                
+                val dataSize = tempFile.length() - 44
+                val durationSec = dataSize.toFloat() / (safeHz * 2.0f)
+                
+                val actualCPS = if (durationSec > 0) text.length / durationSec else TARGET_CPS
+                val multiplier = (TARGET_CPS / actualCPS).coerceIn(0.5f, 1.5f)
+
+                saveConfig(context, pkg, safeHz, multiplier)
             } else {
                 saveFallback(context, pkg)
             }
@@ -150,29 +164,25 @@ object EngineScanner {
             FileInputStream(file).use { fis ->
                 val header = ByteArray(44)
                 if (fis.read(header) < 44) return 0
-                
-                if (header[0] != 'R'.code.toByte() || header[1] != 'I'.code.toByte() || 
-                    header[8] != 'W'.code.toByte() || header[9] != 'A'.code.toByte()) {
-                    return 0
-                }
-
-                val buffer = ByteBuffer.wrap(header)
-                buffer.order(ByteOrder.LITTLE_ENDIAN)
+                val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
                 val rate = buffer.getInt(24)
                 if (rate in 8000..48000) rate else 0
             }
         } catch (e: Exception) { 0 }
     }
 
-    private fun saveRate(context: Context, pkg: String, rate: Int) {
-        val validRate = if (rate < 8000) 16000 else rate
-        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-            .edit().putInt("RATE_$pkg", validRate).apply()
+    private fun saveConfig(context: Context, pkg: String, hz: Int, mult: Float) {
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+            .putInt("RATE_$pkg", hz)
+            .putFloat("MULT_$pkg", mult)
+            .apply()
     }
 
     private fun saveFallback(context: Context, pkg: String) {
-        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-            .edit().putInt("RATE_$pkg", 22050).apply()
+        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+            .putInt("RATE_$pkg", 22050)
+            .putFloat("MULT_$pkg", 1.0f)
+            .apply()
     }
 
     fun stop() {
