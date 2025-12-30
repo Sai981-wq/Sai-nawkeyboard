@@ -17,6 +17,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 
 object EngineScanner {
 
@@ -24,7 +25,12 @@ object EngineScanner {
     private val scanExecutor = Executors.newSingleThreadExecutor()
     private val isRunning = AtomicBoolean(false)
     private const val PREF_NAME = "TTS_CONFIG"
-    private const val TARGET_CPS = 12.0f
+    private const val TARGET_CPS = 12.0f // Standard reading speed
+
+    // Standard Audio Sample Rates
+    private val STANDARD_RATES = intArrayOf(
+        8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000
+    )
 
     private const val TEST_SHAN = "မႂ်ႇသုင်ၶႃႈ ယူႇလီယူႇႁႃႈ ၵိၼ်ၶဝ်ႈယဝ်ႉႁႃႈ"
     private const val TEST_BURMESE = "မင်္ဂလာပါ ခင်ဗျာ နေကောင်းလား ထမင်းစားပြီးပြီလား"
@@ -47,13 +53,10 @@ object EngineScanner {
                 .filter { !blockedEngines.contains(it) }
                 .distinct()
 
-            AppLogger.log("Found Engines: $engines")
-
             if (engines.isEmpty()) {
                 finishScan(onComplete)
                 return@execute
             }
-
             scanRecursive(appContext, engines, 0, onComplete)
         }
     }
@@ -91,12 +94,10 @@ object EngineScanner {
             if (initLatch.await(5, TimeUnit.SECONDS) && initialized) {
                 probeEngine(context, tts!!, pkgName, nextStep)
             } else {
-                AppLogger.error("Failed to init $pkgName")
                 saveFallback(context, pkgName)
                 nextStep()
             }
         } catch (e: Exception) {
-            AppLogger.error("Exception scanning $pkgName", e)
             saveFallback(context, pkgName)
             nextStep()
         }
@@ -114,19 +115,16 @@ object EngineScanner {
             else -> TEST_ENG to Locale.US
         }
         
-        AppLogger.log("Probing $pkg with lang: $targetLocale")
-
         try {
             if (tts.isLanguageAvailable(targetLocale) >= TextToSpeech.LANG_AVAILABLE) {
                 tts.language = targetLocale
             } else {
                 tts.language = Locale.US
             }
+            // Standard Rate for Calibration
             tts.setSpeechRate(1.0f)
             tts.setPitch(1.0f)
-        } catch (e: Exception) {
-            AppLogger.error("Error setting lang for $pkg", e)
-        }
+        } catch (e: Exception) {}
 
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(id: String?) {}
@@ -142,8 +140,7 @@ object EngineScanner {
             val params = Bundle()
             tts.synthesizeToFile(text, params, tempFile, uuid)
             
-            val finished = synthesisLatch.await(8, TimeUnit.SECONDS)
-            if (!finished) AppLogger.error("Probe timeout for $pkg")
+            synthesisLatch.await(8, TimeUnit.SECONDS)
 
             var retries = 0
             while (tempFile.length() < 100 && retries < 20) {
@@ -151,17 +148,17 @@ object EngineScanner {
                 retries++
             }
             
-            AppLogger.log("Probe file size: ${tempFile.length()}")
-
             if (tempFile.length() > 100) {
-                val rateHz = readRate(tempFile)
-                val safeHz = if (rateHz < 8000) 16000 else rateHz
+                val rawHz = readRate(tempFile)
+                val safeHz = sanitizeRate(rawHz)
                 
                 val dataSize = tempFile.length() - 44
                 val durationSec = dataSize.toFloat() / (safeHz * 2.0f)
                 
                 val actualCPS = if (durationSec > 0) text.length / durationSec else TARGET_CPS
-                val multiplier = (TARGET_CPS / actualCPS).coerceIn(0.5f, 1.5f)
+                
+                // Normalization Multiplier (No more extra reduction here, Service handles it)
+                val multiplier = (TARGET_CPS / actualCPS).coerceIn(0.5f, 2.0f)
 
                 AppLogger.log("Result $pkg: Hz=$safeHz, Dur=$durationSec, Mult=$multiplier")
                 saveConfig(context, pkg, safeHz, multiplier)
@@ -169,7 +166,6 @@ object EngineScanner {
                 saveFallback(context, pkg)
             }
         } catch (e: Exception) {
-            AppLogger.error("Probe Exception $pkg", e)
             saveFallback(context, pkg)
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
@@ -184,9 +180,24 @@ object EngineScanner {
                 if (fis.read(header) < 44) return 0
                 val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
                 val rate = buffer.getInt(24)
-                if (rate in 8000..48000) rate else 0
+                if (rate in 4000..48000) rate else 0
             }
         } catch (e: Exception) { 0 }
+    }
+
+    private fun sanitizeRate(rate: Int): Int {
+        if (rate <= 0) return 22050
+        var bestRate = STANDARD_RATES[0]
+        var minDiff = abs(rate - bestRate)
+        for (stdRate in STANDARD_RATES) {
+            val diff = abs(rate - stdRate)
+            if (diff < minDiff) {
+                minDiff = diff
+                bestRate = stdRate
+            }
+        }
+        if (bestRate < 8000) return 16000
+        return bestRate
     }
 
     private fun saveConfig(context: Context, pkg: String, hz: Int, mult: Float) {
@@ -197,7 +208,6 @@ object EngineScanner {
     }
 
     private fun saveFallback(context: Context, pkg: String) {
-        AppLogger.log("Saving Fallback for $pkg")
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
             .putInt("RATE_$pkg", 22050)
             .putFloat("MULT_$pkg", 1.0f)
