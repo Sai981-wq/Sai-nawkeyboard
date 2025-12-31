@@ -11,9 +11,10 @@ import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import java.io.IOException
+import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
-import kotlin.math.sqrt
+import kotlin.math.ln
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -29,11 +30,14 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
 
+    // C++ ဘက်မှာ 24000Hz သတ်မှတ်ထားသလို ဒီဘက်မှာလည်း 24000Hz အသေထားပါမယ်
+    private val TARGET_HZ = 24000
+
     @Volatile private var isStopped = false
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service onCreate (Smart SquareRoot Speed) ===")
+        AppLogger.log("=== Service onCreate (Native Sonic Integration) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -64,22 +68,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         try { engine?.stop() } catch (e: Exception) {}
     }
 
-    // ★ NEW: Smart Speed Calculator ★
-    private fun calculateSmartRate(jieshuoRate: Float): Float {
-        // 1. Minimum Floor (Prevent < 0.2 crash)
-        if (jieshuoRate < 0.1f) return 1.0f // Reset if too low (bug)
-        if (jieshuoRate < 0.5f) return 0.5f // Minimum slow speed
-
-        // 2. Normal Range (0.5 - 1.5) -> Pass through
-        if (jieshuoRate <= 1.5f) return jieshuoRate
-
-        // 3. High Speed Range (> 1.5) -> Use Square Root Curve
-        // Formula: 1.5 + sqrt(input - 1.5)
-        // Example: Input 5.5 -> 1.5 + sqrt(4) = 3.5
-        // This dampens the acceleration.
-        return 1.0f + sqrt(jieshuoRate - 0.5f)
-    }
-
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
         val reqId = UUID.randomUUID().toString().substring(0, 5)
@@ -93,40 +81,29 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
 
-        val firstLang = chunks[0].lang
-        val targetPkg = when (firstLang) {
-            "SHAN" -> shanPkg
-            "MYANMAR" -> burmesePkg
-            else -> englishPkg
-        }
-        
-        // Fix Hz logic
-        var hz = prefs.getInt("RATE_$targetPkg", 0)
-        if (hz < 8000) hz = if (targetPkg.contains("google")) 24000 else 22050
-        
-        // Scanner Multiplier (Normalization)
-        val engineMult = prefs.getFloat("MULT_$targetPkg", 1.0f)
-
-        // Jieshuo Raw Rate (e.g. 5.0, 8.0)
+        // --- Speed Calculation (Jieshuo Fix) ---
         val rawRate = request.speechRate / 100.0f
-        
-        // ★ Apply Smart Curve ★
-        val curvedRate = calculateSmartRate(rawRate)
-        
-        // ★ Apply Engine Normalization ★
-        val finalBaseRate = curvedRate * engineMult
-        
-        // ★ Final Hard Cap (Safety Net) ★
-        // No engine should ever go above 3.5x, regardless of inputs
-        val safeRate = finalBaseRate.coerceIn(0.4f, 3.5f)
-
+        val smartSpeed = if (rawRate <= 1.0f) {
+             rawRate.coerceAtLeast(0.1f)
+        } else {
+             // Logarithmic curve for high speeds
+             1.0f + (ln(rawRate) * 0.7f)
+        }
+        val finalBaseSpeed = smartSpeed.coerceIn(0.1f, 3.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.8f, 1.2f)
-        
-        AppLogger.log("[$reqId] Rate: Raw=$rawRate -> Curved=$curvedRate -> Final=$safeRate (Hz=$hz)")
+
+        AppLogger.log("[$reqId] Rate: Raw=$rawRate -> Smart=$finalBaseSpeed")
 
         try {
-            callback.start(hz, AudioFormat.ENCODING_PCM_16BIT, 1)
-            val buffer = ByteArray(16384) 
+            // ★ SYSTEM OUTPUT: Always 24000Hz (Matched with C++) ★
+            callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+
+            // Buffers for JNI Processing
+            // Direct Buffers are required for efficient JNI access
+            val inputBuffer = ByteBuffer.allocateDirect(4096)
+            val outputBuffer = ByteBuffer.allocateDirect(16384) // Output can be larger due to resampling
+            val chunkReadBuffer = ByteArray(4096)
+            val chunkWriteBuffer = ByteArray(16384)
 
             for ((index, chunk) in chunks.withIndex()) {
                 if (isStopped) break
@@ -140,26 +117,41 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                 if (engine == null) continue
 
-                // Per-Chunk Multiplier check
                 val currentPkg = when (chunk.lang) {
                     "SHAN" -> shanPkg
                     "MYANMAR" -> burmesePkg
                     else -> englishPkg
                 }
-                val chunkMult = prefs.getFloat("MULT_$currentPkg", 1.0f)
                 
-                // Recalculate for specific chunk engine
-                val chunkRate = (calculateSmartRate(rawRate) * chunkMult).coerceIn(0.4f, 3.5f)
+                // Get Source Engine Hz (Defaults to 22050 if unknown)
+                var engineHz = prefs.getInt("RATE_$currentPkg", 0)
+                if (engineHz <= 0) engineHz = 22050 
 
-                engine.setSpeechRate(chunkRate)
-                engine.setPitch(finalPitch)
+                // Calculate Speed for this chunk
+                val chunkMult = prefs.getFloat("MULT_$currentPkg", 1.0f)
+                val chunkSpeed = (finalBaseSpeed * chunkMult).coerceIn(0.1f, 3.5f)
 
-                // Low Latency Pipe Logic
+                AppLogger.log("[$reqId] Processing Chunk $index ($currentPkg): InHz=$engineHz -> OutHz=24000, Speed=$chunkSpeed")
+
+                // ★ Initialize Native AudioProcessor ★
+                val processor = AudioProcessor(engineHz, 1)
+                processor.setSpeed(chunkSpeed)
+                processor.setPitch(finalPitch)
+
+                // Pipe Setup
                 val pipe = ParcelFileDescriptor.createPipe()
                 val readFd = pipe[0]
                 val writeFd = pipe[1]
                 val uuid = UUID.randomUUID().toString()
-                
+
+                // Configure Engine
+                // We set rate/pitch to 1.0 on the engine itself because 
+                // Sonic (C++) will handle the actual speed/pitch changes.
+                // Exception: If engine is very unstable, we might need basic setup, 
+                // but usually raw output is best for Sonic.
+                engine.setSpeechRate(1.0f) 
+                engine.setPitch(1.0f)
+
                 val writerThread = Thread {
                     Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
                     val params = Bundle()
@@ -167,7 +159,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try {
                         engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
                     } catch (e: Exception) {
-                        AppLogger.error("[$reqId-W] Error", e)
+                        AppLogger.error("[$reqId-W] Writer Error", e)
                     } finally {
                         try { writeFd.close() } catch (e: Exception) {}
                     }
@@ -176,7 +168,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                 try {
                     ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                        // Skip Header 44 bytes
+                        // Skip WAV Header (44 bytes)
                         var skipped: Long = 0
                         while (skipped < 44) {
                             val s = fis.skip(44 - skipped)
@@ -185,37 +177,76 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         while (!isStopped) {
-                            val read = try { fis.read(buffer) } catch (e: IOException) { -1 }
-                            if (read == -1) break
-                            if (read > 0) {
-                                val max = callback.maxBufferSize
-                                var offset = 0
-                                while (offset < read) {
-                                    if (isStopped) break
-                                    val len = min(read - offset, max)
-                                    if (callback.audioAvailable(buffer, offset, len) == TextToSpeech.ERROR) {
-                                        isStopped = true
-                                        break
+                            val bytesRead = fis.read(chunkReadBuffer)
+                            if (bytesRead == -1) break
+                            
+                            if (bytesRead > 0) {
+                                // 1. Copy Data to Direct Input Buffer
+                                inputBuffer.clear()
+                                inputBuffer.put(chunkReadBuffer, 0, bytesRead)
+                                
+                                // 2. Process via C++ (Sonic)
+                                outputBuffer.clear()
+                                val processedBytes = processor.process(
+                                    inputBuffer, 
+                                    bytesRead, 
+                                    outputBuffer, 
+                                    outputBuffer.capacity()
+                                )
+                                
+                                // 3. Send Processed Data to System
+                                if (processedBytes > 0) {
+                                    outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
+                                    val max = callback.maxBufferSize
+                                    var offset = 0
+                                    while (offset < processedBytes) {
+                                        if (isStopped) break
+                                        val len = min(processedBytes - offset, max)
+                                        if (callback.audioAvailable(chunkWriteBuffer, offset, len) == TextToSpeech.ERROR) {
+                                            isStopped = true
+                                            break
+                                        }
+                                        offset += len
                                     }
-                                    offset += len
                                 }
                             }
                         }
                     }
+
+                    // ★ FLUSH & DRAIN SONIC BUFFER ★
+                    if (!isStopped) {
+                        processor.flushQueue() // Signals Sonic to flush
+                        // Read the remaining tail
+                        outputBuffer.clear()
+                        // Passing 0 length input to trigger read-only
+                        val flushedBytes = processor.process(
+                            inputBuffer, 
+                            0, 
+                            outputBuffer, 
+                            outputBuffer.capacity()
+                        )
+                        
+                        if (flushedBytes > 0) {
+                            outputBuffer.get(chunkWriteBuffer, 0, flushedBytes)
+                            callback.audioAvailable(chunkWriteBuffer, 0, flushedBytes)
+                        }
+                    }
+
                 } catch (e: Exception) {
-                    AppLogger.error("[$reqId-R] Error", e)
+                    AppLogger.error("[$reqId-R] Reader Error", e)
                 } finally {
+                    processor.release() // Clean up C++ memory
                     try { writerThread.join(2000) } catch (e: Exception) {}
                 }
             }
         } catch (e: Exception) { 
-            AppLogger.error("[$reqId] Critical", e) 
+            AppLogger.error("[$reqId] Critical Error", e) 
         } finally {
             if (!isStopped) callback.done()
         }
     }
     
-    // ... Helpers (getDefaultEngineFallback, getPkg, isInstalled, initTTS, onDestroy) remain same ...
+    // Helpers
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
