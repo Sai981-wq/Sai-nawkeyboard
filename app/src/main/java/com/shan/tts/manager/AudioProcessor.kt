@@ -3,7 +3,7 @@ package com.shan.tts.manager
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 
-class AudioProcessor {
+class AudioProcessor(sampleRate: Int, channels: Int) {
 
     companion object {
         var isLibraryLoaded = false
@@ -11,42 +11,62 @@ class AudioProcessor {
             try {
                 System.loadLibrary("native-lib")
                 isLibraryLoaded = true
-                AppLogger.log("Native Lib Loaded.")
+                AppLogger.log("AudioProcessor: Native Library Loaded Successfully.")
             } catch (e: Throwable) {
                 isLibraryLoaded = false
-                AppLogger.error("Failed to load native-lib", Exception(e))
+                AppLogger.error("AudioProcessor: Failed to load native-lib", Exception(e))
             }
         }
     }
 
     private val handle = AtomicLong(0)
 
-    fun init() {
+    init {
         if (isLibraryLoaded) {
-            // Always init at 24000, inputHz is handled in process()
-            val h = initSonic(24000, 1)
-            if (h != 0L) handle.set(h)
+            AppLogger.log("AudioProcessor: Initializing Sonic with Hz=$sampleRate")
+            val h = initSonic(sampleRate, channels)
+            if (h != 0L) {
+                handle.set(h)
+                AppLogger.log("AudioProcessor: Init Success. Handle=$h")
+            } else {
+                AppLogger.error("AudioProcessor: Init Failed (Handle is 0)")
+            }
+        } else {
+            AppLogger.error("AudioProcessor: Library not loaded, skipping init.")
         }
     }
 
-    // Updated: Takes inputHz to perform resampling in C++
-    fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int, inputHz: Int): Int {
+    fun process(
+        inBuffer: ByteBuffer?,
+        len: Int,
+        outBuffer: ByteBuffer,
+        maxOut: Int
+    ): Int {
         if (!isLibraryLoaded) return 0
         val h = handle.get()
-        if (h == 0L) return 0
-        return processAudio(h, inBuffer, len, outBuffer, maxOut, inputHz)
+        if (h == 0L) {
+            AppLogger.error("AudioProcessor: Process called on invalid handle")
+            return 0
+        }
+        return processAudio(h, inBuffer, len, outBuffer, maxOut)
     }
 
     fun flushQueue() {
         if (!isLibraryLoaded) return
         val h = handle.get()
-        if (h != 0L) flush(h)
+        if (h != 0L) {
+            AppLogger.log("AudioProcessor: Flushing...")
+            flush(h)
+        }
     }
 
     fun release() {
         if (!isLibraryLoaded) return
         val h = handle.getAndSet(0L)
-        if (h != 0L) stop(h)
+        if (h != 0L) {
+            AppLogger.log("AudioProcessor: Releasing Handle $h")
+            stop(h)
+        }
     }
 
     fun setSpeed(speed: Float) {
@@ -60,8 +80,7 @@ class AudioProcessor {
     }
 
     private external fun initSonic(sampleRate: Int, channels: Int): Long
-    // Added inputHz parameter
-    private external fun processAudio(handle: Long, inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int, inputHz: Int): Int
+    private external fun processAudio(handle: Long, inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int
     private external fun flush(handle: Long)
     private external fun stop(handle: Long)
     private external fun setSonicSpeed(handle: Long, speed: Float)
