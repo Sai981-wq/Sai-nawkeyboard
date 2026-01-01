@@ -53,7 +53,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             
             AppLogger.log("Engines Loaded: Shan=$shanPkg, Bur=$burmesePkg, Eng=$englishPkg")
         } catch (e: Exception) { 
-            AppLogger.error("Critical Error in onCreate", e)
+            AppLogger.error("Error in onCreate", e)
         }
     }
 
@@ -61,45 +61,34 @@ class AutoTTSManagerService : TextToSpeechService() {
         AppLogger.log("=== onStop Called ===")
         isStopped = true
         
-        // Interrupt writer
-        if (currentWriterThread != null) {
-            AppLogger.log("Interrupting Writer Thread...")
-            currentWriterThread?.interrupt()
-            currentWriterThread = null
-        }
+        currentWriterThread?.interrupt()
+        currentWriterThread = null
 
-        // Release Native
-        if (currentProcessor != null) {
-            AppLogger.log("Releasing Processor...")
-            currentProcessor?.release()
-            currentProcessor = null
-        }
+        currentProcessor?.release()
+        currentProcessor = null
 
-        stopSafe(shanEngine, "Shan")
-        stopSafe(burmeseEngine, "Burmese")
-        stopSafe(englishEngine, "English")
+        stopSafe(shanEngine)
+        stopSafe(burmeseEngine)
+        stopSafe(englishEngine)
     }
 
-    private fun stopSafe(engine: TextToSpeech?, name: String) {
-        try { engine?.stop() } catch (e: Exception) {
-            AppLogger.error("Error stopping engine: $name", e)
-        }
+    private fun stopSafe(engine: TextToSpeech?) {
+        try { engine?.stop() } catch (e: Exception) {}
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) {
-            AppLogger.error("Request or Callback is NULL")
+            AppLogger.error("Request/Callback is NULL")
             return
         }
         val reqId = UUID.randomUUID().toString().substring(0, 5)
-        AppLogger.log("[$reqId] New Synthesis Request. TextLen: ${request.charSequenceText.length}")
+        AppLogger.log("[$reqId] New Request. TextLen: ${request.charSequenceText.length}")
         
         isStopped = false
         val text = request.charSequenceText.toString()
 
         val chunks = TTSUtils.splitHelper(text)
         if (chunks.isEmpty()) {
-            AppLogger.log("[$reqId] No chunks created. Done.")
             callback.done()
             return
         }
@@ -114,7 +103,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalBaseSpeed = smartSpeed.coerceIn(0.1f, 3.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.8f, 1.2f)
 
-        AppLogger.log("[$reqId] Speed Config: JieshuoRaw=$rawRate -> FinalSpeed=$finalBaseSpeed")
+        AppLogger.log("[$reqId] Speed Config: Raw=$rawRate -> Final=$finalBaseSpeed")
 
         try {
             // Android Track @ 24000
@@ -127,7 +116,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             for ((index, chunk) in chunks.withIndex()) {
                 if (isStopped) {
-                    AppLogger.log("[$reqId] Stopped during chunk loop.")
+                    AppLogger.log("[$reqId] Stopped by user.")
                     break
                 }
                 if (chunk.text.isBlank()) continue
@@ -139,7 +128,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 } ?: englishEngine
 
                 if (engine == null) {
-                    AppLogger.error("[$reqId] Engine is NULL for lang: ${chunk.lang}")
+                    AppLogger.error("[$reqId] Engine NULL for Chunk $index")
                     continue
                 }
 
@@ -157,8 +146,9 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                 AppLogger.log("[$reqId] Chunk $index ($currentPkg): InputHz=$engineHz, Speed=$chunkSpeed")
 
-                // Init Sonic with ACTUAL Hz
+                // ★ FIXED: Pass engineHz to Constructor ★
                 val processor = AudioProcessor(engineHz, 1)
+                processor.init()
                 currentProcessor = processor
                 
                 processor.setSpeed(chunkSpeed)
@@ -180,12 +170,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try {
                         if (!Thread.interrupted()) {
                             val res = engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
-                            if (res != TextToSpeech.SUCCESS) {
-                                AppLogger.error("[$reqId] synthesizeToFile Failed. Code: $res")
-                            }
+                            if (res != TextToSpeech.SUCCESS) AppLogger.error("[$reqId] Engine Error: $res")
                         }
                     } catch (e: Exception) {
-                        AppLogger.error("[$reqId] Writer Thread Exception", e)
+                        AppLogger.error("[$reqId] Writer Ex", e)
                     } finally {
                         try { writeFd.close() } catch (e: Exception) {}
                     }
@@ -226,7 +214,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                                         val len = min(processedBytes - offset, max)
                                         val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
                                         if (ret == TextToSpeech.ERROR) {
-                                            AppLogger.error("[$reqId] AudioTrack rejected data (ERROR)")
+                                            AppLogger.error("[$reqId] AudioTrack Error")
                                             isStopped = true
                                             break
                                         }
@@ -238,7 +226,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
 
                     if (!isStopped) {
-                        // AppLogger.log("[$reqId] Draining Processor...")
                         processor.flushQueue()
                         var flushedBytes: Int
                         do {
@@ -260,29 +247,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
 
                 } catch (e: Exception) {
-                    AppLogger.error("[$reqId] Reader Loop Exception", e)
+                    AppLogger.error("[$reqId] Reader Loop Error", e)
                 } finally {
                     processor.release()
                     currentProcessor = null
                     if (!isStopped) {
-                        try { writerThread.join(2000) } catch (e: Exception) {
-                            AppLogger.error("[$reqId] Join Timeout", e)
-                        }
+                        try { writerThread.join(2000) } catch (e: Exception) {}
                     }
                 }
             }
         } catch (e: Exception) { 
-            AppLogger.error("[$reqId] Critical Service Exception", e) 
+            AppLogger.error("[$reqId] Critical Error", e) 
         } finally {
-            if (!isStopped) {
-                callback.done()
-                AppLogger.log("[$reqId] Request Finished.")
-            } else {
-                AppLogger.log("[$reqId] Request Aborted.")
-            }
+            if (!isStopped) callback.done()
         }
     }
     
+    // Helpers
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
@@ -303,14 +284,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             var t: TextToSpeech? = null
             t = TextToSpeech(this, { if (it == TextToSpeech.SUCCESS) onReady(t!!) }, pkg)
-        } catch (e: Exception) { AppLogger.error("InitTTS Failed for $pkg", e) }
+        } catch (e: Exception) {}
     }
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onDestroy() {
         super.onDestroy()
-        AppLogger.log("=== Service onDestroy ===")
         onStop()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }

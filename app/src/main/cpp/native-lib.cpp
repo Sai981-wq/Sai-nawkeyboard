@@ -3,12 +3,12 @@
 #include <android/log.h>
 #include "sonic.h"
 
-// Log Tag for C++
+// Log Tag definition
 #define TAG "CherryTTS_Native"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-// Output Hz (Fixed)
+// Fixed Output Rate for Android System
 #define TARGET_OUTPUT_RATE 24000
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -22,16 +22,17 @@ Java_com_shan_tts_manager_AudioProcessor_initSonic(
 
     sonicStream stream = sonicCreateStream(sampleRate, channels);
     if (stream == NULL) {
-        LOGE("CRITICAL: Failed to create sonicStream (Out of Memory?)");
+        LOGE("CRITICAL: Failed to create sonicStream");
         return 0;
     }
 
-    // Calculate Ratio: Input / Target (e.g. 11000 / 24000 = 0.458)
-    float resamplingRate = (float)sampleRate / (float)TARGET_OUTPUT_RATE;
+    // Resampling Logic: InputHz / 24000
+    // Example: 11025 / 24000 = 0.459
+    float resamplingRatio = (float)sampleRate / (float)TARGET_OUTPUT_RATE;
     
-    LOGD("Resampling Config: Input=%d -> Target=%d, Ratio=%f", sampleRate, TARGET_OUTPUT_RATE, resamplingRate);
+    LOGD("Resampling Config: Input=%d -> Target=%d, Ratio=%f", sampleRate, TARGET_OUTPUT_RATE, resamplingRatio);
 
-    sonicSetRate(stream, resamplingRate);
+    sonicSetRate(stream, resamplingRatio);
     sonicSetSpeed(stream, 1.0f);
     sonicSetPitch(stream, 1.0f);
     sonicSetQuality(stream, 1);
@@ -51,7 +52,7 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(
 
     sonicStream stream = (sonicStream) handle;
     if (stream == NULL) {
-        LOGE("processAudio Error: Invalid Handle (NULL)");
+        LOGE("processAudio: Invalid Handle");
         return 0;
     }
 
@@ -59,24 +60,20 @@ Java_com_shan_tts_manager_AudioProcessor_processAudio(
     char* outputData = (char*) env->GetDirectBufferAddress(outBuffer);
 
     if (inputData == NULL || outputData == NULL) {
-        LOGE("processAudio Error: Buffer Access Failed (NULL)");
+        LOGE("processAudio: Buffer Access Failed");
         return 0;
     }
 
     // Write Input
     int samplesWritten = len / 2;
     if (samplesWritten > 0) {
-        int ret = sonicWriteShortToStream(stream, (short*) inputData, samplesWritten);
-        if (ret == 0) {
-            LOGE("sonicWriteShortToStream Failed (Buffer Full or Error)");
-        }
+        sonicWriteShortToStream(stream, (short*) inputData, samplesWritten);
     }
 
     // Read Output
     int availableShorts = maxOut / 2;
     int samplesRead = sonicReadShortFromStream(stream, (short*) outputData, availableShorts);
 
-    // LOGD("Processed: InBytes=%d -> OutBytes=%d", len, samplesRead * 2); // Uncomment for verbose logs
     return samplesRead * 2;
 }
 
@@ -86,8 +83,6 @@ Java_com_shan_tts_manager_AudioProcessor_flush(JNIEnv* env, jobject, jlong handl
     if (stream != NULL) {
         LOGD("Flushing Stream...");
         sonicFlushStream(stream);
-    } else {
-        LOGE("Flush Error: Invalid Handle");
     }
 }
 
@@ -103,17 +98,12 @@ Java_com_shan_tts_manager_AudioProcessor_stop(JNIEnv* env, jobject, jlong handle
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setSonicSpeed(JNIEnv* env, jobject, jlong handle, jfloat speed) {
     sonicStream stream = (sonicStream) handle;
-    if (stream != NULL) {
-        // LOGD("Setting Native Speed: %f", speed);
-        sonicSetSpeed(stream, speed);
-    }
+    if (stream != NULL) sonicSetSpeed(stream, speed);
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_shan_tts_manager_AudioProcessor_setSonicPitch(JNIEnv* env, jobject, jlong handle, jfloat pitch) {
     sonicStream stream = (sonicStream) handle;
-    if (stream != NULL) {
-        sonicSetPitch(stream, pitch);
-    }
+    if (stream != NULL) sonicSetPitch(stream, pitch);
 }
 
