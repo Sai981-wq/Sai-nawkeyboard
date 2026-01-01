@@ -24,6 +24,7 @@ class AudioProcessor(sampleRate: Int, channels: Int) {
     init {
         if (isLibraryLoaded) {
             AppLogger.log("Initializing Sonic: Rate=$sampleRate, Channels=$channels")
+            // Pass the ACTUAL Engine Rate here. C++ will calculate the ratio for 24000Hz.
             val h = initSonic(sampleRate, channels)
             if (h != 0L) {
                 handle.set(h)
@@ -48,10 +49,6 @@ class AudioProcessor(sampleRate: Int, channels: Int) {
             AppLogger.error("Process called with Invalid Handle")
             return 0
         }
-        
-        // Verbose logging (Can be commented out if too spammy)
-        // AppLogger.log("Processing Audio: InputLen=$len, MaxOut=$maxOut")
-        
         return processAudio(h, inBuffer, len, outBuffer, maxOut)
     }
 
