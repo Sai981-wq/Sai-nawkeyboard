@@ -5,17 +5,16 @@ import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
+import kotlinx.coroutines.*
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -32,16 +31,21 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val PREF_NAME = "TTS_CONFIG"
     private val TARGET_HZ = 24000
 
-    private val isStopped = AtomicBoolean(false)
+    // ★ Coroutine Setup ★
+    // SupervisorJob allows children to fail independently, but here we use it for scope lifecycle
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     
-    // Shared Processor to prevent Memory Leaks
+    // We keep track of the current synthesis job to cancel it when needed
+    private var currentJob: Job? = null
+
+    // Shared Processor
     @Volatile private var sharedProcessor: AudioProcessor? = null
     @Volatile private var currentProcessorHz = 0
-    @Volatile private var currentWriterThread: Thread? = null
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service onCreate (Pure Sonic Version) ===")
+        AppLogger.log("=== Service onCreate (Coroutines Edition) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -58,12 +62,13 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        isStopped.set(true)
         AppLogger.log("=== onStop Called ===")
-
-        currentWriterThread?.interrupt()
         
-        // Clean up processor if app is stopping completely
+        // ★ The Power of Coroutines: Just cancel the job! ★
+        currentJob?.cancel()
+        currentJob = null
+
+        // Cleanup resources
         sharedProcessor?.release()
         sharedProcessor = null
         currentProcessorHz = 0
@@ -80,8 +85,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
         val reqId = UUID.randomUUID().toString().substring(0, 5)
-        
-        isStopped.set(false)
+
+        // Cancel previous work if any (though onStop usually handles this)
+        currentJob?.cancel()
+
         val text = request.charSequenceText.toString()
         val chunks = TTSUtils.splitHelper(text)
         if (chunks.isEmpty()) {
@@ -89,175 +96,187 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
 
-        // ★ SIMPLE SPEED LOGIC ★
-        // Jieshuo gives 100 for 1x, 200 for 2x, 2000 for 20x.
-        // We just convert to float (e.g., 2.0, 20.0).
-        // Sonic handles the rest.
-        var rawRate = request.speechRate / 100.0f
-        
-        // Basic safety clamp: Limit to 0.1x - 6.0x to avoid crashing Sonic with insane values
-        // You can increase 6.0f if you want higher speeds.
-        val finalSpeed = rawRate.coerceIn(0.1f, 6.0f)
-        
+        // Speed Logic
+        val rawRate = request.speechRate / 100.0f
+        val finalSpeed = rawRate.coerceIn(0.1f, 6.0f) // Simple direct mapping
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
 
-        AppLogger.log("[$reqId] Rate: Raw=$rawRate -> Final=$finalSpeed")
+        AppLogger.log("[$reqId] Start Coroutine. Chunks=${chunks.size}")
 
-        try {
-            callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
-
-            val inputBuffer = ByteBuffer.allocateDirect(8192).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
-            val chunkReadBuffer = ByteArray(8192)
-            val chunkWriteBuffer = ByteArray(32768)
-
-            for ((index, chunk) in chunks.withIndex()) {
-                if (isStopped.get()) break
-                if (chunk.text.isBlank()) continue
-
-                val engine = when (chunk.lang) {
-                    "SHAN" -> shanEngine
-                    "MYANMAR" -> burmeseEngine
-                    else -> englishEngine
-                } ?: englishEngine
-
-                if (engine == null) continue
-
-                val currentPkg = when (chunk.lang) {
-                    "SHAN" -> shanPkg
-                    "MYANMAR" -> burmesePkg
-                    else -> englishPkg
-                }
+        // ★ Launching Coroutine on IO Dispatcher ★
+        currentJob = serviceScope.launch {
+            try {
+                // Ensure we are active before starting
+                ensureActive()
                 
-                var engineHz = prefs.getInt("RATE_$currentPkg", 0)
-                if (engineHz <= 0) engineHz = 22050 
+                callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-                // RE-USE PROCESSOR
-                var processor = sharedProcessor
-                if (processor == null || currentProcessorHz != engineHz) {
-                    processor?.release()
-                    AppLogger.log("[$reqId] New Sonic Instance: $engineHz Hz")
-                    processor = AudioProcessor(engineHz, 1)
-                    processor.init()
-                    sharedProcessor = processor
-                    currentProcessorHz = engineHz
-                }
-                
-                // Pass raw speed/pitch directly to C++
-                processor.setSpeed(finalSpeed)
-                processor.setPitch(finalPitch)
+                val inputBuffer = ByteBuffer.allocateDirect(8192).order(ByteOrder.LITTLE_ENDIAN)
+                val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
+                val chunkReadBuffer = ByteArray(8192)
+                val chunkWriteBuffer = ByteArray(32768)
 
-                val pipe = ParcelFileDescriptor.createPipe()
-                val readFd = pipe[0]
-                val writeFd = pipe[1]
-                val uuid = UUID.randomUUID().toString()
+                for ((index, chunk) in chunks.withIndex()) {
+                    // ★ Check cancellation automatically ★
+                    if (!isActive) break 
+                    if (chunk.text.isBlank()) continue
 
-                engine.setSpeechRate(1.0f) 
-                engine.setPitch(1.0f)
+                    val engine = when (chunk.lang) {
+                        "SHAN" -> shanEngine
+                        "MYANMAR" -> burmeseEngine
+                        else -> englishEngine
+                    } ?: englishEngine
 
-                val writerThread = Thread {
-                    currentWriterThread = Thread.currentThread()
-                    Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-                    val params = Bundle()
-                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-                    try {
-                        if (!isStopped.get() && !Thread.interrupted()) {
-                            engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
-                        }
-                    } catch (e: Exception) {
-                        AppLogger.error("[$reqId] Writer Error", e)
-                    } finally {
-                        try { writeFd.close() } catch (e: Exception) {}
+                    if (engine == null) continue
+
+                    val currentPkg = when (chunk.lang) {
+                        "SHAN" -> shanPkg
+                        "MYANMAR" -> burmesePkg
+                        else -> englishPkg
                     }
-                }
-                writerThread.start()
+                    
+                    var engineHz = prefs.getInt("RATE_$currentPkg", 0)
+                    if (engineHz <= 0) engineHz = 22050 
 
-                try {
-                    ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                        var skipped: Long = 0
-                        while (skipped < 44 && !isStopped.get()) {
-                            val s = fis.skip(44 - skipped)
-                            if (s <= 0) break
-                            skipped += s
+                    // Processor Re-Use Logic
+                    var processor = sharedProcessor
+                    if (processor == null || currentProcessorHz != engineHz) {
+                        processor?.release()
+                        AppLogger.log("[$reqId] Init Sonic: $engineHz Hz")
+                        processor = AudioProcessor(engineHz, 1)
+                        processor.init()
+                        sharedProcessor = processor
+                        currentProcessorHz = engineHz
+                    }
+                    
+                    processor.setSpeed(finalSpeed)
+                    processor.setPitch(finalPitch)
+
+                    val pipe = ParcelFileDescriptor.createPipe()
+                    val readFd = pipe[0]
+                    val writeFd = pipe[1]
+                    val uuid = UUID.randomUUID().toString()
+
+                    engine.setSpeechRate(1.0f) 
+                    engine.setPitch(1.0f)
+
+                    // Helper thread for Engine writing (Engine is blocking API)
+                    // We can use a simple thread here or another coroutine via Dispatchers.Default
+                    // But standard Thread is fine for the engine writer as it just pushes data.
+                    val writerThread = Thread {
+                        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+                        val params = Bundle()
+                        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                        try {
+                            engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
+                        } catch (e: Exception) {
+                            AppLogger.error("[$reqId] Writer Error", e)
+                        } finally {
+                            try { writeFd.close() } catch (e: Exception) {}
                         }
+                    }
+                    writerThread.start()
 
-                        while (!isStopped.get()) {
-                            var bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
-                            if (bytesRead == -1) break
-                            
-                            if (bytesRead > 0) {
-                                // Align bytes
-                                if (bytesRead % 2 != 0) bytesRead--
+                    try {
+                        ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                            var skipped: Long = 0
+                            while (skipped < 44 && isActive) {
+                                val s = fis.skip(44 - skipped)
+                                if (s <= 0) break
+                                skipped += s
+                            }
 
+                            while (isActive) {
+                                // Blocking read, but checking isActive in loop
+                                var bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
+                                if (bytesRead == -1) break
+                                
                                 if (bytesRead > 0) {
-                                    inputBuffer.clear()
-                                    inputBuffer.put(chunkReadBuffer, 0, bytesRead)
-                                    outputBuffer.clear()
-                                    
-                                    val processedBytes = processor.process(
-                                        inputBuffer, 
-                                        bytesRead, 
-                                        outputBuffer, 
-                                        outputBuffer.capacity()
-                                    )
-                                    
-                                    if (processedBytes > 0) {
-                                        outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
-                                        val max = callback.maxBufferSize
-                                        var offset = 0
-                                        while (offset < processedBytes) {
-                                            if (isStopped.get()) break
-                                            val len = min(processedBytes - offset, max)
-                                            if (callback.audioAvailable(chunkWriteBuffer, offset, len) == TextToSpeech.ERROR) {
-                                                isStopped.set(true)
-                                                break
+                                    if (bytesRead % 2 != 0) bytesRead--
+
+                                    if (bytesRead > 0) {
+                                        inputBuffer.clear()
+                                        inputBuffer.put(chunkReadBuffer, 0, bytesRead)
+                                        outputBuffer.clear()
+                                        
+                                        val processedBytes = processor.process(
+                                            inputBuffer, 
+                                            bytesRead, 
+                                            outputBuffer, 
+                                            outputBuffer.capacity()
+                                        )
+                                        
+                                        if (processedBytes > 0) {
+                                            outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
+                                            val max = callback.maxBufferSize
+                                            var offset = 0
+                                            while (offset < processedBytes) {
+                                                // ★ Cancellation Point ★
+                                                if (!isActive) break 
+                                                
+                                                val len = min(processedBytes - offset, max)
+                                                val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
+                                                if (ret == TextToSpeech.ERROR) {
+                                                    // Force cancel own scope if track fails
+                                                    this@launch.cancel()
+                                                    break
+                                                }
+                                                offset += len
                                             }
-                                            offset += len
                                         }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    if (!isStopped.get()) {
-                        processor.flushQueue()
-                        var flushedBytes: Int
-                        do {
-                            if (isStopped.get()) break
-                            outputBuffer.clear()
-                            flushedBytes = processor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                            
-                            if (flushedBytes > 0) {
-                                outputBuffer.get(chunkWriteBuffer, 0, flushedBytes)
-                                val max = callback.maxBufferSize
-                                var offset = 0
-                                while (offset < flushedBytes) {
-                                    if (isStopped.get()) break
-                                    val len = min(flushedBytes - offset, max)
-                                    callback.audioAvailable(chunkWriteBuffer, offset, len)
-                                    offset += len
+                        // Drain Loop
+                        if (isActive) {
+                            processor.flushQueue()
+                            var flushedBytes: Int
+                            do {
+                                if (!isActive) break
+                                outputBuffer.clear()
+                                flushedBytes = processor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                                
+                                if (flushedBytes > 0) {
+                                    outputBuffer.get(chunkWriteBuffer, 0, flushedBytes)
+                                    val max = callback.maxBufferSize
+                                    var offset = 0
+                                    while (offset < flushedBytes) {
+                                        if (!isActive) break
+                                        val len = min(flushedBytes - offset, max)
+                                        callback.audioAvailable(chunkWriteBuffer, offset, len)
+                                        offset += len
+                                    }
                                 }
-                            }
-                        } while (flushedBytes > 0)
-                    }
+                            } while (flushedBytes > 0)
+                        }
 
-                } catch (e: Exception) {
-                    AppLogger.error("[$reqId] Reader Error", e)
-                } finally {
-                    if (!isStopped.get()) {
-                        try { writerThread.join(2000) } catch (e: Exception) {}
+                    } catch (e: Exception) {
+                        AppLogger.error("[$reqId] Loop Error", e)
+                    } finally {
+                        // Ensure writer thread stops if we cancel mid-stream
+                        if (!isActive) {
+                            try { writerThread.join(500) } catch (e: Exception) {}
+                        }
                     }
                 }
+                
+                // Only call done() if we finished successfully (not cancelled)
+                if (isActive) {
+                    callback.done()
+                    AppLogger.log("[$reqId] Done.")
+                } else {
+                    AppLogger.log("[$reqId] Cancelled.")
+                }
+
+            } catch (e: Exception) {
+                AppLogger.error("[$reqId] Critical Coroutine Error", e)
             }
-        } catch (e: Exception) { 
-            AppLogger.error("[$reqId] Critical", e) 
-        } finally {
-            if (!isStopped.get()) callback.done()
         }
     }
     
-    // Helpers
+    // Standard Helpers ...
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
@@ -283,11 +302,19 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
+    
     override fun onDestroy() {
         super.onDestroy()
-        onStop()
+        AppLogger.log("=== Service onDestroy ===")
+        // ★ Cleanup Scope ★
+        serviceJob.cancel()
+        
         sharedProcessor?.release()
-        shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
+        sharedProcessor = null
+        
+        shanEngine?.shutdown()
+        burmeseEngine?.shutdown()
+        englishEngine?.shutdown()
     }
 }
 
