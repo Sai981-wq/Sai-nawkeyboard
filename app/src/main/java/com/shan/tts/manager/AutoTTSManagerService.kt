@@ -12,6 +12,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -33,14 +34,14 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val isStopped = AtomicBoolean(false)
     
-    // ★ Singleton Processor variables ★
+    // Shared Processor to prevent Memory Leaks
     @Volatile private var sharedProcessor: AudioProcessor? = null
     @Volatile private var currentProcessorHz = 0
     @Volatile private var currentWriterThread: Thread? = null
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service onCreate (Optimized Re-Use) ===")
+        AppLogger.log("=== Service onCreate (Pure Sonic Version) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -60,12 +61,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped.set(true)
         AppLogger.log("=== onStop Called ===")
 
-        // Interrupt Writer
         currentWriterThread?.interrupt()
         
-        // Don't release sharedProcessor here immediately if you want to reuse it across requests.
-        // BUT for safety on stop, we can flush or just leave it.
-        // Releasing it ensures clean state if user switches apps.
+        // Clean up processor if app is stopping completely
         sharedProcessor?.release()
         sharedProcessor = null
         currentProcessorHz = 0
@@ -91,22 +89,25 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
 
-        val rawRate = request.speechRate / 100.0f
-        val smartSpeed = if (rawRate <= 1.0f) {
-             rawRate.coerceAtLeast(0.1f)
-        } else {
-             1.0f + ((rawRate - 1.0f) * 0.15f)
-        }
-        val finalBaseSpeed = smartSpeed.coerceIn(0.1f, 3.0f)
-        val finalPitch = (request.pitch / 100.0f).coerceIn(0.8f, 1.2f)
+        // ★ SIMPLE SPEED LOGIC ★
+        // Jieshuo gives 100 for 1x, 200 for 2x, 2000 for 20x.
+        // We just convert to float (e.g., 2.0, 20.0).
+        // Sonic handles the rest.
+        var rawRate = request.speechRate / 100.0f
+        
+        // Basic safety clamp: Limit to 0.1x - 6.0x to avoid crashing Sonic with insane values
+        // You can increase 6.0f if you want higher speeds.
+        val finalSpeed = rawRate.coerceIn(0.1f, 6.0f)
+        
+        val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
 
-        AppLogger.log("[$reqId] Start. Chunks=${chunks.size}")
+        AppLogger.log("[$reqId] Rate: Raw=$rawRate -> Final=$finalSpeed")
 
         try {
             callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            val inputBuffer = ByteBuffer.allocateDirect(8192)
-            val outputBuffer = ByteBuffer.allocateDirect(32768) 
+            val inputBuffer = ByteBuffer.allocateDirect(8192).order(ByteOrder.LITTLE_ENDIAN)
+            val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
             val chunkReadBuffer = ByteArray(8192)
             val chunkWriteBuffer = ByteArray(32768)
 
@@ -131,28 +132,20 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var engineHz = prefs.getInt("RATE_$currentPkg", 0)
                 if (engineHz <= 0) engineHz = 22050 
 
-                val chunkMult = prefs.getFloat("MULT_$currentPkg", 1.0f)
-                val chunkSpeed = (finalBaseSpeed * chunkMult).coerceIn(0.1f, 3.5f)
-
-                // ★ PROCESSOR RE-USE LOGIC ★
-                // Only create new processor if Hz changes or it's null
+                // RE-USE PROCESSOR
                 var processor = sharedProcessor
                 if (processor == null || currentProcessorHz != engineHz) {
-                    processor?.release() // Release old one
-                    AppLogger.log("[$reqId] Switching Processor: $currentProcessorHz -> $engineHz")
-                    
+                    processor?.release()
+                    AppLogger.log("[$reqId] New Sonic Instance: $engineHz Hz")
                     processor = AudioProcessor(engineHz, 1)
                     processor.init()
-                    
                     sharedProcessor = processor
                     currentProcessorHz = engineHz
                 }
                 
-                // Update settings on existing processor
-                processor.setSpeed(chunkSpeed)
+                // Pass raw speed/pitch directly to C++
+                processor.setSpeed(finalSpeed)
                 processor.setPitch(finalPitch)
-
-                // AppLogger.log("[$reqId] Chunk $index ($currentPkg) Hz=$engineHz")
 
                 val pipe = ParcelFileDescriptor.createPipe()
                 val readFd = pipe[0]
@@ -189,33 +182,38 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         while (!isStopped.get()) {
-                            val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
+                            var bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
                             if (bytesRead == -1) break
                             
                             if (bytesRead > 0) {
-                                inputBuffer.clear()
-                                inputBuffer.put(chunkReadBuffer, 0, bytesRead)
-                                
-                                outputBuffer.clear()
-                                val processedBytes = processor.process(
-                                    inputBuffer, 
-                                    bytesRead, 
-                                    outputBuffer, 
-                                    outputBuffer.capacity()
-                                )
-                                
-                                if (processedBytes > 0) {
-                                    outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
-                                    val max = callback.maxBufferSize
-                                    var offset = 0
-                                    while (offset < processedBytes) {
-                                        if (isStopped.get()) break
-                                        val len = min(processedBytes - offset, max)
-                                        if (callback.audioAvailable(chunkWriteBuffer, offset, len) == TextToSpeech.ERROR) {
-                                            isStopped.set(true)
-                                            break
+                                // Align bytes
+                                if (bytesRead % 2 != 0) bytesRead--
+
+                                if (bytesRead > 0) {
+                                    inputBuffer.clear()
+                                    inputBuffer.put(chunkReadBuffer, 0, bytesRead)
+                                    outputBuffer.clear()
+                                    
+                                    val processedBytes = processor.process(
+                                        inputBuffer, 
+                                        bytesRead, 
+                                        outputBuffer, 
+                                        outputBuffer.capacity()
+                                    )
+                                    
+                                    if (processedBytes > 0) {
+                                        outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
+                                        val max = callback.maxBufferSize
+                                        var offset = 0
+                                        while (offset < processedBytes) {
+                                            if (isStopped.get()) break
+                                            val len = min(processedBytes - offset, max)
+                                            if (callback.audioAvailable(chunkWriteBuffer, offset, len) == TextToSpeech.ERROR) {
+                                                isStopped.set(true)
+                                                break
+                                            }
+                                            offset += len
                                         }
-                                        offset += len
                                     }
                                 }
                             }
@@ -223,9 +221,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
 
                     if (!isStopped.get()) {
-                        // For re-usable processor, we just flush, DO NOT RELEASE
                         processor.flushQueue()
-                        
                         var flushedBytes: Int
                         do {
                             if (isStopped.get()) break
@@ -247,9 +243,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
 
                 } catch (e: Exception) {
-                    AppLogger.error("[$reqId] Loop Error", e)
+                    AppLogger.error("[$reqId] Reader Error", e)
                 } finally {
-                    // ★ CRITICAL: Do NOT release processor here. Only in onStop. ★
                     if (!isStopped.get()) {
                         try { writerThread.join(2000) } catch (e: Exception) {}
                     }
@@ -291,9 +286,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onDestroy() {
         super.onDestroy()
         onStop()
-        // Final cleanup
         sharedProcessor?.release()
-        sharedProcessor = null
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 }

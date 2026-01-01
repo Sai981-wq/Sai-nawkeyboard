@@ -3,7 +3,6 @@ package com.shan.tts.manager
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 
-// Constructor accepts Hz now to fix the build error
 class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
 
     companion object {
@@ -12,61 +11,40 @@ class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
             try {
                 System.loadLibrary("native-lib")
                 isLibraryLoaded = true
-                AppLogger.log("AudioProcessor: Native Library Loaded.")
+                AppLogger.log("Native Lib Loaded")
             } catch (e: Throwable) {
                 isLibraryLoaded = false
-                AppLogger.error("AudioProcessor: Load Failed", Exception(e))
+                AppLogger.error("Native Lib Load Failed", Exception(e))
             }
         }
     }
 
     private val handle = AtomicLong(0)
 
-    // Call this explicitly to start Sonic
     fun init() {
         if (isLibraryLoaded) {
-            AppLogger.log("AudioProcessor: Init Sonic with Hz=$sampleRate")
             val h = initSonic(sampleRate, channels)
-            if (h != 0L) {
-                handle.set(h)
-                AppLogger.log("AudioProcessor: Init Success. Handle=$h")
-            } else {
-                AppLogger.error("AudioProcessor: Init Failed (Handle=0)")
-            }
+            if (h != 0L) handle.set(h)
         }
     }
 
-    fun process(
-        inBuffer: ByteBuffer?,
-        len: Int,
-        outBuffer: ByteBuffer,
-        maxOut: Int
-    ): Int {
+    fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int {
         if (!isLibraryLoaded) return 0
         val h = handle.get()
-        if (h == 0L) {
-            AppLogger.error("AudioProcessor: Process called on invalid handle")
-            return 0
-        }
+        if (h == 0L) return 0
         return processAudio(h, inBuffer, len, outBuffer, maxOut)
     }
 
     fun flushQueue() {
         if (!isLibraryLoaded) return
         val h = handle.get()
-        if (h != 0L) {
-            AppLogger.log("AudioProcessor: Flushing")
-            flush(h)
-        }
+        if (h != 0L) flush(h)
     }
 
     fun release() {
         if (!isLibraryLoaded) return
         val h = handle.getAndSet(0L)
-        if (h != 0L) {
-            AppLogger.log("AudioProcessor: Releasing Handle")
-            stop(h)
-        }
+        if (h != 0L) stop(h)
     }
 
     fun setSpeed(speed: Float) {
