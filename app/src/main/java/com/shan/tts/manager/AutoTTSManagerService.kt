@@ -14,7 +14,7 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.UUID
-import kotlin.math.ln
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -31,13 +31,16 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val PREF_NAME = "TTS_CONFIG"
     private val TARGET_HZ = 24000
 
-    @Volatile private var isStopped = false
+    private val isStopped = AtomicBoolean(false)
+    
+    // ★ Singleton Processor variables ★
+    @Volatile private var sharedProcessor: AudioProcessor? = null
+    @Volatile private var currentProcessorHz = 0
     @Volatile private var currentWriterThread: Thread? = null
-    @Volatile private var currentProcessor: AudioProcessor? = null
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service onCreate Started ===")
+        AppLogger.log("=== Service onCreate (Optimized Re-Use) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -50,22 +53,22 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defEngine)
             initTTS(englishPkg, Locale.US) { englishEngine = it }
-            
-            AppLogger.log("Engines Loaded: Shan=$shanPkg, Bur=$burmesePkg, Eng=$englishPkg")
-        } catch (e: Exception) { 
-            AppLogger.error("Error in onCreate", e)
-        }
+        } catch (e: Exception) { AppLogger.error("onCreate Error", e) }
     }
 
     override fun onStop() {
+        isStopped.set(true)
         AppLogger.log("=== onStop Called ===")
-        isStopped = true
-        
-        currentWriterThread?.interrupt()
-        currentWriterThread = null
 
-        currentProcessor?.release()
-        currentProcessor = null
+        // Interrupt Writer
+        currentWriterThread?.interrupt()
+        
+        // Don't release sharedProcessor here immediately if you want to reuse it across requests.
+        // BUT for safety on stop, we can flush or just leave it.
+        // Releasing it ensures clean state if user switches apps.
+        sharedProcessor?.release()
+        sharedProcessor = null
+        currentProcessorHz = 0
 
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
@@ -77,23 +80,17 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
-        if (request == null || callback == null) {
-            AppLogger.error("Request/Callback is NULL")
-            return
-        }
+        if (request == null || callback == null) return
         val reqId = UUID.randomUUID().toString().substring(0, 5)
-        AppLogger.log("[$reqId] New Request. TextLen: ${request.charSequenceText.length}")
         
-        isStopped = false
+        isStopped.set(false)
         val text = request.charSequenceText.toString()
-
         val chunks = TTSUtils.splitHelper(text)
         if (chunks.isEmpty()) {
             callback.done()
             return
         }
 
-        // Speed Logic
         val rawRate = request.speechRate / 100.0f
         val smartSpeed = if (rawRate <= 1.0f) {
              rawRate.coerceAtLeast(0.1f)
@@ -103,10 +100,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalBaseSpeed = smartSpeed.coerceIn(0.1f, 3.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.8f, 1.2f)
 
-        AppLogger.log("[$reqId] Speed Config: Raw=$rawRate -> Final=$finalBaseSpeed")
+        AppLogger.log("[$reqId] Start. Chunks=${chunks.size}")
 
         try {
-            // Android Track @ 24000
             callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
             val inputBuffer = ByteBuffer.allocateDirect(8192)
@@ -115,10 +111,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             val chunkWriteBuffer = ByteArray(32768)
 
             for ((index, chunk) in chunks.withIndex()) {
-                if (isStopped) {
-                    AppLogger.log("[$reqId] Stopped by user.")
-                    break
-                }
+                if (isStopped.get()) break
                 if (chunk.text.isBlank()) continue
 
                 val engine = when (chunk.lang) {
@@ -127,10 +120,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     else -> englishEngine
                 } ?: englishEngine
 
-                if (engine == null) {
-                    AppLogger.error("[$reqId] Engine NULL for Chunk $index")
-                    continue
-                }
+                if (engine == null) continue
 
                 val currentPkg = when (chunk.lang) {
                     "SHAN" -> shanPkg
@@ -144,15 +134,25 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val chunkMult = prefs.getFloat("MULT_$currentPkg", 1.0f)
                 val chunkSpeed = (finalBaseSpeed * chunkMult).coerceIn(0.1f, 3.5f)
 
-                AppLogger.log("[$reqId] Chunk $index ($currentPkg): InputHz=$engineHz, Speed=$chunkSpeed")
-
-                // ★ FIXED: Pass engineHz to Constructor ★
-                val processor = AudioProcessor(engineHz, 1)
-                processor.init()
-                currentProcessor = processor
+                // ★ PROCESSOR RE-USE LOGIC ★
+                // Only create new processor if Hz changes or it's null
+                var processor = sharedProcessor
+                if (processor == null || currentProcessorHz != engineHz) {
+                    processor?.release() // Release old one
+                    AppLogger.log("[$reqId] Switching Processor: $currentProcessorHz -> $engineHz")
+                    
+                    processor = AudioProcessor(engineHz, 1)
+                    processor.init()
+                    
+                    sharedProcessor = processor
+                    currentProcessorHz = engineHz
+                }
                 
+                // Update settings on existing processor
                 processor.setSpeed(chunkSpeed)
                 processor.setPitch(finalPitch)
+
+                // AppLogger.log("[$reqId] Chunk $index ($currentPkg) Hz=$engineHz")
 
                 val pipe = ParcelFileDescriptor.createPipe()
                 val readFd = pipe[0]
@@ -168,12 +168,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val params = Bundle()
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     try {
-                        if (!Thread.interrupted()) {
-                            val res = engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
-                            if (res != TextToSpeech.SUCCESS) AppLogger.error("[$reqId] Engine Error: $res")
+                        if (!isStopped.get() && !Thread.interrupted()) {
+                            engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
                         }
                     } catch (e: Exception) {
-                        AppLogger.error("[$reqId] Writer Ex", e)
+                        AppLogger.error("[$reqId] Writer Error", e)
                     } finally {
                         try { writeFd.close() } catch (e: Exception) {}
                     }
@@ -183,13 +182,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                 try {
                     ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                         var skipped: Long = 0
-                        while (skipped < 44) {
+                        while (skipped < 44 && !isStopped.get()) {
                             val s = fis.skip(44 - skipped)
                             if (s <= 0) break
                             skipped += s
                         }
 
-                        while (!isStopped) {
+                        while (!isStopped.get()) {
                             val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
                             if (bytesRead == -1) break
                             
@@ -210,12 +209,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                                     val max = callback.maxBufferSize
                                     var offset = 0
                                     while (offset < processedBytes) {
-                                        if (isStopped) break
+                                        if (isStopped.get()) break
                                         val len = min(processedBytes - offset, max)
-                                        val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
-                                        if (ret == TextToSpeech.ERROR) {
-                                            AppLogger.error("[$reqId] AudioTrack Error")
-                                            isStopped = true
+                                        if (callback.audioAvailable(chunkWriteBuffer, offset, len) == TextToSpeech.ERROR) {
+                                            isStopped.set(true)
                                             break
                                         }
                                         offset += len
@@ -225,10 +222,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
 
-                    if (!isStopped) {
+                    if (!isStopped.get()) {
+                        // For re-usable processor, we just flush, DO NOT RELEASE
                         processor.flushQueue()
+                        
                         var flushedBytes: Int
                         do {
+                            if (isStopped.get()) break
                             outputBuffer.clear()
                             flushedBytes = processor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
                             
@@ -237,29 +237,28 @@ class AutoTTSManagerService : TextToSpeechService() {
                                 val max = callback.maxBufferSize
                                 var offset = 0
                                 while (offset < flushedBytes) {
-                                    if (isStopped) break
+                                    if (isStopped.get()) break
                                     val len = min(flushedBytes - offset, max)
                                     callback.audioAvailable(chunkWriteBuffer, offset, len)
                                     offset += len
                                 }
                             }
-                        } while (flushedBytes > 0 && !isStopped)
+                        } while (flushedBytes > 0)
                     }
 
                 } catch (e: Exception) {
-                    AppLogger.error("[$reqId] Reader Loop Error", e)
+                    AppLogger.error("[$reqId] Loop Error", e)
                 } finally {
-                    processor.release()
-                    currentProcessor = null
-                    if (!isStopped) {
+                    // ★ CRITICAL: Do NOT release processor here. Only in onStop. ★
+                    if (!isStopped.get()) {
                         try { writerThread.join(2000) } catch (e: Exception) {}
                     }
                 }
             }
         } catch (e: Exception) { 
-            AppLogger.error("[$reqId] Critical Error", e) 
+            AppLogger.error("[$reqId] Critical", e) 
         } finally {
-            if (!isStopped) callback.done()
+            if (!isStopped.get()) callback.done()
         }
     }
     
@@ -292,6 +291,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onDestroy() {
         super.onDestroy()
         onStop()
+        // Final cleanup
+        sharedProcessor?.release()
+        sharedProcessor = null
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 }
