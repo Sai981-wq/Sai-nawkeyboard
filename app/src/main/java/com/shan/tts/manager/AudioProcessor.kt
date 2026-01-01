@@ -11,8 +11,10 @@ class AudioProcessor(sampleRate: Int, channels: Int) {
             try {
                 System.loadLibrary("native-lib")
                 isLibraryLoaded = true
+                AppLogger.log("Native Library Loaded Successfully.")
             } catch (e: Throwable) {
                 isLibraryLoaded = false
+                AppLogger.error("Failed to load native-lib", Exception(e))
             }
         }
     }
@@ -21,10 +23,16 @@ class AudioProcessor(sampleRate: Int, channels: Int) {
 
     init {
         if (isLibraryLoaded) {
+            AppLogger.log("Initializing Sonic: Rate=$sampleRate, Channels=$channels")
             val h = initSonic(sampleRate, channels)
             if (h != 0L) {
                 handle.set(h)
+                AppLogger.log("Sonic Initialized. Handle: $h")
+            } else {
+                AppLogger.error("Sonic Init Failed: Returned 0 handle")
             }
+        } else {
+            AppLogger.error("Cannot Init Sonic: Library not loaded")
         }
     }
 
@@ -36,32 +44,51 @@ class AudioProcessor(sampleRate: Int, channels: Int) {
     ): Int {
         if (!isLibraryLoaded) return 0
         val h = handle.get()
-        if (h == 0L) return 0
+        if (h == 0L) {
+            AppLogger.error("Process called with Invalid Handle")
+            return 0
+        }
+        
+        // Verbose logging (Can be commented out if too spammy)
+        // AppLogger.log("Processing Audio: InputLen=$len, MaxOut=$maxOut")
+        
         return processAudio(h, inBuffer, len, outBuffer, maxOut)
     }
 
     fun flushQueue() {
         if (!isLibraryLoaded) return
         val h = handle.get()
-        if (h != 0L) flush(h)
+        if (h != 0L) {
+            AppLogger.log("Flushing Sonic Stream...")
+            flush(h)
+        }
     }
 
     fun release() {
         if (!isLibraryLoaded) return
         val h = handle.getAndSet(0L)
-        if (h != 0L) stop(h)
+        if (h != 0L) {
+            AppLogger.log("Releasing Sonic Handle: $h")
+            stop(h)
+        }
     }
 
     fun setSpeed(speed: Float) {
         if (!isLibraryLoaded) return
         val h = handle.get()
-        if (h != 0L) setSonicSpeed(h, speed)
+        if (h != 0L) {
+            AppLogger.log("Setting Sonic Speed: $speed")
+            setSonicSpeed(h, speed)
+        }
     }
 
     fun setPitch(pitch: Float) {
         if (!isLibraryLoaded) return
         val h = handle.get()
-        if (h != 0L) setSonicPitch(h, pitch)
+        if (h != 0L) {
+            AppLogger.log("Setting Sonic Pitch: $pitch")
+            setSonicPitch(h, pitch)
+        }
     }
 
     private external fun initSonic(sampleRate: Int, channels: Int): Long
