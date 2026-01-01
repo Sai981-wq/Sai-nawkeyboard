@@ -29,6 +29,8 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
+    
+    // System Output Fixed Rate
     private val TARGET_HZ = 24000
 
     @Volatile private var isStopped = false
@@ -37,7 +39,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service onCreate (Sonic Native + Anti-Freeze) ===")
+        AppLogger.log("=== Service onCreate (Fixed Integration) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -57,11 +59,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         AppLogger.log("=== onStop Called ===")
         isStopped = true
         
-        // 1. Interrupt writer immediately
+        // Interrupt writer immediately
         currentWriterThread?.interrupt()
         currentWriterThread = null
 
-        // 2. Cleanup Native
+        // Cleanup Native
         currentProcessor?.release()
         currentProcessor = null
 
@@ -86,29 +88,25 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
 
-        // --- Speed Calculation ---
+        // Speed Logic
         val rawRate = request.speechRate / 100.0f
-        
-        // Jieshuo Fix: Dampen extremely high speeds
         val smartSpeed = if (rawRate <= 1.0f) {
              rawRate.coerceAtLeast(0.1f)
         } else {
-             // Formula: 1.0 + (Excess * 0.15)
              1.0f + ((rawRate - 1.0f) * 0.15f)
         }
         val finalBaseSpeed = smartSpeed.coerceIn(0.1f, 3.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.8f, 1.2f)
 
-        AppLogger.log("[$reqId] Rate: Raw=$rawRate -> Final=$finalBaseSpeed")
+        AppLogger.log("[$reqId] Speed: Raw=$rawRate -> Final=$finalBaseSpeed")
 
         try {
-            // System Output Fixed at 24000Hz
+            // System Output Fixed
             callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            // Direct Buffers
-            val inputBuffer = ByteBuffer.allocateDirect(4096)
+            val inputBuffer = ByteBuffer.allocateDirect(8192)
             val outputBuffer = ByteBuffer.allocateDirect(32768) 
-            val chunkReadBuffer = ByteArray(4096)
+            val chunkReadBuffer = ByteArray(8192)
             val chunkWriteBuffer = ByteArray(32768)
 
             for ((index, chunk) in chunks.withIndex()) {
@@ -135,9 +133,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val chunkMult = prefs.getFloat("MULT_$currentPkg", 1.0f)
                 val chunkSpeed = (finalBaseSpeed * chunkMult).coerceIn(0.1f, 3.5f)
 
-                // Initialize Sonic with ENGINE Hz
-                val processor = AudioProcessor(engineHz, 1)
-                currentProcessor = processor // Track for cleanup
+                // ★ Updated Processor Initialization ★
+                // 1. Constructor takes NO arguments
+                val processor = AudioProcessor()
+                // 2. Call init() separately
+                processor.init()
+                currentProcessor = processor
                 
                 processor.setSpeed(chunkSpeed)
                 processor.setPitch(finalPitch)
@@ -171,7 +172,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                 try {
                     ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                        // Skip Header
                         var skipped: Long = 0
                         while (skipped < 44) {
                             val s = fis.skip(44 - skipped)
@@ -188,12 +188,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                                 inputBuffer.put(chunkReadBuffer, 0, bytesRead)
                                 
                                 outputBuffer.clear()
-                                // Process directly (C++ handles resampling via Rate)
+                                // ★ Updated Process Call: Passes engineHz ★
                                 val processedBytes = processor.process(
                                     inputBuffer, 
                                     bytesRead, 
                                     outputBuffer, 
-                                    outputBuffer.capacity()
+                                    outputBuffer.capacity(),
+                                    engineHz 
                                 )
                                 
                                 if (processedBytes > 0) {
@@ -203,10 +204,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                                     while (offset < processedBytes) {
                                         if (isStopped) break
                                         val len = min(processedBytes - offset, max)
-                                        if (callback.audioAvailable(chunkWriteBuffer, offset, len) == TextToSpeech.ERROR) {
-                                            isStopped = true
-                                            break
-                                        }
+                                        callback.audioAvailable(chunkWriteBuffer, offset, len)
                                         offset += len
                                     }
                                 }
@@ -214,14 +212,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
 
-                    // Drain Loop
                     if (!isStopped) {
                         processor.flushQueue()
                         var flushedBytes: Int
                         do {
                             outputBuffer.clear()
-                            // Pass 0 input to trigger drain
-                            flushedBytes = processor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                            flushedBytes = processor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity(), engineHz)
                             
                             if (flushedBytes > 0) {
                                 outputBuffer.get(chunkWriteBuffer, 0, flushedBytes)
@@ -242,7 +238,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 } finally {
                     processor.release()
                     currentProcessor = null
-                    // Prevent freeze: Wait with timeout
                     if (!isStopped) {
                         try { writerThread.join(2000) } catch (e: Exception) {}
                     }
@@ -255,7 +250,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // Helpers (Standard)
+    // Helpers
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
