@@ -89,7 +89,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
                 val chunkReadBuffer = ByteArray(16384)
                 val chunkWriteBuffer = ByteArray(32768)
-                val headerDiscardBuffer = ByteArray(44)
 
                 for (chunk in chunks) {
                     if (!isActive) break
@@ -138,13 +137,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try {
                         withContext(Dispatchers.IO) {
                             ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                                var headerReadTotal = 0
-                                while (headerReadTotal < 44 && isActive) {
-                                    val count = fis.read(headerDiscardBuffer, headerReadTotal, 44 - headerReadTotal)
-                                    if (count < 0) break 
-                                    headerReadTotal += count
-                                }
-
                                 while (isActive) {
                                     val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
                                     if (bytesRead == -1) break
