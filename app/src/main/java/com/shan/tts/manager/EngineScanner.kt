@@ -20,12 +20,7 @@ object EngineScanner {
     private var scanJob: Job? = null
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
-        if (scanJob?.isActive == true) {
-            AppLogger.log("Scan already running.")
-            return
-        }
-
-        AppLogger.log("Starting Engine Scan...")
+        if (scanJob?.isActive == true) return
 
         scanJob = CoroutineScope(Dispatchers.IO).launch {
             val appContext = context.applicationContext
@@ -37,8 +32,6 @@ object EngineScanner {
                 .filter { !blockedEngines.contains(it) }
                 .distinct()
 
-            AppLogger.log("Found Engines to scan: $engines")
-
             if (engines.isEmpty()) {
                 finishScan(onComplete)
                 return@launch
@@ -46,7 +39,6 @@ object EngineScanner {
 
             for (pkg in engines) {
                 if (!isActive) break
-                AppLogger.log("Scanning Engine: $pkg")
                 scanSingleEngine(appContext, pkg)
             }
 
@@ -62,32 +54,26 @@ object EngineScanner {
             if (tts != null) {
                 val rate = probeEngine(context, tts, pkg)
                 if (rate > 0) {
-                    AppLogger.log("Result $pkg: Detected Rate = $rate")
                     saveRate(context, pkg, rate)
                 } else {
-                    AppLogger.error("Probe failed for $pkg")
                     saveFallback(context, pkg)
                 }
             } else {
-                AppLogger.error("Failed to init $pkg")
                 saveFallback(context, pkg)
             }
         } catch (e: Exception) {
-            AppLogger.error("Exception scanning $pkg", e)
             saveFallback(context, pkg)
         } finally {
             try { tts?.shutdown() } catch (e: Exception) {}
         }
     }
 
-    // ★ FIXED: Correctly captures the TTS instance ★
     private suspend fun initTTS(context: Context, pkg: String): TextToSpeech? = withTimeoutOrNull(5000L) {
         suspendCancellableCoroutine { cont ->
             var tts: TextToSpeech? = null
             tts = TextToSpeech(context, { status ->
                 if (cont.isActive) {
                     if (status == TextToSpeech.SUCCESS) {
-                        // Return the 'tts' object we created
                         cont.resume(tts)
                     } else {
                         cont.resume(null)
@@ -133,7 +119,7 @@ object EngineScanner {
                 return@withContext readRate(tempFile)
             }
         } catch (e: Exception) {
-            AppLogger.error("Probe error", e)
+            e.printStackTrace()
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
         }
@@ -141,7 +127,6 @@ object EngineScanner {
     }
 
     private fun finishScan(onComplete: () -> Unit) {
-        AppLogger.log("Engine Scan Finished.")
         CoroutineScope(Dispatchers.Main).launch {
             onComplete()
         }

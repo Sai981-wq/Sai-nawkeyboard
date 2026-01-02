@@ -9,12 +9,12 @@ import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
+import kotlinx.coroutines.*
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -31,8 +31,9 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val PREF_NAME = "TTS_CONFIG"
     private val TARGET_HZ = 24000
 
-    private val isStopped = AtomicBoolean(false)
-    @Volatile private var currentWriterThread: Thread? = null
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
+    private var currentSessionJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -52,8 +53,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        isStopped.set(true)
-        currentWriterThread?.interrupt()
+        currentSessionJob?.cancel()
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
         stopSafe(englishEngine)
@@ -66,7 +66,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
         
-        isStopped.set(false)
+        currentSessionJob?.cancel()
+        val sessionJob = Job()
+        currentSessionJob = sessionJob
+        
         val text = request.charSequenceText.toString()
         val chunks = TTSUtils.splitHelper(text)
         if (chunks.isEmpty()) {
@@ -78,162 +81,148 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalSpeed = rawRate.coerceIn(0.1f, 6.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
 
-        try {
-            // Buffer Sizes increased to prevent stuttering
-            callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+        runBlocking(sessionJob) {
+            try {
+                callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            val inputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
-            val chunkReadBuffer = ByteArray(16384)
-            val chunkWriteBuffer = ByteArray(32768)
-            val headerDiscardBuffer = ByteArray(44)
+                val inputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
+                val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
+                val chunkReadBuffer = ByteArray(16384)
+                val chunkWriteBuffer = ByteArray(32768)
+                val headerDiscardBuffer = ByteArray(44)
 
-            for ((index, chunk) in chunks.withIndex()) {
-                if (isStopped.get()) break
-                if (chunk.text.isBlank()) continue
+                for (chunk in chunks) {
+                    if (!isActive) break
+                    if (chunk.text.isBlank()) continue
 
-                val engine = when (chunk.lang) {
-                    "SHAN" -> shanEngine
-                    "MYANMAR" -> burmeseEngine
-                    else -> englishEngine
-                } ?: englishEngine
+                    val engine = when (chunk.lang) {
+                        "SHAN" -> shanEngine
+                        "MYANMAR" -> burmeseEngine
+                        else -> englishEngine
+                    } ?: englishEngine
 
-                if (engine == null) continue
+                    if (engine == null) continue
 
-                val currentPkg = when (chunk.lang) {
-                    "SHAN" -> shanPkg
-                    "MYANMAR" -> burmesePkg
-                    else -> englishPkg
-                }
-                
-                var engineHz = prefs.getInt("RATE_$currentPkg", 0)
-                if (engineHz <= 0) engineHz = 22050 
-
-                // Create fresh processor for each chunk
-                val processor = AudioProcessor(engineHz, 1)
-                processor.setSpeed(finalSpeed)
-                processor.setPitch(finalPitch)
-
-                val pipe = ParcelFileDescriptor.createPipe()
-                val readFd = pipe[0]
-                val writeFd = pipe[1]
-                val uuid = UUID.randomUUID().toString()
-
-                engine.setSpeechRate(1.0f) 
-                engine.setPitch(1.0f)
-
-                val writerThread = Thread {
-                    currentWriterThread = Thread.currentThread()
-                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
-                    val params = Bundle()
-                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-                    try {
-                        if (!Thread.interrupted() && !isStopped.get()) {
-                            engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
-                        }
-                    } catch (e: Exception) {
-                    } finally {
-                        try { writeFd.close() } catch (e: Exception) {}
+                    val currentPkg = when (chunk.lang) {
+                        "SHAN" -> shanPkg
+                        "MYANMAR" -> burmesePkg
+                        else -> englishPkg
                     }
-                }
-                writerThread.start()
+                    
+                    var engineHz = prefs.getInt("RATE_$currentPkg", 0)
+                    if (engineHz <= 0) engineHz = 22050 
 
-                try {
-                    ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                        // Header Skip
-                        var headerReadTotal = 0
-                        while (headerReadTotal < 44 && !isStopped.get()) {
-                            val count = fis.read(headerDiscardBuffer, headerReadTotal, 44 - headerReadTotal)
-                            if (count < 0) break 
-                            headerReadTotal += count
+                    val processor = AudioProcessor(engineHz, 1)
+                    processor.setSpeed(finalSpeed)
+                    processor.setPitch(finalPitch)
+
+                    val pipe = ParcelFileDescriptor.createPipe()
+                    val readFd = pipe[0]
+                    val writeFd = pipe[1]
+                    val uuid = UUID.randomUUID().toString()
+
+                    engine.setSpeechRate(1.0f) 
+                    engine.setPitch(1.0f)
+
+                    val writerJob = launch(Dispatchers.IO) {
+                        val params = Bundle()
+                        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                        try {
+                            engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
+                        } catch (e: Exception) {
+                        } finally {
+                            try { writeFd.close() } catch (e: Exception) {}
                         }
+                    }
 
-                        while (!isStopped.get()) {
-                            val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
-                            if (bytesRead == -1) break
-                            
-                            if (bytesRead > 0) {
-                                inputBuffer.clear()
-                                inputBuffer.put(chunkReadBuffer, 0, bytesRead)
-                                inputBuffer.flip() 
-                                
-                                // Loop until input is consumed or we need to break
-                                while (inputBuffer.hasRemaining() && !isStopped.get()) {
-                                    outputBuffer.clear()
-                                    // Pass Remaining Length
-                                    val processedBytes = processor.process(
-                                        inputBuffer, 
-                                        inputBuffer.remaining(), 
-                                        outputBuffer, 
-                                        outputBuffer.capacity()
-                                    )
+                    try {
+                        withContext(Dispatchers.IO) {
+                            ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                                var headerReadTotal = 0
+                                while (headerReadTotal < 44 && isActive) {
+                                    val count = fis.read(headerDiscardBuffer, headerReadTotal, 44 - headerReadTotal)
+                                    if (count < 0) break 
+                                    headerReadTotal += count
+                                }
+
+                                while (isActive) {
+                                    val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
+                                    if (bytesRead == -1) break
                                     
-                                    if (processedBytes > 0) {
-                                        outputBuffer.flip()
-                                        outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
+                                    if (bytesRead > 0) {
+                                        inputBuffer.clear()
+                                        inputBuffer.put(chunkReadBuffer, 0, bytesRead)
+                                        inputBuffer.flip() 
                                         
-                                        var offset = 0
-                                        while (offset < processedBytes) {
-                                            if (isStopped.get()) break
-                                            val len = min(processedBytes - offset, callback.maxBufferSize)
-                                            val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
-                                            if (ret == TextToSpeech.ERROR) {
-                                                isStopped.set(true)
-                                                break
+                                        while (inputBuffer.hasRemaining() && isActive) {
+                                            outputBuffer.clear()
+                                            val processedBytes = processor.process(
+                                                inputBuffer, 
+                                                inputBuffer.remaining(), 
+                                                outputBuffer
+                                            )
+                                            
+                                            if (processedBytes > 0) {
+                                                outputBuffer.flip()
+                                                outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
+                                                
+                                                var offset = 0
+                                                while (offset < processedBytes) {
+                                                    if (!isActive) break
+                                                    val len = min(processedBytes - offset, callback.maxBufferSize)
+                                                    val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
+                                                    if (ret == TextToSpeech.ERROR) {
+                                                        cancel()
+                                                        break
+                                                    }
+                                                    offset += len
+                                                }
+                                            } else {
+                                                break 
                                             }
-                                            offset += len
                                         }
-                                    } else {
-                                        // Sonic needs more data to produce output, break to read more
-                                        break 
                                     }
                                 }
                             }
                         }
-                    }
 
-                    // Flush
-                    if (!isStopped.get()) {
-                        processor.flushQueue()
-                        var flushedBytes: Int
-                        do {
-                            if (isStopped.get()) break
-                            outputBuffer.clear()
-                            flushedBytes = processor.process(null, 0, outputBuffer, outputBuffer.capacity())
-                            
-                            if (flushedBytes > 0) {
-                                outputBuffer.flip()
-                                outputBuffer.get(chunkWriteBuffer, 0, flushedBytes)
-                                var offset = 0
-                                while (offset < flushedBytes) {
-                                    if (isStopped.get()) break
-                                    val len = min(flushedBytes - offset, callback.maxBufferSize)
-                                    callback.audioAvailable(chunkWriteBuffer, offset, len)
-                                    offset += len
+                        if (isActive) {
+                            processor.flushQueue()
+                            var flushedBytes: Int
+                            do {
+                                if (!isActive) break
+                                outputBuffer.clear()
+                                flushedBytes = processor.process(null, 0, outputBuffer)
+                                
+                                if (flushedBytes > 0) {
+                                    outputBuffer.flip()
+                                    outputBuffer.get(chunkWriteBuffer, 0, flushedBytes)
+                                    var offset = 0
+                                    while (offset < flushedBytes) {
+                                        if (!isActive) break
+                                        val len = min(flushedBytes - offset, callback.maxBufferSize)
+                                        callback.audioAvailable(chunkWriteBuffer, offset, len)
+                                        offset += len
+                                    }
                                 }
-                            }
-                        } while (flushedBytes > 0)
-                    }
+                            } while (flushedBytes > 0)
+                        }
 
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                } finally {
-                    processor.release()
-                    if (!isStopped.get()) {
-                        try { writerThread.join(1000) } catch (e: Exception) {}
+                    } finally {
+                        processor.release()
+                        writerJob.cancelAndJoin()
                     }
                 }
-            }
-        } catch (e: Exception) { 
-            e.printStackTrace()
-        } finally {
-            if (!isStopped.get()) {
-                callback.done()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                if (isActive) {
+                    callback.done()
+                }
             }
         }
     }
     
-    // Helpers
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
@@ -262,7 +251,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onDestroy() {
         super.onDestroy()
-        onStop()
+        serviceJob.cancel()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 }
