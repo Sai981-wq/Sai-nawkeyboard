@@ -39,7 +39,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service onCreate (Diagnostic Mode) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -52,12 +51,11 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defEngine)
             initTTS(englishPkg, Locale.US) { englishEngine = it }
-        } catch (e: Exception) { AppLogger.error("onCreate Error", e) }
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     override fun onStop() {
         isStopped.set(true)
-        AppLogger.log("=== onStop Called ===")
         currentWriterThread?.interrupt()
         sharedProcessor?.flushQueue()
         stopSafe(shanEngine)
@@ -85,15 +83,12 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalSpeed = rawRate.coerceIn(0.1f, 6.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
 
-        AppLogger.log("[$reqId] Start. Chunks=${chunks.size}, Speed=$finalSpeed")
-
         try {
             callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            // Buffers
             val inputBuffer = ByteBuffer.allocateDirect(16384).order(ByteOrder.LITTLE_ENDIAN)
             val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
-            val chunkReadBuffer = ByteArray(16384)
+            val chunkReadBuffer = ByteArray(4096)
             val chunkWriteBuffer = ByteArray(32768)
             val headerDiscardBuffer = ByteArray(44)
 
@@ -121,9 +116,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var processor = sharedProcessor
                 if (processor == null || currentProcessorHz != engineHz) {
                     processor?.release()
-                    AppLogger.log("[$reqId] New Processor: $engineHz Hz")
                     processor = AudioProcessor(engineHz, 1)
-                    processor.init()
                     sharedProcessor = processor
                     currentProcessorHz = engineHz
                 }
@@ -146,11 +139,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                     params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     try {
                         if (!Thread.interrupted() && !isStopped.get()) {
-                            // AppLogger.log("[$reqId] Engine Writing...")
                             engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
                         }
                     } catch (e: Exception) {
-                        AppLogger.error("[$reqId] Writer Error", e)
                     } finally {
                         try { writeFd.close() } catch (e: Exception) {}
                     }
@@ -159,90 +150,61 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                 try {
                     ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                        // Header Skip
                         var headerReadTotal = 0
                         while (headerReadTotal < 44 && !isStopped.get()) {
                             val count = fis.read(headerDiscardBuffer, headerReadTotal, 44 - headerReadTotal)
                             if (count < 0) break 
                             headerReadTotal += count
                         }
-                        // AppLogger.log("[$reqId] Header Skipped: $headerReadTotal bytes")
-
-                        var totalBytesProcessed = 0
-                        var loopStart = System.nanoTime()
 
                         while (!isStopped.get()) {
-                            val tReadStart = System.nanoTime()
                             val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
-                            val tReadEnd = System.nanoTime()
-                            
                             if (bytesRead == -1) break
                             
                             if (bytesRead > 0) {
-                                // Diagnostic: Check pipe read speed
-                                val readMs = (tReadEnd - tReadStart) / 1000000.0
-                                if (readMs > 50.0) AppLogger.log("[$reqId] Slow Read: ${readMs}ms for $bytesRead bytes")
-
                                 inputBuffer.clear()
-                                val safeLen = min(bytesRead, inputBuffer.capacity())
-                                inputBuffer.put(chunkReadBuffer, 0, safeLen)
+                                inputBuffer.put(chunkReadBuffer, 0, bytesRead)
                                 inputBuffer.flip() 
                                 
                                 outputBuffer.clear()
                                 
-                                // Process
-                                val tProcStart = System.nanoTime()
                                 val processedBytes = processor.process(
                                     inputBuffer, 
-                                    safeLen, 
+                                    bytesRead, 
                                     outputBuffer, 
                                     outputBuffer.capacity()
                                 )
-                                val tProcEnd = System.nanoTime()
                                 
                                 if (processedBytes > 0) {
-                                    outputBuffer.flip() // Ensure ready to read
+                                    outputBuffer.flip()
                                     outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
                                     
                                     var offset = 0
-                                    val tWriteStart = System.nanoTime()
                                     while (offset < processedBytes) {
                                         if (isStopped.get()) break
                                         val len = min(processedBytes - offset, callback.maxBufferSize)
-                                        
-                                        // This blocks if AudioTrack is full
                                         val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
                                         if (ret == TextToSpeech.ERROR) {
-                                            AppLogger.error("[$reqId] AudioTrack Error")
                                             isStopped.set(true)
                                             break
                                         }
                                         offset += len
                                     }
-                                    val tWriteEnd = System.nanoTime()
-                                    val writeMs = (tWriteEnd - tWriteStart) / 1000000.0
-                                    
-                                    // Log only significant events to avoid spam
-                                    if (writeMs > 50.0) AppLogger.log("[$reqId] Slow Write: ${writeMs}ms")
-                                    
-                                    totalBytesProcessed += processedBytes
                                 }
                             }
                         }
-                        // AppLogger.log("[$reqId] Chunk Done. Total Processed: $totalBytesProcessed")
                     }
 
-                    // Flush
                     if (!isStopped.get()) {
                         processor.flushQueue()
                         var flushedBytes: Int
                         do {
                             if (isStopped.get()) break
                             outputBuffer.clear()
-                            flushedBytes = processor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
+                            flushedBytes = processor.process(null, 0, outputBuffer, outputBuffer.capacity())
                             
                             if (flushedBytes > 0) {
-                                outputBuffer.flip() // Ensure ready to read
+                                outputBuffer.flip()
                                 outputBuffer.get(chunkWriteBuffer, 0, flushedBytes)
                                 var offset = 0
                                 while (offset < flushedBytes) {
@@ -256,26 +218,22 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
 
                 } catch (e: Exception) {
-                    AppLogger.error("[$reqId] Reader Loop Error", e)
+                    e.printStackTrace()
                 } finally {
                     if (!isStopped.get()) {
-                        try { writerThread.join(2000) } catch (e: Exception) {}
+                        try { writerThread.join(1000) } catch (e: Exception) {}
                     }
                 }
             }
         } catch (e: Exception) { 
-            AppLogger.error("[$reqId] Critical", e) 
+            e.printStackTrace()
         } finally {
             if (!isStopped.get()) {
                 callback.done()
-                AppLogger.log("[$reqId] Done.")
-            } else {
-                AppLogger.log("[$reqId] Stopped.")
             }
         }
     }
     
-    // Helpers
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
