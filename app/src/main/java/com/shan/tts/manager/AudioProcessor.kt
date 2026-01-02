@@ -17,37 +17,51 @@ class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
         sonic?.pitch = 1.0f
         sonic?.volume = 1.0f
         
-        AppLogger.log("AudioProcessor (Java): Input=$sampleRate, Target=$TARGET_HZ, Rate=$resamplingRate")
+        AppLogger.log("Processor Init: In=$sampleRate, Out=$TARGET_HZ, Ratio=$resamplingRate")
     }
 
     fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int {
         val s = sonic ?: return 0
+        val t1 = System.nanoTime()
         
-        // ★ SAFE INPUT HANDLING ★
+        // 1. Write Input
         if (len > 0 && inBuffer != null) {
-            val bytesToRead = kotlin.math.min(len, inBuffer.remaining())
-            if (bytesToRead > 0) {
-                val bytes = ByteArray(bytesToRead)
+            val remaining = inBuffer.remaining()
+            val toRead = kotlin.math.min(len, remaining)
+            
+            if (toRead > 0) {
+                val bytes = ByteArray(toRead)
                 inBuffer.get(bytes)
-                s.writeBytesToStream(bytes, bytesToRead)
+                s.writeBytesToStream(bytes, toRead)
+            } else {
+                AppLogger.log("WARN: Buffer empty but len=$len")
             }
         }
 
-        // Output Reading
+        // 2. Read Output
+        var actualRead = 0
         val availableBytes = s.samplesAvailable() * channels * 2
+        
         if (availableBytes > 0) {
             val readLen = kotlin.math.min(availableBytes, maxOut)
             val outBytes = ByteArray(readLen)
-            
-            val actualRead = s.readBytesFromStream(outBytes, readLen)
+            actualRead = s.readBytesFromStream(outBytes, readLen)
             
             if (actualRead > 0) {
                 outBuffer.clear()
                 outBuffer.put(outBytes, 0, actualRead)
-                return actualRead
+                outBuffer.flip() // Critical Flip
             }
         }
-        return 0
+        
+        val t2 = System.nanoTime()
+        // Log if processing takes longer than 5ms (Usually cause of stutter)
+        val duration = (t2 - t1) / 1000000.0
+        if (duration > 5.0) {
+            AppLogger.log("SLOW PROCESS: ${duration}ms | In=$len, Out=$actualRead")
+        }
+
+        return actualRead
     }
 
     fun flushQueue() {
