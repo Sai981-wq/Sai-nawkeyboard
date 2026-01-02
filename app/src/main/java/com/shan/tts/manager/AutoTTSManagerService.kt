@@ -31,12 +31,10 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val PREF_NAME = "TTS_CONFIG"
     private val TARGET_HZ = 24000
 
-    // ★ Coroutine Setup ★
-    // SupervisorJob allows children to fail independently, but here we use it for scope lifecycle
+    // Coroutine Scope Setup
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     
-    // We keep track of the current synthesis job to cancel it when needed
     private var currentJob: Job? = null
 
     // Shared Processor
@@ -45,7 +43,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service onCreate (Coroutines Edition) ===")
+        AppLogger.log("=== Service onCreate (Coroutines Fixed) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -64,7 +62,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onStop() {
         AppLogger.log("=== onStop Called ===")
         
-        // ★ The Power of Coroutines: Just cancel the job! ★
+        // Cancel Coroutine immediately
         currentJob?.cancel()
         currentJob = null
 
@@ -86,7 +84,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (request == null || callback == null) return
         val reqId = UUID.randomUUID().toString().substring(0, 5)
 
-        // Cancel previous work if any (though onStop usually handles this)
+        // Cancel previous work
         currentJob?.cancel()
 
         val text = request.charSequenceText.toString()
@@ -98,15 +96,14 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         // Speed Logic
         val rawRate = request.speechRate / 100.0f
-        val finalSpeed = rawRate.coerceIn(0.1f, 6.0f) // Simple direct mapping
+        val finalSpeed = rawRate.coerceIn(0.1f, 6.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
 
         AppLogger.log("[$reqId] Start Coroutine. Chunks=${chunks.size}")
 
-        // ★ Launching Coroutine on IO Dispatcher ★
+        // Launch Coroutine
         currentJob = serviceScope.launch {
             try {
-                // Ensure we are active before starting
                 ensureActive()
                 
                 callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
@@ -117,7 +114,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val chunkWriteBuffer = ByteArray(32768)
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    // ★ Check cancellation automatically ★
                     if (!isActive) break 
                     if (chunk.text.isBlank()) continue
 
@@ -160,11 +156,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                     engine.setSpeechRate(1.0f) 
                     engine.setPitch(1.0f)
 
-                    // Helper thread for Engine writing (Engine is blocking API)
-                    // We can use a simple thread here or another coroutine via Dispatchers.Default
-                    // But standard Thread is fine for the engine writer as it just pushes data.
+                    // Writer Thread: We use a raw Thread here because we need to set Android-specific priority
+                    // for audio glitch prevention, which Dispatchers.IO doesn't easily allow.
                     val writerThread = Thread {
-                        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+                        // ★ FIXED: Fully Qualified Name to avoid Import Errors ★
+                        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
+                        
                         val params = Bundle()
                         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                         try {
@@ -187,7 +184,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                             }
 
                             while (isActive) {
-                                // Blocking read, but checking isActive in loop
                                 var bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
                                 if (bytesRead == -1) break
                                 
@@ -211,13 +207,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                                             val max = callback.maxBufferSize
                                             var offset = 0
                                             while (offset < processedBytes) {
-                                                // ★ Cancellation Point ★
                                                 if (!isActive) break 
                                                 
                                                 val len = min(processedBytes - offset, max)
                                                 val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
                                                 if (ret == TextToSpeech.ERROR) {
-                                                    // Force cancel own scope if track fails
                                                     this@launch.cancel()
                                                     break
                                                 }
@@ -255,14 +249,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                     } catch (e: Exception) {
                         AppLogger.error("[$reqId] Loop Error", e)
                     } finally {
-                        // Ensure writer thread stops if we cancel mid-stream
                         if (!isActive) {
                             try { writerThread.join(500) } catch (e: Exception) {}
                         }
                     }
                 }
                 
-                // Only call done() if we finished successfully (not cancelled)
                 if (isActive) {
                     callback.done()
                     AppLogger.log("[$reqId] Done.")
@@ -276,7 +268,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // Standard Helpers ...
+    // Helpers
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
@@ -306,7 +298,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onDestroy() {
         super.onDestroy()
         AppLogger.log("=== Service onDestroy ===")
-        // ★ Cleanup Scope ★
         serviceJob.cancel()
         
         sharedProcessor?.release()
