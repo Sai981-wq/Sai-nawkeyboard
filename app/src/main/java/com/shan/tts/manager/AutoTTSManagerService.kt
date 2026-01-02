@@ -5,17 +5,16 @@ import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
-import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
+import kotlinx.coroutines.*
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class AutoTTSManagerService : TextToSpeechService() {
@@ -30,18 +29,15 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
-    private val TARGET_HZ = 24000
+    private val TARGET_HZ = 24000 // Fixed Output Rate
 
-    private val isStopped = AtomicBoolean(false)
-    
-    // Shared Processor
-    @Volatile private var sharedProcessor: AudioProcessor? = null
-    @Volatile private var currentProcessorHz = 0
-    @Volatile private var currentWriterThread: Thread? = null
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
+    private var synthesisJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service onCreate (Simple Stream) ===")
+        AppLogger.log("=== Service onCreate (Java Sonic + Logs) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -54,19 +50,15 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defEngine)
             initTTS(englishPkg, Locale.US) { englishEngine = it }
+            
+            AppLogger.log("Engines: Shan=$shanPkg, Bur=$burmesePkg, Eng=$englishPkg")
         } catch (e: Exception) { AppLogger.error("onCreate Error", e) }
     }
 
     override fun onStop() {
-        isStopped.set(true)
         AppLogger.log("=== onStop Called ===")
-        
-        // Interrupt Writer
-        currentWriterThread?.interrupt()
-        
-        // Flush Processor
-        sharedProcessor?.flushQueue()
-
+        synthesisJob?.cancel()
+        synthesisJob = null
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
         stopSafe(englishEngine)
@@ -80,7 +72,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (request == null || callback == null) return
         val reqId = UUID.randomUUID().toString().substring(0, 5)
         
-        isStopped.set(false)
+        // Clear previous job
+        synthesisJob?.cancel()
+
         val text = request.charSequenceText.toString()
         val chunks = TTSUtils.splitHelper(text)
         if (chunks.isEmpty()) {
@@ -88,158 +82,144 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
 
+        // Speed Logic
         val rawRate = request.speechRate / 100.0f
-        // Limit speed to avoid buffer underrun
-        val finalSpeed = rawRate.coerceIn(0.1f, 5.0f)
+        val finalSpeed = rawRate.coerceIn(0.1f, 6.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
 
-        AppLogger.log("[$reqId] Start. Chunks=${chunks.size}")
+        AppLogger.log("[$reqId] Start Synthesis. Chunks=${chunks.size}, Speed=$finalSpeed")
 
-        try {
-            // Standard Android TTS Output
-            callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
-
-            // Buffers
-            val inputBuffer = ByteBuffer.allocateDirect(8192).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(16384).order(ByteOrder.LITTLE_ENDIAN)
-            val chunkReadBuffer = ByteArray(8192)
-            val chunkWriteBuffer = ByteArray(16384)
-
-            for ((index, chunk) in chunks.withIndex()) {
-                if (isStopped.get()) break
-                if (chunk.text.isBlank()) continue
-
-                val engine = when (chunk.lang) {
-                    "SHAN" -> shanEngine
-                    "MYANMAR" -> burmeseEngine
-                    else -> englishEngine
-                } ?: englishEngine
-
-                if (engine == null) continue
-
-                val currentPkg = when (chunk.lang) {
-                    "SHAN" -> shanPkg
-                    "MYANMAR" -> burmesePkg
-                    else -> englishPkg
-                }
-                
-                var engineHz = prefs.getInt("RATE_$currentPkg", 0)
-                if (engineHz <= 0) engineHz = 22050 
-
-                // Processor Logic
-                var processor = sharedProcessor
-                if (processor == null || currentProcessorHz != engineHz) {
-                    processor?.release()
-                    AppLogger.log("[$reqId] Init Sonic: $engineHz Hz")
-                    processor = AudioProcessor(engineHz, 1)
-                    processor.init()
-                    sharedProcessor = processor
-                    currentProcessorHz = engineHz
-                }
-                
-                processor.setSpeed(finalSpeed)
-                processor.setPitch(finalPitch)
-
-                val pipe = ParcelFileDescriptor.createPipe()
-                val readFd = pipe[0]
-                val writeFd = pipe[1]
-                val uuid = UUID.randomUUID().toString()
-
-                engine.setSpeechRate(1.0f) 
-                engine.setPitch(1.0f)
-
-                val writerThread = Thread {
-                    currentWriterThread = Thread.currentThread()
-                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
-                    val params = Bundle()
-                    params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-                    try {
-                        if (!isStopped.get() && !Thread.interrupted()) {
-                            engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
-                        }
-                    } catch (e: Exception) {
-                        AppLogger.error("[$reqId] Writer Error", e)
-                    } finally {
-                        try { writeFd.close() } catch (e: Exception) {}
-                    }
-                }
-                writerThread.start()
-
+        runBlocking {
+            synthesisJob = launch(Dispatchers.IO) {
                 try {
-                    ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                        var skipped: Long = 0
-                        while (skipped < 44 && !isStopped.get()) {
-                            val s = fis.skip(44 - skipped)
-                            if (s <= 0) break
-                            skipped += s
+                    // Always start with Fixed 24000Hz
+                    callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
+
+                    val chunkReadBuffer = ByteArray(4096)
+                    val sonicOutputBuffer = ByteArray(8192)
+
+                    // Create Sonic Instance
+                    val sonic = Sonic(TARGET_HZ, 1) // Start with default
+                    sonic.setOutputSampleRate(TARGET_HZ)
+                    sonic.setSpeed(finalSpeed)
+                    sonic.setPitch(finalPitch)
+
+                    for ((index, chunk) in chunks.withIndex()) {
+                        if (!isActive) {
+                            AppLogger.log("[$reqId] Cancelled at chunk $index")
+                            break
+                        }
+                        if (chunk.text.isBlank()) continue
+
+                        val engine = when (chunk.lang) {
+                            "SHAN" -> shanEngine
+                            "MYANMAR" -> burmeseEngine
+                            else -> englishEngine
+                        } ?: englishEngine
+
+                        if (engine == null) {
+                            AppLogger.error("[$reqId] Engine is NULL for ${chunk.lang}")
+                            continue
                         }
 
-                        while (!isStopped.get()) {
-                            val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
-                            if (bytesRead == -1) break
-                            
-                            if (bytesRead > 0) {
-                                // Byte alignment safety
-                                var safeLen = bytesRead
-                                if (safeLen % 2 != 0) safeLen--
+                        val currentPkg = when (chunk.lang) {
+                            "SHAN" -> shanPkg
+                            "MYANMAR" -> burmesePkg
+                            else -> englishPkg
+                        }
+                        
+                        var engineHz = prefs.getInt("RATE_$currentPkg", 0)
+                        if (engineHz <= 0) engineHz = 22050 
 
-                                if (safeLen > 0) {
-                                    inputBuffer.clear()
-                                    inputBuffer.put(chunkReadBuffer, 0, safeLen)
-                                    outputBuffer.clear()
+                        AppLogger.log("[$reqId] Processing Chunk $index ($currentPkg). InputHz=$engineHz")
+
+                        // Update Sonic Input Hz
+                        sonic.setSampleRate(engineHz)
+                        
+                        val pipe = ParcelFileDescriptor.createPipe()
+                        val readFd = pipe[0]
+                        val writeFd = pipe[1]
+                        val uuid = UUID.randomUUID().toString()
+
+                        engine.setSpeechRate(1.0f) 
+                        engine.setPitch(1.0f)
+
+                        // Launch Writer
+                        val writerJob = launch(Dispatchers.IO) {
+                            val params = Bundle()
+                            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                            try {
+                                engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
+                            } catch (e: Exception) {
+                                AppLogger.error("[$reqId-W] Writer Error", e)
+                            } finally {
+                                try { writeFd.close() } catch (e: Exception) {}
+                            }
+                        }
+
+                        // Reader Loop
+                        try {
+                            ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                                var skipped: Long = 0
+                                while (skipped < 44 && isActive) {
+                                    val s = fis.skip(44 - skipped)
+                                    if (s <= 0) break
+                                    skipped += s
+                                }
+
+                                while (isActive) {
+                                    val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
+                                    if (bytesRead == -1) break
                                     
-                                    val processedBytes = processor.process(
-                                        inputBuffer, 
-                                        safeLen, 
-                                        outputBuffer, 
-                                        outputBuffer.capacity()
-                                    )
-                                    
-                                    if (processedBytes > 0) {
-                                        outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
+                                    if (bytesRead > 0) {
+                                        // 1. Feed Sonic
+                                        sonic.writeBytesToStream(chunkReadBuffer, bytesRead)
                                         
-                                        // Simple Write Loop (No complex offsets)
-                                        // Just push to system. If system buffer full, it blocks naturally.
-                                        val ret = callback.audioAvailable(chunkWriteBuffer, 0, processedBytes)
-                                        if (ret == TextToSpeech.ERROR) {
-                                            isStopped.set(true)
-                                            break
+                                        // 2. Read from Sonic & Send to Callback
+                                        var available = sonic.samplesAvailable()
+                                        while (available > 0 && isActive) {
+                                            val readLen = min(available, sonicOutputBuffer.size)
+                                            val actualRead = sonic.readBytesFromStream(sonicOutputBuffer, readLen)
+                                            
+                                            if (actualRead > 0) {
+                                                val max = callback.maxBufferSize
+                                                var offset = 0
+                                                while (offset < actualRead) {
+                                                    if (!isActive) break
+                                                    val len = min(actualRead - offset, max)
+                                                    
+                                                    // Send to System
+                                                    val ret = callback.audioAvailable(sonicOutputBuffer, offset, len)
+                                                    if (ret == TextToSpeech.ERROR) {
+                                                        AppLogger.error("[$reqId] AudioTrack Error")
+                                                        this@launch.cancel()
+                                                        break
+                                                    }
+                                                    offset += len
+                                                }
+                                            }
+                                            available = sonic.samplesAvailable()
                                         }
                                     }
                                 }
                             }
+                        } catch (e: Exception) {
+                            AppLogger.error("[$reqId] Reader Loop Error", e)
+                        } finally {
+                            if (!isActive) try { writerJob.join() } catch (e: Exception) {}
                         }
                     }
-
-                    // Flush Logic
-                    if (!isStopped.get()) {
-                        processor.flushQueue()
-                        var flushedBytes: Int
-                        do {
-                            if (isStopped.get()) break
-                            outputBuffer.clear()
-                            flushedBytes = processor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
-                            
-                            if (flushedBytes > 0) {
-                                outputBuffer.get(chunkWriteBuffer, 0, flushedBytes)
-                                val ret = callback.audioAvailable(chunkWriteBuffer, 0, flushedBytes)
-                                if (ret == TextToSpeech.ERROR) break
-                            }
-                        } while (flushedBytes > 0)
+                    
+                    if (isActive) {
+                        callback.done()
+                        AppLogger.log("[$reqId] Done.")
                     }
 
                 } catch (e: Exception) {
-                    AppLogger.error("[$reqId] Loop Error", e)
-                } finally {
-                    if (!isStopped.get()) {
-                        try { writerThread.join(1000) } catch (e: Exception) {}
-                    }
+                    AppLogger.error("[$reqId] Critical Error", e)
                 }
             }
-        } catch (e: Exception) { 
-            AppLogger.error("[$reqId] Critical", e) 
-        } finally {
-            if (!isStopped.get()) callback.done()
+            synthesisJob?.join()
         }
     }
     
@@ -264,16 +244,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             var t: TextToSpeech? = null
             t = TextToSpeech(this, { if (it == TextToSpeech.SUCCESS) onReady(t!!) }, pkg)
-        } catch (e: Exception) {}
+        } catch (e: Exception) { AppLogger.error("InitTTS Failed", e) }
     }
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onDestroy() {
         super.onDestroy()
-        onStop()
-        sharedProcessor?.release()
-        sharedProcessor = null
+        serviceJob.cancel()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 }
