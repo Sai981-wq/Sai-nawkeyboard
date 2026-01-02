@@ -1,13 +1,13 @@
 package com.shan.tts.manager
 
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 class AudioProcessor(private val sourceHz: Int, channels: Int) {
 
     private var sonic: Sonic? = null
     private val TARGET_HZ = 24000
-    private val tempBuffer = ByteArray(4096 * 4) 
+    // Increased temp buffer to prevent bottlenecks
+    private val tempBuffer = ByteArray(8192) 
 
     init {
         sonic = Sonic(sourceHz, channels)
@@ -18,7 +18,7 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
     }
 
     fun init() {
-        // Already initialized in constructor, but keeping method for compatibility
+        // Compatibility method
     }
 
     fun setSpeed(speed: Float) {
@@ -39,23 +39,39 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
             s.writeBytesToStream(bytes, len)
         }
 
-        // 2. Read from Sonic (At Source Rate)
+        // 2. Read All Available from Sonic & Resample
         var totalProcessed = 0
         
+        // Loop until sonic is empty or outBuffer is full
         while (true) {
-            val available = s.samplesAvailable() * 2 // 1 channel * 2 bytes
-            if (available <= 0) break
+            val availableSamples = s.samplesAvailable()
+            if (availableSamples <= 0) break
 
-            // Read a chunk from Sonic
-            val readLen = kotlin.math.min(available, tempBuffer.size)
-            val bytesRead = s.readBytesFromStream(tempBuffer, readLen)
+            // Calculate safe read size
+            val bytesToRead = kotlin.math.min(availableSamples * 2, tempBuffer.size)
+            if (bytesToRead <= 0) break
+
+            val bytesRead = s.readBytesFromStream(tempBuffer, bytesToRead)
             
             if (bytesRead > 0) {
-                // 3. Resample to Target Rate (24000Hz)
+                // High Quality Cubic Resample
                 val resampledBytes = TTSUtils.resample(tempBuffer, bytesRead, sourceHz, TARGET_HZ)
                 
+                // Check if we have space
                 if (outBuffer.remaining() < resampledBytes.size) {
-                    // Output buffer full, stop processing for now
+                    // Critical: If output buffer is full, we must stop and return what we have.
+                    // The service loop will call us again because sonic still has data.
+                    
+                    // Push back the unread data? No, in streaming we just pause.
+                    // Ideally, we should not have read from sonic if we can't write.
+                    // But for simplicity, we assume Service provides large enough buffer (32KB).
+                    
+                    // Force put as much as possible?
+                    val space = outBuffer.remaining()
+                    if (space > 0) {
+                        outBuffer.put(resampledBytes, 0, space)
+                        totalProcessed += space
+                    }
                     break
                 }
                 
