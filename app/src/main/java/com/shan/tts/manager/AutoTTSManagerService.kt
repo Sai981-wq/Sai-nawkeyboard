@@ -33,14 +33,13 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val isStopped = AtomicBoolean(false)
     
-    // Shared Processor
     @Volatile private var sharedProcessor: AudioProcessor? = null
     @Volatile private var currentProcessorHz = 0
     @Volatile private var currentWriterThread: Thread? = null
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service onCreate (Buffer Optimized) ===")
+        AppLogger.log("=== Service onCreate (Buffer Fix) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -60,10 +59,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         isStopped.set(true)
         AppLogger.log("=== onStop Called ===")
         currentWriterThread?.interrupt()
-        
-        // Don't release sharedProcessor here for speed, just flush
         sharedProcessor?.flushQueue()
-
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
         stopSafe(englishEngine)
@@ -94,12 +90,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            // ★ INCREASED BUFFER SIZE (16KB) for smoother audio ★
             val inputBuffer = ByteBuffer.allocateDirect(16384).order(ByteOrder.LITTLE_ENDIAN)
             val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
             val chunkReadBuffer = ByteArray(16384)
             val chunkWriteBuffer = ByteArray(32768)
-            val headerDiscardBuffer = ByteArray(44) // Buffer just to eat the header
+            val headerDiscardBuffer = ByteArray(44)
 
             for ((index, chunk) in chunks.withIndex()) {
                 if (isStopped.get()) break
@@ -122,7 +117,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var engineHz = prefs.getInt("RATE_$currentPkg", 0)
                 if (engineHz <= 0) engineHz = 22050 
 
-                // Processor Re-Use Logic
                 var processor = sharedProcessor
                 if (processor == null || currentProcessorHz != engineHz) {
                     processor?.release()
@@ -163,67 +157,71 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                 try {
                     ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                        // ★ ROBUST HEADER SKIP ★
-                        // Explicitly read 44 bytes to ensure they are removed from the pipe
+                        // Header Skip Logic
                         var headerReadTotal = 0
                         while (headerReadTotal < 44 && !isStopped.get()) {
                             val count = fis.read(headerDiscardBuffer, headerReadTotal, 44 - headerReadTotal)
-                            if (count < 0) break // EOF
+                            if (count < 0) break 
                             headerReadTotal += count
                         }
 
                         while (!isStopped.get()) {
-                            // Read larger chunks (16KB)
                             val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
                             if (bytesRead == -1) break
                             
                             if (bytesRead > 0) {
-                                // Align bytes (must be even for 16-bit PCM)
-                                var safeBytes = bytesRead
-                                if (safeBytes % 2 != 0) safeBytes--
-
-                                if (safeBytes > 0) {
-                                    inputBuffer.clear()
-                                    inputBuffer.put(chunkReadBuffer, 0, safeBytes)
-                                    outputBuffer.clear()
-                                    
-                                    val processedBytes = processor.process(
-                                        inputBuffer, 
-                                        safeBytes, 
-                                        outputBuffer, 
-                                        outputBuffer.capacity()
-                                    )
-                                    
-                                    if (processedBytes > 0) {
-                                        outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
-                                        val max = callback.maxBufferSize
-                                        var offset = 0
-                                        while (offset < processedBytes) {
-                                            if (isStopped.get()) break
-                                            val len = min(processedBytes - offset, max)
-                                            
-                                            // Write to system (Blocking call - handles pacing naturally)
-                                            val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
-                                            if (ret == TextToSpeech.ERROR) {
-                                                isStopped.set(true)
-                                                break
-                                            }
-                                            offset += len
-                                            // ★ Delay REMOVED to prevent stuttering ★
+                                // ★ SAFE BUFFER LOADING FIX ★
+                                // Ensure we don't overflow the input buffer
+                                inputBuffer.clear()
+                                
+                                // Make sure 'bytesRead' fits into inputBuffer capacity
+                                val safeLen = min(bytesRead, inputBuffer.capacity())
+                                inputBuffer.put(chunkReadBuffer, 0, safeLen)
+                                
+                                // Limit buffer to actual data read
+                                // This is crucial for 'process' to know how much to read
+                                inputBuffer.flip() 
+                                // Note: AudioProcessor.process expects limit to be set correctly, 
+                                // but our AudioProcessor implementation takes 'len' argument.
+                                // Let's ensure AudioProcessor respects 'len'.
+                                
+                                outputBuffer.clear()
+                                
+                                // Pass 'safeLen' instead of raw 'bytesRead'
+                                val processedBytes = processor.process(
+                                    inputBuffer, 
+                                    safeLen, 
+                                    outputBuffer, 
+                                    outputBuffer.capacity()
+                                )
+                                
+                                if (processedBytes > 0) {
+                                    outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
+                                    val max = callback.maxBufferSize
+                                    var offset = 0
+                                    while (offset < processedBytes) {
+                                        if (isStopped.get()) break
+                                        val len = min(processedBytes - offset, max)
+                                        
+                                        val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
+                                        if (ret == TextToSpeech.ERROR) {
+                                            isStopped.set(true)
+                                            break
                                         }
+                                        offset += len
                                     }
                                 }
                             }
                         }
                     }
 
-                    // Drain Loop
                     if (!isStopped.get()) {
                         processor.flushQueue()
                         var flushedBytes: Int
                         do {
                             if (isStopped.get()) break
                             outputBuffer.clear()
+                            // Pass 0 length for flush processing
                             flushedBytes = processor.process(inputBuffer, 0, outputBuffer, outputBuffer.capacity())
                             
                             if (flushedBytes > 0) {
@@ -286,7 +284,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
-    
     override fun onDestroy() {
         super.onDestroy()
         onStop()
