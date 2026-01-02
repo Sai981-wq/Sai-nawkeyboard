@@ -3,20 +3,13 @@ package com.shan.tts.manager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-// Wrapper for Pure Java Sonic
 class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
 
     private var sonic: Sonic? = null
-    // We target 24000Hz output for stability
     private val TARGET_HZ = 24000 
 
     fun init() {
-        // Initialize Sonic with the TARGET rate
         sonic = Sonic(TARGET_HZ, channels)
-        
-        // Calculate Resampling Rate
-        // If Input=16000, Output=24000 -> Rate = 0.666
-        // Sonic will use Sinc Interpolation to smooth this out
         val resamplingRate = sampleRate.toFloat() / TARGET_HZ.toFloat()
         
         sonic?.rate = resamplingRate
@@ -30,15 +23,17 @@ class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
     fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int {
         val s = sonic ?: return 0
         
-        // 1. Write Input (Bytes)
+        // ★ SAFE INPUT HANDLING ★
         if (len > 0 && inBuffer != null) {
-            val bytes = ByteArray(len)
-            inBuffer.get(bytes)
-            s.writeBytesToStream(bytes, len)
+            val bytesToRead = kotlin.math.min(len, inBuffer.remaining())
+            if (bytesToRead > 0) {
+                val bytes = ByteArray(bytesToRead)
+                inBuffer.get(bytes)
+                s.writeBytesToStream(bytes, bytesToRead)
+            }
         }
 
-        // 2. Read Output (Bytes)
-        // Check available samples (convert to bytes: samples * channels * 2)
+        // Output Reading
         val availableBytes = s.samplesAvailable() * channels * 2
         if (availableBytes > 0) {
             val readLen = kotlin.math.min(availableBytes, maxOut)
