@@ -1,67 +1,74 @@
 package com.shan.tts.manager
 
 import java.nio.ByteBuffer
-import java.util.concurrent.atomic.AtomicLong
+import java.nio.ByteOrder
 
+// Wrapper for Pure Java Sonic
 class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
 
-    companion object {
-        var isLibraryLoaded = false
-        init {
-            try {
-                System.loadLibrary("native-lib")
-                isLibraryLoaded = true
-                AppLogger.log("Native Lib Loaded")
-            } catch (e: Throwable) {
-                isLibraryLoaded = false
-                AppLogger.error("Native Lib Load Failed", Exception(e))
-            }
-        }
-    }
-
-    private val handle = AtomicLong(0)
+    private var sonic: Sonic? = null
+    // We target 24000Hz output for stability
+    private val TARGET_HZ = 24000 
 
     fun init() {
-        if (isLibraryLoaded) {
-            val h = initSonic(sampleRate, channels)
-            if (h != 0L) handle.set(h)
-        }
+        // Initialize Sonic with the TARGET rate
+        sonic = Sonic(TARGET_HZ, channels)
+        
+        // Calculate Resampling Rate
+        // If Input=16000, Output=24000 -> Rate = 0.666
+        // Sonic will use Sinc Interpolation to smooth this out
+        val resamplingRate = sampleRate.toFloat() / TARGET_HZ.toFloat()
+        
+        sonic?.rate = resamplingRate
+        sonic?.speed = 1.0f
+        sonic?.pitch = 1.0f
+        sonic?.volume = 1.0f
+        
+        AppLogger.log("AudioProcessor (Java): Input=$sampleRate, Target=$TARGET_HZ, Rate=$resamplingRate")
     }
 
     fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int {
-        if (!isLibraryLoaded) return 0
-        val h = handle.get()
-        if (h == 0L) return 0
-        return processAudio(h, inBuffer, len, outBuffer, maxOut)
+        val s = sonic ?: return 0
+        
+        // 1. Write Input (Bytes)
+        if (len > 0 && inBuffer != null) {
+            val bytes = ByteArray(len)
+            inBuffer.get(bytes)
+            s.writeBytesToStream(bytes, len)
+        }
+
+        // 2. Read Output (Bytes)
+        // Check available samples (convert to bytes: samples * channels * 2)
+        val availableBytes = s.samplesAvailable() * channels * 2
+        if (availableBytes > 0) {
+            val readLen = kotlin.math.min(availableBytes, maxOut)
+            val outBytes = ByteArray(readLen)
+            
+            val actualRead = s.readBytesFromStream(outBytes, readLen)
+            
+            if (actualRead > 0) {
+                outBuffer.clear()
+                outBuffer.put(outBytes, 0, actualRead)
+                return actualRead
+            }
+        }
+        return 0
     }
 
     fun flushQueue() {
-        if (!isLibraryLoaded) return
-        val h = handle.get()
-        if (h != 0L) flush(h)
+        sonic?.flushStream()
     }
 
     fun release() {
-        if (!isLibraryLoaded) return
-        val h = handle.getAndSet(0L)
-        if (h != 0L) stop(h)
+        sonic = null
     }
 
     fun setSpeed(speed: Float) {
-        val h = handle.get()
-        if (h != 0L) setSonicSpeed(h, speed)
+        sonic?.speed = speed
     }
 
     fun setPitch(pitch: Float) {
-        val h = handle.get()
-        if (h != 0L) setSonicPitch(h, pitch)
+        sonic?.pitch = pitch
     }
-
-    private external fun initSonic(sampleRate: Int, channels: Int): Long
-    private external fun processAudio(handle: Long, inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int
-    private external fun flush(handle: Long)
-    private external fun stop(handle: Long)
-    private external fun setSonicSpeed(handle: Long, speed: Float)
-    private external fun setSonicPitch(handle: Long, pitch: Float)
 }
 
