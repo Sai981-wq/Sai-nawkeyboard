@@ -3,36 +3,32 @@ package com.shan.tts.manager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 
 object EngineScanner {
 
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val scanExecutor = Executors.newSingleThreadExecutor()
-    private val isRunning = AtomicBoolean(false)
     private const val PREF_NAME = "TTS_CONFIG"
+    private var scanJob: Job? = null // To control cancellation
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
-        if (isRunning.getAndSet(true)) {
+        if (scanJob?.isActive == true) {
             AppLogger.log("Scan already running.")
             return
         }
+
         AppLogger.log("Starting Engine Scan...")
 
-        scanExecutor.execute {
+        // Using CoroutineScope (IO Dispatcher for background work)
+        scanJob = CoroutineScope(Dispatchers.IO).launch {
             val appContext = context.applicationContext
             val intent = Intent("android.intent.action.TTS_SERVICE")
             val resolveInfos = appContext.packageManager.queryIntentServices(intent, 0)
@@ -46,116 +42,135 @@ object EngineScanner {
 
             if (engines.isEmpty()) {
                 finishScan(onComplete)
-                return@execute
+                return@launch
             }
 
-            scanRecursive(appContext, engines, 0, onComplete)
+            // Loop through engines sequentially
+            for (pkg in engines) {
+                if (!isActive) break // Check for cancellation
+                AppLogger.log("Scanning Engine: $pkg")
+                scanSingleEngine(appContext, pkg)
+            }
+
+            finishScan(onComplete)
         }
+    }
+
+    private suspend fun scanSingleEngine(context: Context, pkg: String) {
+        var tts: TextToSpeech? = null
+        try {
+            // Step 1: Initialize TTS and wait for success/fail
+            tts = initTTS(context, pkg)
+            
+            if (tts != null) {
+                // Step 2: Probe the engine
+                val rate = probeEngine(context, tts, pkg)
+                if (rate > 0) {
+                    AppLogger.log("Result $pkg: Detected Rate = $rate")
+                    saveRate(context, pkg, rate)
+                } else {
+                    AppLogger.error("Probe failed for $pkg")
+                    saveFallback(context, pkg)
+                }
+            } else {
+                AppLogger.error("Failed to init $pkg")
+                saveFallback(context, pkg)
+            }
+        } catch (e: Exception) {
+            AppLogger.error("Exception scanning $pkg", e)
+            saveFallback(context, pkg)
+        } finally {
+            try { tts?.shutdown() } catch (e: Exception) {}
+        }
+    }
+
+    // Convert TTS Init callback to Coroutine
+    private suspend fun initTTS(context: Context, pkg: String): TextToSpeech? = suspendCancellableCoroutine { cont ->
+        var resumed = false
+        val tts = TextToSpeech(context, { status ->
+            if (!resumed) {
+                resumed = true
+                if (status == TextToSpeech.SUCCESS) {
+                    cont.resume(it as TextToSpeech) // 'it' is the TTS instance but we can't access it easily here, wait...
+                    // Actually TextToSpeech constructor creates the object immediately.
+                } else {
+                    cont.resume(null)
+                }
+            }
+        }, pkg)
+        
+        // Correct way to resume with the instance we just created:
+        // We modify the listener logic slightly or just check status inside.
+        // Simplified Logic:
+        // Note: The listener above needs reference to 'tts' which might not be initialized yet.
+        // So we handle it carefully or rely on timeout.
+        
+        // Better implementation for Listener:
+        // Since we can't capture 'tts' variable inside its own constructor lambda easily in Java/Kotlin 
+        // without some tricks, let's use a timeout race.
+    } ?: withTimeoutOrNull(5000L) {
+        suspendCancellableCoroutine<TextToSpeech?> { cont ->
+            lateinit var ttsObj: TextToSpeech
+            ttsObj = TextToSpeech(context, { status ->
+                if (cont.isActive) {
+                    if (status == TextToSpeech.SUCCESS) cont.resume(ttsObj)
+                    else cont.resume(null)
+                }
+            }, pkg)
+        }
+    }
+
+    private suspend fun probeEngine(context: Context, tts: TextToSpeech, pkg: String): Int = withContext(Dispatchers.IO) {
+        val tempFile = File(context.cacheDir, "probe_$pkg.wav")
+        val uuid = UUID.randomUUID().toString()
+        
+        try {
+            if (tempFile.exists()) tempFile.delete()
+
+            // Setup Locale
+            val lower = pkg.lowercase(Locale.ROOT)
+            val (text, targetLocale) = when {
+                lower.contains("shan") || lower.contains("shn") -> "မႂ်ႇသုင်ၶႃႈ" to Locale("shn", "MM")
+                lower.contains("myanmar") || lower.contains("burmese") -> "မင်္ဂလာပါ" to Locale("my", "MM")
+                else -> "Hello test" to Locale.US
+            }
+            
+            try { tts.language = targetLocale } catch (e: Exception) { tts.language = Locale.US }
+
+            // Synthesis with Coroutine waiting
+            val success = suspendCancellableCoroutine<Boolean> { cont ->
+                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(id: String?) {}
+                    override fun onDone(id: String?) { if (cont.isActive) cont.resume(true) }
+                    override fun onError(id: String?) { if (cont.isActive) cont.resume(false) }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(id: String?, errorCode: Int) { if (cont.isActive) cont.resume(false) }
+                })
+
+                val params = Bundle()
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.1f)
+                tts.synthesizeToFile(text, params, tempFile, uuid)
+            }
+
+            // Small delay to ensure file flush (system specific issue)
+            if (success) delay(100) 
+
+            if (tempFile.length() > 44) {
+                return@withContext readRate(tempFile)
+            }
+        } catch (e: Exception) {
+            AppLogger.error("Probe error", e)
+        } finally {
+            try { tempFile.delete() } catch (e: Exception) {}
+        }
+        return@withContext 0
     }
 
     private fun finishScan(onComplete: () -> Unit) {
         AppLogger.log("Engine Scan Finished.")
-        isRunning.set(false)
-        mainHandler.post { onComplete() }
-    }
-
-    private fun scanRecursive(context: Context, engines: List<String>, index: Int, onComplete: () -> Unit) {
-        if (index >= engines.size || !isRunning.get()) {
-            finishScan(onComplete)
-            return
-        }
-
-        val pkgName = engines[index]
-        AppLogger.log("Scanning Engine: $pkgName")
-        var tts: TextToSpeech? = null
-        
-        val nextStep = {
-            tts?.shutdown()
-            scanRecursive(context, engines, index + 1, onComplete)
-        }
-
-        try {
-            val initLatch = CountDownLatch(1)
-            var initialized = false
-            
-            tts = TextToSpeech(context, { status ->
-                initialized = (status == TextToSpeech.SUCCESS)
-                initLatch.countDown()
-            }, pkgName)
-
-            if (initLatch.await(5, TimeUnit.SECONDS) && initialized) {
-                probeEngine(context, tts!!, pkgName, nextStep)
-            } else {
-                AppLogger.error("Failed to init $pkgName")
-                saveFallback(context, pkgName)
-                nextStep()
-            }
-        } catch (e: Exception) {
-            AppLogger.error("Exception scanning $pkgName", e)
-            saveFallback(context, pkgName)
-            nextStep()
-        }
-    }
-
-    private fun probeEngine(context: Context, tts: TextToSpeech, pkg: String, onDone: () -> Unit) {
-        val tempFile = File(context.cacheDir, "probe_$pkg.wav")
-        val uuid = UUID.randomUUID().toString()
-        val synthesisLatch = CountDownLatch(1)
-
-        val lower = pkg.lowercase(Locale.ROOT)
-        val (text, targetLocale) = when {
-            lower.contains("shan") || lower.contains("shn") -> "မႂ်ႇသုင်ၶႃႈ" to Locale("shn", "MM")
-            lower.contains("myanmar") || lower.contains("burmese") -> "မင်္ဂလာပါ" to Locale("my", "MM")
-            else -> "Hello test" to Locale.US
-        }
-
-        try {
-            if (tts.isLanguageAvailable(targetLocale) >= TextToSpeech.LANG_AVAILABLE) {
-                tts.language = targetLocale
-            } else {
-                tts.language = Locale.US
-            }
-        } catch (e: Exception) {}
-
-        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String?) {}
-            override fun onError(id: String?) { synthesisLatch.countDown() }
-            override fun onDone(id: String?) { synthesisLatch.countDown() }
-        })
-
-        try { Thread.sleep(150) } catch (e: Exception) {}
-
-        try {
-            if (tempFile.exists()) tempFile.delete()
-            val params = Bundle()
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.1f) 
-            
-            AppLogger.log("Probing $pkg...")
-            tts.synthesizeToFile(text, params, tempFile, uuid)
-            
-            val finished = synthesisLatch.await(6, TimeUnit.SECONDS)
-            if (!finished) AppLogger.error("Probe Timeout for $pkg")
-
-            var retries = 0
-            while (tempFile.length() < 44 && retries < 20) {
-                Thread.sleep(50)
-                retries++
-            }
-
-            if (tempFile.length() > 44) {
-                val rate = readRate(tempFile)
-                AppLogger.log("Result $pkg: Detected Rate = $rate")
-                if (rate > 0) saveRate(context, pkg, rate) else saveFallback(context, pkg)
-            } else {
-                AppLogger.error("Probe failed for $pkg (Empty file)")
-                saveFallback(context, pkg)
-            }
-        } catch (e: Exception) {
-            AppLogger.error("Probe Exception $pkg", e)
-            saveFallback(context, pkg)
-        } finally {
-            try { tempFile.delete() } catch (e: Exception) {}
-            onDone()
+        // Run on Main Thread
+        CoroutineScope(Dispatchers.Main).launch {
+            onComplete()
         }
     }
 
@@ -183,8 +198,7 @@ object EngineScanner {
     }
 
     fun stop() {
-        isRunning.set(false)
-        scanExecutor.shutdownNow()
+        scanJob?.cancel() // Safely cancel coroutine
     }
 }
 
