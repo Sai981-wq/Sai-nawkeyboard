@@ -32,9 +32,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val TARGET_HZ = 24000
 
     private val isStopped = AtomicBoolean(false)
-    
-    // Don't share processor between chunks to prevent "Speed Up" drift
-    // Create new processor for each session or manage strictly
     @Volatile private var currentWriterThread: Thread? = null
 
     override fun onCreate() {
@@ -82,14 +79,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
 
         try {
+            // Buffer Sizes increased to prevent stuttering
             callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            // ★ INCREASED BUFFER SIZES TO FIX STUTTERING ★
-            // Small buffers cause frequent blocking, leading to "choppy" sound.
             val inputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(65536).order(ByteOrder.LITTLE_ENDIAN)
-            val chunkReadBuffer = ByteArray(16384) // Read large chunks from pipe
-            val chunkWriteBuffer = ByteArray(65536)
+            val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
+            val chunkReadBuffer = ByteArray(16384)
+            val chunkWriteBuffer = ByteArray(32768)
             val headerDiscardBuffer = ByteArray(44)
 
             for ((index, chunk) in chunks.withIndex()) {
@@ -113,7 +109,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var engineHz = prefs.getInt("RATE_$currentPkg", 0)
                 if (engineHz <= 0) engineHz = 22050 
 
-                // Create a fresh processor for each chunk to avoid "Speed Up/Drift" issues
+                // Create fresh processor for each chunk
                 val processor = AudioProcessor(engineHz, 1)
                 processor.setSpeed(finalSpeed)
                 processor.setPitch(finalPitch)
@@ -153,7 +149,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
 
                         while (!isStopped.get()) {
-                            // Read large chunk to prevent stutter
                             val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
                             if (bytesRead == -1) break
                             
@@ -162,12 +157,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                                 inputBuffer.put(chunkReadBuffer, 0, bytesRead)
                                 inputBuffer.flip() 
                                 
-                                // Process loop: keep processing until input is consumed or output is full
-                                do {
+                                // Loop until input is consumed or we need to break
+                                while (inputBuffer.hasRemaining() && !isStopped.get()) {
                                     outputBuffer.clear()
+                                    // Pass Remaining Length
                                     val processedBytes = processor.process(
                                         inputBuffer, 
-                                        inputBuffer.remaining(), // Pass remaining, not original length
+                                        inputBuffer.remaining(), 
                                         outputBuffer, 
                                         outputBuffer.capacity()
                                     )
@@ -187,20 +183,22 @@ class AutoTTSManagerService : TextToSpeechService() {
                                             }
                                             offset += len
                                         }
+                                    } else {
+                                        // Sonic needs more data to produce output, break to read more
+                                        break 
                                     }
-                                } while (inputBuffer.hasRemaining() && !isStopped.get())
+                                }
                             }
                         }
                     }
 
-                    // Flush Processor
+                    // Flush
                     if (!isStopped.get()) {
                         processor.flushQueue()
                         var flushedBytes: Int
                         do {
                             if (isStopped.get()) break
                             outputBuffer.clear()
-                            // Process with null input to drain sonic buffer
                             flushedBytes = processor.process(null, 0, outputBuffer, outputBuffer.capacity())
                             
                             if (flushedBytes > 0) {
@@ -220,7 +218,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 } catch (e: Exception) {
                     e.printStackTrace()
                 } finally {
-                    processor.release() // Clean up strictly
+                    processor.release()
                     if (!isStopped.get()) {
                         try { writerThread.join(1000) } catch (e: Exception) {}
                     }
@@ -235,7 +233,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // ... (Helpers remain same) ...
+    // Helpers
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
