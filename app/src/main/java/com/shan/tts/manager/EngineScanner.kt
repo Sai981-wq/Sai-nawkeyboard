@@ -17,7 +17,7 @@ import kotlin.coroutines.resume
 object EngineScanner {
 
     private const val PREF_NAME = "TTS_CONFIG"
-    private var scanJob: Job? = null // To control cancellation
+    private var scanJob: Job? = null
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
         if (scanJob?.isActive == true) {
@@ -27,7 +27,6 @@ object EngineScanner {
 
         AppLogger.log("Starting Engine Scan...")
 
-        // Using CoroutineScope (IO Dispatcher for background work)
         scanJob = CoroutineScope(Dispatchers.IO).launch {
             val appContext = context.applicationContext
             val intent = Intent("android.intent.action.TTS_SERVICE")
@@ -45,9 +44,8 @@ object EngineScanner {
                 return@launch
             }
 
-            // Loop through engines sequentially
             for (pkg in engines) {
-                if (!isActive) break // Check for cancellation
+                if (!isActive) break
                 AppLogger.log("Scanning Engine: $pkg")
                 scanSingleEngine(appContext, pkg)
             }
@@ -59,11 +57,9 @@ object EngineScanner {
     private suspend fun scanSingleEngine(context: Context, pkg: String) {
         var tts: TextToSpeech? = null
         try {
-            // Step 1: Initialize TTS and wait for success/fail
             tts = initTTS(context, pkg)
             
             if (tts != null) {
-                // Step 2: Probe the engine
                 val rate = probeEngine(context, tts, pkg)
                 if (rate > 0) {
                     AppLogger.log("Result $pkg: Detected Rate = $rate")
@@ -84,37 +80,18 @@ object EngineScanner {
         }
     }
 
-    // Convert TTS Init callback to Coroutine
-    private suspend fun initTTS(context: Context, pkg: String): TextToSpeech? = suspendCancellableCoroutine { cont ->
-        var resumed = false
-        val tts = TextToSpeech(context, { status ->
-            if (!resumed) {
-                resumed = true
-                if (status == TextToSpeech.SUCCESS) {
-                    cont.resume(it as TextToSpeech) // 'it' is the TTS instance but we can't access it easily here, wait...
-                    // Actually TextToSpeech constructor creates the object immediately.
-                } else {
-                    cont.resume(null)
-                }
-            }
-        }, pkg)
-        
-        // Correct way to resume with the instance we just created:
-        // We modify the listener logic slightly or just check status inside.
-        // Simplified Logic:
-        // Note: The listener above needs reference to 'tts' which might not be initialized yet.
-        // So we handle it carefully or rely on timeout.
-        
-        // Better implementation for Listener:
-        // Since we can't capture 'tts' variable inside its own constructor lambda easily in Java/Kotlin 
-        // without some tricks, let's use a timeout race.
-    } ?: withTimeoutOrNull(5000L) {
-        suspendCancellableCoroutine<TextToSpeech?> { cont ->
-            lateinit var ttsObj: TextToSpeech
-            ttsObj = TextToSpeech(context, { status ->
+    // ★ FIXED: Correctly captures the TTS instance ★
+    private suspend fun initTTS(context: Context, pkg: String): TextToSpeech? = withTimeoutOrNull(5000L) {
+        suspendCancellableCoroutine { cont ->
+            var tts: TextToSpeech? = null
+            tts = TextToSpeech(context, { status ->
                 if (cont.isActive) {
-                    if (status == TextToSpeech.SUCCESS) cont.resume(ttsObj)
-                    else cont.resume(null)
+                    if (status == TextToSpeech.SUCCESS) {
+                        // Return the 'tts' object we created
+                        cont.resume(tts)
+                    } else {
+                        cont.resume(null)
+                    }
                 }
             }, pkg)
         }
@@ -127,7 +104,6 @@ object EngineScanner {
         try {
             if (tempFile.exists()) tempFile.delete()
 
-            // Setup Locale
             val lower = pkg.lowercase(Locale.ROOT)
             val (text, targetLocale) = when {
                 lower.contains("shan") || lower.contains("shn") -> "မႂ်ႇသုင်ၶႃႈ" to Locale("shn", "MM")
@@ -137,7 +113,6 @@ object EngineScanner {
             
             try { tts.language = targetLocale } catch (e: Exception) { tts.language = Locale.US }
 
-            // Synthesis with Coroutine waiting
             val success = suspendCancellableCoroutine<Boolean> { cont ->
                 tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(id: String?) {}
@@ -152,8 +127,7 @@ object EngineScanner {
                 tts.synthesizeToFile(text, params, tempFile, uuid)
             }
 
-            // Small delay to ensure file flush (system specific issue)
-            if (success) delay(100) 
+            if (success) delay(150) 
 
             if (tempFile.length() > 44) {
                 return@withContext readRate(tempFile)
@@ -168,7 +142,6 @@ object EngineScanner {
 
     private fun finishScan(onComplete: () -> Unit) {
         AppLogger.log("Engine Scan Finished.")
-        // Run on Main Thread
         CoroutineScope(Dispatchers.Main).launch {
             onComplete()
         }
@@ -198,7 +171,7 @@ object EngineScanner {
     }
 
     fun stop() {
-        scanJob?.cancel() // Safely cancel coroutine
+        scanJob?.cancel()
     }
 }
 
