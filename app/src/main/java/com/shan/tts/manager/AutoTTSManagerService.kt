@@ -30,7 +30,6 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
     private val TARGET_HZ = 24000
-    private val START_THRESHOLD = 4096 
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
@@ -38,7 +37,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created")
+        AppLogger.log("=== Service onCreate (Debug Mode) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -87,7 +86,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
         val reqId = UUID.randomUUID().toString().substring(0, 4)
 
-        AppLogger.log("[$reqId] New Request: '${text.take(20)}...' Speed=$finalSpeed")
+        AppLogger.log("[$reqId] START: '${text.take(15)}...' Spd=$finalSpeed")
 
         runBlocking(sessionJob) {
             try {
@@ -109,7 +108,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     } ?: englishEngine
 
                     if (engine == null) {
-                        AppLogger.log("[$reqId] Engine null for ${chunk.lang}")
+                        AppLogger.log("[$reqId] ERR: Engine null for ${chunk.lang}")
                         continue
                     }
 
@@ -122,7 +121,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     var engineHz = prefs.getInt("RATE_$currentPkg", 0)
                     if (engineHz <= 0) engineHz = 22050 
 
-                    AppLogger.log("[$reqId] Processing Chunk: ${chunk.lang} ($engineHz Hz)")
+                    AppLogger.log("[$reqId] Chunk: ${chunk.lang} ($engineHz Hz)")
 
                     val processor = AudioProcessor(engineHz, 1)
                     processor.setSpeed(finalSpeed)
@@ -151,36 +150,27 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try {
                         withContext(Dispatchers.IO) {
                             ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                                var isBuffering = true 
+                                var firstPacket = true
+                                var totalBytesProcessed = 0
 
                                 while (isActive) {
                                     val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
-                                    if (bytesRead == -1) {
-                                        AppLogger.log("[$reqId] Pipe End Reached")
-                                        break
-                                    }
+                                    if (bytesRead == -1) break
                                     
                                     if (bytesRead > 0) {
                                         inputBuffer.clear()
                                         inputBuffer.put(chunkReadBuffer, 0, bytesRead)
                                         inputBuffer.flip() 
                                         
+                                        // 1. Direct Feed to Sonic
                                         processor.writeInput(inputBuffer, bytesRead)
-                                        val available = processor.availableBytes()
 
-                                        if (isBuffering) {
-                                            if (available >= START_THRESHOLD) {
-                                                isBuffering = false
-                                                AppLogger.log("[$reqId] Threshold Met ($available/$START_THRESHOLD). Playing...")
-                                            } else {
-                                                // Log every few reads to avoid spam, or check specific conditions
-                                                if (available % 1000 < 200) { 
-                                                    AppLogger.log("[$reqId] Buffering... ($available/$START_THRESHOLD)")
-                                                }
-                                                continue 
-                                            }
+                                        if (firstPacket) {
+                                            AppLogger.log("[$reqId] >> First Data from Engine ($bytesRead bytes)")
+                                            firstPacket = false
                                         }
 
+                                        // 2. Direct Read from Sonic (No Threshold Blocking)
                                         while (isActive) {
                                             outputBuffer.clear()
                                             val processedBytes = processor.readOutput(outputBuffer)
@@ -192,25 +182,33 @@ class AutoTTSManagerService : TextToSpeechService() {
                                                 var offset = 0
                                                 while (offset < processedBytes) {
                                                     if (!isActive) break
-                                                    val len = min(processedBytes - offset, callback.maxBufferSize)
                                                     
+                                                    val remaining = processedBytes - offset
+                                                    val maxBuf = callback.maxBufferSize
+                                                    val len = if (remaining < maxBuf) remaining else maxBuf
+                                                    
+                                                    // This call blocks naturally if AudioTrack is full
                                                     val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
                                                     if (ret == TextToSpeech.ERROR) {
-                                                        AppLogger.error("[$reqId] AudioTrack Error")
+                                                        AppLogger.error("[$reqId] AudioTrack Write Error")
                                                         cancel()
                                                         break
                                                     }
                                                     offset += len
                                                 }
+                                                totalBytesProcessed += processedBytes
                                             } else {
+                                                // Sonic has no more data right now, go get more from engine
                                                 break 
                                             }
                                         }
                                     }
                                 }
+                                // AppLogger.log("[$reqId] Chunk Finish. Total Output: $totalBytesProcessed bytes")
                             }
                         }
 
+                        // Flush remaining audio
                         if (isActive) {
                             processor.flushQueue()
                             var flushedBytes: Int
@@ -225,7 +223,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                                     var offset = 0
                                     while (offset < flushedBytes) {
                                         if (!isActive) break
-                                        val len = min(flushedBytes - offset, callback.maxBufferSize)
+                                        val remaining = flushedBytes - offset
+                                        val maxBuf = callback.maxBufferSize
+                                        val len = if (remaining < maxBuf) remaining else maxBuf
                                         callback.audioAvailable(chunkWriteBuffer, offset, len)
                                         offset += len
                                     }
@@ -239,16 +239,17 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             } catch (e: Exception) {
-                AppLogger.error("Synthesis Error", e)
+                AppLogger.error("Synthesis Critical Error", e)
             } finally {
                 if (isActive) {
                     callback.done()
-                    AppLogger.log("[$reqId] Done")
+                    AppLogger.log("[$reqId] DONE")
                 }
             }
         }
     }
     
+    // ... Helpers remain unchanged ...
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)
