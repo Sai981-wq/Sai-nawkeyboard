@@ -28,15 +28,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val PREF_NAME = "TTS_CONFIG"
     private val TARGET_HZ = 24000
 
-    private var sharedProcessor: AudioProcessor? = null
-    private var currentProcessorHz = 0
-
     private val serviceJob = SupervisorJob()
     private var currentSessionJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service Started (Standard IO Mode) ===")
+        AppLogger.log("=== Service Started (v2 Stable Mode) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -56,8 +53,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         currentSessionJob?.cancel()
-        sharedProcessor?.release()
-        sharedProcessor = null
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
         stopSafe(englishEngine)
@@ -86,7 +81,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
         val reqId = UUID.randomUUID().toString().substring(0, 4)
 
-        AppLogger.log("[$reqId] NEW REQ: '${text.take(20)}...'")
+        AppLogger.log("[$reqId] NEW REQ: '${text.take(20)}...' Speed=$finalSpeed Pitch=$finalPitch")
 
         runBlocking(sessionJob) {
             try {
@@ -94,7 +89,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                 val headerBuffer = ByteArray(44)
 
-                for (chunk in chunks) {
+                for ((index, chunk) in chunks.withIndex()) {
                     if (!isActive) break
                     if (chunk.text.isBlank()) continue
 
@@ -104,7 +99,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                         else -> englishEngine
                     } ?: englishEngine
 
-                    if (engine == null) continue
+                    if (engine == null) {
+                        AppLogger.error("[$reqId] Engine is null for ${chunk.lang}")
+                        continue
+                    }
 
                     val pipe = ParcelFileDescriptor.createPipe()
                     val readFd = pipe[0]
@@ -147,33 +145,35 @@ class AutoTTSManagerService : TextToSpeechService() {
                                             else -> englishPkg
                                         }
                                         finalHz = prefs.getInt("RATE_$currentPkg", 22050)
-                                    }
-                                    if (finalHz <= 0) finalHz = 22050
-
-                                    if (sharedProcessor == null || currentProcessorHz != finalHz) {
-                                        sharedProcessor?.release()
-                                        sharedProcessor = AudioProcessor(finalHz, 1)
-                                        currentProcessorHz = finalHz
-                                        AppLogger.log("[$reqId] ${chunk.lang}: Init Processor $finalHz Hz")
+                                        AppLogger.log("[$reqId] Chunk $index: Detected=0, Fallback to Pref=$finalHz")
+                                    } else {
+                                        AppLogger.log("[$reqId] Chunk $index: Detected=$finalHz Hz (${chunk.lang})")
                                     }
 
-                                    sharedProcessor?.setSpeed(finalSpeed)
-                                    sharedProcessor?.setPitch(finalPitch)
-                                    
-                                    // Piped Stream Processing
-                                    sharedProcessor?.processStream(fis, callback, this)
+                                    if (finalHz < 8000) finalHz = 22050
+
+                                    val processor = AudioProcessor(finalHz, 1)
+                                    try {
+                                        processor.setSpeed(finalSpeed)
+                                        processor.setPitch(finalPitch)
+                                        processor.processStream(fis, callback, this)
+                                    } finally {
+                                        processor.release()
+                                    }
                                 } else {
-                                    AppLogger.error("[$reqId] Failed to read WAV Header")
+                                    AppLogger.error("[$reqId] Chunk $index: Failed to read WAV Header")
                                 }
                             }
                         }
+                    } catch (e: Exception) {
+                        AppLogger.error("[$reqId] Processing Error Chunk $index", e)
                     } finally {
                         writerJob.cancelAndJoin()
                         try { readFd.close() } catch (e: Exception) {}
                     }
                 }
             } catch (e: Exception) {
-                AppLogger.error("Session Error", e)
+                AppLogger.error("[$reqId] Critical Session Error", e)
             } finally {
                 if (isActive) {
                     callback.done()

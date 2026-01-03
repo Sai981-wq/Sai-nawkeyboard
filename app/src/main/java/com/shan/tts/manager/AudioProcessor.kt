@@ -14,9 +14,9 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
     private var sonic: Sonic? = null
     private val TARGET_HZ = 24000
     
-    private val inputBuffer = ByteBuffer.allocateDirect(8192).order(ByteOrder.LITTLE_ENDIAN)
-    private val outputBuffer = ByteBuffer.allocateDirect(8192).order(ByteOrder.LITTLE_ENDIAN)
-    private val chunkReadBuffer = ByteArray(4096)
+    private val inputBuffer = ByteBuffer.allocateDirect(16384).order(ByteOrder.LITTLE_ENDIAN)
+    private val outputBuffer = ByteBuffer.allocateDirect(16384).order(ByteOrder.LITTLE_ENDIAN)
+    private val chunkReadBuffer = ByteArray(8192)
     private val chunkWriteBuffer = ByteArray(8192)
 
     init {
@@ -27,9 +27,9 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
         sonic?.speed = 1.0f
         sonic?.pitch = 1.0f
         sonic?.volume = 1.0f
-        sonic?.quality = 1 
+        sonic?.quality = 0 
         
-        AppLogger.log("Processor Init: In=$sourceHz, Out=$TARGET_HZ")
+        // AppLogger.log("Processor Init: In=$sourceHz, Out=$TARGET_HZ, Rate=$resampleRatio")
     }
 
     fun setSpeed(speed: Float) {
@@ -56,7 +56,7 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
                 inputBuffer.get(bytes)
                 s.writeBytesToStream(bytes, bytesRead)
 
-                drainToCallback(callback, scope)
+                if (!drainToCallback(callback, scope)) break
             }
         }
         
@@ -64,8 +64,8 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
         drainToCallback(callback, scope)
     }
 
-    private fun drainToCallback(callback: SynthesisCallback, scope: CoroutineScope) {
-        val s = sonic ?: return
+    private fun drainToCallback(callback: SynthesisCallback, scope: CoroutineScope): Boolean {
+        val s = sonic ?: return true
         
         while (scope.isActive) {
             val available = s.samplesAvailable() * 2
@@ -81,19 +81,22 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
             if (bytesRead > 0) {
                 outputBuffer.put(tempRead, 0, bytesRead)
                 outputBuffer.flip()
-                outputBuffer.get(chunkWriteBuffer, 0, bytesRead)
                 
                 var offset = 0
                 while (offset < bytesRead) {
-                    if (!scope.isActive) break
+                    if (!scope.isActive) return false
+                    
                     val remaining = bytesRead - offset
                     val maxBuf = callback.maxBufferSize
                     val len = min(remaining, maxBuf)
                     
-                    val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
+                    outputBuffer.position(offset)
+                    outputBuffer.get(chunkWriteBuffer, 0, len)
+                    
+                    val ret = callback.audioAvailable(chunkWriteBuffer, 0, len)
                     if (ret == TextToSpeech.ERROR) {
-                        AppLogger.error("AudioTrack Write Error")
-                        return 
+                        AppLogger.error("AudioTrack Write Error (Buffer Full or Track Dead)")
+                        return false
                     }
                     offset += len
                 }
@@ -101,6 +104,7 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
                 break
             }
         }
+        return true
     }
 
     fun release() {
