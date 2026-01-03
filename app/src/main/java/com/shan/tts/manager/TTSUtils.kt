@@ -1,5 +1,8 @@
 package com.shan.tts.manager
 
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+
 object TTSUtils {
     private val SHAN_MARKERS = Regex("[\\u1075-\\u108F\\u1090-\\u1099\\uAA60-\\uAA7F]")
     private val MYANMAR_BLOCK = Regex("[\\u1000-\\u109F]")
@@ -50,6 +53,15 @@ object TTSUtils {
         if (SHAN_MARKERS.containsMatchIn(word)) return "SHAN"
         if (MYANMAR_BLOCK.containsMatchIn(word)) return "MYANMAR"
         return "ENGLISH"
+    }
+
+    fun parseWavSampleRate(header: ByteArray): Int {
+        if (header.size < 44) return 0
+        return try {
+            ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN).getInt(24)
+        } catch (e: Exception) {
+            0
+        }
     }
 }
 

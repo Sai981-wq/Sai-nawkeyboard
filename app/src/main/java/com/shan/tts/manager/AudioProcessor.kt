@@ -1,12 +1,23 @@
 package com.shan.tts.manager
 
+import android.speech.tts.SynthesisCallback
+import android.speech.tts.TextToSpeech
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.isActive
+import java.io.InputStream
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.min
 
 class AudioProcessor(private val sourceHz: Int, channels: Int) {
 
     private var sonic: Sonic? = null
     private val TARGET_HZ = 24000
-    private val tempBuffer = ByteArray(8192)
+    
+    private val inputBuffer = ByteBuffer.allocateDirect(8192).order(ByteOrder.LITTLE_ENDIAN)
+    private val outputBuffer = ByteBuffer.allocateDirect(8192).order(ByteOrder.LITTLE_ENDIAN)
+    private val chunkReadBuffer = ByteArray(4096)
+    private val chunkWriteBuffer = ByteArray(8192)
 
     init {
         sonic = Sonic(sourceHz, channels)
@@ -17,6 +28,8 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
         sonic?.pitch = 1.0f
         sonic?.volume = 1.0f
         sonic?.quality = 1 
+        
+        AppLogger.log("Processor Init: In=$sourceHz, Out=$TARGET_HZ")
     }
 
     fun setSpeed(speed: Float) {
@@ -27,55 +40,71 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
         sonic?.pitch = pitch
     }
 
-    fun writeInput(inBuffer: ByteBuffer, len: Int) {
+    fun processStream(inputStream: InputStream, callback: SynthesisCallback, scope: CoroutineScope) {
         val s = sonic ?: return
-        if (len > 0) {
-            val bytes = ByteArray(len)
-            inBuffer.get(bytes)
-            s.writeBytesToStream(bytes, len)
-        }
-    }
 
-    fun availableBytes(): Int {
-        return (sonic?.samplesAvailable() ?: 0) * 2
-    }
+        while (scope.isActive) {
+            val bytesRead = try { inputStream.read(chunkReadBuffer) } catch (e: Exception) { -1 }
+            if (bytesRead == -1) break
 
-    fun readOutput(outBuffer: ByteBuffer): Int {
-        val s = sonic ?: return 0
-        var totalProcessed = 0
-        
-        while (true) {
-            val available = s.samplesAvailable() * 2 
-            if (available <= 0) break
-            if (outBuffer.remaining() <= 0) break
-
-            val spaceInOut = outBuffer.remaining()
-            val toRead = kotlin.math.min(available, spaceInOut)
-            val safeRead = kotlin.math.min(toRead, tempBuffer.size)
-
-            val bytesRead = s.readBytesFromStream(tempBuffer, safeRead)
-            
             if (bytesRead > 0) {
-                outBuffer.put(tempBuffer, 0, bytesRead)
-                totalProcessed += bytesRead
+                inputBuffer.clear()
+                inputBuffer.put(chunkReadBuffer, 0, bytesRead)
+                inputBuffer.flip()
+                
+                val bytes = ByteArray(bytesRead)
+                inputBuffer.get(bytes)
+                s.writeBytesToStream(bytes, bytesRead)
+
+                drainToCallback(callback, scope)
+            }
+        }
+        
+        s.flushStream()
+        drainToCallback(callback, scope)
+    }
+
+    private fun drainToCallback(callback: SynthesisCallback, scope: CoroutineScope) {
+        val s = sonic ?: return
+        
+        while (scope.isActive) {
+            val available = s.samplesAvailable() * 2
+            if (available <= 0) break
+
+            outputBuffer.clear()
+            val spaceInOut = outputBuffer.capacity()
+            val toRead = min(available, spaceInOut)
+            
+            val tempRead = ByteArray(toRead)
+            val bytesRead = s.readBytesFromStream(tempRead, toRead)
+
+            if (bytesRead > 0) {
+                outputBuffer.put(tempRead, 0, bytesRead)
+                outputBuffer.flip()
+                outputBuffer.get(chunkWriteBuffer, 0, bytesRead)
+                
+                var offset = 0
+                while (offset < bytesRead) {
+                    if (!scope.isActive) break
+                    val remaining = bytesRead - offset
+                    val maxBuf = callback.maxBufferSize
+                    val len = min(remaining, maxBuf)
+                    
+                    val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
+                    if (ret == TextToSpeech.ERROR) {
+                        AppLogger.error("AudioTrack Write Error")
+                        return 
+                    }
+                    offset += len
+                }
             } else {
                 break
             }
         }
-        return totalProcessed
-    }
-
-    fun flushQueue() {
-        sonic?.flushStream()
     }
 
     fun release() {
         sonic = null
-    }
-    
-    fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer): Int {
-        if (inBuffer != null) writeInput(inBuffer, len)
-        return readOutput(outBuffer)
     }
 }
 
