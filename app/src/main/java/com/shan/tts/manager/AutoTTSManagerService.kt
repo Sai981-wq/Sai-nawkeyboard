@@ -30,6 +30,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
     private val TARGET_HZ = 24000
+    private val START_THRESHOLD = 4096 
 
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
@@ -37,6 +38,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
+        AppLogger.log("Service Created")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -49,10 +51,13 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defEngine)
             initTTS(englishPkg, Locale.US) { englishEngine = it }
-        } catch (e: Exception) { e.printStackTrace() }
+        } catch (e: Exception) { 
+            AppLogger.error("onCreate Error", e) 
+        }
     }
 
     override fun onStop() {
+        AppLogger.log("Service Stopped")
         currentSessionJob?.cancel()
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
@@ -80,6 +85,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         val rawRate = request.speechRate / 100.0f
         val finalSpeed = rawRate.coerceIn(0.1f, 6.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
+        val reqId = UUID.randomUUID().toString().substring(0, 4)
+
+        AppLogger.log("[$reqId] New Request: '${text.take(20)}...' Speed=$finalSpeed")
 
         runBlocking(sessionJob) {
             try {
@@ -87,7 +95,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                 val inputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
                 val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
-                val chunkReadBuffer = ByteArray(16384)
+                val chunkReadBuffer = ByteArray(8192)
                 val chunkWriteBuffer = ByteArray(32768)
 
                 for (chunk in chunks) {
@@ -100,7 +108,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                         else -> englishEngine
                     } ?: englishEngine
 
-                    if (engine == null) continue
+                    if (engine == null) {
+                        AppLogger.log("[$reqId] Engine null for ${chunk.lang}")
+                        continue
+                    }
 
                     val currentPkg = when (chunk.lang) {
                         "SHAN" -> shanPkg
@@ -110,6 +121,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                     
                     var engineHz = prefs.getInt("RATE_$currentPkg", 0)
                     if (engineHz <= 0) engineHz = 22050 
+
+                    AppLogger.log("[$reqId] Processing Chunk: ${chunk.lang} ($engineHz Hz)")
 
                     val processor = AudioProcessor(engineHz, 1)
                     processor.setSpeed(finalSpeed)
@@ -129,6 +142,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         try {
                             engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
                         } catch (e: Exception) {
+                            AppLogger.error("[$reqId] Writer Error", e)
                         } finally {
                             try { writeFd.close() } catch (e: Exception) {}
                         }
@@ -137,22 +151,39 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try {
                         withContext(Dispatchers.IO) {
                             ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
+                                var isBuffering = true 
+
                                 while (isActive) {
                                     val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
-                                    if (bytesRead == -1) break
+                                    if (bytesRead == -1) {
+                                        AppLogger.log("[$reqId] Pipe End Reached")
+                                        break
+                                    }
                                     
                                     if (bytesRead > 0) {
                                         inputBuffer.clear()
                                         inputBuffer.put(chunkReadBuffer, 0, bytesRead)
                                         inputBuffer.flip() 
                                         
-                                        while (inputBuffer.hasRemaining() && isActive) {
+                                        processor.writeInput(inputBuffer, bytesRead)
+                                        val available = processor.availableBytes()
+
+                                        if (isBuffering) {
+                                            if (available >= START_THRESHOLD) {
+                                                isBuffering = false
+                                                AppLogger.log("[$reqId] Threshold Met ($available/$START_THRESHOLD). Playing...")
+                                            } else {
+                                                // Log every few reads to avoid spam, or check specific conditions
+                                                if (available % 1000 < 200) { 
+                                                    AppLogger.log("[$reqId] Buffering... ($available/$START_THRESHOLD)")
+                                                }
+                                                continue 
+                                            }
+                                        }
+
+                                        while (isActive) {
                                             outputBuffer.clear()
-                                            val processedBytes = processor.process(
-                                                inputBuffer, 
-                                                inputBuffer.remaining(), 
-                                                outputBuffer
-                                            )
+                                            val processedBytes = processor.readOutput(outputBuffer)
                                             
                                             if (processedBytes > 0) {
                                                 outputBuffer.flip()
@@ -162,8 +193,10 @@ class AutoTTSManagerService : TextToSpeechService() {
                                                 while (offset < processedBytes) {
                                                     if (!isActive) break
                                                     val len = min(processedBytes - offset, callback.maxBufferSize)
+                                                    
                                                     val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
                                                     if (ret == TextToSpeech.ERROR) {
+                                                        AppLogger.error("[$reqId] AudioTrack Error")
                                                         cancel()
                                                         break
                                                     }
@@ -184,7 +217,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                             do {
                                 if (!isActive) break
                                 outputBuffer.clear()
-                                flushedBytes = processor.process(null, 0, outputBuffer)
+                                flushedBytes = processor.readOutput(outputBuffer)
                                 
                                 if (flushedBytes > 0) {
                                     outputBuffer.flip()
@@ -206,10 +239,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                AppLogger.error("Synthesis Error", e)
             } finally {
                 if (isActive) {
                     callback.done()
+                    AppLogger.log("[$reqId] Done")
                 }
             }
         }
