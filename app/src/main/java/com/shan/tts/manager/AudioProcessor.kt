@@ -9,14 +9,13 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.min
 
-class AudioProcessor(private val sourceHz: Int, channels: Int) {
+class AudioProcessor(sourceHz: Int, channels: Int) {
 
     private var sonic: Sonic? = null
     private val TARGET_HZ = 24000
     
-    private val inputBuffer = ByteBuffer.allocateDirect(16384).order(ByteOrder.LITTLE_ENDIAN)
-    private val outputBuffer = ByteBuffer.allocateDirect(16384).order(ByteOrder.LITTLE_ENDIAN)
-    private val chunkReadBuffer = ByteArray(8192)
+    // Increased buffer size for smoother streaming
+    private val chunkReadBuffer = ByteArray(4096)
     private val chunkWriteBuffer = ByteArray(8192)
 
     init {
@@ -24,12 +23,7 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
         val resampleRatio = sourceHz.toFloat() / TARGET_HZ.toFloat()
         
         sonic?.rate = resampleRatio
-        sonic?.speed = 1.0f
-        sonic?.pitch = 1.0f
-        sonic?.volume = 1.0f
-        sonic?.quality = 0 
-        
-        // AppLogger.log("Processor Init: In=$sourceHz, Out=$TARGET_HZ, Rate=$resampleRatio")
+        sonic?.quality = 0 // Fastest quality
     }
 
     fun setSpeed(speed: Float) {
@@ -48,18 +42,15 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
             if (bytesRead == -1) break
 
             if (bytesRead > 0) {
-                inputBuffer.clear()
-                inputBuffer.put(chunkReadBuffer, 0, bytesRead)
-                inputBuffer.flip()
-                
-                val bytes = ByteArray(bytesRead)
-                inputBuffer.get(bytes)
-                s.writeBytesToStream(bytes, bytesRead)
+                // Direct feed to Sonic
+                s.writeBytesToStream(chunkReadBuffer, bytesRead)
 
+                // Drain immediately to keep latency low
                 if (!drainToCallback(callback, scope)) break
             }
         }
         
+        // Final flush
         s.flushStream()
         drainToCallback(callback, scope)
     }
@@ -71,17 +62,10 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
             val available = s.samplesAvailable() * 2
             if (available <= 0) break
 
-            outputBuffer.clear()
-            val spaceInOut = outputBuffer.capacity()
-            val toRead = min(available, spaceInOut)
-            
-            val tempRead = ByteArray(toRead)
-            val bytesRead = s.readBytesFromStream(tempRead, toRead)
+            // Read directly from Sonic
+            val bytesRead = s.readBytesFromStream(chunkWriteBuffer, chunkWriteBuffer.size)
 
             if (bytesRead > 0) {
-                outputBuffer.put(tempRead, 0, bytesRead)
-                outputBuffer.flip()
-                
                 var offset = 0
                 while (offset < bytesRead) {
                     if (!scope.isActive) return false
@@ -90,12 +74,9 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
                     val maxBuf = callback.maxBufferSize
                     val len = min(remaining, maxBuf)
                     
-                    outputBuffer.position(offset)
-                    outputBuffer.get(chunkWriteBuffer, 0, len)
-                    
-                    val ret = callback.audioAvailable(chunkWriteBuffer, 0, len)
+                    // Direct write to AudioTrack via Callback
+                    val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
                     if (ret == TextToSpeech.ERROR) {
-                        AppLogger.error("AudioTrack Write Error (Buffer Full or Track Dead)")
                         return false
                     }
                     offset += len
