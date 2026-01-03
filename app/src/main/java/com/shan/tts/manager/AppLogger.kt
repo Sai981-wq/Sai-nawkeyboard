@@ -9,45 +9,61 @@ import java.util.concurrent.CopyOnWriteArrayList
 object AppLogger {
     private const val TAG = "CherryTTS_Debug"
     
-    // Thread-safe list to store logs
+    // Thread-safe list to store logs in memory
     private val logHistory = CopyOnWriteArrayList<String>()
-    private const val MAX_LOGS = 1000 // Keep last 1000 lines
+    
+    // Maximum number of lines to keep in memory
+    private const val MAX_LOGS = 1500 
     
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
+    // Standard Debug Log
     fun log(message: String) {
+        val entry = formatLog("D", message)
         Log.d(TAG, message)
-        addToHistory("D", message)
+        addToHistory(entry)
     }
 
+    // Error Log
     fun error(message: String, e: Throwable? = null) {
         val fullMsg = if (e != null) "$message: ${e.message}\n${Log.getStackTraceString(e)}" else message
+        val entry = formatLog("E", fullMsg)
         Log.e(TAG, fullMsg)
-        addToHistory("E", fullMsg)
+        addToHistory(entry)
     }
 
-    private fun addToHistory(type: String, msg: String) {
+    private fun formatLog(type: String, msg: String): String {
         val time = dateFormat.format(Date())
-        val entry = "$time [$type] $msg"
-        
+        return "$time [$type] $msg"
+    }
+
+    private fun addToHistory(entry: String) {
         logHistory.add(entry)
         
-        // Trim old logs to prevent memory issues
+        // Remove old logs if limit reached to save memory
         if (logHistory.size > MAX_LOGS) {
-            logHistory.removeAt(0)
+            // Remove the first 100 logs at once to avoid frequent resizing
+            try {
+                if (logHistory.isNotEmpty()) {
+                    logHistory.subList(0, 100).clear()
+                }
+            } catch (e: Exception) {
+                // Ignore modification errors
+            }
         }
     }
 
-    // Called by LogViewerActivity
+    // Called by LogViewerActivity to display logs
     fun getAllLogs(): String {
         return if (logHistory.isEmpty()) {
             "No logs yet..."
         } else {
+            // Join lines for TextView
             logHistory.joinToString("\n\n")
         }
     }
 
-    // Called by LogViewerActivity (changed from clearLogs to clear)
+    // Clear logs from memory
     fun clear() {
         logHistory.clear()
         log("Logs cleared by user.")

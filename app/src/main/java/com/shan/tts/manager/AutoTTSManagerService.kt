@@ -26,14 +26,15 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
-    private val TARGET_HZ = 24000
+    private val TARGET_HZ = 24000 // Fixed Output
 
     private val serviceJob = SupervisorJob()
     private var currentSessionJob: Job? = null
+    private var activeReadFd: ParcelFileDescriptor? = null
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service Started (v5 Direct Stream Mode) ===")
+        AppLogger.log("=== Service Started (DEBUG MODE) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -46,14 +47,26 @@ class AutoTTSManagerService : TextToSpeechService() {
 
             englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defEngine)
             initTTS(englishPkg, Locale.US) { englishEngine = it }
-            
         } catch (e: Exception) { 
             AppLogger.error("onCreate Error", e)
         }
     }
 
     override fun onStop() {
+        AppLogger.log("Service: onStop Called")
         currentSessionJob?.cancel()
+        currentSessionJob = null
+        
+        // Force Close Pipe to prevent Deadlock
+        if (activeReadFd != null) {
+            try { 
+                activeReadFd?.close()
+                AppLogger.log("Pipe: Force Closed on Stop")
+            } catch (e: Exception) {
+                AppLogger.error("Pipe Close Error", e)
+            }
+        }
+        activeReadFd = null
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
         stopSafe(englishEngine)
@@ -69,6 +82,9 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentSessionJob?.cancel()
         val sessionJob = Job()
         currentSessionJob = sessionJob
+
+        // Clean up old pipe
+        try { activeReadFd?.close() } catch (e: Exception) {}
         
         val text = request.charSequenceText.toString()
         val chunks = TTSUtils.splitHelper(text)
@@ -82,18 +98,20 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
         val reqId = UUID.randomUUID().toString().substring(0, 4)
 
-        AppLogger.log("[$reqId] REQ: '${text.take(15)}...' Spd=$finalSpeed")
+        AppLogger.log("[$reqId] NEW REQ: '${text.take(15)}...' Chunks=${chunks.size}")
 
         runBlocking(sessionJob) {
             try {
-                // Set output format fixed at TARGET_HZ (24000)
+                // Fixed Output Rate
                 callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
                 for ((index, chunk) in chunks.withIndex()) {
-                    if (!isActive) break
+                    if (!isActive) {
+                        AppLogger.log("[$reqId] Job Cancelled at Chunk $index")
+                        break
+                    }
                     if (chunk.text.isBlank()) continue
 
-                    // 1. Select Engine
                     val (engine, currentPkg) = when (chunk.lang) {
                         "SHAN" -> shanEngine to shanPkg
                         "MYANMAR" -> burmeseEngine to burmesePkg
@@ -103,38 +121,43 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val activeEngine = engine ?: englishEngine
                     val activePkg = if (engine != null) currentPkg else englishPkg
 
-                    if (activeEngine == null) continue
+                    if (activeEngine == null) {
+                        AppLogger.error("[$reqId] No Engine for ${chunk.lang}")
+                        continue
+                    }
 
-                    // 2. Retrieve Stored Rate (Scan Data)
-                    val storedRate = prefs.getInt("RATE_$activePkg", 22050)
+                    // Get Input Hz
+                    val inputHz = prefs.getInt("RATE_$activePkg", 22050)
+                    AppLogger.log("[$reqId] Chk $index: $inputHz Hz -> $TARGET_HZ Hz ($activePkg)")
                     
                     val pipe = ParcelFileDescriptor.createPipe()
                     val readFd = pipe[0]
                     val writeFd = pipe[1]
                     val uuid = UUID.randomUUID().toString()
 
+                    activeReadFd = readFd 
+
                     activeEngine.setSpeechRate(1.0f)
                     activeEngine.setPitch(1.0f)
 
-                    // 3. Write Thread
                     val writerJob = launch(Dispatchers.IO) {
                         val params = Bundle()
                         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                         try {
+                            // AppLogger.log("[$reqId] Writer Start")
                             activeEngine.synthesizeToFile(chunk.text, params, writeFd, uuid)
+                            // AppLogger.log("[$reqId] Writer Done")
                         } catch (e: Exception) {
-                            AppLogger.error("Writer Error", e)
+                            AppLogger.error("[$reqId] Writer Failed", e)
                         } finally {
                             try { writeFd.close() } catch (e: Exception) {}
                         }
                     }
 
-                    // 4. Read & Process Thread (Direct Stream)
                     try {
                         withContext(Dispatchers.IO) {
                             FileInputStream(readFd.fileDescriptor).use { fis ->
-                                // Direct Pass to Sonic without skipping header
-                                val processor = AudioProcessor(storedRate, 1)
+                                val processor = AudioProcessor(inputHz, TARGET_HZ, reqId)
                                 try {
                                     processor.setSpeed(finalSpeed)
                                     processor.setPitch(finalPitch)
@@ -145,18 +168,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                             }
                         }
                     } catch (e: Exception) {
-                        AppLogger.error("Process Error", e)
+                        if (e !is CancellationException) {
+                            AppLogger.error("[$reqId] Reader Error", e)
+                        }
                     } finally {
-                        writerJob.cancelAndJoin()
                         try { readFd.close() } catch (e: Exception) {}
+                        activeReadFd = null
+                        writerJob.cancelAndJoin()
                     }
                 }
             } catch (e: Exception) {
-                AppLogger.error("Session Error", e)
+                AppLogger.error("[$reqId] Critical Error", e)
             } finally {
                 if (isActive) {
                     callback.done()
                     AppLogger.log("[$reqId] DONE")
+                } else {
+                    AppLogger.log("[$reqId] CANCELLED")
                 }
             }
         }
