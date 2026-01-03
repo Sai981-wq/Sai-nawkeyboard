@@ -4,12 +4,14 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.media.AudioFormat
 import android.os.Bundle
-import android.os.ParcelFileDescriptor
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
+import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import java.io.File
 import java.io.FileInputStream
 import java.util.Locale
 import java.util.UUID
@@ -30,10 +32,13 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private val serviceJob = SupervisorJob()
     private var currentSessionJob: Job? = null
+    
+    // Channel to handle TTS callbacks safely
+    private val utteranceEvents = Channel<Pair<String, Boolean>>(Channel.UNLIMITED)
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service Started (v2 Stable Mode) ===")
+        AppLogger.log("=== Service Started (v3 TempFile Mode) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -81,12 +86,13 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
         val reqId = UUID.randomUUID().toString().substring(0, 4)
 
-        AppLogger.log("[$reqId] NEW REQ: '${text.take(20)}...' Speed=$finalSpeed Pitch=$finalPitch")
+        AppLogger.log("[$reqId] REQ: '${text.take(15)}...' Spd=$finalSpeed")
 
         runBlocking(sessionJob) {
             try {
                 callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
+                // Reuse a buffer for header reading
                 val headerBuffer = ByteArray(44)
 
                 for ((index, chunk) in chunks.withIndex()) {
@@ -99,81 +105,69 @@ class AutoTTSManagerService : TextToSpeechService() {
                         else -> englishEngine
                     } ?: englishEngine
 
-                    if (engine == null) {
-                        AppLogger.error("[$reqId] Engine is null for ${chunk.lang}")
-                        continue
-                    }
+                    if (engine == null) continue
 
-                    val pipe = ParcelFileDescriptor.createPipe()
-                    val readFd = pipe[0]
-                    val writeFd = pipe[1]
+                    // Create Temp File
                     val uuid = UUID.randomUUID().toString()
-
-                    engine.setSpeechRate(1.0f) 
-                    engine.setPitch(1.0f)
-
-                    val writerJob = launch(Dispatchers.IO) {
-                        val params = Bundle()
-                        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-                        try {
-                            engine.synthesizeToFile(chunk.text, params, writeFd, uuid)
-                        } catch (e: Exception) {
-                            AppLogger.error("[$reqId] Writer Error", e)
-                        } finally {
-                            try { writeFd.close() } catch (e: Exception) {}
-                        }
-                    }
+                    val tempFile = File(cacheDir, "tts_$uuid.wav")
 
                     try {
-                        withContext(Dispatchers.IO) {
-                            FileInputStream(readFd.fileDescriptor).use { fis ->
-                                var headerRead = 0
-                                while (headerRead < 44 && isActive) {
-                                    val count = fis.read(headerBuffer, headerRead, 44 - headerRead)
-                                    if (count < 0) break
-                                    headerRead += count
-                                }
+                        engine.setSpeechRate(1.0f) 
+                        engine.setPitch(1.0f)
+                        val params = Bundle()
+                        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
 
-                                if (headerRead == 44) {
-                                    val detectedHz = TTSUtils.parseWavSampleRate(headerBuffer)
-                                    
-                                    var finalHz = detectedHz
-                                    if (finalHz <= 0) {
-                                         val currentPkg = when (chunk.lang) {
-                                            "SHAN" -> shanPkg
-                                            "MYANMAR" -> burmesePkg
-                                            else -> englishPkg
-                                        }
-                                        finalHz = prefs.getInt("RATE_$currentPkg", 22050)
-                                        AppLogger.log("[$reqId] Chunk $index: Detected=0, Fallback to Pref=$finalHz")
-                                    } else {
-                                        AppLogger.log("[$reqId] Chunk $index: Detected=$finalHz Hz (${chunk.lang})")
-                                    }
+                        // 1. Synthesize to File and Wait
+                        val success = synthesizeAndWait(engine, chunk.text, params, tempFile, uuid)
 
-                                    if (finalHz < 8000) finalHz = 22050
-
-                                    val processor = AudioProcessor(finalHz, 1)
-                                    try {
-                                        processor.setSpeed(finalSpeed)
-                                        processor.setPitch(finalPitch)
-                                        processor.processStream(fis, callback, this)
-                                    } finally {
-                                        processor.release()
-                                    }
-                                } else {
-                                    AppLogger.error("[$reqId] Chunk $index: Failed to read WAV Header")
+                        if (success && tempFile.length() > 44) {
+                            // 2. Read Accurate Sample Rate
+                            var detectedHz = 0
+                            FileInputStream(tempFile).use { fis ->
+                                if (fis.read(headerBuffer) == 44) {
+                                    detectedHz = TTSUtils.parseWavSampleRate(headerBuffer)
                                 }
                             }
+
+                            // If header is still bad, fallback to pref
+                            var finalHz = detectedHz
+                            if (finalHz <= 0) {
+                                val currentPkg = when (chunk.lang) {
+                                    "SHAN" -> shanPkg
+                                    "MYANMAR" -> burmesePkg
+                                    else -> englishPkg
+                                }
+                                finalHz = prefs.getInt("RATE_$currentPkg", 22050)
+                            }
+                            if (finalHz < 8000) finalHz = 22050
+
+                            AppLogger.log("[$reqId] Chk $index: $finalHz Hz (${chunk.lang})")
+
+                            // 3. Process Audio from File
+                            FileInputStream(tempFile).use { fis ->
+                                // Skip header
+                                fis.skip(44)
+                                
+                                val processor = AudioProcessor(finalHz, 1)
+                                try {
+                                    processor.setSpeed(finalSpeed)
+                                    processor.setPitch(finalPitch)
+                                    processor.processStream(fis, callback, this)
+                                } finally {
+                                    processor.release()
+                                }
+                            }
+                        } else {
+                            AppLogger.error("[$reqId] Chk $index Failed or Empty")
                         }
                     } catch (e: Exception) {
-                        AppLogger.error("[$reqId] Processing Error Chunk $index", e)
+                        AppLogger.error("[$reqId] Error Chk $index", e)
                     } finally {
-                        writerJob.cancelAndJoin()
-                        try { readFd.close() } catch (e: Exception) {}
+                        try { tempFile.delete() } catch (e: Exception) {}
                     }
                 }
             } catch (e: Exception) {
-                AppLogger.error("[$reqId] Critical Session Error", e)
+                AppLogger.error("[$reqId] Session Error", e)
             } finally {
                 if (isActive) {
                     callback.done()
@@ -181,6 +175,24 @@ class AutoTTSManagerService : TextToSpeechService() {
                 }
             }
         }
+    }
+
+    private suspend fun synthesizeAndWait(engine: TextToSpeech, text: String, params: Bundle, file: File, utteranceId: String): Boolean {
+        // Clear old events
+        while(utteranceEvents.tryReceive().isSuccess) {}
+
+        val result = engine.synthesizeToFile(text, params, file, utteranceId)
+        if (result != TextToSpeech.SUCCESS) return false
+
+        return withTimeoutOrNull(8000) {
+            while (isActive) {
+                val (id, success) = utteranceEvents.receive()
+                if (id == utteranceId) {
+                    return@withTimeoutOrNull success
+                }
+            }
+            false
+        } ?: false
     }
     
     private fun getDefaultEngineFallback(): String {
@@ -202,7 +214,19 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (pkg.isEmpty()) return
         try {
             var t: TextToSpeech? = null
-            t = TextToSpeech(this, { if (it == TextToSpeech.SUCCESS) onReady(t!!) }, pkg)
+            t = TextToSpeech(this, { status ->
+                if (status == TextToSpeech.SUCCESS && t != null) {
+                    // Set Listener for File Events
+                    t!!.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(id: String?) {}
+                        override fun onDone(id: String?) { if (id != null) utteranceEvents.trySend(id to true) }
+                        override fun onError(id: String?) { if (id != null) utteranceEvents.trySend(id to false) }
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(id: String?, errorCode: Int) { if (id != null) utteranceEvents.trySend(id to false) }
+                    })
+                    onReady(t!!)
+                }
+            }, pkg)
         } catch (e: Exception) {}
     }
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
