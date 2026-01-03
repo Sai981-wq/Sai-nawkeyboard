@@ -32,8 +32,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val TARGET_HZ = 24000
 
     private val serviceJob = SupervisorJob()
-    private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
-    private var currentSessionJob: Job? = null
+    private val currentSessionJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -57,7 +56,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onStop() {
         AppLogger.log("Service Stopped")
-        currentSessionJob?.cancel()
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
         stopSafe(englishEngine)
@@ -69,10 +67,6 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
-        
-        currentSessionJob?.cancel()
-        val sessionJob = Job()
-        currentSessionJob = sessionJob
         
         val text = request.charSequenceText.toString()
         val chunks = TTSUtils.splitHelper(text)
@@ -88,7 +82,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
         AppLogger.log("[$reqId] START: '${text.take(15)}...' Spd=$finalSpeed")
 
-        runBlocking(sessionJob) {
+        runBlocking {
             try {
                 callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
@@ -96,6 +90,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                 val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
                 val chunkReadBuffer = ByteArray(8192)
                 val chunkWriteBuffer = ByteArray(32768)
+                val headerBuffer = ByteArray(44)
 
                 for (chunk in chunks) {
                     if (!isActive) break
@@ -150,8 +145,16 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try {
                         withContext(Dispatchers.IO) {
                             ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
-                                var firstPacket = true
-                                var totalBytesProcessed = 0
+                                var headerBytesRead = 0
+                                while (headerBytesRead < 44 && isActive) {
+                                    val count = fis.read(headerBuffer, headerBytesRead, 44 - headerBytesRead)
+                                    if (count < 0) break
+                                    headerBytesRead += count
+                                }
+                                
+                                if (headerBytesRead == 44) {
+                                    // AppLogger.log("[$reqId] Header Skipped")
+                                }
 
                                 while (isActive) {
                                     val bytesRead = try { fis.read(chunkReadBuffer) } catch (e: IOException) { -1 }
@@ -162,15 +165,8 @@ class AutoTTSManagerService : TextToSpeechService() {
                                         inputBuffer.put(chunkReadBuffer, 0, bytesRead)
                                         inputBuffer.flip() 
                                         
-                                        // 1. Direct Feed to Sonic
                                         processor.writeInput(inputBuffer, bytesRead)
 
-                                        if (firstPacket) {
-                                            AppLogger.log("[$reqId] >> First Data from Engine ($bytesRead bytes)")
-                                            firstPacket = false
-                                        }
-
-                                        // 2. Direct Read from Sonic (No Threshold Blocking)
                                         while (isActive) {
                                             outputBuffer.clear()
                                             val processedBytes = processor.readOutput(outputBuffer)
@@ -187,7 +183,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                                                     val maxBuf = callback.maxBufferSize
                                                     val len = if (remaining < maxBuf) remaining else maxBuf
                                                     
-                                                    // This call blocks naturally if AudioTrack is full
                                                     val ret = callback.audioAvailable(chunkWriteBuffer, offset, len)
                                                     if (ret == TextToSpeech.ERROR) {
                                                         AppLogger.error("[$reqId] AudioTrack Write Error")
@@ -196,19 +191,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                                                     }
                                                     offset += len
                                                 }
-                                                totalBytesProcessed += processedBytes
                                             } else {
-                                                // Sonic has no more data right now, go get more from engine
                                                 break 
                                             }
                                         }
                                     }
                                 }
-                                // AppLogger.log("[$reqId] Chunk Finish. Total Output: $totalBytesProcessed bytes")
                             }
                         }
 
-                        // Flush remaining audio
                         if (isActive) {
                             processor.flushQueue()
                             var flushedBytes: Int
@@ -249,7 +240,6 @@ class AutoTTSManagerService : TextToSpeechService() {
         }
     }
     
-    // ... Helpers remain unchanged ...
     private fun getDefaultEngineFallback(): String {
         return try {
             val tts = TextToSpeech(this, null)

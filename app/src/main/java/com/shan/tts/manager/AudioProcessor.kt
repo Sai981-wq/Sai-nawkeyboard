@@ -27,9 +27,6 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
         sonic?.pitch = pitch
     }
 
-    // ★ ဒီ Function တွေ မရှိရင် Error တက်ပါမယ် ★
-    
-    // Input ထည့်ဖို့ သီးသန့် Function
     fun writeInput(inBuffer: ByteBuffer, len: Int) {
         val s = sonic ?: return
         if (len > 0) {
@@ -39,12 +36,10 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
         }
     }
 
-    // Output ဘယ်လောက်ရှိလဲ စစ်ဖို့ Function
     fun availableBytes(): Int {
         return (sonic?.samplesAvailable() ?: 0) * 2
     }
 
-    // Output ထုတ်ဖို့ သီးသန့် Function
     fun readOutput(outBuffer: ByteBuffer): Int {
         val s = sonic ?: return 0
         var totalProcessed = 0
@@ -78,7 +73,6 @@ class AudioProcessor(private val sourceHz: Int, channels: Int) {
         sonic = null
     }
     
-    // Legacy process method (Compatibility)
     fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer): Int {
         if (inBuffer != null) writeInput(inBuffer, len)
         return readOutput(outBuffer)
