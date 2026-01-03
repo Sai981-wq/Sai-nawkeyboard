@@ -26,19 +26,15 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
-    
-    // Fixed Output Rate to keep AudioTrack stable
-    private val TARGET_HZ = 24000 
+    private val TARGET_HZ = 24000
 
     private val serviceJob = SupervisorJob()
     private var currentSessionJob: Job? = null
-    
-    // Track active pipe to force close on stop
     private var activeReadFd: ParcelFileDescriptor? = null
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service Started (v11 Final Stable + Logs) ===")
+        AppLogger.log("=== Service Created (Full Logging Mode) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -52,17 +48,23 @@ class AutoTTSManagerService : TextToSpeechService() {
             englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), defEngine)
             initTTS(englishPkg, Locale.US) { englishEngine = it }
         } catch (e: Exception) { 
-            AppLogger.error("onCreate Error", e)
+            AppLogger.error("Service onCreate Failed", e)
         }
     }
 
     override fun onStop() {
-        // Critical: Cancel job AND close pipes to prevent deadlock (Silence on Swipe)
+        AppLogger.log("Service: onStop Called")
         currentSessionJob?.cancel()
         currentSessionJob = null
-        try { activeReadFd?.close() } catch (e: Exception) {}
+        try { 
+            if (activeReadFd != null) {
+                activeReadFd?.close()
+                AppLogger.log("Pipe: Force closed active pipe")
+            }
+        } catch (e: Exception) {
+            AppLogger.error("Pipe Close Error", e)
+        }
         activeReadFd = null
-        
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
         stopSafe(englishEngine)
@@ -73,38 +75,42 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
-        if (request == null || callback == null) return
+        if (request == null || callback == null) {
+            AppLogger.error("Request or Callback is null")
+            return
+        }
         
         currentSessionJob?.cancel()
         val sessionJob = Job()
         currentSessionJob = sessionJob
         
-        // Clean up old pipe
         try { activeReadFd?.close() } catch (e: Exception) {}
         
         val text = request.charSequenceText.toString()
+        val reqId = UUID.randomUUID().toString().substring(0, 4)
+        
+        // Log Input Text
+        AppLogger.log("[$reqId] REQ START: '${text.take(20)}...'")
+
         val chunks = TTSUtils.splitHelper(text)
         if (chunks.isEmpty()) {
+            AppLogger.log("[$reqId] No chunks to process")
             callback.done()
             return
         }
+        AppLogger.log("[$reqId] Split into ${chunks.size} chunks")
 
-        val rawRate = request.speechRate / 100.0f
-        val finalSpeed = rawRate.coerceIn(0.1f, 6.0f)
-        val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
-        val reqId = UUID.randomUUID().toString().substring(0, 4)
-
-        // Log request start
-        AppLogger.log("[$reqId] NEW REQ: '${text.take(15)}...' Chunks=${chunks.size}")
+        val engineRate = request.speechRate / 100.0f
+        val enginePitch = request.pitch / 100.0f
 
         runBlocking(sessionJob) {
             try {
-                // Fixed Output Rate (24kHz)
+                AppLogger.log("[$reqId] Starting AudioTrack at $TARGET_HZ Hz")
                 callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
                 for ((index, chunk) in chunks.withIndex()) {
                     if (!isActive) {
-                        AppLogger.log("[$reqId] Cancelled at Chunk $index")
+                        AppLogger.log("[$reqId] Job Cancelled at Chunk $index")
                         break
                     }
                     if (chunk.text.isBlank()) continue
@@ -119,14 +125,15 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val activePkg = if (engine != null) currentPkg else englishPkg
 
                     if (activeEngine == null) {
-                         AppLogger.error("[$reqId] No Engine found for ${chunk.lang}")
-                         continue
+                        AppLogger.error("[$reqId] Engine NULL for ${chunk.lang}")
+                        continue
                     }
 
-                    // Get Input Hz from Scanner Prefs
                     var inputHz = prefs.getInt("RATE_$activePkg", 22050)
                     if (inputHz < 8000) inputHz = 22050
                     
+                    // AppLogger.log("[$reqId] Chk $index: Using $activePkg ($inputHz Hz)")
+
                     val pipe = ParcelFileDescriptor.createPipe()
                     val readFd = pipe[0]
                     val writeFd = pipe[1]
@@ -134,16 +141,20 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     activeReadFd = readFd 
 
-                    activeEngine.setSpeechRate(1.0f) 
-                    activeEngine.setPitch(1.0f)
+                    activeEngine.setSpeechRate(engineRate) 
+                    activeEngine.setPitch(enginePitch)
 
                     val writerJob = launch(Dispatchers.IO) {
                         val params = Bundle()
                         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                         try {
-                            activeEngine.synthesizeToFile(chunk.text, params, writeFd, uuid)
+                            // AppLogger.log("[$reqId] Writer: Synthesizing...")
+                            val result = activeEngine.synthesizeToFile(chunk.text, params, writeFd, uuid)
+                            if (result != TextToSpeech.SUCCESS) {
+                                AppLogger.error("[$reqId] Writer: Engine returned ERROR code")
+                            }
                         } catch (e: Exception) {
-                           AppLogger.error("[$reqId] Writer Error", e)
+                           AppLogger.error("[$reqId] Writer Exception", e)
                         } finally {
                             try { writeFd.close() } catch (e: Exception) {}
                         }
@@ -152,7 +163,6 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try {
                         withContext(Dispatchers.IO) {
                             FileInputStream(readFd.fileDescriptor).use { fis ->
-                                // SKIP WAV HEADER (44 Bytes) - To prevent noise/speedup
                                 val header = ByteArray(44)
                                 var skipped = 0
                                 while (skipped < 44 && isActive) {
@@ -162,25 +172,23 @@ class AutoTTSManagerService : TextToSpeechService() {
                                 }
                                 
                                 if (skipped == 44) {
-                                    AppLogger.log("[$reqId] Chk $index: $inputHz -> $TARGET_HZ Hz ($activePkg)")
-                                    
-                                    // Create FRESH processor for every chunk + Pass reqId for logging
+                                    AppLogger.log("[$reqId] Chk $index: Header skipped. Processing...")
                                     val processor = AudioProcessor(inputHz, TARGET_HZ, reqId)
                                     try {
-                                        processor.setSpeed(finalSpeed)
-                                        processor.setPitch(finalPitch)
+                                        processor.setSpeed(1.0f)
+                                        processor.setPitch(1.0f)
                                         processor.processStream(fis, callback, this)
                                     } finally {
                                         processor.release()
                                     }
                                 } else {
-                                    AppLogger.error("[$reqId] Header Skip Failed (Read $skipped bytes)")
+                                    AppLogger.error("[$reqId] Chk $index: Header read failed (Got $skipped bytes)")
                                 }
                             }
                         }
                     } catch (e: Exception) {
                         if (e !is CancellationException) {
-                            AppLogger.error("[$reqId] Processing Error", e)
+                            AppLogger.error("[$reqId] Reader Exception", e)
                         }
                     } finally {
                         try { readFd.close() } catch (e: Exception) {}
@@ -195,7 +203,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     callback.done()
                     AppLogger.log("[$reqId] DONE")
                 } else {
-                    AppLogger.log("[$reqId] SESSION CANCELLED")
+                    AppLogger.log("[$reqId] CANCELLED")
                 }
             }
         }
@@ -220,8 +228,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         if (pkg.isEmpty()) return
         try {
             var t: TextToSpeech? = null
-            t = TextToSpeech(this, { if (it == TextToSpeech.SUCCESS) onReady(t!!) }, pkg)
-        } catch (e: Exception) {}
+            t = TextToSpeech(this, { 
+                if (it == TextToSpeech.SUCCESS) {
+                    AppLogger.log("TTS Init Success: $pkg")
+                    onReady(t!!) 
+                } else {
+                    AppLogger.error("TTS Init Failed: $pkg (Code $it)")
+                }
+            }, pkg)
+        } catch (e: Exception) {
+            AppLogger.error("TTS Init Exception: $pkg", e)
+        }
     }
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int = TextToSpeech.LANG_COUNTRY_AVAILABLE
@@ -229,6 +246,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onDestroy() {
         super.onDestroy()
+        AppLogger.log("Service Destroyed")
         serviceJob.cancel()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }

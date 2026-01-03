@@ -20,49 +20,66 @@ object EngineScanner {
     private var scanJob: Job? = null
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
-        if (scanJob?.isActive == true) return
+        if (scanJob?.isActive == true) {
+            AppLogger.log("Scanner: Already running")
+            return
+        }
 
+        AppLogger.log("Scanner: Starting full scan...")
         scanJob = CoroutineScope(Dispatchers.IO).launch {
-            val appContext = context.applicationContext
-            val intent = Intent("android.intent.action.TTS_SERVICE")
-            val resolveInfos = appContext.packageManager.queryIntentServices(intent, 0)
+            try {
+                val appContext = context.applicationContext
+                val intent = Intent("android.intent.action.TTS_SERVICE")
+                val resolveInfos = appContext.packageManager.queryIntentServices(intent, 0)
 
-            val blockedEngines = listOf(appContext.packageName, "com.vnspeak.autotts")
-            val engines = resolveInfos.map { it.serviceInfo.packageName }
-                .filter { !blockedEngines.contains(it) }
-                .distinct()
+                val blockedEngines = listOf(appContext.packageName, "com.vnspeak.autotts")
+                val engines = resolveInfos.map { it.serviceInfo.packageName }
+                    .filter { !blockedEngines.contains(it) }
+                    .distinct()
 
-            if (engines.isEmpty()) {
+                if (engines.isEmpty()) {
+                    AppLogger.log("Scanner: No engines found")
+                    finishScan(onComplete)
+                    return@launch
+                }
+                
+                AppLogger.log("Scanner: Found ${engines.size} engines: $engines")
+
+                for (pkg in engines) {
+                    if (!isActive) break
+                    scanSingleEngine(appContext, pkg)
+                }
+            } catch (e: Exception) {
+                AppLogger.error("Scanner: Fatal Error", e)
+            } finally {
+                AppLogger.log("Scanner: Finished")
                 finishScan(onComplete)
-                return@launch
             }
-
-            for (pkg in engines) {
-                if (!isActive) break
-                scanSingleEngine(appContext, pkg)
-            }
-
-            finishScan(onComplete)
         }
     }
 
     private suspend fun scanSingleEngine(context: Context, pkg: String) {
         var tts: TextToSpeech? = null
         try {
+            AppLogger.log("Scanner: Probing $pkg...")
             tts = initTTS(context, pkg)
             
             if (tts != null) {
                 val rate = probeEngine(context, tts, pkg)
                 if (rate > 0) {
                     saveRate(context, pkg, rate)
+                    AppLogger.log("Scanner: $pkg -> Detected $rate Hz")
                 } else {
                     saveFallback(context, pkg)
+                    AppLogger.log("Scanner: $pkg -> Failed (Default 22050)")
                 }
             } else {
                 saveFallback(context, pkg)
+                AppLogger.error("Scanner: Could not init $pkg")
             }
         } catch (e: Exception) {
             saveFallback(context, pkg)
+            AppLogger.error("Scanner: Error probing $pkg", e)
         } finally {
             try { tts?.shutdown() } catch (e: Exception) {}
         }
@@ -119,7 +136,7 @@ object EngineScanner {
                 return@withContext readRate(tempFile)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            AppLogger.error("Probe Error", e)
         } finally {
             try { tempFile.delete() } catch (e: Exception) {}
         }
