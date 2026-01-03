@@ -7,10 +7,11 @@ import kotlinx.coroutines.isActive
 import java.io.InputStream
 import kotlin.math.min
 
+// Added reqId to identify logs
 class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
 
     private var sonic: Sonic? = null
-    private val chunkReadBuffer = ByteArray(8192)
+    private val chunkReadBuffer = ByteArray(4096)
     private val chunkWriteBuffer = ByteArray(4096)
     
     // Stats for logging
@@ -20,15 +21,13 @@ class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
     init {
         sonic = Sonic(inputHz, 1)
         
+        // Calculate Resample Ratio
         val resampleRatio = inputHz.toFloat() / outputHz.toFloat()
         
         sonic?.rate = resampleRatio
-        sonic?.quality = 0
+        sonic?.quality = 0 
         
-        // Log the Ratio calculation
-        // If Ratio is 1.0, Input = Output (No Distortion)
-        // If Ratio < 1.0 (e.g., 0.66), Input < Output (Upsampling)
-        // If Ratio > 1.0, Input > Output (Downsampling)
+        // Optional: Log init params to check logic
         // AppLogger.log("[$reqId] Proc Init: In=$inputHz Out=$outputHz Ratio=$resampleRatio")
     }
 
@@ -44,12 +43,12 @@ class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
         val s = sonic ?: return
 
         while (scope.isActive) {
+            // Read raw PCM (Service already skipped the header)
             val bytesRead = try { inputStream.read(chunkReadBuffer) } catch (e: Exception) { -1 }
             if (bytesRead == -1) break
 
             if (bytesRead > 0) {
                 totalBytesRead += bytesRead
-                // Feed Raw Data
                 s.writeBytesToStream(chunkReadBuffer, bytesRead)
 
                 if (!drainToCallback(callback, scope)) break
@@ -59,8 +58,8 @@ class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
         s.flushStream()
         drainToCallback(callback, scope)
         
-        // Log Summary
-        AppLogger.log("[$reqId] Stream End: Read=$totalBytesRead bytes, Wrote=$totalBytesWritten bytes")
+        // Final Log Summary: Useful to detect "Speeding Up" (if Wrote is > 3x Read)
+        AppLogger.log("[$reqId] Stream End: Read=$totalBytesRead, Wrote=$totalBytesWritten")
     }
 
     private fun drainToCallback(callback: SynthesisCallback, scope: CoroutineScope): Boolean {
@@ -76,7 +75,7 @@ class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
             if (bytesRead > 0) {
                 val ret = callback.audioAvailable(chunkWriteBuffer, 0, bytesRead)
                 if (ret == TextToSpeech.ERROR) {
-                    AppLogger.error("[$reqId] AudioTrack Write Error!")
+                    AppLogger.error("[$reqId] AudioTrack Write Failed")
                     return false
                 }
                 totalBytesWritten += bytesRead

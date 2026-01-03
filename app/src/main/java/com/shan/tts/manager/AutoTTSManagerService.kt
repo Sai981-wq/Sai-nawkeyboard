@@ -26,15 +26,19 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     private lateinit var prefs: SharedPreferences
     private val PREF_NAME = "TTS_CONFIG"
-    private val TARGET_HZ = 24000 // Fixed Output
+    
+    // Fixed Output Rate to keep AudioTrack stable
+    private val TARGET_HZ = 24000 
 
     private val serviceJob = SupervisorJob()
     private var currentSessionJob: Job? = null
+    
+    // Track active pipe to force close on stop
     private var activeReadFd: ParcelFileDescriptor? = null
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service Started (DEBUG MODE) ===")
+        AppLogger.log("=== Service Started (v11 Final Stable + Logs) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -53,20 +57,12 @@ class AutoTTSManagerService : TextToSpeechService() {
     }
 
     override fun onStop() {
-        AppLogger.log("Service: onStop Called")
+        // Critical: Cancel job AND close pipes to prevent deadlock (Silence on Swipe)
         currentSessionJob?.cancel()
         currentSessionJob = null
-        
-        // Force Close Pipe to prevent Deadlock
-        if (activeReadFd != null) {
-            try { 
-                activeReadFd?.close()
-                AppLogger.log("Pipe: Force Closed on Stop")
-            } catch (e: Exception) {
-                AppLogger.error("Pipe Close Error", e)
-            }
-        }
+        try { activeReadFd?.close() } catch (e: Exception) {}
         activeReadFd = null
+        
         stopSafe(shanEngine)
         stopSafe(burmeseEngine)
         stopSafe(englishEngine)
@@ -82,7 +78,7 @@ class AutoTTSManagerService : TextToSpeechService() {
         currentSessionJob?.cancel()
         val sessionJob = Job()
         currentSessionJob = sessionJob
-
+        
         // Clean up old pipe
         try { activeReadFd?.close() } catch (e: Exception) {}
         
@@ -98,16 +94,17 @@ class AutoTTSManagerService : TextToSpeechService() {
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
         val reqId = UUID.randomUUID().toString().substring(0, 4)
 
+        // Log request start
         AppLogger.log("[$reqId] NEW REQ: '${text.take(15)}...' Chunks=${chunks.size}")
 
         runBlocking(sessionJob) {
             try {
-                // Fixed Output Rate
+                // Fixed Output Rate (24kHz)
                 callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
                 for ((index, chunk) in chunks.withIndex()) {
                     if (!isActive) {
-                        AppLogger.log("[$reqId] Job Cancelled at Chunk $index")
+                        AppLogger.log("[$reqId] Cancelled at Chunk $index")
                         break
                     }
                     if (chunk.text.isBlank()) continue
@@ -122,13 +119,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val activePkg = if (engine != null) currentPkg else englishPkg
 
                     if (activeEngine == null) {
-                        AppLogger.error("[$reqId] No Engine for ${chunk.lang}")
-                        continue
+                         AppLogger.error("[$reqId] No Engine found for ${chunk.lang}")
+                         continue
                     }
 
-                    // Get Input Hz
-                    val inputHz = prefs.getInt("RATE_$activePkg", 22050)
-                    AppLogger.log("[$reqId] Chk $index: $inputHz Hz -> $TARGET_HZ Hz ($activePkg)")
+                    // Get Input Hz from Scanner Prefs
+                    var inputHz = prefs.getInt("RATE_$activePkg", 22050)
+                    if (inputHz < 8000) inputHz = 22050
                     
                     val pipe = ParcelFileDescriptor.createPipe()
                     val readFd = pipe[0]
@@ -137,18 +134,16 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                     activeReadFd = readFd 
 
-                    activeEngine.setSpeechRate(1.0f)
+                    activeEngine.setSpeechRate(1.0f) 
                     activeEngine.setPitch(1.0f)
 
                     val writerJob = launch(Dispatchers.IO) {
                         val params = Bundle()
                         params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                         try {
-                            // AppLogger.log("[$reqId] Writer Start")
                             activeEngine.synthesizeToFile(chunk.text, params, writeFd, uuid)
-                            // AppLogger.log("[$reqId] Writer Done")
                         } catch (e: Exception) {
-                            AppLogger.error("[$reqId] Writer Failed", e)
+                           AppLogger.error("[$reqId] Writer Error", e)
                         } finally {
                             try { writeFd.close() } catch (e: Exception) {}
                         }
@@ -157,19 +152,35 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try {
                         withContext(Dispatchers.IO) {
                             FileInputStream(readFd.fileDescriptor).use { fis ->
-                                val processor = AudioProcessor(inputHz, TARGET_HZ, reqId)
-                                try {
-                                    processor.setSpeed(finalSpeed)
-                                    processor.setPitch(finalPitch)
-                                    processor.processStream(fis, callback, this)
-                                } finally {
-                                    processor.release()
+                                // SKIP WAV HEADER (44 Bytes) - To prevent noise/speedup
+                                val header = ByteArray(44)
+                                var skipped = 0
+                                while (skipped < 44 && isActive) {
+                                    val count = fis.read(header, skipped, 44 - skipped)
+                                    if (count < 0) break
+                                    skipped += count
+                                }
+                                
+                                if (skipped == 44) {
+                                    AppLogger.log("[$reqId] Chk $index: $inputHz -> $TARGET_HZ Hz ($activePkg)")
+                                    
+                                    // Create FRESH processor for every chunk + Pass reqId for logging
+                                    val processor = AudioProcessor(inputHz, TARGET_HZ, reqId)
+                                    try {
+                                        processor.setSpeed(finalSpeed)
+                                        processor.setPitch(finalPitch)
+                                        processor.processStream(fis, callback, this)
+                                    } finally {
+                                        processor.release()
+                                    }
+                                } else {
+                                    AppLogger.error("[$reqId] Header Skip Failed (Read $skipped bytes)")
                                 }
                             }
                         }
                     } catch (e: Exception) {
                         if (e !is CancellationException) {
-                            AppLogger.error("[$reqId] Reader Error", e)
+                            AppLogger.error("[$reqId] Processing Error", e)
                         }
                     } finally {
                         try { readFd.close() } catch (e: Exception) {}
@@ -178,13 +189,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
             } catch (e: Exception) {
-                AppLogger.error("[$reqId] Critical Error", e)
+                AppLogger.error("[$reqId] Critical Session Error", e)
             } finally {
                 if (isActive) {
                     callback.done()
                     AppLogger.log("[$reqId] DONE")
                 } else {
-                    AppLogger.log("[$reqId] CANCELLED")
+                    AppLogger.log("[$reqId] SESSION CANCELLED")
                 }
             }
         }
