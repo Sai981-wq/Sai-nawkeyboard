@@ -3,18 +3,27 @@ package com.shan.tts.manager
 import java.nio.ByteBuffer
 
 class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
-
     private var sonic: Sonic? = null
     private val TARGET_HZ = 24000 
 
     fun init() {
         sonic = Sonic(TARGET_HZ, channels)
         val resamplingRate = sampleRate.toFloat() / TARGET_HZ.toFloat()
-        
         sonic?.rate = resamplingRate
         sonic?.speed = 1.0f
         sonic?.pitch = 1.0f
         sonic?.volume = 1.0f
+        AppLogger.log("PROC: Initialized. In=$sampleRate, Out=$TARGET_HZ, Ratio=$resamplingRate")
+    }
+
+    fun reset() {
+        val currentRate = sonic?.getRate() ?: 1.0f
+        sonic = Sonic(TARGET_HZ, channels).apply {
+            this.setRate(currentRate)
+            this.setSpeed(1.0f)
+            this.setPitch(1.0f)
+        }
+        AppLogger.log("PROC: Sonic Reset performed for clean chunk transition.")
     }
 
     fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int {
@@ -44,19 +53,16 @@ class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
     }
 
     fun flushQueue() {
+        AppLogger.log("PROC: Flushing stream...")
         sonic?.flushStream()
     }
 
     fun release() {
+        AppLogger.log("PROC: Processor Released.")
         sonic = null
     }
 
-    fun setSpeed(speed: Float) {
-        sonic?.setSpeed(speed)
-    }
-
-    fun setPitch(pitch: Float) {
-        sonic?.setPitch(pitch)
-    }
+    fun setSpeed(speed: Float) { sonic?.setSpeed(speed) }
+    fun setPitch(pitch: Float) { sonic?.setPitch(pitch) }
 }
 
