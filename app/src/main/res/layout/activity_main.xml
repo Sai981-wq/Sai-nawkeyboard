@@ -1,204 +1,185 @@
-<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Copyright (C) 2014 wak
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the 'License');
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~   http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an 'AS IS' BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+ -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FAFAFA"
-    android:padding="16dp">
+    android:paddingLeft="20dp"
+    android:paddingRight="20dp"
+    android:scrollbarStyle="outsideOverlay"
+    tools:context="com.github.wakhub.abstts.activity.MainActivity">
 
     <LinearLayout
-        android:layout_width="match_parent"
+        android:layout_width="fill_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:divider="@drawable/relax_divider"
+        android:orientation="vertical"
+        android:showDividers="middle">
 
-        <LinearLayout
+        <Space
+            android:layout_width="fill_parent"
+            android:layout_height="20dp" />
+
+        <EditText
+            android:id="@+id/edit_text"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:layout_marginBottom="24dp"
-            android:gravity="center">
-            
-            <TextView
-                android:layout_width="60dp"
-                android:layout_height="60dp"
-                android:text="🍒"
-                android:textSize="40sp"
-                android:gravity="center"
-                android:background="@drawable/bg_card"
-                android:elevation="4dp"
-                android:importantForAccessibility="no"/>
+            android:ems="3"
+            android:gravity="top"
+            android:inputType="textMultiLine"
+            android:selectAllOnFocus="true"
+            android:text="Welcome to Abstract Text-to-Speech." />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/app_name"
-                android:textSize="24sp"
-                android:textStyle="bold"
-                android:textColor="#C2185B"
-                android:layout_marginTop="10dp"
-                android:importantForAccessibility="yes"/>
-                
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Advanced Auto TTS Manager"
-                android:textSize="14sp"
-                android:textColor="#757575"/>
-        </LinearLayout>
-
-        <LinearLayout
+        <Button
+            android:id="@+id/speech_button"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="@drawable/bg_card"
-            android:padding="16dp"
-            android:layout_marginBottom="16dp"
-            android:elevation="2dp">
+            android:text="Speech" />
 
-            <TextView 
-                android:text="Shan Engine (ရှမ်း)" 
-                android:textStyle="bold" 
-                android:textColor="#C2185B"
-                android:textSize="16sp" 
-                android:layout_width="wrap_content" 
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:labelFor="@+id/spinnerShan"/>
+        <Spinner
+            android:id="@+id/languages_spinner"
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content" />
 
-            <Spinner 
-                android:id="@+id/spinnerShan" 
-                android:layout_width="match_parent" 
-                android:layout_height="50dp" 
-                android:background="@drawable/bg_spinner"
-                android:paddingStart="10dp"
-                android:layout_marginBottom="12dp"
-                android:contentDescription="Select Shan Engine"/>
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
+        <CheckBox
+            android:id="@+id/languages_use_default"
+            android:layout_width="200dp"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="@drawable/bg_card"
-            android:padding="16dp"
-            android:layout_marginBottom="16dp"
-            android:elevation="2dp">
+            android:checked="true"
+            android:text="Use Default Settings" />
 
-            <TextView 
-                android:text="Burmese Engine (ဗမာ)" 
-                android:textStyle="bold" 
-                android:textColor="#1976D2"
-                android:textSize="16sp" 
-                android:layout_width="wrap_content" 
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:labelFor="@+id/spinnerBurmese"/>
-
-            <Spinner 
-                android:id="@+id/spinnerBurmese" 
-                android:layout_width="match_parent" 
-                android:layout_height="50dp" 
-                android:background="@drawable/bg_spinner"
-                android:paddingStart="10dp"
-                android:layout_marginBottom="12dp"
-                android:contentDescription="Select Burmese Engine"/>
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="@drawable/bg_card"
-            android:padding="16dp"
-            android:layout_marginBottom="24dp"
-            android:elevation="2dp">
-
-            <TextView 
-                android:text="English Engine (အင်္ဂလိပ်)" 
-                android:textStyle="bold" 
-                android:textColor="#388E3C"
-                android:textSize="16sp" 
-                android:layout_width="wrap_content" 
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:labelFor="@+id/spinnerEnglish"/>
-
-            <Spinner 
-                android:id="@+id/spinnerEnglish" 
-                android:layout_width="match_parent" 
-                android:layout_height="50dp" 
-                android:background="@drawable/bg_spinner"
-                android:paddingStart="10dp"
-                android:layout_marginBottom="12dp"
-                android:contentDescription="Select English Engine"/>
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="@drawable/bg_card"
-            android:padding="16dp"
-            android:layout_marginBottom="20dp"
-            android:elevation="2dp">
-
-            <TextView 
-                android:text="Support Developer" 
-                android:textStyle="bold" 
-                android:textSize="16sp"
-                android:layout_width="wrap_content" 
-                android:layout_height="wrap_content"/>
-            
-            <TextView 
-                android:text="(ဖန်တီးသူကို ကူညီထောက်ပံ့ရန်)" 
-                android:textSize="12sp"
-                android:textColor="#757575"
-                android:layout_width="wrap_content" 
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="12dp"/>
-
-            <TextView
-                android:id="@+id/btnKpay"
-                android:layout_width="match_parent"
-                android:layout_height="50dp"
-                android:text="KBZ Pay: 09750091817 (Copy)"
-                android:background="@drawable/bg_spinner"
-                android:backgroundTint="#E8F5E9"
-                android:gravity="center_vertical"
-                android:paddingStart="15dp"
-                android:textSize="15sp"
-                android:textStyle="bold"
-                android:textColor="#2E7D32"
-                android:layout_marginBottom="10dp"
-                android:clickable="true"
-                android:focusable="true"
-                android:contentDescription="Donate via K B Z Pay, Double tap to copy number 0 9 7 5 0 0 9 1 8 1 7"/>
-
-            <TextView
-                android:id="@+id/btnWave"
-                android:layout_width="match_parent"
-                android:layout_height="50dp"
-                android:text="Wave Pay: 09750091817 (Copy)"
-                android:background="@drawable/bg_spinner"
-                android:backgroundTint="#FFF3E0"
-                android:gravity="center_vertical"
-                android:paddingStart="15dp"
-                android:textSize="15sp"
-                android:textStyle="bold"
-                android:textColor="#EF6C00"
-                android:clickable="true"
-                android:focusable="true"
-                android:contentDescription="Donate via Wave Pay, Double tap to copy number 0 9 7 5 0 0 9 1 8 1 7"/>
-            
-        </LinearLayout>
-        
         <TextView
-            android:text="Thank you for using Cherry SME TTS!"
-            android:layout_width="match_parent"
+            android:layout_width="fill_parent"
             android:layout_height="wrap_content"
-            android:gravity="center"
-            android:textColor="#9E9E9E"
-            android:textSize="12sp"/>
+            android:text="Volume"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <SeekBar
+                android:id="@+id/volume_seek_bar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_weight="5"
+                android:indeterminate="false"
+                android:max="100"
+                android:progress="100" />
+
+            <Button
+                android:id="@+id/volume_reset_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Reset" />
+
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:text="Rate"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+
+            <SeekBar
+                android:id="@+id/rate_seek_bar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_weight="5"
+                android:indeterminate="false"
+                android:max="40"
+                android:progress="10" />
+
+            <Button
+                android:id="@+id/rate_reset_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Reset" />
+
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:text="Pitch"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+
+            <SeekBar
+                android:id="@+id/pitch_seek_bar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_weight="5"
+                android:indeterminate="false"
+                android:max="20"
+                android:progress="10" />
+
+            <Button
+                android:id="@+id/pitch_reset_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Reset" />
+
+        </LinearLayout>
+
+
+        <TextView
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:text="Pan"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content">
+
+
+            <SeekBar
+                android:id="@+id/pan_seek_bar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_weight="5"
+                android:indeterminate="false"
+                android:max="100"
+                android:progress="50" />
+
+            <Button
+                android:id="@+id/pan_reset_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Reset" />
+
+        </LinearLayout>
 
     </LinearLayout>
-</ScrollView>
 
+</ScrollView>

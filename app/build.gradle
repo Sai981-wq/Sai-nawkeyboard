@@ -1,43 +1,44 @@
-plugins {
-    id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
-}
+apply plugin: 'com.android.application'
 
 android {
-    namespace 'com.shan.tts.manager'
-    compileSdk 34
+    compileSdkVersion 19
+    buildToolsVersion '19.1.0'
 
     defaultConfig {
-        applicationId "com.shan.tts.manager"
-        minSdk 24
-        targetSdk 34
-        
-        versionCode 4
-        versionName "1.3"
+        minSdkVersion 14
+        targetSdkVersion 19
+        versionCode 1
+        versionName "1.0.0"
     }
-
-    buildTypes {
+    signingConfigs {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-    
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+    buildTypes {
+        release {
+            debuggable false
+            runProguard true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.txt'
+            signingConfig signingConfigs.release
+        }
     }
-    
-    kotlinOptions {
-        jvmTarget = '1.8'
+    lintOptions {
+//        checkReleaseBuilds false
+//        abortOnError false
     }
 }
 
 dependencies {
-    implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'com.google.android.material:material:1.11.0'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    compile fileTree(dir: 'libs', include: ['*.jar'])
+    compile 'com.android.support:support-v4:19.0.1'
 }
 
+File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
+if (signingPropertiesFile.exists()) {
+    Properties props = new Properties()
+    props.load(new FileInputStream(signingPropertiesFile))
+    android.signingConfigs.release.storeFile = file(props.storeFile)
+    android.signingConfigs.release.storePassword = props.storePassword
+    android.signingConfigs.release.keyAlias = props.keyAlias
+    android.signingConfigs.release.keyPassword = props.keyPassword
+}
