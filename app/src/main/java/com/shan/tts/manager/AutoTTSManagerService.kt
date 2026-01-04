@@ -11,6 +11,9 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import kotlinx.coroutines.*
 import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.charset.Charset
 import java.util.Locale
 import java.util.UUID
 
@@ -31,7 +34,7 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("=== Service Started (v24: Unlimited Buffer) ===")
+        AppLogger.log("=== Service Started (v27: No Skipping) ===")
         try {
             prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
             val defEngine = getDefaultEngineFallback()
@@ -102,12 +105,13 @@ class AutoTTSManagerService : TextToSpeechService() {
                     val activePkg = if (engine != null) currentPkg else englishPkg
 
                     if (activeEngine == null) {
-                        AppLogger.error("[$reqId] No Engine for ${chunk.lang}")
+                        AppLogger.error("[$reqId] No Engine")
                         continue
                     }
 
+                    // User Prefs Hz (11000 ဆို 11000 ပဲ ယူမယ်)
                     var inputHz = prefs.getInt("RATE_$activePkg", 22050)
-                    if (inputHz < 16000) inputHz = 22050
+                    if (inputHz < 8000) inputHz = 22050
 
                     val pipe = ParcelFileDescriptor.createPipe()
                     val readFd = pipe[0]
@@ -133,13 +137,48 @@ class AutoTTSManagerService : TextToSpeechService() {
                     try {
                         withContext(Dispatchers.IO) {
                             FileInputStream(readFd.fileDescriptor).use { fis ->
-                                SonicStreamer.stream(
-                                    inputStream = fis,
-                                    callback = callback,
-                                    inputHz = inputHz,
-                                    outputHz = TARGET_HZ,
-                                    reqId = reqId
-                                )
+                                // 1. ပထမ 44 bytes ကို ဖတ်ပြီး စစ်မယ်
+                                val headerBuffer = ByteArray(44)
+                                var bytesRead = 0
+                                while (bytesRead < 44 && isActive) {
+                                    val count = fis.read(headerBuffer, bytesRead, 44 - bytesRead)
+                                    if (count < 0) break
+                                    bytesRead += count
+                                }
+
+                                if (bytesRead > 0) {
+                                    val isWav = if (bytesRead >= 4) {
+                                        val riff = String(headerBuffer, 0, 4, Charset.forName("ASCII"))
+                                        riff == "RIFF"
+                                    } else false
+
+                                    val finalHz: Int
+                                    val bytesToInject: ByteArray?
+
+                                    if (isWav && bytesRead == 44) {
+                                        // Header အစစ်ဆိုရင် Hz ယူမယ်၊ Header ကို ကျော်မယ်
+                                        val detected = ByteBuffer.wrap(headerBuffer).order(ByteOrder.LITTLE_ENDIAN).getInt(24)
+                                        finalHz = if (detected in 8000..48000) detected else inputHz
+                                        bytesToInject = null 
+                                        AppLogger.log("[$reqId] WAV Header Found: $detected Hz")
+                                    } else {
+                                        // Raw Audio ဆိုရင် Pref Hz ယူမယ်
+                                        finalHz = inputHz
+                                        // အရေးကြီးဆုံး: ဖတ်ထားတဲ့ 44 bytes ကို လွှင့်မပစ်ဘဲ ပြန်ထည့်ပေးမယ်
+                                        bytesToInject = headerBuffer.copyOfRange(0, bytesRead)
+                                        AppLogger.log("[$reqId] Raw Audio Detected: $inputHz Hz (Injecting Header Bytes)")
+                                    }
+
+                                    // SonicStreamer ဆီ ပို့မယ်
+                                    SonicStreamer.stream(
+                                        inputStream = fis,
+                                        initialBytes = bytesToInject, // ဒီမှာ ပြန်ထည့်ပေးလိုက်ပြီ
+                                        callback = callback,
+                                        inputHz = finalHz,
+                                        outputHz = TARGET_HZ,
+                                        reqId = reqId
+                                    )
+                                }
                             }
                         }
                     } catch (e: Exception) {

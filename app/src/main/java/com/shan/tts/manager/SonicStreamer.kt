@@ -4,11 +4,14 @@ import android.speech.tts.SynthesisCallback
 import android.speech.tts.TextToSpeech
 import kotlinx.coroutines.*
 import java.io.InputStream
+import java.io.SequenceInputStream
+import java.io.ByteArrayInputStream
 
 object SonicStreamer {
 
     suspend fun stream(
         inputStream: InputStream,
+        initialBytes: ByteArray?, // ပြန်ထည့်မယ့် Bytes (Inject)
         callback: SynthesisCallback,
         inputHz: Int,
         outputHz: Int,
@@ -23,7 +26,14 @@ object SonicStreamer {
         sonic.pitch = 1.0f
         sonic.quality = 0
 
-        // Initial capacity, but will grow as needed
+        // initialBytes ရှိရင် inputStream နဲ့ ပေါင်းပြီး Stream တစ်ခုတည်းဖြစ်အောင် လုပ်မယ်
+        val combinedStream = if (initialBytes != null && initialBytes.isNotEmpty()) {
+            SequenceInputStream(ByteArrayInputStream(initialBytes), inputStream)
+        } else {
+            inputStream
+        }
+
+        // Dynamic Buffer
         var currentBufferSize = 64 * 1024 
         val inputBuffer = ByteArray(currentBufferSize)
         var outputBuffer = ByteArray(currentBufferSize)
@@ -33,8 +43,9 @@ object SonicStreamer {
 
         try {
             while (isActive) {
+                // Combined Stream ကနေ ဖတ်မယ်
                 val bytesRead = try {
-                    inputStream.read(inputBuffer)
+                    combinedStream.read(inputBuffer)
                 } catch (e: Exception) { -1 }
 
                 if (bytesRead == -1) break
@@ -49,9 +60,10 @@ object SonicStreamer {
 
                         val requiredBytes = availableSamples * 2
 
+                        // Dynamic Buffer Resizing
                         if (outputBuffer.size < requiredBytes) {
                             outputBuffer = ByteArray(requiredBytes)
-                            AppLogger.log("[$reqId] Buffer Expanded: ${outputBuffer.size} bytes")
+                            AppLogger.log("[$reqId] Buffer Expanded: ${outputBuffer.size}")
                         }
 
                         val processedBytes = sonic.readBytesFromStream(outputBuffer, requiredBytes)
@@ -70,16 +82,13 @@ object SonicStreamer {
                 }
             }
 
+            // Final Flush
             sonic.flushStream()
             while (isActive) {
                 val available = sonic.samplesAvailable()
                 if (available <= 0) break
-
                 val requiredBytes = available * 2
-                
-                if (outputBuffer.size < requiredBytes) {
-                    outputBuffer = ByteArray(requiredBytes)
-                }
+                if (outputBuffer.size < requiredBytes) outputBuffer = ByteArray(requiredBytes)
 
                 val processedBytes = sonic.readBytesFromStream(outputBuffer, requiredBytes)
                 if (processedBytes > 0) {
@@ -96,3 +105,4 @@ object SonicStreamer {
         }
     }
 }
+
