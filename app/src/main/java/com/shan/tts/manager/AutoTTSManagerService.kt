@@ -77,14 +77,25 @@ class AutoTTSManagerService : TextToSpeechService() {
         try {
             callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
-            val inputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
-            val outputBuffer = ByteBuffer.allocateDirect(32768).order(ByteOrder.LITTLE_ENDIAN)
-            val chunkReadBuffer = ByteArray(16384)
-            val chunkWriteBuffer = ByteArray(32768)
+            val inputBuffer = ByteBuffer.allocateDirect(65536).order(ByteOrder.LITTLE_ENDIAN)
+            val outputBuffer = ByteBuffer.allocateDirect(65536).order(ByteOrder.LITTLE_ENDIAN)
+            val chunkReadBuffer = ByteArray(32768)
+            val chunkWriteBuffer = ByteArray(65536)
 
             for (chunk in chunks) {
                 if (isStopped.get()) break
                 if (chunk.text.isBlank()) continue
+
+                val engine = when (chunk.lang) {
+                    "SHAN" -> shanEngine
+                    "MYANMAR" -> burmeseEngine
+                    else -> englishEngine
+                } ?: englishEngine
+
+                if (engine == null) {
+                    AppLogger.log("Engine not ready for: ${chunk.lang}")
+                    continue
+                }
 
                 val currentPkg = when (chunk.lang) {
                     "SHAN" -> shanPkg
@@ -105,22 +116,21 @@ class AutoTTSManagerService : TextToSpeechService() {
                 sharedProcessor?.setPitch(finalPitch)
 
                 val pipe = ParcelFileDescriptor.createPipe()
-                val engine = when (chunk.lang) {
-                    "SHAN" -> shanEngine
-                    "MYANMAR" -> burmeseEngine
-                    else -> englishEngine
-                } ?: englishEngine ?: continue
+                val writeFd = pipe[1]
+                val readFd = pipe[0]
 
                 Thread {
                     try {
-                        engine.synthesizeToFile(chunk.text, Bundle(), pipe[1], UUID.randomUUID().toString())
+                        engine.synthesizeToFile(chunk.text, Bundle(), writeFd, UUID.randomUUID().toString())
+                    } catch (e: Exception) {
+                        AppLogger.error("Synthesis Writing Error", e)
                     } finally {
-                        try { pipe[1].close() } catch (e: Exception) {}
+                        try { writeFd.close() } catch (e: Exception) {}
                     }
                 }.start()
 
                 try {
-                    ParcelFileDescriptor.AutoCloseInputStream(pipe[0]).use { fis ->
+                    ParcelFileDescriptor.AutoCloseInputStream(readFd).use { fis ->
                         val headerDiscard = ByteArray(44)
                         var hRead = 0
                         while (hRead < 44) {
@@ -135,16 +145,17 @@ class AutoTTSManagerService : TextToSpeechService() {
 
                             inputBuffer.clear()
                             inputBuffer.put(chunkReadBuffer, 0, bytesRead)
-                            inputBuffer.flip() // Critical: Prepare for AudioProcessor to Read
+                            inputBuffer.flip() 
                             
                             outputBuffer.clear()
                             val processedBytes = sharedProcessor?.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity()) ?: 0
                             
                             if (processedBytes > 0) {
-                                // outputBuffer is already flipped in sharedProcessor.process()
+                                // outputBuffer is already flipped in AudioProcessor.process()
                                 outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
                                 var offset = 0
                                 while (offset < processedBytes) {
+                                    if (isStopped.get()) break
                                     val len = min(processedBytes - offset, callback.maxBufferSize)
                                     callback.audioAvailable(chunkWriteBuffer, offset, len)
                                     offset += len
@@ -153,6 +164,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                     
+                    // Flush remaining audio in Sonic for this chunk
                     sharedProcessor?.flushQueue()
                     var fBytes: Int
                     do {
@@ -165,11 +177,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                     } while (fBytes > 0)
 
                 } catch (e: Exception) {
-                    AppLogger.error("Reader Error", e)
+                    AppLogger.error("Chunk Processing Error", e)
                 }
             }
         } catch (e: Exception) { 
-            AppLogger.error("Critical Error", e) 
+            AppLogger.error("Synthesize Final Error", e) 
         } finally {
             callback.done()
         }
@@ -181,20 +193,29 @@ class AutoTTSManagerService : TextToSpeechService() {
             val p = tts.defaultEngine; tts.shutdown(); p ?: "com.google.android.tts"
         } catch (e: Exception) { "com.google.android.tts" }
     }
+
     private fun getPkg(key: String, list: List<String>, def: String): String {
         val p = prefs.getString(key, "")
         if (!p.isNullOrEmpty() && isInstalled(p)) return p
         for (i in list) if (isInstalled(i)) return i
         return def
     }
+
     private fun isInstalled(pkg: String): Boolean {
         return try { packageManager.getPackageInfo(pkg, 0); true } catch (e: Exception) { false }
     }
+
     private fun initTTS(pkg: String, loc: Locale, onReady: (TextToSpeech) -> Unit) {
         if (pkg.isEmpty()) return
-        TextToSpeech(this, { if (it == TextToSpeech.SUCCESS) onReady(shanEngine!!) }, pkg).apply {
-            language = loc
-        }
+        var ttsInstance: TextToSpeech? = null
+        ttsInstance = TextToSpeech(this, { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                ttsInstance?.let {
+                    it.language = loc
+                    onReady(it)
+                }
+            }
+        }, pkg)
     }
 
     override fun onGetLanguage(): Array<String> = arrayOf("eng", "USA", "")
@@ -204,6 +225,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     override fun onDestroy() {
         super.onDestroy()
         sharedProcessor?.release()
+        sharedProcessor = null
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 }

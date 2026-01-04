@@ -22,12 +22,14 @@ class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
     fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int {
         val s = sonic ?: return 0
         
+        // Input logic
         if (len > 0 && inBuffer != null && inBuffer.hasRemaining()) {
             val bytes = ByteArray(inBuffer.remaining())
             inBuffer.get(bytes)
             s.writeBytesToStream(bytes, bytes.size)
         }
 
+        // Output logic
         var actualRead = 0
         val availableBytes = s.samplesAvailable() * channels * 2
         
