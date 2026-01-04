@@ -4,21 +4,16 @@ object TTSUtils {
     private val SHAN_MARKERS = Regex("[\\u1075-\\u108F\\u1090-\\u1099\\uAA60-\\uAA7F]")
     private val MYANMAR_BLOCK = Regex("[\\u1000-\\u109F]")
     
-    // Space ခြားရန် Regex
     private val ENG_TO_MM = Regex("([a-zA-Z0-9])([\\u1000-\\u109F\\uAA60-\\uAA7F])")
     private val MM_TO_ENG = Regex("([\\u1000-\\u109F\\uAA60-\\uAA7F])([a-zA-Z0-9])")
 
     fun splitHelper(text: String): List<LangChunk> {
-        // Log: စာသားစဝင်လာချိန်
-        AppLogger.log("TTSUtils: Splitting Text -> '${text.take(20)}...'")
-        
         val list = ArrayList<LangChunk>()
         if (text.isBlank()) return list
 
-        // 1. Spacing Fix (Log if changes happen)
         var processedText = text.replace(ENG_TO_MM, "$1 $2")
         processedText = processedText.replace(MM_TO_ENG, "$1 $2")
-        
+
         if (text != processedText) {
             AppLogger.log("TTSUtils: Added Spaces -> '$processedText'")
         }
@@ -44,9 +39,7 @@ object TTSUtils {
             if (detected == currentLang) {
                 currentBuffer.append(part)
             } else {
-                // Log: ဘာသာစကား ပြောင်းလဲချိန်
                 AppLogger.log("TTSUtils: Lang Switch [$currentLang -> $detected] at '$part'")
-                
                 list.add(LangChunk(currentBuffer.toString(), currentLang))
                 currentBuffer = StringBuilder(part)
                 currentLang = detected
@@ -57,7 +50,6 @@ object TTSUtils {
             list.add(LangChunk(currentBuffer.toString(), currentLang))
         }
 
-        // Log: ရရှိလာသော အပိုင်းအရေအတွက်
         AppLogger.log("TTSUtils: Total Chunks -> ${list.size}")
         return list
     }
