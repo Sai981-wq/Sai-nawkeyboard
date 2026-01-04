@@ -1,89 +1,59 @@
 package com.shan.tts.manager
 
-import android.speech.tts.SynthesisCallback
-import android.speech.tts.TextToSpeech
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.isActive
-import java.io.InputStream
-import kotlin.math.min
+import java.nio.ByteBuffer
 
-class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
-
+class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
     private var sonic: Sonic? = null
-    private val chunkReadBuffer = ByteArray(8192)
-    private val chunkWriteBuffer = ByteArray(8192)
-    
-    // Statistics Logs
-    private var totalBytesRead = 0
-    private var totalBytesWritten = 0
+    private val TARGET_HZ = 24000 
 
-    init {
-        sonic = Sonic(inputHz, 1)
-        val resampleRatio = inputHz.toFloat() / outputHz.toFloat()
-        sonic?.rate = resampleRatio
-        sonic?.quality = 0 
-        // AppLogger.log("[$reqId] Processor Init: In=$inputHz Out=$outputHz Ratio=$resampleRatio")
+    fun init() {
+        sonic = Sonic(TARGET_HZ, channels)
+        val resamplingRate = sampleRate.toFloat() / TARGET_HZ.toFloat()
+        sonic?.rate = resamplingRate
+        sonic?.speed = 1.0f
+        sonic?.pitch = 1.0f
+        sonic?.volume = 1.0f
+        AppLogger.log("Processor: In=$sampleRate, Out=$TARGET_HZ, Rate=$resamplingRate")
     }
 
-    fun setSpeed(speed: Float) { sonic?.speed = speed }
-    fun setPitch(pitch: Float) { sonic?.pitch = pitch }
-
-    fun injectRawBytes(bytes: ByteArray, length: Int) {
-        if (length > 0) {
-            sonic?.writeBytesToStream(bytes, length)
-            totalBytesRead += length
+    fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int {
+        val s = sonic ?: return 0
+        
+        if (len > 0 && inBuffer != null) {
+            val bytes = ByteArray(len)
+            inBuffer.get(bytes)
+            s.writeBytesToStream(bytes, len)
         }
+
+        var actualRead = 0
+        val availableBytes = s.samplesAvailable() * channels * 2
+        if (availableBytes > 0) {
+            val readLen = kotlin.math.min(availableBytes, maxOut)
+            val outBytes = ByteArray(readLen)
+            actualRead = s.readBytesFromStream(outBytes, readLen)
+            if (actualRead > 0) {
+                outBuffer.clear()
+                outBuffer.put(outBytes, 0, actualRead)
+                outBuffer.flip()
+            }
+        }
+        return actualRead
     }
 
-    fun processStream(inputStream: InputStream, callback: SynthesisCallback, scope: CoroutineScope) {
-        val s = sonic ?: return
-
-        while (scope.isActive) {
-            val bytesRead = try { inputStream.read(chunkReadBuffer) } catch (e: Exception) { 
-                AppLogger.error("[$reqId] Stream Read Error", e)
-                -1 
-            }
-            if (bytesRead == -1) break
-
-            if (bytesRead > 0) {
-                totalBytesRead += bytesRead
-                s.writeBytesToStream(chunkReadBuffer, bytesRead)
-                if (!drainToCallback(callback, scope)) break
-            }
-        }
-        
-        s.flushStream()
-        drainToCallback(callback, scope)
-        
-        AppLogger.log("[$reqId] Stream Stats: Read=$totalBytesRead bytes -> Wrote=$totalBytesWritten bytes")
-    }
-
-    private fun drainToCallback(callback: SynthesisCallback, scope: CoroutineScope): Boolean {
-        val s = sonic ?: return true
-        
-        while (scope.isActive) {
-            val available = s.samplesAvailable() * 2
-            if (available <= 0) break
-
-            val toRead = min(available, chunkWriteBuffer.size)
-            val bytesRead = s.readBytesFromStream(chunkWriteBuffer, toRead)
-
-            if (bytesRead > 0) {
-                val ret = callback.audioAvailable(chunkWriteBuffer, 0, bytesRead)
-                if (ret == TextToSpeech.ERROR) {
-                    AppLogger.error("[$reqId] AudioTrack Write FAILED")
-                    return false
-                }
-                totalBytesWritten += bytesRead
-            } else {
-                break
-            }
-        }
-        return true
+    fun flushQueue() {
+        sonic?.flushStream()
     }
 
     fun release() {
         sonic = null
+    }
+
+    fun setSpeed(speed: Float) {
+        sonic?.setSpeed(speed)
+    }
+
+    fun setPitch(pitch: Float) {
+        sonic?.setPitch(pitch)
     }
 }
 
