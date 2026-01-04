@@ -34,20 +34,18 @@ class AutoTTSManagerService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("SVC: onCreate - Initializing Engines...")
-        try {
-            prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-            val def = getDefaultEngineFallback()
-            
-            shanPkg = getPkg("pref_shan_pkg", listOf("com.shan.tts", "com.espeak.ng"), def)
-            initTTS(shanPkg, Locale("shn", "MM")) { shanEngine = it; AppLogger.log("SVC: Shan Engine Ready ($shanPkg)") }
+        AppLogger.log("SVC: onCreate - Initializing engines.")
+        prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val def = getDefaultEngineFallback()
+        
+        shanPkg = getPkg("pref_shan_pkg", listOf("com.shan.tts", "com.espeak.ng"), def)
+        initTTS(shanPkg, Locale("shn", "MM")) { engine -> shanEngine = engine }
 
-            burmesePkg = getPkg("pref_burmese_pkg", listOf("org.saomaicenter.myanmartts", "com.google.android.tts"), def)
-            initTTS(burmesePkg, Locale("my", "MM")) { burmeseEngine = it; AppLogger.log("SVC: Burmese Engine Ready ($burmesePkg)") }
+        burmesePkg = getPkg("pref_burmese_pkg", listOf("org.saomaicenter.myanmartts", "com.google.android.tts"), def)
+        initTTS(burmesePkg, Locale("my", "MM")) { engine -> burmeseEngine = engine }
 
-            englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), def)
-            initTTS(englishPkg, Locale.US) { englishEngine = it; AppLogger.log("SVC: English Engine Ready ($englishPkg)") }
-        } catch (e: Exception) { AppLogger.error("SVC: Initialization Failed", e) }
+        englishPkg = getPkg("pref_english_pkg", listOf("com.google.android.tts", "es.codefactory.eloquencetts"), def)
+        initTTS(englishPkg, Locale.US) { engine -> englishEngine = engine }
     }
 
     override fun onStop() { 
@@ -60,12 +58,11 @@ class AutoTTSManagerService : TextToSpeechService() {
         val reqId = UUID.randomUUID().toString().substring(0, 4)
         isStopped.set(false)
 
-        val text = request.charSequenceText.toString()
-        val chunks = TTSUtils.splitHelper(text)
-        AppLogger.log("[$reqId] START: Chunks=${chunks.size}, TextLength=${text.length}")
-
+        val chunks = TTSUtils.splitHelper(request.charSequenceText.toString())
         val speed = (request.speechRate / 100.0f).coerceIn(0.1f, 4.0f)
         val pitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
+        
+        AppLogger.log("[$reqId] START: Chunks=${chunks.size}")
         callback.start(TARGET_HZ, AudioFormat.ENCODING_PCM_16BIT, 1)
 
         val inBuf = ByteBuffer.allocateDirect(65536).order(ByteOrder.LITTLE_ENDIAN)
@@ -74,16 +71,14 @@ class AutoTTSManagerService : TextToSpeechService() {
         val writeArr = ByteArray(65536)
 
         for ((idx, chunk) in chunks.withIndex()) {
-            if (isStopped.get()) { AppLogger.log("[$reqId] STOPPED: Interrupted during chunk $idx"); break }
+            if (isStopped.get()) break
             
             val engine = when(chunk.lang) { "SHAN" -> shanEngine; "MYANMAR" -> burmeseEngine; else -> englishEngine }
-            if (engine == null) { AppLogger.error("[$reqId] ERROR: No engine for ${chunk.lang}"); continue }
+            if (engine == null) { AppLogger.error("[$reqId] Engine null for ${chunk.lang}"); continue }
 
             val pkg = when(chunk.lang) { "SHAN" -> shanPkg; "MYANMAR" -> burmesePkg; else -> englishPkg }
             val hz = prefs.getInt("RATE_$pkg", 22050).let { if (it < 8000) 22050 else it }
             
-            AppLogger.log("[$reqId] CHUNK $idx: Lang=${chunk.lang}, Hz=$hz, Text='${chunk.text.take(20)}...'")
-
             val proc = processorCache.getOrPut(hz) { AudioProcessor(hz, 1).apply { init() } }
             proc.reset()
             proc.setSpeed(speed)
@@ -95,41 +90,38 @@ class AutoTTSManagerService : TextToSpeechService() {
             Thread {
                 try { 
                     engine.synthesizeToFile(chunk.text, Bundle(), pipe[1], UUID.randomUUID().toString()) 
-                } catch (e: Exception) {
-                    AppLogger.error("[$reqId] ENGINE WRITE ERROR", e)
-                } finally { 
-                    try { pipe[1].close() } catch (e: Exception) {} 
-                }
+                } catch (e: Exception) { AppLogger.error("[$reqId] Thread error", e) }
+                finally { try { pipe[1].close() } catch (e: Exception) {} }
             }.start()
 
-            var totalBytesRead = 0
-            var totalBytesOut = 0
-
             try {
+                var totalRead = 0
+                var totalOut = 0
                 ParcelFileDescriptor.AutoCloseInputStream(pipe[0]).use { fis ->
-                    val head = ByteArray(44)
+                    // Header Skip (44 bytes)
                     var hRead = 0
                     while (hRead < 44) {
-                        val c = fis.read(head, hRead, 44 - hRead)
-                        if (c < 0) break
-                        hRead += c
+                        val r = fis.read(writeArr, 0, 44 - hRead)
+                        if (r <= 0) break
+                        hRead += r
                     }
 
                     while (!isStopped.get()) {
                         val r = fis.read(readArr)
                         if (r <= 0) break
-                        totalBytesRead += r
+                        totalRead += r
                         
                         inBuf.clear(); inBuf.put(readArr, 0, r); inBuf.flip()
                         outBuf.clear()
                         
-                        val p = proc.process(inBuf, r, outBuf, outBuf.capacity())
-                        if (p > 0) {
-                            totalBytesOut += p
-                            outBuf.get(writeArr, 0, p)
+                        val pCount = proc.process(inBuf, r, outBuf, outBuf.capacity())
+                        if (pCount > 0) {
+                            totalOut += pCount
+                            outBuf.get(writeArr, 0, pCount)
                             var offset = 0
-                            while (offset < p) {
-                                val len = min(p - offset, callback.maxBufferSize)
+                            while (offset < pCount) {
+                                if (isStopped.get()) break
+                                val len = min(pCount - offset, callback.maxBufferSize)
                                 callback.audioAvailable(writeArr, offset, len)
                                 offset += len
                             }
@@ -137,27 +129,24 @@ class AutoTTSManagerService : TextToSpeechService() {
                     }
                 }
                 
-                proc.flushQueue()
-                var f: Int
-                do {
-                    outBuf.clear()
-                    f = proc.process(null, 0, outBuf, outBuf.capacity())
-                    if (f > 0) {
-                        totalBytesOut += f
-                        outBuf.get(writeArr, 0, f)
-                        callback.audioAvailable(writeArr, 0, f)
-                    }
-                } while (f > 0)
-                
-                val duration = System.currentTimeMillis() - startTime
-                AppLogger.log("[$reqId] CHUNK $idx DONE: Read=$totalBytesRead, Out=$totalBytesOut, Time=${duration}ms")
-
-            } catch (e: Exception) { 
-                AppLogger.error("[$reqId] READER ERROR at chunk $idx", e) 
-            }
+                if (!isStopped.get()) {
+                    proc.flushQueue()
+                    var f: Int
+                    do {
+                        outBuf.clear()
+                        f = proc.process(null, 0, outBuf, outBuf.capacity())
+                        if (f > 0) {
+                            totalOut += f
+                            outBuf.get(writeArr, 0, f)
+                            callback.audioAvailable(writeArr, 0, f)
+                        }
+                    } while (f > 0)
+                }
+                AppLogger.log("[$reqId] CHUNK $idx: Read=$totalRead, Out=$totalOut, Time=${System.currentTimeMillis() - startTime}ms")
+            } catch (e: Exception) { AppLogger.error("[$reqId] Loop Error", e) }
         }
-        AppLogger.log("[$reqId] FINISHED.")
         callback.done()
+        AppLogger.log("[$reqId] FINISHED.")
     }
 
     private fun getDefaultEngineFallback(): String {
@@ -179,8 +168,9 @@ class AutoTTSManagerService : TextToSpeechService() {
             if (status == TextToSpeech.SUCCESS) { 
                 t?.language = l
                 ready(t!!) 
+                AppLogger.log("SVC: Init success $p")
             } else {
-                AppLogger.error("SVC: Failed to init engine $p")
+                AppLogger.error("SVC: Init fail $p")
             }
         }, p)
     }
@@ -191,9 +181,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onDestroy() {
         super.onDestroy()
-        AppLogger.log("SVC: onDestroy - Cleaning up...")
+        AppLogger.log("SVC: onDestroy - Cleaning up.")
         processorCache.forEach { it.value.release() }
-        processorCache.clear()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 }
