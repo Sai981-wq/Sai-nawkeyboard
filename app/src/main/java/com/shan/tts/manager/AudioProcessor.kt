@@ -15,21 +15,17 @@ class AudioProcessor(private val sampleRate: Int, private val channels: Int) {
         sonic?.speed = 1.0f
         sonic?.pitch = 1.0f
         sonic?.volume = 1.0f
-        
-        AppLogger.log("Processor Init: In=$sampleRate, Out=$TARGET_HZ, Ratio=$resamplingRate")
     }
 
     fun process(inBuffer: ByteBuffer?, len: Int, outBuffer: ByteBuffer, maxOut: Int): Int {
         val s = sonic ?: return 0
         
-        // Input logic
         if (len > 0 && inBuffer != null && inBuffer.hasRemaining()) {
             val bytes = ByteArray(inBuffer.remaining())
             inBuffer.get(bytes)
             s.writeBytesToStream(bytes, bytes.size)
         }
 
-        // Output logic
         var actualRead = 0
         val availableBytes = s.samplesAvailable() * channels * 2
         

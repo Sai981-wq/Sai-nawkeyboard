@@ -32,9 +32,7 @@ class AutoTTSManagerService : TextToSpeechService() {
     private val TARGET_HZ = 24000
 
     private val isStopped = AtomicBoolean(false)
-    
-    @Volatile private var sharedProcessor: AudioProcessor? = null
-    @Volatile private var currentProcessorHz = 0
+    private val processorCache = HashMap<Int, AudioProcessor>()
 
     override fun onCreate() {
         super.onCreate()
@@ -71,7 +69,7 @@ class AutoTTSManagerService : TextToSpeechService() {
             return
         }
 
-        val finalSpeed = (request.speechRate / 100.0f).coerceIn(0.1f, 6.0f)
+        val finalSpeed = (request.speechRate / 100.0f).coerceIn(0.1f, 4.0f)
         val finalPitch = (request.pitch / 100.0f).coerceIn(0.5f, 2.0f)
 
         try {
@@ -90,12 +88,7 @@ class AutoTTSManagerService : TextToSpeechService() {
                     "SHAN" -> shanEngine
                     "MYANMAR" -> burmeseEngine
                     else -> englishEngine
-                } ?: englishEngine
-
-                if (engine == null) {
-                    AppLogger.log("Engine not ready for: ${chunk.lang}")
-                    continue
-                }
+                } ?: englishEngine ?: continue
 
                 val currentPkg = when (chunk.lang) {
                     "SHAN" -> shanPkg
@@ -106,14 +99,12 @@ class AutoTTSManagerService : TextToSpeechService() {
                 var engineHz = prefs.getInt("RATE_$currentPkg", 22050)
                 if (engineHz <= 0) engineHz = 22050 
 
-                if (sharedProcessor == null || currentProcessorHz != engineHz) {
-                    sharedProcessor?.release()
-                    sharedProcessor = AudioProcessor(engineHz, 1).apply { init() }
-                    currentProcessorHz = engineHz
+                val processor = processorCache.getOrPut(engineHz) {
+                    AudioProcessor(engineHz, 1).apply { init() }
                 }
                 
-                sharedProcessor?.setSpeed(finalSpeed)
-                sharedProcessor?.setPitch(finalPitch)
+                processor.setSpeed(finalSpeed)
+                processor.setPitch(finalPitch)
 
                 val pipe = ParcelFileDescriptor.createPipe()
                 val writeFd = pipe[1]
@@ -148,10 +139,9 @@ class AutoTTSManagerService : TextToSpeechService() {
                             inputBuffer.flip() 
                             
                             outputBuffer.clear()
-                            val processedBytes = sharedProcessor?.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity()) ?: 0
+                            val processedBytes = processor.process(inputBuffer, bytesRead, outputBuffer, outputBuffer.capacity())
                             
                             if (processedBytes > 0) {
-                                // outputBuffer is already flipped in AudioProcessor.process()
                                 outputBuffer.get(chunkWriteBuffer, 0, processedBytes)
                                 var offset = 0
                                 while (offset < processedBytes) {
@@ -164,12 +154,11 @@ class AutoTTSManagerService : TextToSpeechService() {
                         }
                     }
                     
-                    // Flush remaining audio in Sonic for this chunk
-                    sharedProcessor?.flushQueue()
+                    processor.flushQueue()
                     var fBytes: Int
                     do {
                         outputBuffer.clear()
-                        fBytes = sharedProcessor?.process(null, 0, outputBuffer, outputBuffer.capacity()) ?: 0
+                        fBytes = processor.process(null, 0, outputBuffer, outputBuffer.capacity())
                         if (fBytes > 0) {
                             outputBuffer.get(chunkWriteBuffer, 0, fBytes)
                             callback.audioAvailable(chunkWriteBuffer, 0, fBytes)
@@ -224,8 +213,8 @@ class AutoTTSManagerService : TextToSpeechService() {
     
     override fun onDestroy() {
         super.onDestroy()
-        sharedProcessor?.release()
-        sharedProcessor = null
+        processorCache.forEach { it.value.release() }
+        processorCache.clear()
         shanEngine?.shutdown(); burmeseEngine?.shutdown(); englishEngine?.shutdown()
     }
 }
