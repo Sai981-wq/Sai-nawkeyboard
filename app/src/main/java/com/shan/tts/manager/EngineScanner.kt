@@ -21,7 +21,7 @@ object EngineScanner {
 
     fun scanAllEngines(context: Context, onComplete: () -> Unit) {
         if (scanJob?.isActive == true) {
-            AppLogger.log("Scanner: Already running")
+            AppLogger.log("Scanner: Already running, ignoring request.")
             return
         }
 
@@ -37,12 +37,6 @@ object EngineScanner {
                     .filter { !blockedEngines.contains(it) }
                     .distinct()
 
-                if (engines.isEmpty()) {
-                    AppLogger.log("Scanner: No engines found")
-                    finishScan(onComplete)
-                    return@launch
-                }
-                
                 AppLogger.log("Scanner: Found ${engines.size} engines: $engines")
 
                 for (pkg in engines) {
@@ -61,7 +55,7 @@ object EngineScanner {
     private suspend fun scanSingleEngine(context: Context, pkg: String) {
         var tts: TextToSpeech? = null
         try {
-            AppLogger.log("Scanner: Probing $pkg...")
+            // AppLogger.log("Scanner: Probing $pkg...")
             tts = initTTS(context, pkg)
             
             if (tts != null) {
@@ -90,11 +84,7 @@ object EngineScanner {
             var tts: TextToSpeech? = null
             tts = TextToSpeech(context, { status ->
                 if (cont.isActive) {
-                    if (status == TextToSpeech.SUCCESS) {
-                        cont.resume(tts)
-                    } else {
-                        cont.resume(null)
-                    }
+                    if (status == TextToSpeech.SUCCESS) cont.resume(tts) else cont.resume(null)
                 }
             }, pkg)
         }
@@ -144,9 +134,7 @@ object EngineScanner {
     }
 
     private fun finishScan(onComplete: () -> Unit) {
-        CoroutineScope(Dispatchers.Main).launch {
-            onComplete()
-        }
+        CoroutineScope(Dispatchers.Main).launch { onComplete() }
     }
 
     private fun readRate(file: File): Int {
