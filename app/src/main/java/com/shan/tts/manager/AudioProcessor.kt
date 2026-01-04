@@ -12,16 +12,13 @@ class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
     private var sonic: Sonic? = null
     private val chunkReadBuffer = ByteArray(8192)
     private val chunkWriteBuffer = ByteArray(8192)
-    
-    private var totalBytesRead = 0
-    private var totalBytesWritten = 0
 
     init {
         sonic = Sonic(inputHz, 1)
         val resampleRatio = inputHz.toFloat() / outputHz.toFloat()
+        
         sonic?.rate = resampleRatio
-        sonic?.quality = 0
-        // AppLogger.log("[$reqId] Proc Init: Ratio=$resampleRatio")
+        sonic?.quality = 0 
     }
 
     fun setSpeed(speed: Float) { sonic?.speed = speed }
@@ -31,14 +28,10 @@ class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
         val s = sonic ?: return
 
         while (scope.isActive) {
-            val bytesRead = try { inputStream.read(chunkReadBuffer) } catch (e: Exception) { 
-                AppLogger.error("[$reqId] Stream Read Error", e)
-                -1 
-            }
+            val bytesRead = try { inputStream.read(chunkReadBuffer) } catch (e: Exception) { -1 }
             if (bytesRead == -1) break
 
             if (bytesRead > 0) {
-                totalBytesRead += bytesRead
                 s.writeBytesToStream(chunkReadBuffer, bytesRead)
                 if (!drainToCallback(callback, scope)) break
             }
@@ -46,8 +39,6 @@ class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
         
         s.flushStream()
         drainToCallback(callback, scope)
-        
-        AppLogger.log("[$reqId] Stream End: In=$totalBytesRead, Out=$totalBytesWritten")
     }
 
     private fun drainToCallback(callback: SynthesisCallback, scope: CoroutineScope): Boolean {
@@ -63,10 +54,9 @@ class AudioProcessor(inputHz: Int, outputHz: Int, private val reqId: String) {
             if (bytesRead > 0) {
                 val ret = callback.audioAvailable(chunkWriteBuffer, 0, bytesRead)
                 if (ret == TextToSpeech.ERROR) {
-                    AppLogger.error("[$reqId] AudioTrack Write FAILED")
+                    AppLogger.error("[$reqId] Write FAILED")
                     return false
                 }
-                totalBytesWritten += bytesRead
             } else {
                 break
             }
