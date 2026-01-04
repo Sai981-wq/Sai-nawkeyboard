@@ -1,6 +1,7 @@
 package com.cherry.sme.tts;
 
 import android.content.SharedPreferences;
+import android.media.AudioManager;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.speech.tts.SynthesisCallback;
@@ -15,7 +16,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private RemoteTextToSpeech burmeseEngine;
     private RemoteTextToSpeech englishEngine;
     
-    // Default Engine များ (User မရွေးရသေးခင် ယာယီသုံးရန်)
     private String defaultShanPkg = "com.shan.tts";
     private String defaultBurmesePkg = "org.saomaicenter.myanmartts";
     private String defaultEnglishPkg = "com.google.android.tts";
@@ -28,13 +28,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         
-        // Settings မှ User ရွေးထားသော Engine များကို ဖတ်ခြင်း
-        // "pref_engine_shan", "pref_engine_myanmar" စသည်တို့သည် SettingsActivity တွင် Key ပေးရမည့် နာမည်များဖြစ်သည်
         String shanPkg = prefs.getString("pref_engine_shan", defaultShanPkg);
         String burmesePkg = prefs.getString("pref_engine_myanmar", defaultBurmesePkg);
         String englishPkg = prefs.getString("pref_engine_english", defaultEnglishPkg);
 
-        // User ရွေးထားသော Engine များဖြင့် Initialize လုပ်ခြင်း
         shanEngine = new RemoteTextToSpeech(this, shanPkg);
         burmeseEngine = new RemoteTextToSpeech(this, burmesePkg);
         englishEngine = new RemoteTextToSpeech(this, englishPkg);
@@ -60,8 +57,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         stopRequested = false;
         String text = request.getText();
-        
-        // စာကြောင်းခွဲခြင်း (Logic မပြောင်းပါ)
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
 
         if (chunks.isEmpty()) {
@@ -75,7 +70,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
             RemoteTextToSpeech engine;
 
-            // ဘာသာစကားအလိုက် Engine ရွေးချယ်ခြင်း
             if (chunk.lang.equals("SHAN")) {
                 engine = shanEngine;
             } else if (chunk.lang.equals("MYANMAR")) {
@@ -84,16 +78,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 engine = englishEngine;
             }
 
-            // Engine မရှိလျှင် (သို့) ပျက်နေလျှင် ကျော်သွားမည်
             if (engine == null) continue;
 
             Bundle params = new Bundle();
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f);
+            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
             
             String utteranceId = "ID_" + System.currentTimeMillis();
             engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
-            // Blocking Loop (Proxy Method)
             try {
                 Thread.sleep(20);
                 while (engine.isSpeaking() && !stopRequested) {

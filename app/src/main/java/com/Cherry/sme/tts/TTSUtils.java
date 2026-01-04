@@ -5,8 +5,9 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 public class TTSUtils {
-    private static final Pattern SHAN_PATTERN = Pattern.compile("[\\u1075-\\u108F\\u1090-\\u109F\\uaa60-\\uaa7f]+");
-    private static final Pattern MYANMAR_PATTERN = Pattern.compile("[\\u1000-\\u109F]+");
+
+    private static final Pattern SHAN_PATTERN = Pattern.compile("[\\u1075-\\u108F\\u1090-\\u109F\\uaa60-\\uaa7f]");
+    private static final Pattern MYANMAR_PATTERN = Pattern.compile("[\\u1000-\\u109F]");
 
     public static class Chunk {
         public String text;
@@ -22,41 +23,22 @@ public class TTSUtils {
         List<Chunk> chunks = new ArrayList<>();
         if (text == null || text.isEmpty()) return chunks;
 
-        StringBuilder buffer = new StringBuilder();
-        String currentLang = "";
+        String[] words = text.split("\\s+");
 
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            String charStr = String.valueOf(c);
-
-            if (Character.isWhitespace(c)) {
-                buffer.append(c);
-                continue;
-            }
+        for (String word : words) {
+            if (word.trim().isEmpty()) continue;
 
             String detectedLang = "ENGLISH";
-            if (SHAN_PATTERN.matcher(charStr).find()) {
+
+            if (SHAN_PATTERN.matcher(word).find()) {
                 detectedLang = "SHAN";
-            } else if (MYANMAR_PATTERN.matcher(charStr).find()) {
+            } else if (MYANMAR_PATTERN.matcher(word).find()) {
                 detectedLang = "MYANMAR";
             }
 
-            if (buffer.length() == 0) {
-                currentLang = detectedLang;
-                buffer.append(c);
-            } else if (detectedLang.equals(currentLang)) {
-                buffer.append(c);
-            } else {
-                chunks.add(new Chunk(buffer.toString(), currentLang));
-                buffer.setLength(0);
-                buffer.append(c);
-                currentLang = detectedLang;
-            }
-        }
-
-        if (buffer.length() > 0) {
-            chunks.add(new Chunk(buffer.toString(), currentLang));
+            chunks.add(new Chunk(word, detectedLang));
         }
         return chunks;
     }
 }
+
