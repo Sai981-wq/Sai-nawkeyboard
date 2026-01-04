@@ -1,9 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<tts-engine xmlns:android="http://schemas.android.com/apk/res/android">
-    <voice
-        android:name="en-us"
-        android:gender="female"
-        android:age="adult"
-        android:language="eng"
-        android:country="USA" />
-</tts-engine>
+<tts-engine xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="com.cherry.sme.tts.MainActivity" />
+
