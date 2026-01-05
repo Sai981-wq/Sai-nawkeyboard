@@ -7,18 +7,19 @@ import android.speech.tts.UtteranceProgressListener;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-public class RemoteTextToSpeech extends TextToSpeech {
+public class RemoteTextToSpeech {
 
+    private TextToSpeech tts;
     private final String engineName;
     private volatile boolean isInitialized = false;
 
     public RemoteTextToSpeech(Context context, String engineName) {
-        super(context, status -> {
+        this.engineName = engineName;
+        tts = new TextToSpeech(context, status -> {
             if (status == TextToSpeech.SUCCESS) {
                 isInitialized = true;
             }
         }, engineName);
-        this.engineName = engineName;
     }
 
     public boolean isReady() {
@@ -26,12 +27,12 @@ public class RemoteTextToSpeech extends TextToSpeech {
     }
 
     public void speakAndWait(String text, Bundle params) {
-        if (!isInitialized) return;
+        if (!isInitialized || tts == null) return;
 
         final CountDownLatch latch = new CountDownLatch(1);
         String utteranceId = "ID_" + System.currentTimeMillis();
 
-        this.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override
             public void onStart(String utteranceId) {
             }
@@ -52,7 +53,7 @@ public class RemoteTextToSpeech extends TextToSpeech {
             }
         });
 
-        int result = this.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId);
+        int result = tts.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
         if (result == TextToSpeech.ERROR) {
             return;
@@ -69,12 +70,27 @@ public class RemoteTextToSpeech extends TextToSpeech {
         return engineName;
     }
 
-    @Override
     public void shutdown() {
-        try {
-            super.shutdown();
-        } catch (Exception e) {
+        if (tts != null) {
+            try {
+                tts.shutdown();
+            } catch (Exception e) {
+            }
         }
+    }
+
+    public void stop() {
+        if (tts != null) {
+            tts.stop();
+        }
+    }
+
+    public int setSpeechRate(float speechRate) {
+        return tts != null ? tts.setSpeechRate(speechRate) : TextToSpeech.ERROR;
+    }
+
+    public int setPitch(float pitch) {
+        return tts != null ? tts.setPitch(pitch) : TextToSpeech.ERROR;
     }
 }
 
