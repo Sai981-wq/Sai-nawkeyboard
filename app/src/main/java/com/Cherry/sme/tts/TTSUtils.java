@@ -23,39 +23,37 @@ public class TTSUtils {
         List<Chunk> chunks = new ArrayList<>();
         if (text == null || text.isEmpty()) return chunks;
 
-        String[] words = text.split("(?<=\\s)|(?=\\s)"); 
-        
         StringBuilder currentBuffer = new StringBuilder();
         String currentLang = null;
 
-        for (String word : words) {
-            if (word.isEmpty()) continue;
-            
-            if (word.trim().isEmpty()) {
-                if (currentLang != null) {
-                    currentBuffer.append(word);
-                }
-                continue;
-            }
+        int i = 0;
+        while (i < text.length()) {
+            int codePoint = text.codePointAt(i);
+            String currentChar = new String(Character.toChars(codePoint));
+            String detectedLang;
 
-            String detectedLang = "ENGLISH";
-            if (SHAN_PATTERN.matcher(word).find()) {
+            if (currentChar.trim().isEmpty()) {
+                detectedLang = (currentLang != null) ? currentLang : "ENGLISH";
+            } else if (SHAN_PATTERN.matcher(currentChar).find()) {
                 detectedLang = "SHAN";
-            } else if (MYANMAR_PATTERN.matcher(word).find()) {
+            } else if (MYANMAR_PATTERN.matcher(currentChar).find()) {
                 detectedLang = "MYANMAR";
+            } else {
+                detectedLang = "ENGLISH";
             }
 
             if (currentLang == null) {
                 currentLang = detectedLang;
-                currentBuffer.append(word);
+                currentBuffer.append(currentChar);
             } else if (currentLang.equals(detectedLang)) {
-                currentBuffer.append(word);
+                currentBuffer.append(currentChar);
             } else {
                 chunks.add(new Chunk(currentBuffer.toString(), currentLang));
                 currentBuffer.setLength(0);
-                currentBuffer.append(word);
+                currentBuffer.append(currentChar);
                 currentLang = detectedLang;
             }
+            i += Character.charCount(codePoint);
         }
 
         if (currentBuffer.length() > 0) {
