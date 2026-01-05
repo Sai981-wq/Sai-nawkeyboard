@@ -25,23 +25,23 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onCreate() {
         super.onCreate();
-        prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        prefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
 
         String shanPkg = prefs.getString("pref_engine_shan", defaultShanPkg);
         String burmesePkg = prefs.getString("pref_engine_myanmar", defaultBurmesePkg);
         String englishPkg = prefs.getString("pref_engine_english", defaultEnglishPkg);
 
-        shanEngine = new RemoteTextToSpeech(this, shanPkg);
-        burmeseEngine = new RemoteTextToSpeech(this, burmesePkg);
-        englishEngine = new RemoteTextToSpeech(this, englishPkg);
+        shanEngine = new RemoteTextToSpeech(getApplicationContext(), shanPkg);
+        burmeseEngine = new RemoteTextToSpeech(getApplicationContext(), burmesePkg);
+        englishEngine = new RemoteTextToSpeech(getApplicationContext(), englishPkg);
     }
 
     @Override
     public void onDestroy() {
-        super.onDestroy();
         if (shanEngine != null) shanEngine.shutdown();
         if (burmeseEngine != null) burmeseEngine.shutdown();
         if (englishEngine != null) englishEngine.shutdown();
+        super.onDestroy();
     }
 
     @Override
@@ -63,48 +63,44 @@ public class AutoTTSManagerService extends TextToSpeechService {
             return;
         }
 
-        Bundle requestParams = request.getParams();
+        int requestRate = request.getSpeechRate();
+        int requestPitch = request.getPitch();
+
+        callback.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1);
 
         for (TTSUtils.Chunk chunk : chunks) {
             if (stopRequested) break;
-            if (chunk.text.trim().isEmpty()) continue;
+            if (chunk.text == null || chunk.text.trim().isEmpty()) continue;
 
             RemoteTextToSpeech engine;
-            if (chunk.lang.equals("SHAN")) {
+            if ("SHAN".equals(chunk.lang)) {
                 engine = shanEngine;
-            } else if (chunk.lang.equals("MYANMAR")) {
+            } else if ("MYANMAR".equals(chunk.lang)) {
                 engine = burmeseEngine;
             } else {
                 engine = englishEngine;
             }
 
-            if (engine == null) continue;
+            if (engine == null || !engine.isReady()) continue;
+
+            engine.setSpeechRate(requestRate / 100.0f);
+            engine.setPitch(requestPitch / 100.0f);
 
             Bundle params = new Bundle();
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f);
 
+            Bundle requestParams = request.getParams();
             if (requestParams != null) {
                 String streamKey = TextToSpeech.Engine.KEY_PARAM_STREAM;
                 if (requestParams.containsKey(streamKey)) {
-                    Object streamValue = requestParams.get(streamKey);
-                    if (streamValue != null) {
-                        params.putString(streamKey, String.valueOf(streamValue));
-                    }
+                    params.putString(streamKey, requestParams.getString(streamKey));
                 }
             }
 
-            String utteranceId = "ID_" + System.currentTimeMillis();
-            engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
+            engine.speakAndWait(chunk.text, params);
 
             try {
-                Thread.sleep(60);
-                
-                while (engine.isSpeaking() && !stopRequested) {
-                    Thread.sleep(10);
-                }
-
-                Thread.sleep(40);
-
+                if (!stopRequested) Thread.sleep(20);
             } catch (InterruptedException e) {
                 break;
             }
