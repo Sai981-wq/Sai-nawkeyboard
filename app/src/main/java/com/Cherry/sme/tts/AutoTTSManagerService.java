@@ -38,10 +38,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     public void onDestroy() {
+        super.onDestroy();
         if (shanEngine != null) shanEngine.shutdown();
         if (burmeseEngine != null) burmeseEngine.shutdown();
         if (englishEngine != null) englishEngine.shutdown();
-        super.onDestroy();
     }
 
     @Override
@@ -63,43 +63,52 @@ public class AutoTTSManagerService extends TextToSpeechService {
             return;
         }
 
-        int requestRate = request.getSpeechRate();
-        int requestPitch = request.getPitch();
-
-        callback.start(16000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1);
+        float userRate = request.getSpeechRate() / 100.0f;
+        float userPitch = request.getPitch() / 100.0f;
 
         for (TTSUtils.Chunk chunk : chunks) {
             if (stopRequested) break;
-            if (chunk.text == null || chunk.text.trim().isEmpty()) continue;
+            if (chunk.text.trim().isEmpty()) continue;
 
             RemoteTextToSpeech engine;
-            if ("SHAN".equals(chunk.lang)) {
+            if (chunk.lang.equals("SHAN")) {
                 engine = shanEngine;
-            } else if ("MYANMAR".equals(chunk.lang)) {
+            } else if (chunk.lang.equals("MYANMAR")) {
                 engine = burmeseEngine;
             } else {
                 engine = englishEngine;
             }
 
-            if (engine == null || !engine.isReady()) continue;
+            if (engine == null) continue;
 
-            engine.setSpeechRate(requestRate / 100.0f);
-            engine.setPitch(requestPitch / 100.0f);
+            engine.setSpeechRate(userRate);
+            engine.setPitch(userPitch);
 
             Bundle params = new Bundle();
-            params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f);
+            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, 3);
+            
+            String utteranceId = "CHERRY_" + System.currentTimeMillis();
+            engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
-            Bundle requestParams = request.getParams();
-            if (requestParams != null) {
-                String streamKey = TextToSpeech.Engine.KEY_PARAM_STREAM;
-                if (requestParams.containsKey(streamKey)) {
-                    params.putString(streamKey, requestParams.getString(streamKey));
+            try {
+                int startTimeout = 0;
+                while (!engine.isSpeaking() && startTimeout < 40 && !stopRequested) {
+                    Thread.sleep(10);
+                    startTimeout++;
                 }
+
+                while (engine.isSpeaking() && !stopRequested) {
+                    Thread.sleep(10);
+                }
+
+                if (!stopRequested) {
+                    Thread.sleep(100); 
+                }
+
+            } catch (InterruptedException e) {
+                break;
             }
-
-            engine.speakAndWait(chunk.text, params);
         }
-
         callback.done();
     }
 
