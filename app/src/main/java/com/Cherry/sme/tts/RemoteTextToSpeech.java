@@ -12,14 +12,47 @@ public class RemoteTextToSpeech {
     private TextToSpeech tts;
     private final String engineName;
     private volatile boolean isInitialized = false;
+    private volatile CountDownLatch currentLatch;
 
     public RemoteTextToSpeech(Context context, String engineName) {
         this.engineName = engineName;
         tts = new TextToSpeech(context, status -> {
             if (status == TextToSpeech.SUCCESS) {
                 isInitialized = true;
+                setupListener();
             }
         }, engineName);
+    }
+
+    private void setupListener() {
+        if (tts == null) return;
+        
+        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override
+            public void onStart(String utteranceId) {
+            }
+
+            @Override
+            public void onDone(String utteranceId) {
+                if (currentLatch != null) {
+                    currentLatch.countDown();
+                }
+            }
+
+            @Override
+            public void onError(String utteranceId) {
+                if (currentLatch != null) {
+                    currentLatch.countDown();
+                }
+            }
+
+            @Override
+            public void onError(String utteranceId, int errorCode) {
+                if (currentLatch != null) {
+                    currentLatch.countDown();
+                }
+            }
+        });
     }
 
     public boolean isReady() {
@@ -29,29 +62,8 @@ public class RemoteTextToSpeech {
     public void speakAndWait(String text, Bundle params) {
         if (!isInitialized || tts == null) return;
 
-        final CountDownLatch latch = new CountDownLatch(1);
+        currentLatch = new CountDownLatch(1);
         String utteranceId = "ID_" + System.currentTimeMillis();
-
-        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override
-            public void onStart(String utteranceId) {
-            }
-
-            @Override
-            public void onDone(String utteranceId) {
-                latch.countDown();
-            }
-
-            @Override
-            public void onError(String utteranceId) {
-                latch.countDown();
-            }
-
-            @Override
-            public void onError(String utteranceId, int errorCode) {
-                latch.countDown();
-            }
-        });
 
         int result = tts.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
@@ -60,7 +72,7 @@ public class RemoteTextToSpeech {
         }
 
         try {
-            latch.await(60, TimeUnit.SECONDS);
+            currentLatch.await(5, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }

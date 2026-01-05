@@ -25,15 +25,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onCreate() {
         super.onCreate();
-        prefs = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
+        prefs = PreferenceManager.getDefaultSharedPreferences(this);
 
         String shanPkg = prefs.getString("pref_engine_shan", defaultShanPkg);
         String burmesePkg = prefs.getString("pref_engine_myanmar", defaultBurmesePkg);
         String englishPkg = prefs.getString("pref_engine_english", defaultEnglishPkg);
 
-        shanEngine = new RemoteTextToSpeech(getApplicationContext(), shanPkg);
-        burmeseEngine = new RemoteTextToSpeech(getApplicationContext(), burmesePkg);
-        englishEngine = new RemoteTextToSpeech(getApplicationContext(), englishPkg);
+        shanEngine = new RemoteTextToSpeech(this, shanPkg);
+        burmeseEngine = new RemoteTextToSpeech(this, burmesePkg);
+        englishEngine = new RemoteTextToSpeech(this, englishPkg);
     }
 
     @Override
@@ -98,12 +98,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
             }
 
             engine.speakAndWait(chunk.text, params);
-
-            try {
-                if (!stopRequested) Thread.sleep(20);
-            } catch (InterruptedException e) {
-                break;
-            }
         }
 
         callback.done();
