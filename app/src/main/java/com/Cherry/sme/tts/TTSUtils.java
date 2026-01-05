@@ -23,37 +23,39 @@ public class TTSUtils {
         List<Chunk> chunks = new ArrayList<>();
         if (text == null || text.isEmpty()) return chunks;
 
+        String[] words = text.split("(?<=\\s)|(?=\\s)|(?<=[\\u1000-\\u109F\\uAA60-\\uAA7F])(?=[^\\u1000-\\u109F\\uAA60-\\uAA7F])|(?<=[^\\u1000-\\u109F\\uAA60-\\uAA7F])(?=[\\u1000-\\u109F\\uAA60-\\uAA7F])");
+        
         StringBuilder currentBuffer = new StringBuilder();
         String currentLang = null;
 
-        int i = 0;
-        while (i < text.length()) {
-            int codePoint = text.codePointAt(i);
-            String currentChar = new String(Character.toChars(codePoint));
-            String detectedLang;
+        for (String word : words) {
+            if (word.isEmpty()) continue;
+            
+            if (word.trim().isEmpty()) {
+                if (currentLang != null) {
+                    currentBuffer.append(word);
+                }
+                continue;
+            }
 
-            if (currentChar.trim().isEmpty()) {
-                detectedLang = (currentLang != null) ? currentLang : "ENGLISH";
-            } else if (SHAN_PATTERN.matcher(currentChar).find()) {
+            String detectedLang = "ENGLISH";
+            if (SHAN_PATTERN.matcher(word).find()) {
                 detectedLang = "SHAN";
-            } else if (MYANMAR_PATTERN.matcher(currentChar).find()) {
+            } else if (MYANMAR_PATTERN.matcher(word).find()) {
                 detectedLang = "MYANMAR";
-            } else {
-                detectedLang = "ENGLISH";
             }
 
             if (currentLang == null) {
                 currentLang = detectedLang;
-                currentBuffer.append(currentChar);
+                currentBuffer.append(word);
             } else if (currentLang.equals(detectedLang)) {
-                currentBuffer.append(currentChar);
+                currentBuffer.append(word);
             } else {
                 chunks.add(new Chunk(currentBuffer.toString(), currentLang));
                 currentBuffer.setLength(0);
-                currentBuffer.append(currentChar);
+                currentBuffer.append(word);
                 currentLang = detectedLang;
             }
-            i += Character.charCount(codePoint);
         }
 
         if (currentBuffer.length() > 0) {
