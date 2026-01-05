@@ -65,6 +65,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         float userRate = request.getSpeechRate() / 100.0f;
         float userPitch = request.getPitch() / 100.0f;
+        Bundle requestParams = request.getParams();
 
         for (TTSUtils.Chunk chunk : chunks) {
             if (stopRequested) break;
@@ -85,30 +86,42 @@ public class AutoTTSManagerService extends TextToSpeechService {
             engine.setPitch(userPitch);
 
             Bundle params = new Bundle();
-            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, 3);
+            if (requestParams != null && requestParams.containsKey(TextToSpeech.Engine.KEY_PARAM_STREAM)) {
+                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, requestParams.getInt(TextToSpeech.Engine.KEY_PARAM_STREAM));
+            } else {
+                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, 10);
+            }
             
             String utteranceId = "CHERRY_" + System.currentTimeMillis();
-            engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
-
+            
             try {
-                int startTimeout = 0;
-                while (!engine.isSpeaking() && startTimeout < 40 && !stopRequested) {
-                    Thread.sleep(10);
-                    startTimeout++;
+                engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
+
+                int startWait = 0;
+                while (!engine.isSpeaking() && startWait < 50 && !stopRequested) {
+                    Thread.sleep(5);
+                    startWait++;
                 }
 
                 while (engine.isSpeaking() && !stopRequested) {
-                    Thread.sleep(10);
+                    Thread.sleep(2);
                 }
 
                 if (!stopRequested) {
-                    Thread.sleep(100); 
+                    Thread.sleep(40);
                 }
 
             } catch (InterruptedException e) {
                 break;
             }
         }
+        
+        if (!stopRequested) {
+            try {
+                Thread.sleep(120);
+            } catch (InterruptedException e) {}
+        }
+        
         callback.done();
     }
 
