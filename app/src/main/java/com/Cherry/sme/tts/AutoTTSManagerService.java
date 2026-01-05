@@ -1,7 +1,6 @@
 package com.cherry.sme.tts;
 
 import android.content.SharedPreferences;
-import android.media.AudioManager;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.speech.tts.SynthesisCallback;
@@ -15,7 +14,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private RemoteTextToSpeech shanEngine;
     private RemoteTextToSpeech burmeseEngine;
     private RemoteTextToSpeech englishEngine;
-    
+
     private String defaultShanPkg = "com.shan.tts";
     private String defaultBurmesePkg = "org.saomaicenter.myanmartts";
     private String defaultEnglishPkg = "com.google.android.tts";
@@ -27,7 +26,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onCreate() {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        
+
         String shanPkg = prefs.getString("pref_engine_shan", defaultShanPkg);
         String burmesePkg = prefs.getString("pref_engine_myanmar", defaultBurmesePkg);
         String englishPkg = prefs.getString("pref_engine_english", defaultEnglishPkg);
@@ -64,6 +63,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
             return;
         }
 
+        Bundle requestParams = request.getParams();
+
         for (TTSUtils.Chunk chunk : chunks) {
             if (stopRequested) break;
             if (chunk.text.trim().isEmpty()) continue;
@@ -82,8 +83,17 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
             Bundle params = new Bundle();
             params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f);
-            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
-            
+
+            if (requestParams != null) {
+                String streamKey = TextToSpeech.Engine.KEY_PARAM_STREAM;
+                if (requestParams.containsKey(streamKey)) {
+                    Object streamValue = requestParams.get(streamKey);
+                    if (streamValue != null) {
+                        params.putString(streamKey, String.valueOf(streamValue));
+                    }
+                }
+            }
+
             String utteranceId = "ID_" + System.currentTimeMillis();
             engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
