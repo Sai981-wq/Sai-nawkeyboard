@@ -70,7 +70,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
             if (chunk.text.trim().isEmpty()) continue;
 
             RemoteTextToSpeech engine;
-
             if (chunk.lang.equals("SHAN")) {
                 engine = shanEngine;
             } else if (chunk.lang.equals("MYANMAR")) {
@@ -98,10 +97,14 @@ public class AutoTTSManagerService extends TextToSpeechService {
             engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
             try {
-                Thread.sleep(20);
+                Thread.sleep(60);
+                
                 while (engine.isSpeaking() && !stopRequested) {
-                    Thread.sleep(50);
+                    Thread.sleep(10);
                 }
+
+                Thread.sleep(40);
+
             } catch (InterruptedException e) {
                 break;
             }
