@@ -86,12 +86,25 @@ public class AutoTTSManagerService extends TextToSpeechService {
             engine.setPitch(userPitch);
 
             Bundle params = new Bundle();
-            if (requestParams != null && requestParams.containsKey(TextToSpeech.Engine.KEY_PARAM_STREAM)) {
-                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, requestParams.getInt(TextToSpeech.Engine.KEY_PARAM_STREAM));
+            
+            if (requestParams != null) {
+                String streamKey = TextToSpeech.Engine.KEY_PARAM_STREAM;
+                if (requestParams.containsKey(streamKey)) {
+                    Object streamValue = requestParams.get(streamKey);
+                    if (streamValue instanceof Integer) {
+                        params.putInt(streamKey, (Integer) streamValue);
+                    } else if (streamValue instanceof String) {
+                        params.putString(streamKey, (String) streamValue);
+                    } else {
+                        params.putString(streamKey, String.valueOf(streamValue));
+                    }
+                } else {
+                    params.putInt(streamKey, 10);
+                }
             } else {
                 params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, 10);
             }
-            
+
             String utteranceId = "CHERRY_" + System.currentTimeMillis();
             
             try {
@@ -108,7 +121,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 }
 
                 if (!stopRequested) {
-                    Thread.sleep(40);
+                    Thread.sleep(45);
                 }
 
             } catch (InterruptedException e) {
@@ -118,7 +131,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         
         if (!stopRequested) {
             try {
-                Thread.sleep(120);
+                Thread.sleep(100);
             } catch (InterruptedException e) {}
         }
         
