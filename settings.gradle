@@ -6,11 +6,11 @@ pluginManagement {
     }
 }
 dependencyResolutionManagement {
-    // ဒီနေရာမှာ FAIL_ON_PROJECT_REPOS အစား PREFER_SETTINGS သို့ ပြောင်းလိုက်ပါ
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
         google()
         mavenCentral()
+        maven { url 'https://jitpack.io' }
     }
 }
 rootProject.name = "PanglongTTS"
