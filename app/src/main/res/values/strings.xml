@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">Cherry SME TTS</string>
+    <string name="app_name">Panglong TTS</string>
+    <string name="tts_service_label">Panglong TTS Engine</string>
 </resources>
-

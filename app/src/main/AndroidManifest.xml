@@ -1,64 +1,51 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.cherry.sme.tts">
-
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.TTS_SERVICE" />
-        </intent>
-    </queries>
+    xmlns:tools="http://schemas.android.com/tools">
 
     <application
         android:allowBackup="true"
-        android:label="Cherry SME TTS"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault">
+        android:theme="@style/Theme.PanglongTTS"
+        tools:targetApi="31">
 
+        <!-- TTS Service (မူလအတိုင်း) -->
+        <service
+            android:name=".PanglongTtsService"
+            android:exported="true"
+            android:label="Panglong TTS"
+            android:permission="android.permission.BIND_TEXT_TO_SPEECH_TTS_SERVICE">
+            <intent-filter>
+                <action android:name="android.intent.action.TTS_SERVICE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
+
+        <!-- Main Activity (မူလအတိုင်း) -->
         <activity
             android:name=".MainActivity"
-            android:exported="true"
-            android:label="Cherry SME TTS">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
+        <!-- (အသစ်) Check Voice Data Activity -->
+        <!-- ဒါထည့်လိုက်မှ Settings ထဲမှာ အမှန်ခြစ်ပြပါလိမ့်မယ် -->
         <activity
-            android:name=".CheckVoiceData"
+            android:name=".CheckVoiceDataActivity"
             android:exported="true"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
-                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".GetSampleText"
-            android:exported="true"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar">
-            <intent-filter>
-                <action android:name="android.speech.tts.engine.GET_SAMPLE_TEXT" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
-
-        <service
-            android:name=".AutoTTSManagerService"
-            android:exported="true"
-            android:label="Cherry SME TTS">
-            <intent-filter>
-                <action android:name="android.intent.action.TTS_SERVICE" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-            <meta-data
-                android:name="android.speech.tts"
-                android:resource="@xml/tts_engine_resource" />
-        </service>
 
     </application>
-</manifest>
 
+</manifest>
