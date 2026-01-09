@@ -1,5 +1,6 @@
 package com.panglong.tts
 
+import android.content.Intent
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -13,40 +14,59 @@ import java.util.concurrent.Executors
 
 class PanglongTtsService : TextToSpeechService() {
     private val lock = Any()
+    
+    // Model သိမ်းဆည်းရာ
     private var activeModelKey: String? = null
     private var activeTts: OfflineTts? = null
-    
-    // Background Thread (နောက်ကွယ်မှာ Model တင်ပေးမယ့်အရာ)
+    private var isModelLoading = false 
+
+    // Background Worker
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile private var isStopped = false
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("✅ Service Started (Async Mode)")
+        AppLogger.log("✅ Service Created.")
+        
+        // [နည်းဗျူဟာ ၁] Warm-up: Service စဖွင့်တာနဲ့ English Model ကို ချက်ချင်းတင်မယ်
+        // ဖုန်းဖွင့်ဖွင့်ချင်း TalkBack သုံးနိုင်အောင်ပါ
+        preloadModel("eng")
     }
 
-    // Model ကို နောက်ကွယ်မှာ ဖြည်းဖြည်းချင်း တင်မယ့် function
+    // [နည်းဗျူဟာ ၃] Foreground/Sticky: Service ကို အရှင်မွေးခြင်း
+    // RAM ပြည့်လို့ အသတ်ခံရရင်တောင် System ကို ပြန်ဖွင့်ခိုင်းမယ်
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        AppLogger.log("🛡️ Sticky Service Active")
+        return START_STICKY
+    }
+
     private fun preloadModel(langKey: String) {
+        synchronized(lock) {
+            if (activeModelKey == langKey && activeTts != null) return
+            if (isModelLoading) return 
+        }
+
         executor.submit {
-            synchronized(lock) {
-                if (activeModelKey == langKey && activeTts != null) return@synchronized
-                loadModelBlocking(langKey)
-            }
+            loadModelBlocking(langKey)
         }
     }
 
-    // တကယ် Model တင်မယ့် function
     private fun loadModelBlocking(langKey: String): OfflineTts? {
-        // ရှိပြီးသားဆို ပြန်သုံးမယ်
-        if (activeModelKey == langKey && activeTts != null) return activeTts
+        synchronized(lock) {
+            isModelLoading = true
+            if (activeModelKey == langKey && activeTts != null) {
+                isModelLoading = false
+                return activeTts
+            }
+        }
 
         AppLogger.log("♻️ Switching to $langKey...")
 
+        // RAM ရှင်း
         try {
             activeTts?.release()
             activeTts = null
-            activeModelKey = null
-            System.gc() // RAM ရှင်းမယ်
+            System.gc()
         } catch (e: Exception) { }
 
         val (modelFile, tokensFile) = when (langKey) {
@@ -57,12 +77,13 @@ class PanglongTtsService : TextToSpeechService() {
 
         return try {
             val assetFiles = assets.list("") ?: emptyArray()
-            if (!assetFiles.contains(modelFile) || !assetFiles.contains(tokensFile)) {
+            if (!assetFiles.contains(modelFile)) {
                 AppLogger.log("❌ Missing: $modelFile")
+                synchronized(lock) { isModelLoading = false }
                 return null
             }
 
-            AppLogger.log("⏳ Loading $langKey (Heavy)...")
+            AppLogger.log("⏳ Loading $langKey (9-10s)...")
             
             val config = OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
@@ -78,12 +99,17 @@ class PanglongTtsService : TextToSpeechService() {
                 )
             )
             val tts = OfflineTts(assets, config)
-            activeTts = tts
-            activeModelKey = langKey
+            
+            synchronized(lock) {
+                activeTts = tts
+                activeModelKey = langKey
+                isModelLoading = false
+            }
             AppLogger.log("✅ Ready: $langKey")
             tts
         } catch (e: Throwable) {
-            AppLogger.log("🔥 Load Error: ${e.message}")
+            AppLogger.log("🔥 Load Failed: ${e.message}")
+            synchronized(lock) { isModelLoading = false }
             null
         }
     }
@@ -97,11 +123,9 @@ class PanglongTtsService : TextToSpeechService() {
     }
 
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        AppLogger.log("📥 System Check: $lang")
-        // ဒီနေရာမှာ ကြိုတင် Load ခိုင်းထားလိုက်မယ် (ဒါဆို စာဖတ်ချိန်ကျရင် မြန်သွားမယ်)
         val key = if (lang?.contains("en") == true) "eng" else if (lang?.contains("shn") == true) "shan" else "mya"
+        // System က မေးလာရင် Model ကို အသင့်ဖြစ်အောင် ပြင်ထားမယ်
         preloadModel(key)
-        
         return onIsLanguageAvailable(lang, country, variant)
     }
 
@@ -114,89 +138,78 @@ class PanglongTtsService : TextToSpeechService() {
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
-        if (text.isBlank()) { safeDone(callback); return }
+        if (text.isBlank()) { callback?.done(); return }
         
         isStopped = false
         val lang = request?.language ?: "mya"
-        val shortText = if (text.length > 15) text.substring(0, 15) + "..." else text
-        AppLogger.log("🗣️ Req: '$shortText'")
-
-        // Model ကို ရယူခြင်း (မရှိသေးရင် ဒီနေရာမှာ ခဏစောင့်မယ်)
         val engineKey = when {
             lang.contains("shn") || text.contains("shan_char_check") -> "shan"
             lang.contains("en") -> "eng"
             else -> "mya"
         }
 
+        // *** Silence Trick (Crash ကာကွယ်နည်း) ***
         var tts: OfflineTts? = null
         synchronized(lock) {
-            tts = loadModelBlocking(engineKey) ?: loadModelBlocking("mya")
-        }
-
-        if (isStopped) {
-            AppLogger.log("🛑 Aborted before speak")
-            return
+            // Model မရှိသေးရင် (သို့) တင်နေတုန်းဆိုရင်
+            if (isModelLoading || activeModelKey != engineKey) {
+                if (isModelLoading) {
+                     AppLogger.log("⚠️ Loading... Sending Silence.")
+                     playSilence(callback) // Crash မဖြစ်အောင် အသံတိတ်လွှတ်မယ်
+                     return
+                }
+                // မတင်ရသေးရင် အခုတင်မယ်
+                preloadModel(engineKey)
+                playSilence(callback)
+                return
+            }
+            tts = activeTts
         }
 
         if (tts != null) {
             try {
+                // Log စာရှည်ရင် ဖြတ်မယ်
+                val shortText = if (text.length > 15) text.substring(0, 15) + "..." else text
+                AppLogger.log("🗣️ Speaking: $shortText")
+                
                 val generated = tts!!.generate(text)
                 val samples = generated.samples
                 val sampleRate = generated.sampleRate
 
-                // အကယ်၍ Timeout ဖြစ်သွားပြီးမှ ဒီနေရာရောက်လာရင် Crash မဖြစ်အောင် Try-Catch ခံမယ်
-                if (safeStart(callback, sampleRate)) {
-                    if (samples.isNotEmpty()) {
-                        val audioBytes = floatArrayToByteArray(samples)
-                        val maxBufferSize = 4096
-                        var offset = 0
-                        while (offset < audioBytes.size) {
-                            if (isStopped) break
-                            val bytesToWrite = min(maxBufferSize, audioBytes.size - offset)
-                            // အရေးအကြီးဆုံးနေရာ (Safe Write)
-                            val success = safeWrite(callback, audioBytes, offset, bytesToWrite)
-                            if (!success) break // ပို့လို့မရတော့ရင် ရပ်လိုက်မယ်
-                            offset += bytesToWrite
-                        }
+                if (isStopped) { safeError(callback); return }
+
+                callback?.start(sampleRate, 16, 1)
+                if (samples.isNotEmpty()) {
+                    val audioBytes = floatArrayToByteArray(samples)
+                    val maxBufferSize = 4096
+                    var offset = 0
+                    while (offset < audioBytes.size) {
+                        if (isStopped) break
+                        val bytesToWrite = min(maxBufferSize, audioBytes.size - offset)
+                        callback?.audioAvailable(audioBytes, offset, bytesToWrite)
+                        offset += bytesToWrite
                     }
-                    safeDone(callback)
-                    AppLogger.log("✅ Done")
                 }
+                callback?.done()
             } catch (e: Throwable) {
                 AppLogger.log("⚠️ Error: ${e.message}")
-                safeError(callback)
+                // Error တက်ရင်လည်း Silence လွှတ်လိုက်မယ် (Crash မဖြစ်အောင်)
+                playSilence(callback) 
             }
         } else {
-            safeError(callback)
+            playSilence(callback)
         }
     }
 
-    // --- Safety Wrappers (Crash ကာကွယ်ရေး) ---
-
-    private fun safeStart(callback: SynthesisCallback?, sampleRate: Int): Boolean {
-        return try {
-            if (isStopped) return false
-            callback?.start(sampleRate, 16, 1)
-            true
-        } catch (e: Throwable) {
-            AppLogger.log("⚠️ Callback Dead (Start): ${e.message}")
-            false
-        }
-    }
-
-    private fun safeWrite(callback: SynthesisCallback?, buffer: ByteArray, offset: Int, length: Int): Boolean {
-        return try {
-            if (isStopped) return false
-            callback?.audioAvailable(buffer, offset, length)
-            true
-        } catch (e: Throwable) {
-            AppLogger.log("⚠️ Callback Dead (Write): ${e.message}")
-            false
-        }
-    }
-
-    private fun safeDone(callback: SynthesisCallback?) {
-        try { callback?.done() } catch (e: Throwable) {}
+    // အသံတိတ် လွှတ်ပေးသည့် Function (အသက်ကယ်ဆေး)
+    private fun playSilence(callback: SynthesisCallback?) {
+        try {
+            // 16000Hz, 16bit, Mono အသံတိတ်
+            callback?.start(16000, 16, 1)
+            val silence = ByteArray(3200) // 0.1 စက္ကန့်စာ အသံတိတ်
+            callback?.audioAvailable(silence, 0, silence.size)
+            callback?.done()
+        } catch (e: Throwable) { }
     }
 
     private fun safeError(callback: SynthesisCallback?) {
