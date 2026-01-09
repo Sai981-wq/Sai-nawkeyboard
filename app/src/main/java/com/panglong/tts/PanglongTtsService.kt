@@ -8,24 +8,21 @@ import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
+import kotlin.math.min
 
 class PanglongTtsService : TextToSpeechService() {
     private var ttsEngines = mutableMapOf<String, OfflineTts>()
 
     override fun onCreate() {
         super.onCreate()
-        // onCreate မှာ Model တွေကို မတင်တော့ပါဘူး (RAM သက်သာအောင်ပါ)
-        AppLogger.log("Service Started. Ready to load models...")
+        AppLogger.log("Service Started. Lazy loading enabled.")
     }
 
-    // လိုအပ်တဲ့အချိန်ကျမှ Model ကိုခေါ်တင်မယ့် Function
     private fun getOrLoadModel(langKey: String): OfflineTts? {
-        // အရင် Load လုပ်ပြီးသားရှိရင် အဟောင်းကိုပဲ ပြန်သုံးမယ်
         if (ttsEngines.containsKey(langKey)) {
             return ttsEngines[langKey]
         }
 
-        // ဖိုင်နာမည်များ သတ်မှတ်ခြင်း
         val (modelFile, tokensFile) = when (langKey) {
             "shan" -> Pair("shan_model.onnx", "shan_tokens.txt")
             "eng" -> Pair("english_model.onnx", "english_tokens.txt")
@@ -33,14 +30,13 @@ class PanglongTtsService : TextToSpeechService() {
         }
 
         return try {
-            // ဖိုင်တကယ်ရှိမရှိ အရင်စစ်မယ် (မရှိရင် Crash မဖြစ်အောင် ကာကွယ်မယ်)
             val assetFiles = assets.list("") ?: emptyArray()
             if (!assetFiles.contains(modelFile) || !assetFiles.contains(tokensFile)) {
-                AppLogger.log("⚠️ File Missing: $modelFile or $tokensFile")
+                AppLogger.log("Missing: $modelFile")
                 return null
             }
 
-            AppLogger.log("⏳ Loading $langKey model... (RAM usage increasing)")
+            AppLogger.log("Loading $langKey...")
             
             val config = OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
@@ -56,11 +52,11 @@ class PanglongTtsService : TextToSpeechService() {
                 )
             )
             val tts = OfflineTts(assets, config)
-            ttsEngines[langKey] = tts // Map ထဲသိမ်းထားမယ်
-            AppLogger.log("✅ Loaded Success: $langKey")
+            ttsEngines[langKey] = tts
+            AppLogger.log("Loaded: $langKey")
             tts
         } catch (e: Exception) {
-            AppLogger.log("❌ Error loading $langKey: ${e.message}")
+            AppLogger.log("Error loading $langKey: ${e.message}")
             null
         }
     }
@@ -74,26 +70,35 @@ class PanglongTtsService : TextToSpeechService() {
         val text = request?.charSequenceText.toString()
         val lang = request?.language ?: "mya"
         
-        AppLogger.log("Req: $text ($lang)")
+        AppLogger.log("Req: $text")
 
-        // ဘာသာစကား ခွဲခြားခြင်း
         val engineKey = when {
             lang.contains("shn") || text.contains("shan_char_check") -> "shan"
             lang.contains("en") -> "eng"
             else -> "mya"
         }
 
-        // ဒီနေရာကျမှ Model ကို စတင်ခေါ်ယူပါမယ် (Lazy Loading)
         val tts = getOrLoadModel(engineKey) ?: getOrLoadModel("mya")
 
         if (tts != null) {
+            // Sherpa VITS default is often 22050Hz
             callback?.start(22050, 16, 1)
             try {
                 val generated = tts.generate(text)
                 val samples = generated.samples
+                
                 if (samples.isNotEmpty()) {
                     val audioBytes = floatArrayToByteArray(samples)
-                    callback?.audioAvailable(audioBytes, 0, audioBytes.size)
+                    
+                    // Fix: Send audio in small chunks (4KB)
+                    val maxBufferSize = 4096
+                    var offset = 0
+                    while (offset < audioBytes.size) {
+                        val bytesToWrite = min(maxBufferSize, audioBytes.size - offset)
+                        callback?.audioAvailable(audioBytes, offset, bytesToWrite)
+                        offset += bytesToWrite
+                    }
+                    AppLogger.log("Sent ${audioBytes.size} bytes")
                 }
                 callback?.done()
             } catch (e: Exception) {
@@ -101,7 +106,6 @@ class PanglongTtsService : TextToSpeechService() {
                 callback?.error()
             }
         } else {
-            AppLogger.log("Failed to get Engine for $engineKey")
             callback?.error()
         }
     }
