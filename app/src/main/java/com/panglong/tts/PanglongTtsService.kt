@@ -17,6 +17,7 @@ class PanglongTtsService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
+        // Assets folder ထဲတွင် အောက်ပါဖိုင်များ ရှိနေရပါမည်
         initializeEngine("shan", "shan_model.onnx", "shan_tokens.txt")
         initializeEngine("mya", "burmese_model.onnx", "burmese_tokens.txt")
         initializeEngine("eng", "english_model.onnx", "english_tokens.txt")
@@ -77,10 +78,16 @@ class PanglongTtsService : TextToSpeechService() {
         val tts = ttsEngines[engineKey] ?: ttsEngines["mya"]
 
         if (tts != null) {
+            // Sample rate 16000 or 24000 (Sherpa default is usually 22050 or 24000 for VITS)
+            // ဒီမှာ 24000Hz လို့ သတ်မှတ်ထားပါတယ်
             callback?.start(16000, 24000, 1)
-            val audio = tts.generate(text)
-            if (audio.isNotEmpty()) {
-                val audioBytes = FloatArrayToByteArray(audio)
+            
+            // ပြင်ဆင်ထားသည့်အပိုင်း
+            val generatedAudio = tts.generate(text)
+            val samples = generatedAudio.samples // အသံဖိုင်ကို ဒီနေရာမှာ ဆွဲထုတ်ပါတယ်
+
+            if (samples.isNotEmpty()) {
+                val audioBytes = FloatArrayToByteArray(samples)
                 callback?.audioAvailable(audioBytes, 0, audioBytes.size)
             }
             callback?.done()
@@ -104,3 +111,4 @@ class PanglongTtsService : TextToSpeechService() {
         super.onDestroy()
     }
 }
+
