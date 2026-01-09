@@ -14,7 +14,8 @@ class CheckVoiceDataActivity : Activity() {
 
         availableVoices.add("mya-MM")
         availableVoices.add("shn-MM")
-        availableVoices.add("eng-US")
+        availableVoices.add("eng-USA")
+        availableVoices.add("en-US")
 
         val returnIntent = Intent()
         returnIntent.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, availableVoices)
@@ -24,3 +25,4 @@ class CheckVoiceDataActivity : Activity() {
         finish()
     }
 }
+
