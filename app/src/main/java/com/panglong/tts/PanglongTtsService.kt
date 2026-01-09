@@ -14,19 +14,39 @@ class PanglongTtsService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("Service Created. Loading models...")
-        initModel("shan", "shan_model.onnx", "shan_tokens.txt")
-        initModel("mya", "burmese_model.onnx", "burmese_tokens.txt")
-        initModel("eng", "english_model.onnx", "english_tokens.txt")
+        // onCreate မှာ Model တွေကို မတင်တော့ပါဘူး (RAM သက်သာအောင်ပါ)
+        AppLogger.log("Service Started. Ready to load models...")
     }
 
-    private fun initModel(key: String, model: String, tokens: String) {
-        try {
+    // လိုအပ်တဲ့အချိန်ကျမှ Model ကိုခေါ်တင်မယ့် Function
+    private fun getOrLoadModel(langKey: String): OfflineTts? {
+        // အရင် Load လုပ်ပြီးသားရှိရင် အဟောင်းကိုပဲ ပြန်သုံးမယ်
+        if (ttsEngines.containsKey(langKey)) {
+            return ttsEngines[langKey]
+        }
+
+        // ဖိုင်နာမည်များ သတ်မှတ်ခြင်း
+        val (modelFile, tokensFile) = when (langKey) {
+            "shan" -> Pair("shan_model.onnx", "shan_tokens.txt")
+            "eng" -> Pair("english_model.onnx", "english_tokens.txt")
+            else -> Pair("burmese_model.onnx", "burmese_tokens.txt")
+        }
+
+        return try {
+            // ဖိုင်တကယ်ရှိမရှိ အရင်စစ်မယ် (မရှိရင် Crash မဖြစ်အောင် ကာကွယ်မယ်)
+            val assetFiles = assets.list("") ?: emptyArray()
+            if (!assetFiles.contains(modelFile) || !assetFiles.contains(tokensFile)) {
+                AppLogger.log("⚠️ File Missing: $modelFile or $tokensFile")
+                return null
+            }
+
+            AppLogger.log("⏳ Loading $langKey model... (RAM usage increasing)")
+            
             val config = OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
                     vits = OfflineTtsVitsModelConfig(
-                        model = model,
-                        tokens = tokens,
+                        model = modelFile,
+                        tokens = tokensFile,
                         noiseScale = 0.667f,
                         noiseScaleW = 0.8f,
                         lengthScale = 1.0f
@@ -35,10 +55,13 @@ class PanglongTtsService : TextToSpeechService() {
                     provider = "cpu"
                 )
             )
-            ttsEngines[key] = OfflineTts(assets, config)
-            AppLogger.log("Loaded: $key")
+            val tts = OfflineTts(assets, config)
+            ttsEngines[langKey] = tts // Map ထဲသိမ်းထားမယ်
+            AppLogger.log("✅ Loaded Success: $langKey")
+            tts
         } catch (e: Exception) {
-            AppLogger.log("Failed $key: ${e.message}")
+            AppLogger.log("❌ Error loading $langKey: ${e.message}")
+            null
         }
     }
 
@@ -51,15 +74,17 @@ class PanglongTtsService : TextToSpeechService() {
         val text = request?.charSequenceText.toString()
         val lang = request?.language ?: "mya"
         
-        AppLogger.log("Speaking ($lang): $text")
+        AppLogger.log("Req: $text ($lang)")
 
+        // ဘာသာစကား ခွဲခြားခြင်း
         val engineKey = when {
-            lang.contains("shn") -> "shan"
+            lang.contains("shn") || text.contains("shan_char_check") -> "shan"
             lang.contains("en") -> "eng"
             else -> "mya"
         }
 
-        val tts = ttsEngines[engineKey] ?: ttsEngines["mya"]
+        // ဒီနေရာကျမှ Model ကို စတင်ခေါ်ယူပါမယ် (Lazy Loading)
+        val tts = getOrLoadModel(engineKey) ?: getOrLoadModel("mya")
 
         if (tts != null) {
             callback?.start(22050, 16, 1)
@@ -69,15 +94,14 @@ class PanglongTtsService : TextToSpeechService() {
                 if (samples.isNotEmpty()) {
                     val audioBytes = floatArrayToByteArray(samples)
                     callback?.audioAvailable(audioBytes, 0, audioBytes.size)
-                    AppLogger.log("generated ${samples.size} samples")
                 }
                 callback?.done()
             } catch (e: Exception) {
-                AppLogger.log("Error: ${e.message}")
+                AppLogger.log("TTS Error: ${e.message}")
                 callback?.error()
             }
         } else {
-            AppLogger.log("Engine not found for $engineKey")
+            AppLogger.log("Failed to get Engine for $engineKey")
             callback?.error()
         }
     }
