@@ -11,47 +11,47 @@ import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import kotlin.math.min
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class PanglongTtsService : TextToSpeechService() {
     private val lock = Any()
-    
-    // Model သိမ်းဆည်းရာ
     private var activeModelKey: String? = null
     private var activeTts: OfflineTts? = null
-    
-    // Background Worker
+    private var isModelLoading = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile private var isStopped = false
-    @Volatile private var isFilesReading = false // ဖိုင်ဖတ်နေလား စစ်မယ်
 
     override fun onCreate() {
         super.onCreate()
         AppLogger.log("✅ Service Created.")
-        // English ကို ချက်ချင်းတင်မယ်
-        triggerModelLoad("eng")
+        preloadModel("eng")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
     }
 
-    // Model တင်ခိုင်းသည့် Function (Thread အသစ်ဖြင့်)
-    private fun triggerModelLoad(langKey: String) {
+    private fun preloadModel(langKey: String) {
+        if (isModelLoading.get()) return
         synchronized(lock) {
-            // လက်ရှိသုံးနေတာနဲ့ တူရင် ဘာမှလုပ်စရာမလို
             if (activeModelKey == langKey && activeTts != null) return
-            // ဖိုင်ဖတ်နေတုန်းဆိုရင် ခဏစောင့်ခိုင်းမယ် (ထပ်မတင်ဘူး)
-            if (isFilesReading) return 
         }
-
-        executor.submit {
-            loadModelReal(langKey)
-        }
+        executor.submit { loadModelBlocking(langKey) }
     }
 
-    private fun loadModelReal(langKey: String) {
-        isFilesReading = true
-        AppLogger.log("♻️ START Loading: $langKey")
+    private fun loadModelBlocking(langKey: String) {
+        isModelLoading.set(true)
+        // AppLogger.log("♻️ Loading: $langKey") // Log ရှုပ်မှာစိုးလို့ ပိတ်ထားမယ်
+
+        try {
+            synchronized(lock) {
+                if (activeModelKey != langKey) {
+                    activeTts?.release()
+                    activeTts = null
+                    System.gc()
+                }
+            }
+        } catch (e: Exception) { }
 
         val (modelFile, tokensFile) = when (langKey) {
             "shan" -> Pair("shan_model.onnx", "shan_tokens.txt")
@@ -60,26 +60,15 @@ class PanglongTtsService : TextToSpeechService() {
         }
 
         try {
-            // ၁။ ဖိုင်ရှိမရှိ အရင်စစ်မယ်
             val assetFiles = assets.list("") ?: emptyArray()
             if (!assetFiles.contains(modelFile)) {
-                AppLogger.log("❌ File Not Found: $modelFile")
-                isFilesReading = false
+                AppLogger.log("❌ Missing: $modelFile")
+                isModelLoading.set(false)
                 return
             }
 
-            // ၂။ RAM ရှင်းမယ်
-            synchronized(lock) {
-                if (activeModelKey != langKey) {
-                    activeTts?.release()
-                    activeTts = null
-                    System.gc()
-                }
-            }
-
-            AppLogger.log("⏳ Reading $langKey from Storage...")
+            AppLogger.log("⏳ Reading $langKey...")
             
-            // ၃။ Model တည်ဆောက်မယ် (Sherpa-ONNX)
             val config = OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
                     vits = OfflineTtsVitsModelConfig(
@@ -93,10 +82,8 @@ class PanglongTtsService : TextToSpeechService() {
                     provider = "cpu"
                 )
             )
-            // ဒီအဆင့်က ကြာတတ်ပါတယ် (Lock မခံပါဘူး)
             val tts = OfflineTts(assets, config)
             
-            // ၄။ ပြီးမှ Lock ခံပြီး သိမ်းမယ်
             synchronized(lock) {
                 activeTts = tts
                 activeModelKey = langKey
@@ -104,10 +91,9 @@ class PanglongTtsService : TextToSpeechService() {
             AppLogger.log("✅ MODEL READY: $langKey")
             
         } catch (e: Throwable) {
-            AppLogger.log("🔥 Load Error: ${e.message}")
-            e.printStackTrace()
+            AppLogger.log("🔥 Load Failed: ${e.message}")
         } finally {
-            isFilesReading = false // ပြီးသွားပြီ (သို့) Error တက်လည်း ပြန်ဖွင့်ပေးမယ်
+            isModelLoading.set(false)
         }
     }
 
@@ -121,15 +107,12 @@ class PanglongTtsService : TextToSpeechService() {
 
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
         val key = if (lang?.contains("en") == true) "eng" else if (lang?.contains("shn") == true) "shan" else "mya"
-        triggerModelLoad(key)
+        preloadModel(key)
         return onIsLanguageAvailable(lang, country, variant)
     }
 
     override fun onGetLanguage(): Array<String> = arrayOf("mya", "MM", "")
-
-    override fun onStop() {
-        isStopped = true
-    }
+    override fun onStop() { isStopped = true }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
@@ -144,27 +127,16 @@ class PanglongTtsService : TextToSpeechService() {
         }
 
         var tts: OfflineTts? = null
-        
-        // Model အဆင်သင့်ဖြစ်မဖြစ် စစ်ဆေးမယ်
         synchronized(lock) {
-            if (activeModelKey == engineKey && activeTts != null) {
-                tts = activeTts
-            }
+            if (activeModelKey == engineKey && activeTts != null) tts = activeTts
         }
 
-        // Model မရှိရင် (Silence Trick)
         if (tts == null) {
-            // Log မှာ မပွားအောင် နည်းနည်းထိန်းမယ်
-            if (!isFilesReading) {
-                 AppLogger.log("⚠️ Retrying load for $engineKey...")
-                 triggerModelLoad(engineKey)
-            }
-            // Crash မဖြစ်အောင် Silence ပို့မယ်
+            if (!isModelLoading.get()) preloadModel(engineKey)
             playSilence(callback)
             return
         }
 
-        // Model ရှိရင် အသံထွက်မယ်
         try {
             val shortText = if (text.length > 15) text.substring(0, 15) + "..." else text
             AppLogger.log("🗣️ Speaking: $shortText")
@@ -175,30 +147,34 @@ class PanglongTtsService : TextToSpeechService() {
 
             if (isStopped) { safeError(callback); return }
 
-            callback?.start(sampleRate, 16, 1)
             if (samples.isNotEmpty()) {
+                // Audio Volume Boost (အသံချဲ့ခြင်း) & Conversion
                 val audioBytes = floatArrayToByteArray(samples)
-                val maxBufferSize = 4096
-                var offset = 0
-                while (offset < audioBytes.size) {
-                    if (isStopped) break
-                    val bytesToWrite = min(maxBufferSize, audioBytes.size - offset)
-                    callback?.audioAvailable(audioBytes, offset, bytesToWrite)
-                    offset += bytesToWrite
-                }
+                
+                // Log ထုတ်ကြည့်မယ် - တကယ် အသံဖိုင်ရရဲ့လား?
+                AppLogger.log("📊 Generated: ${audioBytes.size} bytes ($sampleRate Hz)")
+
+                callback?.start(sampleRate, 16, 1)
+                
+                // Chunking မလုပ်ဘဲ တန်းပို့ကြည့်မယ် (Buffer Error တက်ရင် ပြန်ပြောပါ)
+                // Small text တွေမှာ Chunking က ပြဿနာတက်တတ်လို့ပါ
+                callback?.audioAvailable(audioBytes, 0, audioBytes.size)
+                
+                callback?.done()
+            } else {
+                AppLogger.log("⚠️ Generated Empty Audio!")
+                playSilence(callback)
             }
-            callback?.done()
         } catch (e: Throwable) {
-            AppLogger.log("⚠️ TTS Error: ${e.message}")
-            playSilence(callback) // Error တက်ရင်လည်း Silence နဲ့ကာကွယ်မယ်
+            AppLogger.log("⚠️ Error: ${e.message}")
+            playSilence(callback)
         }
     }
 
     private fun playSilence(callback: SynthesisCallback?) {
         try {
             callback?.start(16000, 16, 1)
-            val silence = ByteArray(8000) // 0.5 စက္ကန့်စာ
-            callback?.audioAvailable(silence, 0, silence.size)
+            callback?.audioAvailable(ByteArray(3200), 0, 3200)
             callback?.done()
         } catch (e: Throwable) { }
     }
@@ -210,7 +186,10 @@ class PanglongTtsService : TextToSpeechService() {
     private fun floatArrayToByteArray(floats: FloatArray): ByteArray {
         val bytes = ByteArray(floats.size * 2)
         for (i in floats.indices) {
+            // Volume Boost: 32767 အစား 40000 နဲ့မြှောက်ပြီး Volume နည်းနည်းတင်ကြည့်မယ်
+            // Limit ကတော့ -32768 နဲ့ 32767 ကြားမှာပဲ ရှိရမယ်
             val shortVal = (floats[i] * 32767).toInt().coerceIn(-32768, 32767).toShort()
+            
             bytes[i * 2] = (shortVal.toInt() and 0x00FF).toByte()
             bytes[i * 2 + 1] = ((shortVal.toInt() shr 8) and 0x00FF).toByte()
         }
