@@ -1,7 +1,6 @@
 package com.panglong.tts
 
 import android.content.Intent
-import android.media.AudioFormat
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -24,48 +23,35 @@ class PanglongTtsService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("🔵 [Lifecycle] Service Created")
-        AppLogger.log("⚙️ [Init] Starting Preload for English...")
+        AppLogger.log("✅ Service Created (Resampler Mode).")
         preloadModel("eng")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        AppLogger.log("🛡️ [Service] Sticky Mode Activated")
         return START_STICKY
     }
 
     private fun preloadModel(langKey: String) {
-        if (isModelLoading.get()) {
-            AppLogger.log("⚠️ [Load] Skipping: Already loading a model")
-            return
-        }
+        if (isModelLoading.get()) return
         executor.submit { loadModelBlocking(langKey) }
     }
 
     private fun loadModelBlocking(langKey: String) {
         synchronized(lock) {
-            if (activeModelKey == langKey && activeTts != null) {
-                AppLogger.log("ℹ️ [Load] $langKey already active")
-                return
-            }
+            if (activeModelKey == langKey && activeTts != null) return
         }
-        
         isModelLoading.set(true)
-        AppLogger.log("🔄 [Load] Switching to: $langKey")
         
-        // RAM ရှင်းလင်းရေး
+        // RAM ရှင်း
         try {
             synchronized(lock) {
                 if (activeModelKey != langKey) {
                     activeTts?.release()
                     activeTts = null
                     System.gc()
-                    AppLogger.log("🧹 [Memory] Old model released")
                 }
             }
-        } catch (e: Exception) { 
-            AppLogger.log("⚠️ [Memory] Release warning: ${e.message}")
-        }
+        } catch (e: Exception) { }
 
         val (modelFile, tokensFile) = when (langKey) {
             "shan" -> Pair("shan_model.onnx", "shan_tokens.txt")
@@ -76,12 +62,11 @@ class PanglongTtsService : TextToSpeechService() {
         try {
             val assetFiles = assets.list("") ?: emptyArray()
             if (!assetFiles.contains(modelFile)) {
-                AppLogger.log("❌ [File] Missing: $modelFile")
+                AppLogger.log("❌ File Missing: $modelFile")
                 return
             }
 
-            AppLogger.log("📂 [File] Found $modelFile. Initializing Sherpa...")
-            
+            // AppLogger.log("⏳ Loading $langKey...")
             val config = OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
                     vits = OfflineTtsVitsModelConfig(
@@ -96,16 +81,13 @@ class PanglongTtsService : TextToSpeechService() {
                 )
             )
             val tts = OfflineTts(assets, config)
-            
             synchronized(lock) {
                 activeTts = tts
                 activeModelKey = langKey
             }
-            AppLogger.log("✅ [Load] MODEL READY: $langKey")
-            
+            AppLogger.log("✅ MODEL READY: $langKey")
         } catch (e: Throwable) {
-            AppLogger.log("🔥 [Load] CRITICAL ERROR: ${e.message}")
-            e.printStackTrace()
+            AppLogger.log("🔥 Load Failed: ${e.message}")
         } finally {
             isModelLoading.set(false)
         }
@@ -121,17 +103,12 @@ class PanglongTtsService : TextToSpeechService() {
 
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
         val key = if (lang?.contains("en") == true) "eng" else if (lang?.contains("shn") == true) "shan" else "mya"
-        AppLogger.log("📥 [System] Language Request: $key")
         preloadModel(key)
         return onIsLanguageAvailable(lang, country, variant)
     }
 
     override fun onGetLanguage(): Array<String> = arrayOf("mya", "MM", "")
-    
-    override fun onStop() { 
-        isStopped = true
-        AppLogger.log("🛑 [Control] Stop Requested")
-    }
+    override fun onStop() { isStopped = true }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
@@ -139,11 +116,6 @@ class PanglongTtsService : TextToSpeechService() {
         
         isStopped = false
         val lang = request?.language ?: "mya"
-        
-        // Log Raw Request
-        val shortRaw = if (text.length > 20) text.substring(0, 20) + "..." else text
-        AppLogger.log("🗣️ [Req] Lang: $lang | Text: '$shortRaw'")
-
         val engineKey = when {
             lang.contains("shn") || text.contains("shan_char_check") -> "shan"
             lang.contains("en") -> "eng"
@@ -157,13 +129,12 @@ class PanglongTtsService : TextToSpeechService() {
 
         if (tts == null) {
             if (!isModelLoading.get()) preloadModel(engineKey)
-            AppLogger.log("⚠️ [Status] Model not ready. Sending Silence.")
             playSilence(callback)
             return
         }
 
         try {
-            // Text Processing
+            // Text Cleaning & Number Conversion
             var cleanText = text
             if (engineKey == "eng") {
                 cleanText = text.lowercase()
@@ -177,69 +148,74 @@ class PanglongTtsService : TextToSpeechService() {
                     .replace("7", " seven ")
                     .replace("8", " eight ")
                     .replace("9", " nine ")
-                    .replace(Regex("[^a-z\\s]"), "")
-                AppLogger.log("🧹 [Clean] English text processed")
+                    .replace(Regex("[^a-z\\s]"), "") // English မှာ တခြားဟာတွေ ဖယ်မယ်
+            } else {
+                // ဗမာနဲ့ ရှမ်းအတွက် ဘာမှမဖယ်ဘူး (Unicode ပြဿနာမတက်အောင်)
+                cleanText = text
             }
-
-            // Generation
-            AppLogger.log("⚡ [Sherpa] Generating audio...")
+            
             val generated = tts!!.generate(cleanText)
             val samples = generated.samples
-            val sampleRate = generated.sampleRate
+            val originalRate = generated.sampleRate
 
-            if (isStopped) { 
-                AppLogger.log("🛑 [Control] Stopped before playback")
-                safeError(callback)
-                return 
-            }
+            if (isStopped) { safeError(callback); return }
 
             if (samples.isNotEmpty()) {
-                val audioBytes = floatArrayToByteArray(samples)
-                AppLogger.log("📊 [Data] Size: ${audioBytes.size} bytes | Rate: $sampleRate Hz")
-
-                // === FIX HERE: CORRECT AUDIO FORMAT ===
-                // 16 = Invalid
-                // AudioFormat.ENCODING_PCM_16BIT = 2 (Valid)
-                val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-                
-                AppLogger.log("🔊 [Play] Starting: Rate=$sampleRate, Format=$audioFormat")
-                val startResult = callback?.start(sampleRate, audioFormat, 1)
-                
-                if (startResult != TextToSpeech.SUCCESS) {
-                     AppLogger.log("❌ [Play] Start Failed with code: $startResult")
-                     safeError(callback)
-                     return
+                // ===============================================
+                // RESAMPLING FIX (22050Hz -> 16000Hz)
+                // ===============================================
+                // Android ဖုန်းတိုင်း လက်ခံမယ့် 16000Hz ကို ပြောင်းမယ်
+                val targetRate = 16000
+                val resampledSamples = if (originalRate != targetRate) {
+                    resample(samples, originalRate, targetRate)
+                } else {
+                    samples
                 }
+
+                val audioBytes = floatArrayToByteArray(resampledSamples)
+                AppLogger.log("📊 Output: ${audioBytes.size} bytes (Converted to 16kHz)")
+
+                // 16000Hz နဲ့ အသံစမယ် (ဒါဆို Bad audio format မတက်တော့ဘူး)
+                callback?.start(16000, 16, 1)
                 
                 val maxBufferSize = 4096
                 var offset = 0
-                var chunkCount = 0
-                
                 while (offset < audioBytes.size) {
                     if (isStopped) break
                     val bytesToWrite = min(maxBufferSize, audioBytes.size - offset)
                     callback?.audioAvailable(audioBytes, offset, bytesToWrite)
                     offset += bytesToWrite
-                    chunkCount++
                 }
-                
-                AppLogger.log("✅ [Done] Sent $chunkCount chunks successfully")
                 callback?.done()
             } else {
-                AppLogger.log("⚠️ [Sherpa] Generated empty samples")
+                // Empty samples
                 playSilence(callback)
             }
         } catch (e: Throwable) {
-            AppLogger.log("❌ [Error] Exception: ${e.message}")
-            e.printStackTrace()
+            AppLogger.log("❌ Error: ${e.message}")
             playSilence(callback)
         }
     }
 
+    // အသံလှိုင်း ပြောင်းလဲပေးသည့် Function (Resampler)
+    private fun resample(input: FloatArray, originalRate: Int, targetRate: Int): FloatArray {
+        if (originalRate == targetRate) return input
+        val ratio = originalRate.toDouble() / targetRate
+        val newLength = (input.size / ratio).toInt()
+        val output = FloatArray(newLength)
+        for (i in 0 until newLength) {
+            val index = i * ratio
+            val left = index.toInt()
+            val right = min(left + 1, input.size - 1)
+            val frac = index - left
+            output[i] = (input[left] * (1 - frac) + input[right] * frac).toFloat()
+        }
+        return output
+    }
+
     private fun playSilence(callback: SynthesisCallback?) {
         try {
-            AppLogger.log("🔇 [Silence] Playing 0.5s silence")
-            callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
+            callback?.start(16000, 16, 1)
             callback?.audioAvailable(ByteArray(3200), 0, 3200)
             callback?.done()
         } catch (e: Throwable) { }
@@ -262,7 +238,6 @@ class PanglongTtsService : TextToSpeechService() {
     override fun onDestroy() {
         activeTts?.release()
         executor.shutdown()
-        AppLogger.log("🔴 [Lifecycle] Service Destroyed")
         super.onDestroy()
     }
 }
