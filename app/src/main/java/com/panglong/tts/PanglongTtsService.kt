@@ -23,7 +23,7 @@ class PanglongTtsService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("✅ Service Created.")
+        AppLogger.log("✅ Service Created (Resampler Mode).")
         preloadModel("eng")
     }
 
@@ -42,6 +42,7 @@ class PanglongTtsService : TextToSpeechService() {
         }
         isModelLoading.set(true)
         
+        // RAM ရှင်း
         try {
             synchronized(lock) {
                 if (activeModelKey != langKey) {
@@ -61,7 +62,7 @@ class PanglongTtsService : TextToSpeechService() {
         try {
             val assetFiles = assets.list("") ?: emptyArray()
             if (!assetFiles.contains(modelFile)) {
-                AppLogger.log("❌ Missing: $modelFile")
+                AppLogger.log("❌ File Missing: $modelFile")
                 return
             }
 
@@ -133,14 +134,10 @@ class PanglongTtsService : TextToSpeechService() {
         }
 
         try {
-            // ==========================================
-            // FIX: ဂဏန်းများကို စာလုံးပြောင်းခြင်း
-            // ==========================================
-            var cleanText = text.lowercase()
-            
+            // Text Cleaning & Number Conversion
+            var cleanText = text
             if (engineKey == "eng") {
-                // ဂဏန်းတွေတွေ့ရင် စာလုံးပြောင်းမယ် (English Model အတွက်)
-                cleanText = cleanText
+                cleanText = text.lowercase()
                     .replace("0", " zero ")
                     .replace("1", " one ")
                     .replace("2", " two ")
@@ -151,30 +148,36 @@ class PanglongTtsService : TextToSpeechService() {
                     .replace("7", " seven ")
                     .replace("8", " eight ")
                     .replace("9", " nine ")
-                    .replace("%", " percent ")
-                    .replace(":", " ") // 12:00 -> 12 00
-                
-                // အခြား မလိုအပ်သော သင်္ကေတများကို ဖယ်ရှားမယ်
-                cleanText = cleanText.replace(Regex("[^a-z\\s]"), "")
+                    .replace(Regex("[^a-z\\s]"), "") // English မှာ တခြားဟာတွေ ဖယ်မယ်
+            } else {
+                // ဗမာနဲ့ ရှမ်းအတွက် ဘာမှမဖယ်ဘူး (Unicode ပြဿနာမတက်အောင်)
+                cleanText = text
             }
-
-            // Log ထုတ်ကြည့်မယ် (ဂဏန်းမပါတော့တာ သေချာအောင်)
-            val shortLog = if (text.length > 15) text.substring(0, 15) + "..." else text
-            AppLogger.log("🗣️ Req: '$shortLog' -> Clean: '$cleanText'")
             
             val generated = tts!!.generate(cleanText)
             val samples = generated.samples
-            val sampleRate = generated.sampleRate
+            val originalRate = generated.sampleRate
 
             if (isStopped) { safeError(callback); return }
 
             if (samples.isNotEmpty()) {
-                val audioBytes = floatArrayToByteArray(samples)
+                // ===============================================
+                // RESAMPLING FIX (22050Hz -> 16000Hz)
+                // ===============================================
+                // Android ဖုန်းတိုင်း လက်ခံမယ့် 16000Hz ကို ပြောင်းမယ်
+                val targetRate = 16000
+                val resampledSamples = if (originalRate != targetRate) {
+                    resample(samples, originalRate, targetRate)
+                } else {
+                    samples
+                }
+
+                val audioBytes = floatArrayToByteArray(resampledSamples)
+                AppLogger.log("📊 Output: ${audioBytes.size} bytes (Converted to 16kHz)")
+
+                // 16000Hz နဲ့ အသံစမယ် (ဒါဆို Bad audio format မတက်တော့ဘူး)
+                callback?.start(16000, 16, 1)
                 
-                // Audio စတင်ခြင်း
-                callback?.start(sampleRate, 16, 1)
-                
-                // Chunking (4KB)
                 val maxBufferSize = 4096
                 var offset = 0
                 while (offset < audioBytes.size) {
@@ -185,12 +188,29 @@ class PanglongTtsService : TextToSpeechService() {
                 }
                 callback?.done()
             } else {
+                // Empty samples
                 playSilence(callback)
             }
         } catch (e: Throwable) {
-            AppLogger.log("⚠️ Error: ${e.message}")
+            AppLogger.log("❌ Error: ${e.message}")
             playSilence(callback)
         }
+    }
+
+    // အသံလှိုင်း ပြောင်းလဲပေးသည့် Function (Resampler)
+    private fun resample(input: FloatArray, originalRate: Int, targetRate: Int): FloatArray {
+        if (originalRate == targetRate) return input
+        val ratio = originalRate.toDouble() / targetRate
+        val newLength = (input.size / ratio).toInt()
+        val output = FloatArray(newLength)
+        for (i in 0 until newLength) {
+            val index = i * ratio
+            val left = index.toInt()
+            val right = min(left + 1, input.size - 1)
+            val frac = index - left
+            output[i] = (input[left] * (1 - frac) + input[right] * frac).toFloat()
+        }
+        return output
     }
 
     private fun playSilence(callback: SynthesisCallback?) {
