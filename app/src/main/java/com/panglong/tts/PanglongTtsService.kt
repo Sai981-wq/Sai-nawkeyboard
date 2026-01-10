@@ -41,8 +41,6 @@ class PanglongTtsService : TextToSpeechService() {
 
     private fun loadModelBlocking(langKey: String) {
         isModelLoading.set(true)
-        // AppLogger.log("♻️ Loading: $langKey") // Log ရှုပ်မှာစိုးလို့ ပိတ်ထားမယ်
-
         try {
             synchronized(lock) {
                 if (activeModelKey != langKey) {
@@ -68,7 +66,6 @@ class PanglongTtsService : TextToSpeechService() {
             }
 
             AppLogger.log("⏳ Reading $langKey...")
-            
             val config = OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
                     vits = OfflineTtsVitsModelConfig(
@@ -83,13 +80,11 @@ class PanglongTtsService : TextToSpeechService() {
                 )
             )
             val tts = OfflineTts(assets, config)
-            
             synchronized(lock) {
                 activeTts = tts
                 activeModelKey = langKey
             }
             AppLogger.log("✅ MODEL READY: $langKey")
-            
         } catch (e: Throwable) {
             AppLogger.log("🔥 Load Failed: ${e.message}")
         } finally {
@@ -143,30 +138,36 @@ class PanglongTtsService : TextToSpeechService() {
             
             val generated = tts!!.generate(text)
             val samples = generated.samples
-            val sampleRate = generated.sampleRate
+            val sampleRate = generated.sampleRate // VITS Model usually 22050Hz
 
             if (isStopped) { safeError(callback); return }
 
             if (samples.isNotEmpty()) {
-                // Audio Volume Boost (အသံချဲ့ခြင်း) & Conversion
                 val audioBytes = floatArrayToByteArray(samples)
                 
-                // Log ထုတ်ကြည့်မယ် - တကယ် အသံဖိုင်ရရဲ့လား?
-                AppLogger.log("📊 Generated: ${audioBytes.size} bytes ($sampleRate Hz)")
+                // Log ထုတ်ကြည့်မယ် - Data ရှိမရှိ
+                AppLogger.log("📊 Data: ${audioBytes.size} bytes, Rate: $sampleRate")
 
                 callback?.start(sampleRate, 16, 1)
                 
-                // Chunking မလုပ်ဘဲ တန်းပို့ကြည့်မယ် (Buffer Error တက်ရင် ပြန်ပြောပါ)
-                // Small text တွေမှာ Chunking က ပြဿနာတက်တတ်လို့ပါ
-                callback?.audioAvailable(audioBytes, 0, audioBytes.size)
-                
+                // === အရေးကြီးဆုံး ပြောင်းလဲမှု (Chunking ပြန်ထည့်ခြင်း) ===
+                // 4KB စီ ခွဲပို့မှ Android က လက်ခံပါတယ်
+                val maxBufferSize = 4096
+                var offset = 0
+                while (offset < audioBytes.size) {
+                    if (isStopped) break
+                    val bytesToWrite = min(maxBufferSize, audioBytes.size - offset)
+                    callback?.audioAvailable(audioBytes, offset, bytesToWrite)
+                    offset += bytesToWrite
+                }
+                // ===============================================
+
                 callback?.done()
             } else {
-                AppLogger.log("⚠️ Generated Empty Audio!")
                 playSilence(callback)
             }
         } catch (e: Throwable) {
-            AppLogger.log("⚠️ Error: ${e.message}")
+            AppLogger.log("⚠️ TTS Error: ${e.message}")
             playSilence(callback)
         }
     }
@@ -186,10 +187,7 @@ class PanglongTtsService : TextToSpeechService() {
     private fun floatArrayToByteArray(floats: FloatArray): ByteArray {
         val bytes = ByteArray(floats.size * 2)
         for (i in floats.indices) {
-            // Volume Boost: 32767 အစား 40000 နဲ့မြှောက်ပြီး Volume နည်းနည်းတင်ကြည့်မယ်
-            // Limit ကတော့ -32768 နဲ့ 32767 ကြားမှာပဲ ရှိရမယ်
             val shortVal = (floats[i] * 32767).toInt().coerceIn(-32768, 32767).toShort()
-            
             bytes[i * 2] = (shortVal.toInt() and 0x00FF).toByte()
             bytes[i * 2 + 1] = ((shortVal.toInt() shr 8) and 0x00FF).toByte()
         }
