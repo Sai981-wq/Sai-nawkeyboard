@@ -23,7 +23,7 @@ class PanglongTtsService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        AppLogger.log("✅ Service Created.")
+        AppLogger.log("✅ Service Created (Audio Debug Mode).")
         preloadModel("eng")
     }
 
@@ -33,14 +33,16 @@ class PanglongTtsService : TextToSpeechService() {
 
     private fun preloadModel(langKey: String) {
         if (isModelLoading.get()) return
-        synchronized(lock) {
-            if (activeModelKey == langKey && activeTts != null) return
-        }
         executor.submit { loadModelBlocking(langKey) }
     }
 
     private fun loadModelBlocking(langKey: String) {
+        synchronized(lock) {
+            if (activeModelKey == langKey && activeTts != null) return
+        }
         isModelLoading.set(true)
+        
+        // RAM ရှင်း
         try {
             synchronized(lock) {
                 if (activeModelKey != langKey) {
@@ -60,12 +62,11 @@ class PanglongTtsService : TextToSpeechService() {
         try {
             val assetFiles = assets.list("") ?: emptyArray()
             if (!assetFiles.contains(modelFile)) {
-                AppLogger.log("❌ Missing: $modelFile")
-                isModelLoading.set(false)
+                AppLogger.log("❌ File Missing: $modelFile")
                 return
             }
 
-            AppLogger.log("⏳ Reading $langKey...")
+            AppLogger.log("⏳ Loading $langKey...")
             val config = OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
                     vits = OfflineTtsVitsModelConfig(
@@ -107,7 +108,10 @@ class PanglongTtsService : TextToSpeechService() {
     }
 
     override fun onGetLanguage(): Array<String> = arrayOf("mya", "MM", "")
-    override fun onStop() { isStopped = true }
+    override fun onStop() { 
+        isStopped = true 
+        AppLogger.log("🛑 Stop Signal Received")
+    }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         val text = request?.charSequenceText.toString()
@@ -128,48 +132,102 @@ class PanglongTtsService : TextToSpeechService() {
 
         if (tts == null) {
             if (!isModelLoading.get()) preloadModel(engineKey)
+            AppLogger.log("⚠️ Model Not Ready. Sending Silence.")
             playSilence(callback)
             return
         }
 
         try {
-            val shortText = if (text.length > 15) text.substring(0, 15) + "..." else text
-            AppLogger.log("🗣️ Speaking: $shortText")
+            // Text Cleaner (Token Error မတက်အောင်)
+            var cleanText = text.lowercase()
+            if (engineKey == "eng") {
+                 cleanText = cleanText.replace(Regex("[^a-z0-6\\s\\-]"), "")
+            }
             
-            val generated = tts!!.generate(text)
+            AppLogger.log("🗣️ Req: '$text' -> Clean: '$cleanText'")
+            
+            val generated = tts!!.generate(cleanText)
             val samples = generated.samples
-            val sampleRate = generated.sampleRate // VITS Model usually 22050Hz
+            val sampleRate = generated.sampleRate
 
-            if (isStopped) { safeError(callback); return }
+            if (isStopped) { 
+                AppLogger.log("🛑 Stopped before playback")
+                safeError(callback)
+                return 
+            }
 
             if (samples.isNotEmpty()) {
                 val audioBytes = floatArrayToByteArray(samples)
                 
-                // Log ထုတ်ကြည့်မယ် - Data ရှိမရှိ
-                AppLogger.log("📊 Data: ${audioBytes.size} bytes, Rate: $sampleRate")
+                // 🔊 AUDIO FORENSIC LOGS (အသံစစ်ဆေးချက်)
+                val isSilence = audioBytes.all { it == 0.toByte() }
+                if (isSilence) {
+                    AppLogger.log("⚠️ WARNING: Generated Audio is PURE SILENCE (All Zeros)!")
+                    playBeep(callback) // Beep သံနဲ့ သတိပေးမယ်
+                    return
+                }
 
-                callback?.start(sampleRate, 16, 1)
-                
-                // === အရေးကြီးဆုံး ပြောင်းလဲမှု (Chunking ပြန်ထည့်ခြင်း) ===
-                // 4KB စီ ခွဲပို့မှ Android က လက်ခံပါတယ်
+                AppLogger.log("📊 Audio Info: ${audioBytes.size} bytes | Rate: $sampleRate Hz")
+
+                // Start Playback
+                val startResult = callback?.start(sampleRate, 16, 1)
+                if (startResult != TextToSpeech.SUCCESS) {
+                    AppLogger.log("❌ Playback START Failed! (Result: $startResult)")
+                    safeError(callback)
+                    return
+                }
+
+                // Chunking Loop with Detailed Logs
                 val maxBufferSize = 4096
                 var offset = 0
+                var chunkCount = 0
+                
                 while (offset < audioBytes.size) {
-                    if (isStopped) break
+                    if (isStopped) {
+                        AppLogger.log("🛑 Stopped during stream")
+                        break
+                    }
                     val bytesToWrite = min(maxBufferSize, audioBytes.size - offset)
-                    callback?.audioAvailable(audioBytes, offset, bytesToWrite)
+                    
+                    val writeResult = callback?.audioAvailable(audioBytes, offset, bytesToWrite)
+                    if (writeResult == TextToSpeech.ERROR) {
+                        AppLogger.log("❌ System REJECTED chunk #$chunkCount (Offset: $offset)")
+                        break
+                    }
+                    
                     offset += bytesToWrite
+                    chunkCount++
                 }
-                // ===============================================
-
+                
+                AppLogger.log("✅ Playback Done. Sent $chunkCount chunks.")
                 callback?.done()
             } else {
+                AppLogger.log("⚠️ Model returned EMPTY SAMPLES (Size=0)")
                 playSilence(callback)
             }
         } catch (e: Throwable) {
-            AppLogger.log("⚠️ TTS Error: ${e.message}")
+            AppLogger.log("❌ CRITICAL ERROR: ${e.message}")
+            e.printStackTrace()
             playSilence(callback)
         }
+    }
+
+    private fun playBeep(callback: SynthesisCallback?) {
+        // Beep Tone Generator
+        try {
+            val sampleRate = 16000
+            val numSamples = 8000 
+            val generatedSnd = ByteArray(2 * numSamples)
+            for (i in 0 until numSamples) {
+                // 440Hz Sine Wave
+                val value = (Math.sin(2.0 * Math.PI * i.toDouble() / (sampleRate / 440)) * 32767).toInt().toShort()
+                generatedSnd[i * 2] = (value.toInt() and 0x00FF).toByte()
+                generatedSnd[i * 2 + 1] = ((value.toInt() shr 8) and 0x00FF).toByte()
+            }
+            callback?.start(sampleRate, 16, 1)
+            callback?.audioAvailable(generatedSnd, 0, generatedSnd.size)
+            callback?.done()
+        } catch (e: Throwable) {}
     }
 
     private fun playSilence(callback: SynthesisCallback?) {
