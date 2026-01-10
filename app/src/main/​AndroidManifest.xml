@@ -1,14 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.panglong.tts">
+    package="com.cherry.sme.tts">
+
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
 
     <application
-        android:label="Panglong TTS"
-        android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
+        android:allowBackup="true"
+        android:label="Cherry SME TTS"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault">
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:label="Cherry SME TTS">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -16,26 +27,38 @@
         </activity>
 
         <activity
-            android:name=".CheckVoiceDataActivity"
+            android:name=".CheckVoiceData"
             android:exported="true"
-            android:theme="@android:style/Theme.NoDisplay">
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".GetSampleText"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.speech.tts.engine.GET_SAMPLE_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
         <service
-            android:name=".PanglongTtsService"
+            android:name=".AutoTTSManagerService"
             android:exported="true"
-            android:label="Panglong TTS"
-            android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE">
+            android:label="Cherry SME TTS">
             <intent-filter>
                 <action android:name="android.intent.action.TTS_SERVICE" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <meta-data
+                android:name="android.speech.tts"
+                android:resource="@xml/tts_engine_resource" />
         </service>
 
     </application>
-
 </manifest>
 

@@ -1,43 +1,59 @@
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
 }
 
 android {
-    namespace 'com.panglong.tts'
+    namespace 'com.cherry.sme.tts'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.panglong.tts"
-        minSdk 21
+        applicationId "com.cherry.sme.tts"
+        minSdk 24
         targetSdk 34
         versionCode 1
-        versionName "1.0"
+        versionName "1.0.0"
+    }
 
-        ndk {
-            abiFilters "arm64-v8a", "armeabi-v7a"
+    signingConfigs {
+        release {
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    kotlinOptions {
-        jvmTarget = '1.8'
+
+    lintOptions {
+        checkReleaseBuilds false
+        abortOnError false
     }
 }
 
 dependencies {
-    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
     implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'com.google.android.material:material:1.12.0'
-    implementation files('libs/sherpa-onnx.aar')
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+}
+
+File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
+if (signingPropertiesFile.exists()) {
+    Properties props = new Properties()
+    props.load(new FileInputStream(signingPropertiesFile))
+    
+    android.signingConfigs.release.storeFile = file(props['storeFile'])
+    android.signingConfigs.release.storePassword = props['storePassword']
+    android.signingConfigs.release.keyAlias = props['keyAlias']
+    android.signingConfigs.release.keyPassword = props['keyPassword']
 }
 

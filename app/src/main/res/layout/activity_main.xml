@@ -1,33 +1,194 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
+    android:background="#FAFAFA"
     android:padding="16dp">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Panglong TTS Logs"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="10dp"/>
-
-    <ScrollView
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="#EEEEEE"
-        android:padding="8dp">
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/tvLogs"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Waiting for logs..."
-            android:textColor="#000000"
-            android:fontFamily="monospace"
-            android:textSize="12sp"/>
-    </ScrollView>
+            android:orientation="vertical"
+            android:layout_marginBottom="24dp"
+            android:gravity="center">
+            
+            <TextView
+                android:layout_width="60dp"
+                android:layout_height="60dp"
+                android:text="🍒"
+                android:textSize="40sp"
+                android:gravity="center"
+                android:background="@drawable/bg_card"
+                android:elevation="4dp"/>
 
-</LinearLayout>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Cherry SME TTS"
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:textColor="#C2185B"
+                android:layout_marginTop="10dp"/>
+                
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Advanced Auto TTS Manager"
+                android:textSize="14sp"
+                android:textColor="#757575"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp"
+            android:elevation="2dp">
+
+            <TextView 
+                android:text="Shan Engine (ရှမ်း)" 
+                android:textStyle="bold" 
+                android:textColor="#C2185B"
+                android:textSize="16sp" 
+                android:layout_width="wrap_content" 
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"/>
+
+            <Spinner 
+                android:id="@+id/spinnerShan" 
+                android:layout_width="match_parent" 
+                android:layout_height="50dp" 
+                android:background="@drawable/bg_spinner"
+                android:paddingStart="10dp"
+                android:layout_marginBottom="12dp"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp"
+            android:elevation="2dp">
+
+            <TextView 
+                android:text="Burmese Engine (ဗမာ)" 
+                android:textStyle="bold" 
+                android:textColor="#1976D2"
+                android:textSize="16sp" 
+                android:layout_width="wrap_content" 
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"/>
+
+            <Spinner 
+                android:id="@+id/spinnerBurmese" 
+                android:layout_width="match_parent" 
+                android:layout_height="50dp" 
+                android:background="@drawable/bg_spinner"
+                android:paddingStart="10dp"
+                android:layout_marginBottom="12dp"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="24dp"
+            android:elevation="2dp">
+
+            <TextView 
+                android:text="English Engine (အင်္ဂလိပ်)" 
+                android:textStyle="bold" 
+                android:textColor="#388E3C"
+                android:textSize="16sp" 
+                android:layout_width="wrap_content" 
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"/>
+
+            <Spinner 
+                android:id="@+id/spinnerEnglish" 
+                android:layout_width="match_parent" 
+                android:layout_height="50dp" 
+                android:background="@drawable/bg_spinner"
+                android:paddingStart="10dp"
+                android:layout_marginBottom="12dp"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="20dp"
+            android:elevation="2dp">
+
+            <TextView 
+                android:text="Support Developer" 
+                android:textStyle="bold" 
+                android:textSize="16sp"
+                android:layout_width="wrap_content" 
+                android:layout_height="wrap_content"/>
+            
+            <TextView 
+                android:text="(ဖန်တီးသူကို ကူညီထောက်ပံ့ရန်)" 
+                android:textSize="12sp"
+                android:textColor="#757575"
+                android:layout_width="wrap_content" 
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"/>
+
+            <TextView
+                android:id="@+id/btnKpay"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:text="KBZ Pay: 09750091817 (Copy)"
+                android:background="@drawable/bg_spinner"
+                android:backgroundTint="#E8F5E9"
+                android:gravity="center_vertical"
+                android:paddingStart="15dp"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:textColor="#2E7D32"
+                android:layout_marginBottom="10dp"
+                android:clickable="true"
+                android:focusable="true"/>
+
+            <TextView
+                android:id="@+id/btnWave"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:text="Wave Pay: 09750091817 (Copy)"
+                android:background="@drawable/bg_spinner"
+                android:backgroundTint="#FFF3E0"
+                android:gravity="center_vertical"
+                android:paddingStart="15dp"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:textColor="#EF6C00"
+                android:clickable="true"
+                android:focusable="true"/>
+            
+        </LinearLayout>
+        
+        <TextView
+            android:text="Thank you for using Cherry SME TTS!"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textColor="#9E9E9E"
+            android:textSize="12sp"/>
+
+    </LinearLayout>
+</ScrollView>
 
