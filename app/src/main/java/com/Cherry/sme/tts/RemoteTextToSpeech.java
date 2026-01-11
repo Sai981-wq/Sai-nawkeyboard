@@ -2,10 +2,10 @@ package com.cherry.sme.tts;
 
 import android.content.Context;
 import android.media.AudioFormat;
+import android.os.Bundle;
 import android.speech.tts.SynthesisCallback;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
-import java.util.HashMap;
 
 public class RemoteTextToSpeech extends TextToSpeech {
 
@@ -46,9 +46,10 @@ public class RemoteTextToSpeech extends TextToSpeech {
         });
     }
 
-    public void speakWithCallback(String text, int queueMode, HashMap<String, String> params, SynthesisCallback callback) {
+    public void speakWithCallback(String text, int queueMode, Bundle params, SynthesisCallback callback) {
         this.currentCallback = callback;
-        this.speak(text, queueMode, params);
+        // Bundle version ကို အသုံးပြုခြင်းဖြင့် Volume Stream ပြဿနာကို ဖြေရှင်းသည်
+        this.speak(text, queueMode, params, params.getString(Engine.KEY_PARAM_UTTERANCE_ID));
     }
 
     public boolean isSpeaking() {

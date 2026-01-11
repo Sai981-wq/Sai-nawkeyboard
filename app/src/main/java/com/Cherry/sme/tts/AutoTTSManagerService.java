@@ -7,7 +7,6 @@ import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
-import java.util.HashMap;
 import java.util.List;
 
 public class AutoTTSManagerService extends TextToSpeechService {
@@ -66,7 +65,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         float userRate = request.getSpeechRate() / 100.0f;
         float userPitch = request.getPitch() / 100.0f;
-        Bundle requestParams = request.getParams();
+        
+        // TalkBack မှ ပေးပို့လိုက်သော မူရင်း Bundle အားလုံးကို ရယူသည်
+        Bundle originalParams = request.getParams();
 
         for (int i = 0; i < chunks.size(); i++) {
             if (stopRequested) break;
@@ -87,34 +88,26 @@ public class AutoTTSManagerService extends TextToSpeechService {
             engine.setSpeechRate(userRate);
             engine.setPitch(userPitch);
 
-            HashMap<String, String> params = new HashMap<>();
-            if (requestParams != null) {
-                for (String key : requestParams.keySet()) {
-                    params.put(key, String.valueOf(requestParams.get(key)));
-                }
-            }
-            params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "ID_" + System.currentTimeMillis());
+            // Parameter များကို Clone လုပ်ပြီး Utterance ID သတ်မှတ်သည်
+            Bundle params = new Bundle(originalParams);
+            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "CH_" + System.currentTimeMillis() + "_" + i);
 
-            // အင်္ဂလိပ် Engine မဝင်ခင် မြန်မာ Engine အလုပ်ပြီးမြောက်အောင် Strict Wait ပြုလုပ်သည်
             try {
                 // အင်ဂျင်အကူးအပြောင်း Latency အတွက် အနည်းငယ်စောင့်သည်
-                Thread.sleep(10);
+                Thread.sleep(15);
                 
                 engine.speakWithCallback(chunk.text, TextToSpeech.QUEUE_FLUSH, params, callback);
 
-                // ၁။ အင်ဂျင်က အသံစထွက်ကြောင်း (onStart) အချက်ပြသည်အထိ သေချာပေါက်စောင့်သည်
                 int startTimeout = 0;
-                while (!engine.isSpeaking() && startTimeout < 100 && !stopRequested) {
+                while (!engine.isSpeaking() && startTimeout < 80 && !stopRequested) {
                     Thread.sleep(10);
                     startTimeout++;
                 }
 
-                // ၂။ အင်ဂျင်က အသံထွက်ပြီးကြောင်း (onDone) အချက်ပြသည်အထိ ဆက်လက်စောင့်သည်
                 while (engine.isSpeaking() && !stopRequested) {
                     Thread.sleep(5);
                 }
 
-                // ၃။ Audio Buffer ကုန်ဆုံးစေရန်နှင့် Engine အချင်းချင်း မတိုက်မိစေရန် Delay ထည့်သည်
                 if (!stopRequested) {
                     Thread.sleep(20);
                 }
