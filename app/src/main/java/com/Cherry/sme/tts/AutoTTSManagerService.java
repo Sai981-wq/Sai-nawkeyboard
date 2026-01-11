@@ -1,6 +1,7 @@
 package com.cherry.sme.tts;
 
 import android.content.SharedPreferences;
+import android.media.AudioFormat;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.speech.tts.SynthesisCallback;
@@ -10,6 +11,8 @@ import android.speech.tts.TextToSpeechService;
 import java.util.List;
 
 public class AutoTTSManagerService extends TextToSpeechService {
+
+    public static final String[] SUPPORTED_LANGUAGES = {"eng-USA", "mya-MMR", "shn-MMR"};
 
     private RemoteTextToSpeech shanEngine;
     private RemoteTextToSpeech burmeseEngine;
@@ -95,13 +98,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
             try {
                 Thread.sleep(15);
-                
                 engine.speakWithCallback(chunk.text, TextToSpeech.QUEUE_FLUSH, params, callback);
 
-                int startTimeout = 0;
-                while (!engine.isSpeaking() && startTimeout < 100 && !stopRequested) {
+                int startWait = 0;
+                while (!engine.isSpeaking() && startWait < 100 && !stopRequested) {
                     Thread.sleep(10);
-                    startTimeout++;
+                    startWait++;
                 }
 
                 while (engine.isSpeaking() && !stopRequested) {
@@ -111,7 +113,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 if (!stopRequested) {
                     Thread.sleep(30);
                 }
-
             } catch (InterruptedException e) {
                 break;
             }
@@ -120,7 +121,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+        for (String supported : SUPPORTED_LANGUAGES) {
+            if (supported.startsWith(lang)) {
+                return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+            }
+        }
+        return TextToSpeech.LANG_NOT_SUPPORTED;
     }
 
     @Override
@@ -133,7 +139,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         mLanguage = lang;
         mCountry = country;
         mVariant = variant;
-        return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+        return onIsLanguageAvailable(lang, country, variant);
     }
 }
 
