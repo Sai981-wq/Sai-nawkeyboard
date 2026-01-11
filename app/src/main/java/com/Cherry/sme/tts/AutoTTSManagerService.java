@@ -1,6 +1,7 @@
 package com.cherry.sme.tts;
 
 import android.content.SharedPreferences;
+import android.media.AudioFormat;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.speech.tts.SynthesisCallback;
@@ -67,6 +68,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
             return;
         }
 
+        callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
+
         float userRate = request.getSpeechRate() / 100.0f;
         float userPitch = request.getPitch() / 100.0f;
         Bundle requestParams = request.getParams();
@@ -104,30 +107,24 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
                 int startWait = 0;
-                while (!engine.isSpeaking() && startWait < 150 && !stopRequested) {
+                while (!engine.isSpeaking() && startWait < 50 && !stopRequested) {
                     Thread.sleep(10);
                     startWait++;
                 }
 
                 int speechTimeout = 0;
-                while (engine.isSpeaking() && !stopRequested && speechTimeout < 1500) {
+                while (engine.isSpeaking() && !stopRequested && speechTimeout < 1000) {
                     Thread.sleep(5);
                     speechTimeout++;
                 }
 
                 if (!stopRequested) {
-                    Thread.sleep(50);
+                    Thread.sleep(40);
                 }
 
             } catch (InterruptedException e) {
                 break;
             }
-        }
-        
-        if (!stopRequested) {
-            try {
-                Thread.sleep(150);
-            } catch (InterruptedException e) {}
         }
         
         callback.done();
