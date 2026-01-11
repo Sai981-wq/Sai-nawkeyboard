@@ -9,10 +9,9 @@ import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
 import java.util.List;
+import java.util.Locale;
 
 public class AutoTTSManagerService extends TextToSpeechService {
-
-    public static final String[] SUPPORTED_LANGUAGES = {"eng-USA", "mya-MMR", "shn-MMR"};
 
     private RemoteTextToSpeech shanEngine;
     private RemoteTextToSpeech burmeseEngine;
@@ -121,10 +120,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
-        for (String supported : SUPPORTED_LANGUAGES) {
-            if (supported.startsWith(lang)) {
-                return TextToSpeech.LANG_COUNTRY_AVAILABLE;
-            }
+        Locale locale = new Locale(lang, country, variant);
+        if (shanEngine != null && shanEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+            return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+        }
+        if (burmeseEngine != null && burmeseEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+            return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+        }
+        if (englishEngine != null && englishEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+            return TextToSpeech.LANG_COUNTRY_AVAILABLE;
         }
         return TextToSpeech.LANG_NOT_SUPPORTED;
     }
