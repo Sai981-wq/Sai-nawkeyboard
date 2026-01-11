@@ -49,7 +49,8 @@
         <service
             android:name=".AutoTTSManagerService"
             android:exported="true"
-            android:label="Cherry SME TTS">
+            android:label="Cherry SME TTS"
+            android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE">
             <intent-filter>
                 <action android:name="android.intent.action.TTS_SERVICE" />
                 <category android:name="android.intent.category.DEFAULT" />

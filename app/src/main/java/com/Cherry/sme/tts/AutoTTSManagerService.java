@@ -13,11 +13,13 @@ import java.util.Locale;
 
 public class AutoTTSManagerService extends TextToSpeechService {
 
+    public static final String[] SUPPORTED_LANGUAGES = {"eng-USA", "mya-MMR", "shn-MMR"};
+
     private RemoteTextToSpeech shanEngine;
     private RemoteTextToSpeech burmeseEngine;
     private RemoteTextToSpeech englishEngine;
 
-    private String defaultShanPkg = "com.shan.tts";
+    private String defaultShanPkg = "com.espeak.ng";
     private String defaultBurmesePkg = "org.saomaicenter.myanmartts";
     private String defaultEnglishPkg = "com.google.android.tts";
 
@@ -114,9 +116,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
             String uId = "CH_" + System.currentTimeMillis() + "_" + i;
             params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uId);
 
+            int queueMode = (i == 0) ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
+
             try {
                 Thread.sleep(15);
-                engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, uId);
+                engine.speak(chunk.text, queueMode, params, uId);
 
                 int startWait = 0;
                 while (!engine.isSpeaking() && startWait < 150 && !stopRequested) {
@@ -129,7 +133,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 }
 
                 if (!stopRequested) {
-                    Thread.sleep(30);
+                    Thread.sleep(35);
                 }
             } catch (InterruptedException e) {
                 break;

@@ -10,14 +10,16 @@ public class CheckVoiceData extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        
         ArrayList<String> available = new ArrayList<>();
-        available.add("eng-USA");
-        available.add("mya-MMR");
-        available.add("shn-MMR");
+        for (String lang : AutoTTSManagerService.SUPPORTED_LANGUAGES) {
+            available.add(lang);
+        }
         
         Intent data = new Intent();
         data.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, available);
         data.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_UNAVAILABLE_VOICES, new ArrayList<String>());
+        
         setResult(TextToSpeech.Engine.CHECK_VOICE_DATA_PASS, data);
         finish();
     }
