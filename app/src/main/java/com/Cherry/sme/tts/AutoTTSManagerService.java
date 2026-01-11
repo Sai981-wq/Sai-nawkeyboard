@@ -74,8 +74,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
         float userPitch = request.getPitch() / 100.0f;
         Bundle requestParams = request.getParams();
 
-        for (TTSUtils.Chunk chunk : chunks) {
+        for (int i = 0; i < chunks.size(); i++) {
             if (stopRequested) break;
+            TTSUtils.Chunk chunk = chunks.get(i);
             if (chunk.text.trim().isEmpty()) continue;
 
             RemoteTextToSpeech engine;
@@ -103,21 +104,21 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
             String utteranceId = "ID_" + System.currentTimeMillis();
             
-            try {
-                engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
+            // ပထမဆုံး Chunk ကို QUEUE_FLUSH သုံးပြီး အရင်အသံတွေကို ချက်ချင်းဖြတ်ခိုင်းသည်
+            int queueMode = (i == 0) ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
+            engine.speak(chunk.text, queueMode, params, utteranceId);
 
+            try {
+                // အင်ဂျင်အကူးအပြောင်းတွင် TalkBack မပိတ်မိစေရန် အနုစိတ်ဆုံး စောင့်ဆိုင်းချိန်ကိုသာ သုံးသည်
                 int startWait = 0;
-                while (!engine.isSpeaking() && startWait < 25 && !stopRequested) {
-                    Thread.sleep(5);
+                while (!engine.isSpeaking() && startWait < 15 && !stopRequested) {
+                    Thread.sleep(10);
                     startWait++;
                 }
 
-                int speechLimit = 0;
-                while (engine.isSpeaking() && !stopRequested && speechLimit < 300) {
+                while (engine.isSpeaking() && !stopRequested) {
                     Thread.sleep(5);
-                    speechLimit++;
                 }
-
             } catch (InterruptedException e) {
                 break;
             }
