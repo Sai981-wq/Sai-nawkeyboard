@@ -48,7 +48,6 @@ public class RemoteTextToSpeech extends TextToSpeech {
 
     public void speakWithCallback(String text, int queueMode, Bundle params, SynthesisCallback callback) {
         this.currentCallback = callback;
-        // Bundle version ကို အသုံးပြုခြင်းဖြင့် Volume Stream ပြဿနာကို ဖြေရှင်းသည်
         this.speak(text, queueMode, params, params.getString(Engine.KEY_PARAM_UTTERANCE_ID));
     }
 

@@ -22,6 +22,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private volatile boolean stopRequested = false;
     private SharedPreferences prefs;
 
+    private String mLanguage = "eng";
+    private String mCountry = "USA";
+    private String mVariant = "";
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -65,8 +69,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         float userRate = request.getSpeechRate() / 100.0f;
         float userPitch = request.getPitch() / 100.0f;
-        
-        // TalkBack မှ ပေးပို့လိုက်သော မူရင်း Bundle အားလုံးကို ရယူသည်
         Bundle originalParams = request.getParams();
 
         for (int i = 0; i < chunks.size(); i++) {
@@ -88,18 +90,16 @@ public class AutoTTSManagerService extends TextToSpeechService {
             engine.setSpeechRate(userRate);
             engine.setPitch(userPitch);
 
-            // Parameter များကို Clone လုပ်ပြီး Utterance ID သတ်မှတ်သည်
             Bundle params = new Bundle(originalParams);
             params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "CH_" + System.currentTimeMillis() + "_" + i);
 
             try {
-                // အင်ဂျင်အကူးအပြောင်း Latency အတွက် အနည်းငယ်စောင့်သည်
                 Thread.sleep(15);
                 
                 engine.speakWithCallback(chunk.text, TextToSpeech.QUEUE_FLUSH, params, callback);
 
                 int startTimeout = 0;
-                while (!engine.isSpeaking() && startTimeout < 80 && !stopRequested) {
+                while (!engine.isSpeaking() && startTimeout < 100 && !stopRequested) {
                     Thread.sleep(10);
                     startTimeout++;
                 }
@@ -109,7 +109,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 }
 
                 if (!stopRequested) {
-                    Thread.sleep(20);
+                    Thread.sleep(30);
                 }
 
             } catch (InterruptedException e) {
@@ -125,11 +125,14 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected String[] onGetLanguage() {
-        return new String[]{"eng", "USA", ""};
+        return new String[]{mLanguage, mCountry, mVariant};
     }
 
     @Override
     protected int onLoadLanguage(String lang, String country, String variant) {
+        mLanguage = lang;
+        mCountry = country;
+        mVariant = variant;
         return TextToSpeech.LANG_COUNTRY_AVAILABLE;
     }
 }
