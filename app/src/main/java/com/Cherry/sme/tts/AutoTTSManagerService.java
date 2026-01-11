@@ -101,25 +101,21 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 params.putString(TextToSpeech.Engine.KEY_PARAM_STREAM, "10");
             }
 
-            String utteranceId = "CHERRY_" + System.currentTimeMillis() + "_" + chunk.text.hashCode();
+            String utteranceId = "ID_" + System.currentTimeMillis();
             
             try {
                 engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
                 int startWait = 0;
-                while (!engine.isSpeaking() && startWait < 50 && !stopRequested) {
-                    Thread.sleep(10);
+                while (!engine.isSpeaking() && startWait < 25 && !stopRequested) {
+                    Thread.sleep(5);
                     startWait++;
                 }
 
-                int speechTimeout = 0;
-                while (engine.isSpeaking() && !stopRequested && speechTimeout < 1000) {
+                int speechLimit = 0;
+                while (engine.isSpeaking() && !stopRequested && speechLimit < 300) {
                     Thread.sleep(5);
-                    speechTimeout++;
-                }
-
-                if (!stopRequested) {
-                    Thread.sleep(40);
+                    speechLimit++;
                 }
 
             } catch (InterruptedException e) {
