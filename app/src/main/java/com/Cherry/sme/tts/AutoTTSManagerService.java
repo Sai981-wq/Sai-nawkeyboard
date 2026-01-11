@@ -1,13 +1,13 @@
 package com.cherry.sme.tts;
 
 import android.content.SharedPreferences;
-import android.media.AudioFormat;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
+import java.util.HashMap;
 import java.util.List;
 
 public class AutoTTSManagerService extends TextToSpeechService {
@@ -22,10 +22,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private volatile boolean stopRequested = false;
     private SharedPreferences prefs;
-
-    private String mLanguage = "eng";
-    private String mCountry = "USA";
-    private String mVariant = "";
 
     @Override
     public void onCreate() {
@@ -68,8 +64,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
             return;
         }
 
-        callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
-
         float userRate = request.getSpeechRate() / 100.0f;
         float userPitch = request.getPitch() / 100.0f;
         Bundle requestParams = request.getParams();
@@ -93,38 +87,42 @@ public class AutoTTSManagerService extends TextToSpeechService {
             engine.setSpeechRate(userRate);
             engine.setPitch(userPitch);
 
-            Bundle params = new Bundle();
+            HashMap<String, String> params = new HashMap<>();
             if (requestParams != null) {
-                params.putAll(requestParams);
+                for (String key : requestParams.keySet()) {
+                    params.put(key, String.valueOf(requestParams.get(key)));
+                }
             }
-            
-            if (!params.containsKey(TextToSpeech.Engine.KEY_PARAM_STREAM)) {
-                params.putString(TextToSpeech.Engine.KEY_PARAM_STREAM, "10");
-            }
+            params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "ID_" + System.currentTimeMillis());
 
-            String utteranceId = "ID_" + System.currentTimeMillis();
-            
-            // ပထမဆုံး Chunk ကို QUEUE_FLUSH သုံးပြီး အရင်အသံတွေကို ချက်ချင်းဖြတ်ခိုင်းသည်
-            int queueMode = (i == 0) ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
-            engine.speak(chunk.text, queueMode, params, utteranceId);
-
+            // အင်္ဂလိပ် Engine မဝင်ခင် မြန်မာ Engine အလုပ်ပြီးမြောက်အောင် Strict Wait ပြုလုပ်သည်
             try {
-                // အင်ဂျင်အကူးအပြောင်းတွင် TalkBack မပိတ်မိစေရန် အနုစိတ်ဆုံး စောင့်ဆိုင်းချိန်ကိုသာ သုံးသည်
-                int startWait = 0;
-                while (!engine.isSpeaking() && startWait < 15 && !stopRequested) {
+                // အင်ဂျင်အကူးအပြောင်း Latency အတွက် အနည်းငယ်စောင့်သည်
+                Thread.sleep(10);
+                
+                engine.speakWithCallback(chunk.text, TextToSpeech.QUEUE_FLUSH, params, callback);
+
+                // ၁။ အင်ဂျင်က အသံစထွက်ကြောင်း (onStart) အချက်ပြသည်အထိ သေချာပေါက်စောင့်သည်
+                int startTimeout = 0;
+                while (!engine.isSpeaking() && startTimeout < 100 && !stopRequested) {
                     Thread.sleep(10);
-                    startWait++;
+                    startTimeout++;
                 }
 
+                // ၂။ အင်ဂျင်က အသံထွက်ပြီးကြောင်း (onDone) အချက်ပြသည်အထိ ဆက်လက်စောင့်သည်
                 while (engine.isSpeaking() && !stopRequested) {
                     Thread.sleep(5);
                 }
+
+                // ၃။ Audio Buffer ကုန်ဆုံးစေရန်နှင့် Engine အချင်းချင်း မတိုက်မိစေရန် Delay ထည့်သည်
+                if (!stopRequested) {
+                    Thread.sleep(20);
+                }
+
             } catch (InterruptedException e) {
                 break;
             }
         }
-        
-        callback.done();
     }
 
     @Override
@@ -134,14 +132,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected String[] onGetLanguage() {
-        return new String[]{mLanguage, mCountry, mVariant};
+        return new String[]{"eng", "USA", ""};
     }
 
     @Override
     protected int onLoadLanguage(String lang, String country, String variant) {
-        mLanguage = lang;
-        mCountry = country;
-        mVariant = variant;
         return TextToSpeech.LANG_COUNTRY_AVAILABLE;
     }
 }
