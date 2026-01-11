@@ -32,14 +32,30 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onCreate() {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        initEnginesStepByStep();
+    }
 
+    private void initEnginesStepByStep() {
         String shanPkg = prefs.getString("pref_engine_shan", defaultShanPkg);
-        String burmesePkg = prefs.getString("pref_engine_myanmar", defaultBurmesePkg);
-        String englishPkg = prefs.getString("pref_engine_english", defaultEnglishPkg);
+        shanEngine = new RemoteTextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                initBurmeseEngine();
+            }
+        }, shanPkg);
+    }
 
-        shanEngine = new RemoteTextToSpeech(this, shanPkg);
-        burmeseEngine = new RemoteTextToSpeech(this, burmesePkg);
-        englishEngine = new RemoteTextToSpeech(this, englishPkg);
+    private void initBurmeseEngine() {
+        String burmesePkg = prefs.getString("pref_engine_myanmar", defaultBurmesePkg);
+        burmeseEngine = new RemoteTextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                initEnglishEngine();
+            }
+        }, burmesePkg);
+    }
+
+    private void initEnglishEngine() {
+        String englishPkg = prefs.getString("pref_engine_english", defaultEnglishPkg);
+        englishEngine = new RemoteTextToSpeech(this, status -> {}, englishPkg);
     }
 
     @Override
@@ -69,6 +85,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
             return;
         }
 
+        callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
+
         float userRate = request.getSpeechRate() / 100.0f;
         float userPitch = request.getPitch() / 100.0f;
         Bundle originalParams = request.getParams();
@@ -93,20 +111,21 @@ public class AutoTTSManagerService extends TextToSpeechService {
             engine.setPitch(userPitch);
 
             Bundle params = new Bundle(originalParams);
-            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "CH_" + System.currentTimeMillis() + "_" + i);
+            String uId = "CH_" + System.currentTimeMillis() + "_" + i;
+            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uId);
 
             try {
                 Thread.sleep(15);
-                engine.speakWithCallback(chunk.text, TextToSpeech.QUEUE_FLUSH, params, callback);
+                engine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, uId);
 
                 int startWait = 0;
-                while (!engine.isSpeaking() && startWait < 100 && !stopRequested) {
+                while (!engine.isSpeaking() && startWait < 150 && !stopRequested) {
                     Thread.sleep(10);
                     startWait++;
                 }
 
                 while (engine.isSpeaking() && !stopRequested) {
-                    Thread.sleep(5);
+                    Thread.sleep(10);
                 }
 
                 if (!stopRequested) {
@@ -116,6 +135,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 break;
             }
         }
+        callback.done();
     }
 
     @Override

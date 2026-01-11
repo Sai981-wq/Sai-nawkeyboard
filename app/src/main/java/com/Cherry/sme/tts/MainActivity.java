@@ -10,13 +10,13 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.os.Bundle;
+import android.os.Handler;
 import android.preference.PreferenceManager;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Spinner;
 import android.widget.Toast;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -25,21 +25,31 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private ArrayList<String> engineNames = new ArrayList<>();
     private ArrayList<String> enginePackages = new ArrayList<>();
+    private ProgressDialog progressDialog;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // Service က ဖတ်မယ့် Default Preferences ကိုပဲ သုံးပါမယ်
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
 
-        loadInstalledEngines();
+        showScanDialog();
 
-        // Service တွင် သုံးမည့် Key များအတိုင်း ချိတ်ဆက်ခြင်း
-        setupEngineUI(R.id.spinnerShan, "pref_engine_shan", "com.espeak.ng"); // Default Shan
-        setupEngineUI(R.id.spinnerBurmese, "pref_engine_myanmar", "org.saomaicenter.myanmartts"); // Default Burmese
-        setupEngineUI(R.id.spinnerEnglish, "pref_engine_english", "com.google.android.tts"); // Default English
+        new Handler().postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                loadInstalledEngines();
+                
+                setupEngineUI(R.id.spinnerShan, "pref_engine_shan", "com.espeak.ng");
+                setupEngineUI(R.id.spinnerBurmese, "pref_engine_myanmar", "org.saomaicenter.myanmartts");
+                setupEngineUI(R.id.spinnerEnglish, "pref_engine_english", "com.google.android.tts");
+
+                if (progressDialog != null && progressDialog.isShowing()) {
+                    progressDialog.dismiss();
+                }
+            }
+        }, 1500);
 
         setupDonation(R.id.btnKpay, "09750091817", "KBZ Pay Number Copied");
         setupDonation(R.id.btnWave, "09750091817", "Wave Pay Number Copied");
@@ -47,6 +57,13 @@ public class MainActivity extends Activity {
         setupOpenSystemSettings(R.id.spinnerShan);
         setupOpenSystemSettings(R.id.spinnerBurmese);
         setupOpenSystemSettings(R.id.spinnerEnglish);
+    }
+
+    private void showScanDialog() {
+        progressDialog = new ProgressDialog(this);
+        progressDialog.setMessage("Scanning engines, please wait...");
+        progressDialog.setCancelable(false);
+        progressDialog.show();
     }
 
     private void setupDonation(int viewId, final String number, final String msg) {
@@ -60,18 +77,6 @@ public class MainActivity extends Activity {
                 Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
             }
         });
-        
-        if (viewId == R.id.btnKpay) {
-            btn.setOnLongClickListener(new View.OnLongClickListener() {
-                @Override
-                public boolean onLongClick(View v) {
-                    try {
-                        startActivity(new Intent(MainActivity.this, LogViewerActivity.class));
-                    } catch (Exception e) {}
-                    return true;
-                }
-            });
-        }
     }
 
     private void setupEngineUI(int spinnerId, String pkgKey, String defPkg) {
@@ -106,7 +111,6 @@ public class MainActivity extends Activity {
 
         for (ResolveInfo info : resolveInfos) {
             String pkg = info.serviceInfo.packageName;
-            // ကိုယ့် App ကိုယ်ပြန်မခေါ်မိအောင် စစ်မယ်
             if (!pkg.equals(getPackageName())) {
                 String label = info.serviceInfo.loadLabel(getPackageManager()).toString();
                 engineNames.add(label);
