@@ -1,34 +1,22 @@
 package com.cherry.sme.tts;
 
 import android.app.Activity;
-import android.content.Intent;
 import android.os.Bundle;
-import android.speech.tts.TextToSpeech;
-import android.util.Log;
-import java.util.ArrayList;
+import android.text.method.ScrollingMovementMethod;
+import android.widget.TextView;
 
-public class CheckVoiceData extends Activity {
+public class LogViewerActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        
-        ArrayList<String> available = new ArrayList<>();
-        ArrayList<String> unavailable = new ArrayList<>();
+        TextView textView = new TextView(this);
+        textView.setPadding(30, 30, 30, 30);
+        textView.setMovementMethod(new ScrollingMovementMethod());
+        textView.setTextSize(14f);
+        setContentView(textView);
 
-        try {
-            for (String lang : AutoTTSManagerService.SUPPORTED_LANGUAGES) {
-                available.add(lang);
-            }
-        } catch (Exception e) {
-            Log.e("CherryTTS", "CheckVoiceData Error: " + e.getMessage());
-        }
-
-        Intent data = new Intent();
-        data.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, available);
-        data.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_UNAVAILABLE_VOICES, unavailable);
-        
-        setResult(TextToSpeech.Engine.CHECK_VOICE_DATA_PASS, data);
-        finish();
+        // Custom LogCollector ထဲမှ ဒေတာများကို ရယူပြသခြင်း
+        textView.setText(LogCollector.getLogs());
     }
 }
 
