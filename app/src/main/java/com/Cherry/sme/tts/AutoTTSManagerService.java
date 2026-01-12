@@ -8,11 +8,13 @@ import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
+import android.util.Log;
 import java.util.List;
 import java.util.Locale;
 
 public class AutoTTSManagerService extends TextToSpeechService {
 
+    private static final String TAG = "CherryTTS";
     private RemoteTextToSpeech shanEngine;
     private RemoteTextToSpeech burmeseEngine;
     private RemoteTextToSpeech englishEngine;
@@ -26,33 +28,26 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onCreate() {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        LogCollector.addLog("Service", "Created and reading user preferences");
         initEnginesStepByStep();
     }
 
     private void initEnginesStepByStep() {
-        // အသုံးပြုသူ ရွေးချယ်ထားသော ရှမ်းအင်ဂျင်ကို preference မှ ဖတ်ယူခြင်း
         String shanPkg = prefs.getString("pref_engine_shan", "com.espeak.ng");
         shanEngine = new RemoteTextToSpeech(this, status -> {
-            LogCollector.addLog("ShanInit", "Pkg: " + shanPkg + ", Status: " + status);
             initBurmeseEngine();
         }, shanPkg);
     }
 
     private void initBurmeseEngine() {
-        // အသုံးပြုသူ ရွေးချယ်ထားသော ဗမာအင်ဂျင်ကို preference မှ ဖတ်ယူခြင်း
         String burmesePkg = prefs.getString("pref_engine_myanmar", "org.saomaicenter.myanmartts");
         burmeseEngine = new RemoteTextToSpeech(this, status -> {
-            LogCollector.addLog("BurmeseInit", "Pkg: " + burmesePkg + ", Status: " + status);
             initEnglishEngine();
         }, burmesePkg);
     }
 
     private void initEnglishEngine() {
-        // အသုံးပြုသူ ရွေးချယ်ထားသော အင်္ဂလိပ်အင်ဂျင်ကို preference မှ ဖတ်ယူခြင်း
         String englishPkg = prefs.getString("pref_engine_english", "com.google.android.tts");
         englishEngine = new RemoteTextToSpeech(this, status -> {
-            LogCollector.addLog("EnglishInit", "Pkg: " + englishPkg + ", Status: " + status);
         }, englishPkg);
     }
 
@@ -74,30 +69,25 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         String text = request.getText();
-        LogCollector.addLog("Synthesize", "Text: " + text);
-        
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
-        if (chunks.isEmpty()) { callback.done(); return; }
+
+        if (chunks.isEmpty()) {
+            callback.done();
+            return;
+        }
 
         callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
         Bundle originalParams = request.getParams();
 
         for (int i = 0; i < chunks.size(); i++) {
             TTSUtils.Chunk chunk = chunks.get(i);
-            RemoteTextToSpeech engine;
+            RemoteTextToSpeech engine = null;
 
-            if (chunk.lang.equals("SHAN")) {
-                engine = shanEngine;
-            } else if (chunk.lang.equals("MYANMAR")) {
-                engine = burmeseEngine;
-            } else {
-                engine = englishEngine;
-            }
+            if (chunk.lang.equals("SHAN")) engine = shanEngine;
+            else if (chunk.lang.equals("MYANMAR")) engine = burmeseEngine;
+            else engine = englishEngine;
 
-            if (engine == null) {
-                LogCollector.addLog("Error", "Selected engine for " + chunk.lang + " is not ready");
-                continue;
-            }
+            if (engine == null) continue;
 
             Bundle params = new Bundle(originalParams);
             String uId = "CH_" + System.currentTimeMillis() + "_" + i;
@@ -112,11 +102,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     Thread.sleep(10);
                     wait++;
                 }
-                while (engine.isSpeaking()) { Thread.sleep(10); }
-                Thread.sleep(35);
+
+                while (engine.isSpeaking()) {
+                    Thread.sleep(10);
+                }
+                Thread.sleep(40);
 
             } catch (Exception e) {
-                LogCollector.addLog("Error", "Synthesis failure: " + e.getMessage());
                 break;
             }
         }
@@ -127,13 +119,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
 
-        // တည်ငြိမ်မှုရှိစေရန် ရှမ်း၊ မြန်မာ၊ အင်္ဂလိပ် တို့ကို တိုက်ရိုက် Supported ဖြစ်ကြောင်း အဖြေပေးခြင်း
         if (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en") || 
             lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my") || 
             lang.equalsIgnoreCase("shn")) {
             return TextToSpeech.LANG_COUNTRY_AVAILABLE;
         }
-
+        
         return TextToSpeech.LANG_NOT_SUPPORTED;
     }
 
@@ -144,7 +135,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected int onLoadLanguage(String lang, String country, String variant) {
-        mLanguage = lang; mCountry = country; mVariant = variant;
+        mLanguage = lang;
+        mCountry = country;
+        mVariant = variant;
         return onIsLanguageAvailable(lang, country, variant);
     }
 }
