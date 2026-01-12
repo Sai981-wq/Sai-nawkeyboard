@@ -40,18 +40,14 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initEnginesStepByStep() {
         String shanPkg = prefs.getString("pref_engine_shan", defaultShanPkg);
         shanEngine = new RemoteTextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                initBurmeseEngine();
-            }
+            initBurmeseEngine();
         }, shanPkg);
     }
 
     private void initBurmeseEngine() {
         String burmesePkg = prefs.getString("pref_engine_myanmar", defaultBurmesePkg);
         burmeseEngine = new RemoteTextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                initEnglishEngine();
-            }
+            initEnglishEngine();
         }, burmesePkg);
     }
 
@@ -135,7 +131,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 if (!stopRequested) {
                     Thread.sleep(35);
                 }
-            } catch (InterruptedException e) {
+            } catch (Exception e) {
                 break;
             }
         }
@@ -144,22 +140,39 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
+        if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
         Locale locale = new Locale(lang, country, variant);
-        if (shanEngine != null && shanEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
-            return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+
+        if (shanEngine != null) {
+            try {
+                if (shanEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+                    return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+                }
+            } catch (Exception e) {}
         }
-        if (burmeseEngine != null && burmeseEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
-            return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+        
+        if (burmeseEngine != null) {
+            try {
+                if (burmeseEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+                    return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+                }
+            } catch (Exception e) {}
         }
-        if (englishEngine != null && englishEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
-            return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+
+        if (englishEngine != null) {
+            try {
+                if (englishEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+                    return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+                }
+            } catch (Exception e) {}
         }
+
         return TextToSpeech.LANG_NOT_SUPPORTED;
     }
 
     @Override
     protected String[] onGetLanguage() {
-        return new String[]{mLanguage, mCountry, mVariant};
+        return SUPPORTED_LANGUAGES;
     }
 
     @Override
