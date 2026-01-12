@@ -8,10 +8,14 @@ import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
+import android.util.Log;
 import java.util.List;
 import java.util.Locale;
 
 public class AutoTTSManagerService extends TextToSpeechService {
+
+    private static final String TAG = "CherryTTS";
+    public static final String[] SUPPORTED_LANGUAGES = {"eng-USA", "mya-MMR", "shn-MMR"};
 
     private RemoteTextToSpeech shanEngine;
     private RemoteTextToSpeech burmeseEngine;
@@ -74,7 +78,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
         LogCollector.addLog("Synthesize", "Text: " + text);
         
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
-        if (chunks.isEmpty()) { callback.done(); return; }
+        if (chunks.isEmpty()) {
+            callback.done();
+            return;
+        }
 
         callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
         Bundle originalParams = request.getParams();
@@ -84,7 +91,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
             RemoteTextToSpeech engine = chunk.lang.equals("SHAN") ? shanEngine : 
                                       (chunk.lang.equals("MYANMAR") ? burmeseEngine : englishEngine);
 
-            if (engine == null) continue;
+            if (engine == null) {
+                LogCollector.addLog("Error", "Engine NULL for " + chunk.lang);
+                continue;
+            }
 
             Bundle params = new Bundle(originalParams);
             String uId = "CH_" + System.currentTimeMillis() + "_" + i;
@@ -115,20 +125,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
-        Locale locale = new Locale(lang, country, variant);
 
-        try {
-            if (shanEngine != null && lang.equalsIgnoreCase("shn")) {
-                return shanEngine.isLanguageAvailable(locale);
-            }
-            if (burmeseEngine != null && (lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my"))) {
-                return burmeseEngine.isLanguageAvailable(locale);
-            }
-            if (englishEngine != null && (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en"))) {
-                return englishEngine.isLanguageAvailable(locale);
-            }
-        } catch (Exception e) {
-            LogCollector.addLog("CrashGuard", e.getMessage());
+        if (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en") || 
+            lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my") || 
+            lang.equalsIgnoreCase("shn")) {
+            return TextToSpeech.LANG_COUNTRY_AVAILABLE;
         }
 
         return TextToSpeech.LANG_NOT_SUPPORTED;
@@ -141,7 +142,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected int onLoadLanguage(String lang, String country, String variant) {
-        mLanguage = lang; mCountry = country; mVariant = variant;
+        mLanguage = lang;
+        mCountry = country;
+        mVariant = variant;
         return onIsLanguageAvailable(lang, country, variant);
     }
 }
