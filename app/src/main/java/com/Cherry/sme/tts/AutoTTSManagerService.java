@@ -82,10 +82,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
             RemoteTextToSpeech engine = chunk.lang.equals("SHAN") ? shanEngine : 
                                       (chunk.lang.equals("MYANMAR") ? burmeseEngine : englishEngine);
 
-            if (engine == null) {
-                LogCollector.addLog("Synthesize", "Engine NULL for: " + chunk.lang);
-                continue;
-            }
+            if (engine == null) continue;
 
             Bundle params = new Bundle(originalParams);
             String uId = "CH_" + System.currentTimeMillis() + "_" + i;
@@ -101,7 +98,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     wait++;
                 }
                 while (engine.isSpeaking()) { Thread.sleep(10); }
-                Thread.sleep(30);
+                Thread.sleep(35);
 
             } catch (Exception e) {
                 LogCollector.addLog("Error", "Synthesis: " + e.getMessage());
@@ -114,6 +111,14 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
+
+        // ရှမ်း၊ မြန်မာ၊ အင်္ဂလိပ် မဟုတ်ပါက Sub-engines များကို မမေးတော့ဘဲ ချက်ချင်း ပိတ်ချလိုက်မည်
+        if (!(lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en") || 
+              lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my") || 
+              lang.equalsIgnoreCase("shn"))) {
+            return TextToSpeech.LANG_NOT_SUPPORTED;
+        }
+
         Locale locale = new Locale(lang, country, variant);
         LogCollector.addLog("CheckLang", lang);
 
