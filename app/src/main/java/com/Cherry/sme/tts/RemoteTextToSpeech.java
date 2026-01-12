@@ -18,37 +18,40 @@ public class RemoteTextToSpeech extends TextToSpeech {
             @Override
             public void onStart(String utteranceId) {
                 LogCollector.addLog("EngineCallback", engineName + " STARTED: " + utteranceId);
-                syncVariable.close();
+                syncVariable.close(); // အသံစထွက်လျှင် လမ်းကြောင်းပိတ်မည်
             }
 
             @Override
             public void onDone(String utteranceId) {
                 LogCollector.addLog("EngineCallback", engineName + " DONE: " + utteranceId);
-                syncVariable.open();
+                syncVariable.open(); // အသံပြီးလျှင် လမ်းကြောင်းပြန်ဖွင့်မည်
             }
 
             @Override
             public void onError(String utteranceId) {
                 LogCollector.addLog("EngineCallback", engineName + " ERROR: " + utteranceId);
-                syncVariable.open();
+                syncVariable.open(); // Error ဖြစ်လျှင်လည်း လမ်းကြောင်းပြန်ဖွင့်မည်
             }
         });
     }
 
     public void waitForCompletion(String text) {
-        LogCollector.addLog("Sync", "Waiting for: " + engineName + " to finish [" + text + "]");
-        // ၈ စက္ကန့်ထက်ပိုမစောင့်ဘဲ timeout ထားထားပါတယ်
+        LogCollector.addLog("Sync", "Waiting for: " + engineName + " [" + text + "]");
+        // အများဆုံး ၈ စက္ကန့် စောင့်မည်
         boolean success = syncVariable.block(8000); 
         if (!success) {
             LogCollector.addLog("Sync", "TIMEOUT: " + engineName + " failed to signal DONE");
         } else {
-            LogCollector.addLog("Sync", "RELEASED: " + engineName + " finished or was ready");
+            LogCollector.addLog("Sync", "RELEASED: " + engineName);
         }
     }
 
     public void forceOpen() {
-        LogCollector.addLog("Sync", "Force opening: " + engineName);
         syncVariable.open();
+    }
+
+    public String getEngineName() {
+        return engineName;
     }
 }
 

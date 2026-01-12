@@ -22,7 +22,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onCreate() {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        LogCollector.addLog("Lifecycle", "Service onCreate - Initializing Engines");
+        LogCollector.addLog("Lifecycle", "Service Created");
         initEngines();
     }
 
@@ -31,23 +31,28 @@ public class AutoTTSManagerService extends TextToSpeechService {
         String bPkg = prefs.getString("pref_engine_myanmar", "org.saomaicenter.myanmartts");
         String ePkg = prefs.getString("pref_engine_english", "com.google.android.tts");
 
-        shanEngine = new RemoteTextToSpeech(this, status -> LogCollector.addLog("Init", "Shan: " + status), sPkg);
-        burmeseEngine = new RemoteTextToSpeech(this, status -> LogCollector.addLog("Init", "Burmese: " + status), bPkg);
-        englishEngine = new RemoteTextToSpeech(this, status -> LogCollector.addLog("Init", "English: " + status), ePkg);
+        shanEngine = new RemoteTextToSpeech(this, status -> LogCollector.addLog("Init", "Shan Status: " + status), sPkg);
+        burmeseEngine = new RemoteTextToSpeech(this, status -> LogCollector.addLog("Init", "Burmese Status: " + status), bPkg);
+        englishEngine = new RemoteTextToSpeech(this, status -> LogCollector.addLog("Init", "English Status: " + status), ePkg);
+    }
+
+    @Override
+    protected void onStop() {
+        LogCollector.addLog("Lifecycle", "onStop called - Stopping all engines");
+        if (shanEngine != null) { shanEngine.stop(); shanEngine.forceOpen(); }
+        if (burmeseEngine != null) { burmeseEngine.stop(); burmeseEngine.forceOpen(); }
+        if (englishEngine != null) { englishEngine.stop(); englishEngine.forceOpen(); }
     }
 
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         String text = request.getText();
-        LogCollector.addLog("Synthesize", "Received system request: " + text);
+        LogCollector.addLog("Synthesize", "Incoming system request: " + text);
 
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
-        LogCollector.addLog("Splitter", "Chunks count: " + chunks.size());
-
-        if (chunks.isEmpty()) {
-            LogCollector.addLog("Synthesize", "No chunks to play");
-            callback.done();
-            return;
+        if (chunks.isEmpty()) { 
+            callback.done(); 
+            return; 
         }
 
         callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
@@ -55,59 +60,57 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         for (int i = 0; i < chunks.size(); i++) {
             TTSUtils.Chunk chunk = chunks.get(i);
-            RemoteTextToSpeech engine = null;
-
-            if (chunk.lang.equals("SHAN")) engine = shanEngine;
-            else if (chunk.lang.equals("MYANMAR")) engine = burmeseEngine;
-            else engine = englishEngine;
+            RemoteTextToSpeech engine = chunk.lang.equals("SHAN") ? shanEngine : 
+                                      (chunk.lang.equals("MYANMAR") ? burmeseEngine : englishEngine);
 
             if (engine == null) {
                 LogCollector.addLog("Error", "Engine is NULL for lang: " + chunk.lang);
                 continue;
             }
 
-            LogCollector.addLog("Process", "Speaking chunk [" + i + "]: " + chunk.text + " with " + engine.getEngineName());
+            LogCollector.addLog("Process", "Chunk [" + i + "]: " + chunk.text + " using " + engine.getEngineName());
             
-            engine.forceOpen(); // Reset sync state
+            engine.forceOpen(); // Sync အဟောင်းများ ရှင်းထုတ်ခြင်း
             Bundle params = new Bundle(originalParams);
-            String uId = "ID_" + System.currentTimeMillis();
+            String uId = "CH_" + System.currentTimeMillis() + "_" + i;
             params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uId);
 
-            int result = engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, uId);
-            LogCollector.addLog("Process", "Engine speak() result: " + result);
+            int speakResult = engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, uId);
+            LogCollector.addLog("Process", "speak() result: " + speakResult);
 
+            // အင်ဂျင် ပြီးသည်အထိ စောင့်ဆိုင်းခြင်း
             engine.waitForCompletion(chunk.text);
         }
 
-        LogCollector.addLog("Synthesize", "All chunks processed. Sending callback.done()");
+        LogCollector.addLog("Synthesize", "Batch processing complete");
         callback.done();
     }
 
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
-        LogCollector.addLog("SystemCheck", "Checking lang: " + lang);
         if (lang == null) return -2;
         Locale locale = new Locale(lang, country, variant);
         try {
             if (shanEngine != null && lang.equalsIgnoreCase("shn")) return shanEngine.isLanguageAvailable(locale);
             if (burmeseEngine != null && (lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my"))) return burmeseEngine.isLanguageAvailable(locale);
             if (englishEngine != null && (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en"))) return englishEngine.isLanguageAvailable(locale);
-        } catch (Exception e) {
-            LogCollector.addLog("CrashGuard", "Error in IsLanguageAvailable: " + e.getMessage());
-        }
+        } catch (Exception e) {}
         return -2;
     }
 
     @Override
-    protected String[] onGetLanguage() { return new String[]{"eng", "USA", ""}; }
+    protected String[] onGetLanguage() {
+        return new String[]{"eng", "USA", ""};
+    }
 
     @Override
-    protected int onLoadLanguage(String lang, String country, String variant) { return onIsLanguageAvailable(lang, country, variant); }
+    protected int onLoadLanguage(String lang, String country, String variant) {
+        return onIsLanguageAvailable(lang, country, variant);
+    }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-        LogCollector.addLog("Lifecycle", "Service onDestroy");
         if (shanEngine != null) shanEngine.shutdown();
         if (burmeseEngine != null) burmeseEngine.shutdown();
         if (englishEngine != null) englishEngine.shutdown();
