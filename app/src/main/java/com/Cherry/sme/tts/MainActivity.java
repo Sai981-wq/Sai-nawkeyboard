@@ -77,6 +77,20 @@ public class MainActivity extends Activity {
                 Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
             }
         });
+
+        if (viewId == R.id.btnKpay) {
+            btn.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View v) {
+                    try {
+                        startActivity(new Intent(MainActivity.this, LogViewerActivity.class));
+                    } catch (Exception e) {
+                        Toast.makeText(MainActivity.this, "Error opening logs", Toast.LENGTH_SHORT).show();
+                    }
+                    return true;
+                }
+            });
+        }
     }
 
     private void setupEngineUI(int spinnerId, String pkgKey, String defPkg) {

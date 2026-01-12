@@ -8,11 +8,13 @@ import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
+import android.util.Log;
 import java.util.List;
 import java.util.Locale;
 
 public class AutoTTSManagerService extends TextToSpeechService {
 
+    private static final String TAG = "CherryTTS";
     public static final String[] SUPPORTED_LANGUAGES = {"eng-USA", "mya-MMR", "shn-MMR"};
 
     private RemoteTextToSpeech shanEngine;
@@ -40,6 +42,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initEnginesStepByStep() {
         String shanPkg = prefs.getString("pref_engine_shan", defaultShanPkg);
         shanEngine = new RemoteTextToSpeech(this, status -> {
+            Log.d(TAG, "Shan Engine Initialized: " + status);
             initBurmeseEngine();
         }, shanPkg);
     }
@@ -47,13 +50,16 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initBurmeseEngine() {
         String burmesePkg = prefs.getString("pref_engine_myanmar", defaultBurmesePkg);
         burmeseEngine = new RemoteTextToSpeech(this, status -> {
+            Log.d(TAG, "Burmese Engine Initialized: " + status);
             initEnglishEngine();
         }, burmesePkg);
     }
 
     private void initEnglishEngine() {
         String englishPkg = prefs.getString("pref_engine_english", defaultEnglishPkg);
-        englishEngine = new RemoteTextToSpeech(this, status -> {}, englishPkg);
+        englishEngine = new RemoteTextToSpeech(this, status -> {
+            Log.d(TAG, "English Engine Initialized: " + status);
+        }, englishPkg);
     }
 
     @Override
@@ -103,7 +109,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 engine = englishEngine;
             }
 
-            if (engine == null) continue;
+            if (engine == null) {
+                Log.e(TAG, "Engine for " + chunk.lang + " is NULL");
+                continue;
+            }
 
             engine.setSpeechRate(userRate);
             engine.setPitch(userPitch);
@@ -132,6 +141,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     Thread.sleep(35);
                 }
             } catch (Exception e) {
+                Log.e(TAG, "Error in Synthesis: " + e.getMessage());
                 break;
             }
         }
@@ -143,28 +153,18 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
         Locale locale = new Locale(lang, country, variant);
 
-        if (shanEngine != null) {
-            try {
-                if (shanEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
-                    return TextToSpeech.LANG_COUNTRY_AVAILABLE;
-                }
-            } catch (Exception e) {}
-        }
-        
-        if (burmeseEngine != null) {
-            try {
-                if (burmeseEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
-                    return TextToSpeech.LANG_COUNTRY_AVAILABLE;
-                }
-            } catch (Exception e) {}
-        }
-
-        if (englishEngine != null) {
-            try {
-                if (englishEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
-                    return TextToSpeech.LANG_COUNTRY_AVAILABLE;
-                }
-            } catch (Exception e) {}
+        try {
+            if (shanEngine != null && shanEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+                return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+            }
+            if (burmeseEngine != null && burmeseEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+                return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+            }
+            if (englishEngine != null && englishEngine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+                return TextToSpeech.LANG_COUNTRY_AVAILABLE;
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "onIsLanguageAvailable Crash: " + e.getMessage());
         }
 
         return TextToSpeech.LANG_NOT_SUPPORTED;
@@ -172,7 +172,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected String[] onGetLanguage() {
-        return new String[] { mLanguage, mCountry, mVariant };
+        return new String[]{mLanguage, mCountry, mVariant};
     }
 
     @Override
