@@ -62,6 +62,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
     }
 
     @Override
+    protected void onStop() {
+        if (shanEngine != null) shanEngine.stop();
+        if (burmeseEngine != null) burmeseEngine.stop();
+        if (englishEngine != null) englishEngine.stop();
+    }
+
+    @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         String text = request.getText();
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);

@@ -1,22 +1,27 @@
 package com.cherry.sme.tts;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.os.Bundle;
-import android.text.method.ScrollingMovementMethod;
-import android.widget.TextView;
+import android.speech.tts.TextToSpeech;
+import java.util.ArrayList;
 
-public class LogViewerActivity extends Activity {
+public class CheckVoiceData extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        TextView textView = new TextView(this);
-        textView.setPadding(30, 30, 30, 30);
-        textView.setMovementMethod(new ScrollingMovementMethod());
-        textView.setTextSize(14f);
-        setContentView(textView);
+        
+        ArrayList<String> available = new ArrayList<>();
+        available.add("eng-USA");
+        available.add("mya-MMR");
+        available.add("shn-MMR");
 
-        // Custom LogCollector ထဲမှ ဒေတာများကို ရယူပြသခြင်း
-        textView.setText(LogCollector.getLogs());
+        Intent data = new Intent();
+        data.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, available);
+        data.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_UNAVAILABLE_VOICES, new ArrayList<String>());
+        
+        setResult(TextToSpeech.Engine.CHECK_VOICE_DATA_PASS, data);
+        finish();
     }
 }
 

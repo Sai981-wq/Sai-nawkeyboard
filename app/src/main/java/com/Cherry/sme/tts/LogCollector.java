@@ -20,3 +20,4 @@ public class LogCollector {
         logBuilder.setLength(0);
     }
 }
+
