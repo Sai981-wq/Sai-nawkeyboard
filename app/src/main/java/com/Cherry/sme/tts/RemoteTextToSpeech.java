@@ -1,12 +1,13 @@
 package com.cherry.sme.tts;
 
 import android.content.Context;
+import android.os.ConditionVariable;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 
 public class RemoteTextToSpeech extends TextToSpeech {
 
-    private boolean isSpeaking = false;
+    private final ConditionVariable syncVariable = new ConditionVariable(true);
     private final String engineName;
 
     public RemoteTextToSpeech(Context context, OnInitListener listener, String engineName) {
@@ -16,27 +17,38 @@ public class RemoteTextToSpeech extends TextToSpeech {
         this.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override
             public void onStart(String utteranceId) {
-                isSpeaking = true;
+                LogCollector.addLog("EngineCallback", engineName + " STARTED: " + utteranceId);
+                syncVariable.close();
             }
 
             @Override
             public void onDone(String utteranceId) {
-                isSpeaking = false;
+                LogCollector.addLog("EngineCallback", engineName + " DONE: " + utteranceId);
+                syncVariable.open();
             }
 
             @Override
             public void onError(String utteranceId) {
-                isSpeaking = false;
+                LogCollector.addLog("EngineCallback", engineName + " ERROR: " + utteranceId);
+                syncVariable.open();
             }
         });
     }
 
-    public boolean isSpeaking() {
-        return isSpeaking;
+    public void waitForCompletion(String text) {
+        LogCollector.addLog("Sync", "Waiting for: " + engineName + " to finish [" + text + "]");
+        // ၈ စက္ကန့်ထက်ပိုမစောင့်ဘဲ timeout ထားထားပါတယ်
+        boolean success = syncVariable.block(8000); 
+        if (!success) {
+            LogCollector.addLog("Sync", "TIMEOUT: " + engineName + " failed to signal DONE");
+        } else {
+            LogCollector.addLog("Sync", "RELEASED: " + engineName + " finished or was ready");
+        }
     }
 
-    public String getEngineName() {
-        return engineName;
+    public void forceOpen() {
+        LogCollector.addLog("Sync", "Force opening: " + engineName);
+        syncVariable.open();
     }
 }
 
