@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
+import android.util.Log;
 import java.util.ArrayList;
 
 public class CheckVoiceData extends Activity {
@@ -14,10 +15,12 @@ public class CheckVoiceData extends Activity {
         ArrayList<String> available = new ArrayList<>();
         ArrayList<String> unavailable = new ArrayList<>();
 
-        if (AutoTTSManagerService.SUPPORTED_LANGUAGES != null) {
+        try {
             for (String lang : AutoTTSManagerService.SUPPORTED_LANGUAGES) {
                 available.add(lang);
             }
+        } catch (Exception e) {
+            Log.e("CherryTTS", "CheckVoiceData Error: " + e.getMessage());
         }
 
         Intent data = new Intent();

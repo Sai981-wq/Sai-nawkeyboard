@@ -15,6 +15,8 @@ import java.util.Locale;
 public class AutoTTSManagerService extends TextToSpeechService {
 
     private static final String TAG = "CherryTTS";
+    public static final String[] SUPPORTED_LANGUAGES = {"eng-USA", "mya-MMR", "shn-MMR"};
+
     private RemoteTextToSpeech shanEngine;
     private RemoteTextToSpeech burmeseEngine;
     private RemoteTextToSpeech englishEngine;
@@ -34,7 +36,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initEnginesStepByStep() {
         String shanPkg = prefs.getString("pref_engine_shan", "com.espeak.ng");
         shanEngine = new RemoteTextToSpeech(this, status -> {
-            Log.d(TAG, "Shan Engine Init: " + status);
+            Log.d(TAG, "Shan Engine Ready: " + status);
             initBurmeseEngine();
         }, shanPkg);
     }
@@ -42,7 +44,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initBurmeseEngine() {
         String burmesePkg = prefs.getString("pref_engine_myanmar", "org.saomaicenter.myanmartts");
         burmeseEngine = new RemoteTextToSpeech(this, status -> {
-            Log.d(TAG, "Burmese Engine Init: " + status);
+            Log.d(TAG, "Burmese Engine Ready: " + status);
             initEnglishEngine();
         }, burmesePkg);
     }
@@ -50,7 +52,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initEnglishEngine() {
         String englishPkg = prefs.getString("pref_engine_english", "com.google.android.tts");
         englishEngine = new RemoteTextToSpeech(this, status -> {
-            Log.d(TAG, "English Engine Init: " + status);
+            Log.d(TAG, "English Engine Ready: " + status);
         }, englishPkg);
     }
 
@@ -88,11 +90,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         for (int i = 0; i < chunks.size(); i++) {
             TTSUtils.Chunk chunk = chunks.get(i);
-            RemoteTextToSpeech engine = null;
-
-            if (chunk.lang.equals("SHAN")) engine = shanEngine;
-            else if (chunk.lang.equals("MYANMAR")) engine = burmeseEngine;
-            else engine = englishEngine;
+            RemoteTextToSpeech engine = chunk.lang.equals("SHAN") ? shanEngine : 
+                                      (chunk.lang.equals("MYANMAR") ? burmeseEngine : englishEngine);
 
             if (engine == null) continue;
 
@@ -113,10 +112,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 while (engine.isSpeaking()) {
                     Thread.sleep(10);
                 }
-                Thread.sleep(30);
+                Thread.sleep(35);
 
             } catch (Exception e) {
-                Log.e(TAG, "Synthesis Error: " + e.getMessage());
+                Log.e(TAG, "Synthesis Loop Error: " + e.getMessage());
                 break;
             }
         }
@@ -139,7 +138,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 return TextToSpeech.LANG_COUNTRY_AVAILABLE;
             }
         } catch (Exception e) {
-            Log.e(TAG, "Language Check Error: " + e.getMessage());
+            Log.e(TAG, "Availability Check Error: " + e.getMessage());
         }
         return TextToSpeech.LANG_NOT_SUPPORTED;
     }
