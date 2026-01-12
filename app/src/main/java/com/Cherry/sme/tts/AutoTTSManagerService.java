@@ -26,30 +26,33 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onCreate() {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        LogCollector.addLog("Service", "Created");
+        LogCollector.addLog("Service", "Created and reading user preferences");
         initEnginesStepByStep();
     }
 
     private void initEnginesStepByStep() {
+        // အသုံးပြုသူ ရွေးချယ်ထားသော ရှမ်းအင်ဂျင်ကို preference မှ ဖတ်ယူခြင်း
         String shanPkg = prefs.getString("pref_engine_shan", "com.espeak.ng");
         shanEngine = new RemoteTextToSpeech(this, status -> {
-            LogCollector.addLog("ShanInit", "Status: " + status);
+            LogCollector.addLog("ShanInit", "Pkg: " + shanPkg + ", Status: " + status);
             initBurmeseEngine();
         }, shanPkg);
     }
 
     private void initBurmeseEngine() {
+        // အသုံးပြုသူ ရွေးချယ်ထားသော ဗမာအင်ဂျင်ကို preference မှ ဖတ်ယူခြင်း
         String burmesePkg = prefs.getString("pref_engine_myanmar", "org.saomaicenter.myanmartts");
         burmeseEngine = new RemoteTextToSpeech(this, status -> {
-            LogCollector.addLog("BurmeseInit", "Status: " + status);
+            LogCollector.addLog("BurmeseInit", "Pkg: " + burmesePkg + ", Status: " + status);
             initEnglishEngine();
         }, burmesePkg);
     }
 
     private void initEnglishEngine() {
+        // အသုံးပြုသူ ရွေးချယ်ထားသော အင်္ဂလိပ်အင်ဂျင်ကို preference မှ ဖတ်ယူခြင်း
         String englishPkg = prefs.getString("pref_engine_english", "com.google.android.tts");
         englishEngine = new RemoteTextToSpeech(this, status -> {
-            LogCollector.addLog("EnglishInit", "Status: " + status);
+            LogCollector.addLog("EnglishInit", "Pkg: " + englishPkg + ", Status: " + status);
         }, englishPkg);
     }
 
@@ -71,6 +74,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         String text = request.getText();
+        LogCollector.addLog("Synthesize", "Text: " + text);
+        
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
         if (chunks.isEmpty()) { callback.done(); return; }
 
@@ -79,10 +84,20 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         for (int i = 0; i < chunks.size(); i++) {
             TTSUtils.Chunk chunk = chunks.get(i);
-            RemoteTextToSpeech engine = chunk.lang.equals("SHAN") ? shanEngine : 
-                                      (chunk.lang.equals("MYANMAR") ? burmeseEngine : englishEngine);
+            RemoteTextToSpeech engine;
 
-            if (engine == null) continue;
+            if (chunk.lang.equals("SHAN")) {
+                engine = shanEngine;
+            } else if (chunk.lang.equals("MYANMAR")) {
+                engine = burmeseEngine;
+            } else {
+                engine = englishEngine;
+            }
+
+            if (engine == null) {
+                LogCollector.addLog("Error", "Selected engine for " + chunk.lang + " is not ready");
+                continue;
+            }
 
             Bundle params = new Bundle(originalParams);
             String uId = "CH_" + System.currentTimeMillis() + "_" + i;
@@ -101,7 +116,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 Thread.sleep(35);
 
             } catch (Exception e) {
-                LogCollector.addLog("Error", "Synthesis: " + e.getMessage());
+                LogCollector.addLog("Error", "Synthesis failure: " + e.getMessage());
                 break;
             }
         }
@@ -112,24 +127,14 @@ public class AutoTTSManagerService extends TextToSpeechService {
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
 
-        // ရှမ်း၊ မြန်မာ၊ အင်္ဂလိပ် မဟုတ်ပါက Sub-engines များကို မမေးတော့ဘဲ ချက်ချင်း ပိတ်ချလိုက်မည်
-        if (!(lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en") || 
-              lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my") || 
-              lang.equalsIgnoreCase("shn"))) {
-            return TextToSpeech.LANG_NOT_SUPPORTED;
+        // တည်ငြိမ်မှုရှိစေရန် ရှမ်း၊ မြန်မာ၊ အင်္ဂလိပ် တို့ကို တိုက်ရိုက် Supported ဖြစ်ကြောင်း အဖြေပေးခြင်း
+        if (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en") || 
+            lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my") || 
+            lang.equalsIgnoreCase("shn")) {
+            return TextToSpeech.LANG_COUNTRY_AVAILABLE;
         }
 
-        Locale locale = new Locale(lang, country, variant);
-        LogCollector.addLog("CheckLang", lang);
-
-        try {
-            if (shanEngine != null && shanEngine.isLanguageAvailable(locale) >= 0) return 2;
-            if (burmeseEngine != null && burmeseEngine.isLanguageAvailable(locale) >= 0) return 2;
-            if (englishEngine != null && englishEngine.isLanguageAvailable(locale) >= 0) return 2;
-        } catch (Exception e) {
-            LogCollector.addLog("CrashGuard", e.getMessage());
-        }
-        return -2;
+        return TextToSpeech.LANG_NOT_SUPPORTED;
     }
 
     @Override
