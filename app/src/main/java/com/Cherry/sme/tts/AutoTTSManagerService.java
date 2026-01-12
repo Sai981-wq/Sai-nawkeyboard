@@ -172,7 +172,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected String[] onGetLanguage() {
-        return SUPPORTED_LANGUAGES;
+        return new String[] { mLanguage, mCountry, mVariant };
     }
 
     @Override
