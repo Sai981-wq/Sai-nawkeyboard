@@ -20,7 +20,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private volatile boolean stopRequested = false;
     private String mLanguage = "eng";
-    private String mCountry = "USA";
+    private String mCountry = "";
     private String mVariant = "";
 
     @Override
@@ -123,19 +123,16 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
-        Locale locale = new Locale(lang, country, variant);
-
-        try {
-            if (shanEngine != null && lang.equalsIgnoreCase("shn")) {
-                return shanEngine.isLanguageAvailable(locale);
-            }
-            if (burmeseEngine != null && (lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my"))) {
-                return burmeseEngine.isLanguageAvailable(locale);
-            }
-            if (englishEngine != null && (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en"))) {
-                return englishEngine.isLanguageAvailable(locale);
-            }
-        } catch (Exception e) {}
+        
+        if (lang.equalsIgnoreCase("shn")) {
+            return TextToSpeech.LANG_AVAILABLE;
+        }
+        if (lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my")) {
+            return TextToSpeech.LANG_AVAILABLE;
+        }
+        if (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en")) {
+            return TextToSpeech.LANG_AVAILABLE;
+        }
 
         return TextToSpeech.LANG_NOT_SUPPORTED;
     }
