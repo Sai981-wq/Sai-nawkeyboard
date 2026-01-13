@@ -23,7 +23,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private volatile boolean stopRequested = false;
     private String mLanguage = "eng";
-    private String mCountry = "USA";
+    private String mCountry = "";
     private String mVariant = "";
 
     @Override
@@ -133,9 +133,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     Thread.sleep(10);
                     startWait++;
                 }
+
                 while (engine.isSpeaking() && !stopRequested) {
                     Thread.sleep(10);
                 }
+
                 if (!stopRequested) {
                     Thread.sleep(35);
                 }
@@ -149,28 +151,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
-        
-        Locale locale = new Locale(lang, country == null ? "" : country, variant == null ? "" : variant);
-        
-        try {
-            if (lang.equalsIgnoreCase("shn") || lang.toLowerCase().contains("shan")) {
-                if (shanEngine != null) {
-                    int res = shanEngine.isLanguageAvailable(locale);
-                    if (res < 0) res = shanEngine.isLanguageAvailable(new Locale("shn"));
-                    return res;
-                }
-            } 
-            else if (lang.equalsIgnoreCase("my") || lang.equalsIgnoreCase("mya")) {
-                if (burmeseEngine != null) {
-                    int res = burmeseEngine.isLanguageAvailable(locale);
-                    if (res < 0) res = burmeseEngine.isLanguageAvailable(new Locale("my"));
-                    return res;
-                }
-            } 
-            else {
-                if (englishEngine != null) return englishEngine.isLanguageAvailable(locale);
-            }
-        } catch (Exception e) {}
+
+        if (lang.equalsIgnoreCase("shn")) return TextToSpeech.LANG_AVAILABLE;
+        if (lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my")) return TextToSpeech.LANG_AVAILABLE;
+        if (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en")) return TextToSpeech.LANG_AVAILABLE;
+
         return TextToSpeech.LANG_NOT_SUPPORTED;
     }
 
