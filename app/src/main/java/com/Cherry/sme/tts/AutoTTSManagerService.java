@@ -1,6 +1,8 @@
 package com.cherry.sme.tts;
 
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ResolveInfo;
 import android.media.AudioFormat;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
@@ -21,7 +23,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private volatile boolean stopRequested = false;
     private String mLanguage = "eng";
-    private String mCountry = "";
+    private String mCountry = "USA";
     private String mVariant = "";
 
     @Override
@@ -32,19 +34,43 @@ public class AutoTTSManagerService extends TextToSpeechService {
     }
 
     private void initEnginesStepByStep() {
-        String sysDefault = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
-        String shanPkg = prefs.getString("pref_engine_shan", sysDefault);
-        shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(sysDefault), shanPkg);
+        String shanPkg = getBestEngine("pref_engine_shan");
+        shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(), shanPkg);
     }
 
-    private void initBurmeseEngine(String sysDefault) {
-        String burmesePkg = prefs.getString("pref_engine_myanmar", sysDefault);
-        burmeseEngine = new RemoteTextToSpeech(this, status -> initEnglishEngine(sysDefault), burmesePkg);
+    private void initBurmeseEngine() {
+        String burmesePkg = getBestEngine("pref_engine_myanmar");
+        burmeseEngine = new RemoteTextToSpeech(this, status -> initEnglishEngine(), burmesePkg);
     }
 
-    private void initEnglishEngine(String sysDefault) {
-        String englishPkg = prefs.getString("pref_engine_english", sysDefault);
+    private void initEnglishEngine() {
+        String englishPkg = getBestEngine("pref_engine_english");
         englishEngine = new RemoteTextToSpeech(this, status -> {}, englishPkg);
+    }
+
+    private String getBestEngine(String prefKey) {
+        String pkg = prefs.getString(prefKey, null);
+        if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) {
+            return pkg;
+        }
+
+        String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
+        if (sysDef != null && !sysDef.equals(getPackageName())) {
+            return sysDef;
+        }
+
+        try {
+            Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
+            List<ResolveInfo> services = getPackageManager().queryIntentServices(intent, 0);
+            for (ResolveInfo info : services) {
+                String p = info.serviceInfo.packageName;
+                if (!p.equals(getPackageName())) {
+                    return p;
+                }
+            }
+        } catch (Exception e) {}
+
+        return "com.google.android.tts";
     }
 
     @Override
@@ -123,29 +149,18 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
-
         Locale locale = new Locale(lang, country, variant);
-        
         try {
             if (lang.equalsIgnoreCase("shn") || lang.toLowerCase().contains("shan")) {
-                if (shanEngine != null) {
-                    return shanEngine.isLanguageAvailable(locale);
-                }
+                if (shanEngine != null) return shanEngine.isLanguageAvailable(locale);
             } 
             else if (lang.equalsIgnoreCase("my") || lang.equalsIgnoreCase("mya")) {
-                if (burmeseEngine != null) {
-                    return burmeseEngine.isLanguageAvailable(locale);
-                }
+                if (burmeseEngine != null) return burmeseEngine.isLanguageAvailable(locale);
             } 
             else {
-                if (englishEngine != null) {
-                    return englishEngine.isLanguageAvailable(locale);
-                }
+                if (englishEngine != null) return englishEngine.isLanguageAvailable(locale);
             }
-        } catch (Exception e) {
-            return TextToSpeech.LANG_NOT_SUPPORTED;
-        }
-
+        } catch (Exception e) {}
         return TextToSpeech.LANG_NOT_SUPPORTED;
     }
 
