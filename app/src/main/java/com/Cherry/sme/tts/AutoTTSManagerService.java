@@ -4,6 +4,7 @@ import android.content.SharedPreferences;
 import android.media.AudioFormat;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
+import android.provider.Settings;
 import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
@@ -31,17 +32,19 @@ public class AutoTTSManagerService extends TextToSpeechService {
     }
 
     private void initEnginesStepByStep() {
-        String shanPkg = prefs.getString("pref_engine_shan", "com.espeak.ng");
-        shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(), shanPkg);
+        String sysDefault = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
+        
+        String shanPkg = prefs.getString("pref_engine_shan", sysDefault);
+        shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(sysDefault), shanPkg);
     }
 
-    private void initBurmeseEngine() {
-        String burmesePkg = prefs.getString("pref_engine_myanmar", "org.saomaicenter.myanmartts");
-        burmeseEngine = new RemoteTextToSpeech(this, status -> initEnglishEngine(), burmesePkg);
+    private void initBurmeseEngine(String sysDefault) {
+        String burmesePkg = prefs.getString("pref_engine_myanmar", sysDefault);
+        burmeseEngine = new RemoteTextToSpeech(this, status -> initEnglishEngine(sysDefault), burmesePkg);
     }
 
-    private void initEnglishEngine() {
-        String englishPkg = prefs.getString("pref_engine_english", "com.google.android.tts");
+    private void initEnglishEngine(String sysDefault) {
+        String englishPkg = prefs.getString("pref_engine_english", sysDefault);
         englishEngine = new RemoteTextToSpeech(this, status -> {}, englishPkg);
     }
 
@@ -105,11 +108,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     Thread.sleep(10);
                     startWait++;
                 }
-
                 while (engine.isSpeaking() && !stopRequested) {
                     Thread.sleep(10);
                 }
-
                 if (!stopRequested) {
                     Thread.sleep(35);
                 }
@@ -123,18 +124,31 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
-        
-        if (lang.equalsIgnoreCase("shn")) {
-            return TextToSpeech.LANG_AVAILABLE;
-        }
-        if (lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my")) {
-            return TextToSpeech.LANG_AVAILABLE;
-        }
-        if (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en")) {
-            return TextToSpeech.LANG_AVAILABLE;
+
+        Locale locale = new Locale(lang, country, variant);
+        int result = TextToSpeech.LANG_NOT_SUPPORTED;
+
+        try {
+            if (lang.equalsIgnoreCase("shn") || lang.toLowerCase().contains("shan")) {
+                if (shanEngine != null) {
+                    result = shanEngine.isLanguageAvailable(locale);
+                }
+            }
+            else if (lang.equalsIgnoreCase("my") || lang.equalsIgnoreCase("mya")) {
+                if (burmeseEngine != null) {
+                    result = burmeseEngine.isLanguageAvailable(locale);
+                }
+            }
+            else {
+                if (englishEngine != null) {
+                    result = englishEngine.isLanguageAvailable(locale);
+                }
+            }
+        } catch (Exception e) {
+            return TextToSpeech.LANG_NOT_SUPPORTED;
         }
 
-        return TextToSpeech.LANG_NOT_SUPPORTED;
+        return result;
     }
 
     @Override
@@ -144,10 +158,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected int onLoadLanguage(String lang, String country, String variant) {
-        mLanguage = lang;
-        mCountry = country;
-        mVariant = variant;
-        return onIsLanguageAvailable(lang, country, variant);
+        int result = onIsLanguageAvailable(lang, country, variant);
+        if (result >= TextToSpeech.LANG_AVAILABLE) {
+            mLanguage = lang;
+            mCountry = country;
+            mVariant = variant;
+        }
+        return result;
     }
 }
 
