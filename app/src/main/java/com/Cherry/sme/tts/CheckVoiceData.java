@@ -5,7 +5,6 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
-import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 
 public class CheckVoiceData extends Activity {
@@ -15,10 +14,9 @@ public class CheckVoiceData extends Activity {
         super.onCreate(savedInstanceState);
 
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
-        String targetEngine = prefs.getString("pref_engine_english", sysDef);
+        String targetEngine = prefs.getString("pref_engine_english", "");
 
-        if (targetEngine == null || getPackageName().equals(targetEngine)) {
+        if (targetEngine.isEmpty() || getPackageName().equals(targetEngine)) {
             setResult(TextToSpeech.Engine.CHECK_VOICE_DATA_FAIL);
             finish();
             return;

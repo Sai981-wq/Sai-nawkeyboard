@@ -4,7 +4,6 @@ import android.content.SharedPreferences;
 import android.media.AudioFormat;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
-import android.provider.Settings;
 import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
@@ -32,19 +31,17 @@ public class AutoTTSManagerService extends TextToSpeechService {
     }
 
     private void initEnginesStepByStep() {
-        String sysDefault = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
-        
-        String shanPkg = prefs.getString("pref_engine_shan", sysDefault);
-        shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(sysDefault), shanPkg);
+        String shanPkg = prefs.getString("pref_engine_shan", "com.espeak.ng");
+        shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(), shanPkg);
     }
 
-    private void initBurmeseEngine(String sysDefault) {
-        String burmesePkg = prefs.getString("pref_engine_myanmar", sysDefault);
-        burmeseEngine = new RemoteTextToSpeech(this, status -> initEnglishEngine(sysDefault), burmesePkg);
+    private void initBurmeseEngine() {
+        String burmesePkg = prefs.getString("pref_engine_myanmar", "org.saomaicenter.myanmartts");
+        burmeseEngine = new RemoteTextToSpeech(this, status -> initEnglishEngine(), burmesePkg);
     }
 
-    private void initEnglishEngine(String sysDefault) {
-        String englishPkg = prefs.getString("pref_engine_english", sysDefault);
+    private void initEnglishEngine() {
+        String englishPkg = prefs.getString("pref_engine_english", "com.google.android.tts");
         englishEngine = new RemoteTextToSpeech(this, status -> {}, englishPkg);
     }
 
@@ -132,11 +129,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 if (shanEngine != null) {
                     return shanEngine.isLanguageAvailable(locale);
                 }
-            } else if (lang.equalsIgnoreCase("my") || lang.equalsIgnoreCase("mya")) {
+            } 
+            else if (lang.equalsIgnoreCase("my") || lang.equalsIgnoreCase("mya")) {
                 if (burmeseEngine != null) {
                     return burmeseEngine.isLanguageAvailable(locale);
                 }
-            } else {
+            } 
+            else {
                 if (englishEngine != null) {
                     return englishEngine.isLanguageAvailable(locale);
                 }
