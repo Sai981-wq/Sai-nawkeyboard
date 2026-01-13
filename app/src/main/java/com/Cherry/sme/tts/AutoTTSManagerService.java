@@ -5,6 +5,8 @@ import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioFormat;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
@@ -23,6 +25,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private SharedPreferences prefs;
 
     private PowerManager.WakeLock wakeLock;
+    private boolean isRestarting = false;
+    private Handler mainHandler;
 
     private volatile boolean stopRequested = false;
     private String mLanguage = "eng";
@@ -32,8 +36,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onCreate() {
         super.onCreate();
-        prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
         
+        prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        mainHandler = new Handler(Looper.getMainLooper());
+
         PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
         if (powerManager != null) {
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:SpeakingLock");
@@ -42,8 +49,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
         initEnginesStepByStep();
     }
 
-    private void initEnginesStepByStep() {
+    private synchronized void initEnginesStepByStep() {
+        if (isRestarting) return;
+
         String shanPkg = getBestEngine("pref_engine_shan");
+        shutdownEngines();
+
         shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(), shanPkg);
     }
 
@@ -54,7 +65,16 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private void initEnglishEngine() {
         String englishPkg = getBestEngine("pref_engine_english");
-        englishEngine = new RemoteTextToSpeech(this, status -> {}, englishPkg);
+        englishEngine = new RemoteTextToSpeech(this, status -> {
+            isRestarting = false;
+        }, englishPkg);
+    }
+
+    private void triggerWatchdogRestart() {
+        if (!isRestarting) {
+            isRestarting = true;
+            mainHandler.post(this::initEnginesStepByStep);
+        }
     }
 
     private String getBestEngine(String prefKey) {
@@ -77,13 +97,23 @@ public class AutoTTSManagerService extends TextToSpeechService {
         return "com.google.android.tts";
     }
 
+    private void shutdownEngines() {
+        if (shanEngine != null) {
+            try { shanEngine.shutdown(); } catch (Exception e) {}
+        }
+        if (burmeseEngine != null) {
+            try { burmeseEngine.shutdown(); } catch (Exception e) {}
+        }
+        if (englishEngine != null) {
+            try { englishEngine.shutdown(); } catch (Exception e) {}
+        }
+    }
+
     @Override
     public void onDestroy() {
         super.onDestroy();
-        if (shanEngine != null) shanEngine.shutdown();
-        if (burmeseEngine != null) burmeseEngine.shutdown();
-        if (englishEngine != null) englishEngine.shutdown();
-        
+        shutdownEngines();
+
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
@@ -95,7 +125,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (shanEngine != null) shanEngine.stop();
         if (burmeseEngine != null) burmeseEngine.stop();
         if (englishEngine != null) englishEngine.stop();
-        
+
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
@@ -104,7 +134,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         stopRequested = false;
-        
+
+        if (isRestarting) {
+            callback.error();
+            return;
+        }
+
         if (wakeLock != null && !wakeLock.isHeld()) {
             wakeLock.acquire(10 * 60 * 1000L);
         }
@@ -123,46 +158,62 @@ public class AutoTTSManagerService extends TextToSpeechService {
         float userPitch = request.getPitch() / 100.0f;
         Bundle originalParams = request.getParams();
 
+        RemoteTextToSpeech previousEngine = null;
+
         try {
             for (int i = 0; i < chunks.size(); i++) {
                 if (stopRequested) break;
                 TTSUtils.Chunk chunk = chunks.get(i);
-                if (chunk.text.trim().isEmpty()) continue;
+                
+                if (chunk.text.trim().length() < 1) continue;
 
-                RemoteTextToSpeech engine;
-                if (chunk.lang.equals("SHAN")) engine = shanEngine;
-                else if (chunk.lang.equals("MYANMAR")) engine = burmeseEngine;
-                else engine = englishEngine;
+                RemoteTextToSpeech currentEngine;
+                if (chunk.lang.equals("SHAN")) currentEngine = shanEngine;
+                else if (chunk.lang.equals("MYANMAR")) currentEngine = burmeseEngine;
+                else currentEngine = englishEngine;
 
-                if (engine == null) continue;
+                if (currentEngine == null) {
+                    triggerWatchdogRestart();
+                    break;
+                }
 
-                engine.setSpeechRate(userRate);
-                engine.setPitch(userPitch);
+                if (previousEngine != null && previousEngine != currentEngine) {
+                    Thread.sleep(150);
+                }
+
+                currentEngine.setSpeechRate(userRate);
+                currentEngine.setPitch(userPitch);
 
                 Bundle params = new Bundle(originalParams);
                 String uId = "CH_" + System.currentTimeMillis() + "_" + i;
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uId);
 
-                engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, uId);
+                try {
+                    currentEngine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, uId);
 
-                int startWait = 0;
-                while (!engine.isSpeaking() && startWait < 500 && !stopRequested) {
-                    Thread.sleep(10);
-                    startWait++;
-                }
-
-                while (!stopRequested) {
-                    if (!engine.isSpeaking()) {
-                        Thread.sleep(100); 
-                        if (!engine.isSpeaking()) {
-                            break;
-                        }
+                    int startWait = 0;
+                    while (!currentEngine.isSpeaking() && startWait < 500 && !stopRequested) {
+                        Thread.sleep(10);
+                        startWait++;
                     }
-                    Thread.sleep(10);
-                }
-                
-                if (!stopRequested) {
-                    Thread.sleep(50);
+
+                    while (!stopRequested) {
+                        if (!currentEngine.isSpeaking()) {
+                            Thread.sleep(100);
+                            if (!currentEngine.isSpeaking()) break;
+                        }
+                        Thread.sleep(50);
+                    }
+
+                    if (!stopRequested) {
+                        Thread.sleep(20);
+                    }
+                    
+                    previousEngine = currentEngine;
+
+                } catch (Exception e) {
+                    triggerWatchdogRestart();
+                    break;
                 }
             }
         } catch (Exception e) {
