@@ -13,8 +13,11 @@ import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
+import android.speech.tts.UtteranceProgressListener;
+
 import java.util.List;
-import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public class AutoTTSManagerService extends TextToSpeechService {
 
@@ -141,51 +144,56 @@ public class AutoTTSManagerService extends TextToSpeechService {
         try {
             for (int i = 0; i < chunks.size(); i++) {
                 if (stopRequested) break;
-                TTSUtils.Chunk chunk = chunks.get(i);
                 
-                if (chunk.text.trim().length() < 1) continue;
+                TTSUtils.Chunk chunk = chunks.get(i);
+                if (chunk.text.trim().isEmpty()) continue;
 
                 RemoteTextToSpeech engine;
-                if (chunk.lang.equals("SHAN")) engine = shanEngine;
-                else if (chunk.lang.equals("MYANMAR")) engine = burmeseEngine;
+                if ("SHAN".equals(chunk.lang)) engine = shanEngine;
+                else if ("MYANMAR".equals(chunk.lang)) engine = burmeseEngine;
                 else engine = englishEngine;
 
-                if (engine == null) {
-                    triggerWatchdogRestart();
-                    break;
-                }
+                if (engine == null) continue;
 
                 engine.setSpeechRate(userRate);
                 engine.setPitch(userPitch);
 
-                Bundle params = new Bundle(originalParams);
+                CountDownLatch latch = new CountDownLatch(1);
                 String uId = "CH_" + System.currentTimeMillis() + "_" + i;
+
+                engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override
+                    public void onStart(String utteranceId) {}
+
+                    @Override
+                    public void onDone(String utteranceId) {
+                        if (utteranceId.equals(uId)) {
+                            latch.countDown();
+                        }
+                    }
+
+                    @Override
+                    public void onError(String utteranceId) {
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onStop(String utteranceId, boolean interrupted) {
+                        latch.countDown();
+                    }
+                });
+
+                Bundle params = new Bundle(originalParams);
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uId);
 
-                try {
-                    engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, uId);
-
-                    int startWait = 0;
-                    while (!engine.isSpeaking() && startWait < 500 && !stopRequested) {
-                        Thread.sleep(10);
-                        startWait++;
+                int result = engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, uId);
+                
+                if (result == TextToSpeech.SUCCESS) {
+                    try {
+                        latch.await(5000, TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException e) {
+                        break;
                     }
-
-                    while (!stopRequested) {
-                        if (!engine.isSpeaking()) {
-                            Thread.sleep(100);
-                            if (!engine.isSpeaking()) break;
-                        }
-                        Thread.sleep(50);
-                    }
-
-                    if (!stopRequested) {
-                        Thread.sleep(20);
-                    }
-
-                } catch (Exception e) {
-                    triggerWatchdogRestart();
-                    break;
                 }
             }
         } catch (Exception e) {
