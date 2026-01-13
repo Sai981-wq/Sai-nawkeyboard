@@ -13,8 +13,6 @@ public class CheckVoiceData extends Activity {
         
         ArrayList<String> available = new ArrayList<>();
         available.add("eng-USA");
-        available.add("my");
-        available.add("shn");
 
         Intent data = new Intent();
         data.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, available);

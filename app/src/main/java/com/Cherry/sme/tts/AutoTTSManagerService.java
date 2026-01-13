@@ -143,38 +143,20 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
-        if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
-
-        String iso3Lang = new Locale(lang).getISO3Language();
-
-        if (iso3Lang.equals("mya") || lang.equalsIgnoreCase("my")) {
-            return TextToSpeech.LANG_AVAILABLE;
-        }
-        if (iso3Lang.equals("shn") || lang.equalsIgnoreCase("shn")) {
-            return TextToSpeech.LANG_AVAILABLE;
-        }
-        if (iso3Lang.equals("eng")) {
-            return TextToSpeech.LANG_AVAILABLE;
-        }
-
-        return TextToSpeech.LANG_NOT_SUPPORTED;
+        return TextToSpeech.LANG_AVAILABLE;
     }
 
     @Override
     protected String[] onGetLanguage() {
-        return new String[]{mLanguage, mCountry, mVariant};
+        return new String[]{"eng", "USA", ""};
     }
 
     @Override
     protected int onLoadLanguage(String lang, String country, String variant) {
-        int result = onIsLanguageAvailable(lang, country, variant);
-        if (result >= TextToSpeech.LANG_AVAILABLE) {
-            mLanguage = lang;
-            mCountry = country;
-            mVariant = variant;
-            return TextToSpeech.LANG_AVAILABLE;
-        }
-        return TextToSpeech.LANG_NOT_SUPPORTED;
+        mLanguage = "eng";
+        mCountry = "USA";
+        mVariant = "";
+        return TextToSpeech.LANG_AVAILABLE;
     }
 }
 
