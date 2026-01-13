@@ -126,29 +126,26 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
 
         Locale locale = new Locale(lang, country, variant);
-        int result = TextToSpeech.LANG_NOT_SUPPORTED;
-
+        
         try {
             if (lang.equalsIgnoreCase("shn") || lang.toLowerCase().contains("shan")) {
                 if (shanEngine != null) {
-                    result = shanEngine.isLanguageAvailable(locale);
+                    return shanEngine.isLanguageAvailable(locale);
                 }
-            }
-            else if (lang.equalsIgnoreCase("my") || lang.equalsIgnoreCase("mya")) {
+            } else if (lang.equalsIgnoreCase("my") || lang.equalsIgnoreCase("mya")) {
                 if (burmeseEngine != null) {
-                    result = burmeseEngine.isLanguageAvailable(locale);
+                    return burmeseEngine.isLanguageAvailable(locale);
                 }
-            }
-            else {
+            } else {
                 if (englishEngine != null) {
-                    result = englishEngine.isLanguageAvailable(locale);
+                    return englishEngine.isLanguageAvailable(locale);
                 }
             }
         } catch (Exception e) {
             return TextToSpeech.LANG_NOT_SUPPORTED;
         }
 
-        return result;
+        return TextToSpeech.LANG_NOT_SUPPORTED;
     }
 
     @Override
