@@ -3,7 +3,6 @@ package com.cherry.sme.tts;
 import android.content.Context;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
-import java.util.Locale;
 
 public class RemoteTextToSpeech extends TextToSpeech {
 
@@ -38,10 +37,6 @@ public class RemoteTextToSpeech extends TextToSpeech {
 
     public String getEngineName() {
         return engineName;
-    }
-
-    public int isLanguageAvailable(Locale locale) {
-        return super.isLanguageAvailable(locale);
     }
 }
 

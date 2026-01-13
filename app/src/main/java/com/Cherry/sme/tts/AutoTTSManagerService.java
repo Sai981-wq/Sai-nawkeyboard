@@ -23,7 +23,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private volatile boolean stopRequested = false;
     private String mLanguage = "eng";
-    private String mCountry = "";
+    private String mCountry = "USA";
     private String mVariant = "";
 
     @Override
@@ -53,23 +53,18 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) {
             return pkg;
         }
-
         String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
         if (sysDef != null && !sysDef.equals(getPackageName())) {
             return sysDef;
         }
-
         try {
             Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
             List<ResolveInfo> services = getPackageManager().queryIntentServices(intent, 0);
             for (ResolveInfo info : services) {
                 String p = info.serviceInfo.packageName;
-                if (!p.equals(getPackageName())) {
-                    return p;
-                }
+                if (!p.equals(getPackageName())) return p;
             }
         } catch (Exception e) {}
-
         return "com.google.android.tts";
     }
 
@@ -133,11 +128,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     Thread.sleep(10);
                     startWait++;
                 }
-
                 while (engine.isSpeaking() && !stopRequested) {
                     Thread.sleep(10);
                 }
-
                 if (!stopRequested) {
                     Thread.sleep(35);
                 }
@@ -152,9 +145,17 @@ public class AutoTTSManagerService extends TextToSpeechService {
     protected int onIsLanguageAvailable(String lang, String country, String variant) {
         if (lang == null) return TextToSpeech.LANG_NOT_SUPPORTED;
 
-        if (lang.equalsIgnoreCase("shn")) return TextToSpeech.LANG_AVAILABLE;
-        if (lang.equalsIgnoreCase("mya") || lang.equalsIgnoreCase("my")) return TextToSpeech.LANG_AVAILABLE;
-        if (lang.equalsIgnoreCase("eng") || lang.equalsIgnoreCase("en")) return TextToSpeech.LANG_AVAILABLE;
+        String iso3Lang = new Locale(lang).getISO3Language();
+
+        if (iso3Lang.equals("mya") || lang.equalsIgnoreCase("my")) {
+            return TextToSpeech.LANG_AVAILABLE;
+        }
+        if (iso3Lang.equals("shn") || lang.equalsIgnoreCase("shn")) {
+            return TextToSpeech.LANG_AVAILABLE;
+        }
+        if (iso3Lang.equals("eng")) {
+            return TextToSpeech.LANG_AVAILABLE;
+        }
 
         return TextToSpeech.LANG_NOT_SUPPORTED;
     }
@@ -171,8 +172,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
             mLanguage = lang;
             mCountry = country;
             mVariant = variant;
+            return TextToSpeech.LANG_AVAILABLE;
         }
-        return result;
+        return TextToSpeech.LANG_NOT_SUPPORTED;
     }
 }
 

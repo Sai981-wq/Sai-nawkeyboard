@@ -11,9 +11,9 @@ public class GetSampleText extends Activity {
         super.onCreate(savedInstanceState);
         
         Intent data = new Intent();
-        data.putExtra(TextToSpeech.Engine.EXTRA_SAMPLE_TEXT, "မႂ်ႇသုင်ၶႃႈ၊ မင်္ဂလာပါ၊ Cherry SME TTS အဆင်သင့် ဖြစ်နေပါပြီ။ This is a sample text for Cherry SME TTS.");
+        data.putExtra(TextToSpeech.Engine.EXTRA_SAMPLE_TEXT, "မႂ်ႇသုင်ၶႃႈ၊ မင်္ဂလာပါ၊ Cherry SME TTS အဆင်သင့် ဖြစ်နေပါပြီ။ This is a sample text.");
         
-        setResult(RESULT_OK, data);
+        setResult(Activity.RESULT_OK, data);
         finish();
     }
 }

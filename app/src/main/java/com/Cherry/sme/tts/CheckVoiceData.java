@@ -12,7 +12,7 @@ public class CheckVoiceData extends Activity {
         super.onCreate(savedInstanceState);
         
         ArrayList<String> available = new ArrayList<>();
-        available.add("eng");
+        available.add("eng-USA");
         available.add("my");
         available.add("shn");
 
