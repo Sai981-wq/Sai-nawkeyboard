@@ -1,30 +1,30 @@
 plugins {
     id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
 }
 
 android {
-    namespace 'com.cherry.sme.tts'
+    namespace 'com.shan.tts'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.cherry.sme.tts"
+        applicationId "com.shan.tts"
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName "1.1.0"
-    }
+        versionCode 1
+        versionName "1.0"
 
-    signingConfigs {
-        release {
+        externalNativeBuild {
+            cmake {
+                cppFlags ""
+            }
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled true
-            shrinkResources true
+            minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
         }
     }
 
@@ -33,27 +33,22 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
-    lintOptions {
-        checkReleaseBuilds false
-        abortOnError false
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
     }
 }
 
 dependencies {
-    implementation fileTree(dir: 'libs', include: ['*.jar'])
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'com.google.android.material:material:1.12.0'
-    implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
-}
-
-File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
-if (signingPropertiesFile.exists()) {
-    Properties props = new Properties()
-    props.load(new FileInputStream(signingPropertiesFile))
-    
-    android.signingConfigs.release.storeFile = file(props['storeFile'])
-    android.signingConfigs.release.storePassword = props['storePassword']
-    android.signingConfigs.release.keyAlias = props['keyAlias']
-    android.signingConfigs.release.keyPassword = props['keyPassword']
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 }
 

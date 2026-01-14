@@ -1,4 +1,9 @@
 <resources>
-    <string name="app_name">Cherry SME TTS</string>
+    <string name="app_name">Shan TTS</string>
+    <string name="settings_title">Shan TTS Settings</string>
+    <string name="speed_label">TTS rate: 1.0x</string>
+    <string name="pitch_label">TTS pitch: 1.0x</string>
+    <string name="about_title">Welcome to Shan TTS</string>
+    <string name="about_text">Created by: Sai Naw\n\nThis engine is dedicated to the Shan blind community, to make technology accessible in the Shan language.\n\nYour feedback is essential for improvement. If you find any bugs or have suggestions for new words, please contact:\nsainaw1331@gmail.com\n\nThis engine will be continuously updated.\nThank you for your support.</string>
 </resources>
 
