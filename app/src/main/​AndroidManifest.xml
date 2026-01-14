@@ -1,32 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.cherry.sme.tts">
+    package="com.shan.tts">
 
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.TTS_SERVICE" />
-        </intent>
-    </queries>
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
 
     <application
         android:allowBackup="true"
-        android:label="Cherry SME TTS"
-        android:largeHeap="true"
-        android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault">
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/AppTheme">
+
+        <meta-data
+            android:name="android.speech.tts"
+            android:resource="@xml/tts_engine" />
 
         <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:label="Cherry SME TTS">
+            android:name=".DebugActivity"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".ShanTtsService"
+            android:label="Shan TTS"
+            android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.TTS_SERVICE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
 
         <activity
             android:name=".CheckVoiceData"
@@ -48,25 +57,10 @@
             </intent-filter>
         </activity>
 
-        <activity 
-            android:name=".LogViewerActivity" 
-            android:exported="false"
-            android:label="Error Logs" />
-
-        <service
-            android:name=".AutoTTSManagerService"
-            android:exported="true"
-            android:label="Cherry SME TTS"
-            android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE">
-            <intent-filter>
-                <action android:name="android.intent.action.TTS_SERVICE" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-            <meta-data
-                android:name="android.speech.tts"
-                android:resource="@xml/tts_engine_resource" />
-        </service>
+        <activity
+            android:name=".ShanTtsSettingsActivity"
+            android:label="Shan TTS Settings"
+            android:exported="true" />
 
     </application>
 </manifest>
-
