@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioFormat;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -159,7 +160,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 engine.setPitch(userPitch);
 
                 CountDownLatch latch = new CountDownLatch(1);
-                String uId = "CH_" + System.currentTimeMillis() + "_" + i;
+                String textId = "TXT_" + System.currentTimeMillis() + "_" + i;
+                String silenceId = textId + "_SILENCE";
 
                 engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                     @Override
@@ -167,7 +169,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                     @Override
                     public void onDone(String utteranceId) {
-                        if (utteranceId.equals(uId)) {
+                        if (utteranceId.equals(silenceId)) {
                             latch.countDown();
                         }
                     }
@@ -184,11 +186,18 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 });
 
                 Bundle params = new Bundle(originalParams);
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uId);
+                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, textId);
 
-                int result = engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, uId);
-                
+                int result = engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, textId);
+
                 if (result == TextToSpeech.SUCCESS) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        engine.playSilentUtterance(150, TextToSpeech.QUEUE_ADD, silenceId);
+                    } else {
+                        engine.playSilence(150, TextToSpeech.QUEUE_ADD, null);
+                        latch.countDown();
+                    }
+
                     try {
                         latch.await(5000, TimeUnit.MILLISECONDS);
                     } catch (InterruptedException e) {
