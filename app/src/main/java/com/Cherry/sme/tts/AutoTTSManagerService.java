@@ -4,7 +4,6 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioFormat;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,8 +28,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private boolean isRestarting = false;
     private Handler mainHandler;
-
     private volatile boolean stopRequested = false;
+
     private String mLanguage = "eng";
     private String mCountry = "USA";
     private String mVariant = "";
@@ -159,56 +158,55 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 engine.setSpeechRate(userRate);
                 engine.setPitch(userPitch);
 
-                CountDownLatch latch = new CountDownLatch(1);
-                String speechId = "TXT_" + System.currentTimeMillis() + "_" + i;
-                String silenceId = speechId + "_END";
-
-                engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                    @Override
-                    public void onStart(String utteranceId) {}
-
-                    @Override
-                    public void onDone(String utteranceId) {
-                        if (utteranceId.equals(silenceId)) {
-                            latch.countDown();
-                        }
-                    }
-
-                    @Override
-                    public void onError(String utteranceId) {
-                        latch.countDown();
-                    }
-
-                    @Override
-                    public void onStop(String utteranceId, boolean interrupted) {
-                        latch.countDown();
-                    }
-                });
-
                 Bundle params = new Bundle(originalParams);
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, speechId);
+                String uId = "ID_" + System.currentTimeMillis() + "_" + i;
+                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uId);
 
-                int result = engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, speechId);
-
-                if (result == TextToSpeech.SUCCESS) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        engine.playSilentUtterance(100, TextToSpeech.QUEUE_ADD, silenceId);
-                    } else {
-                        engine.playSilence(100, TextToSpeech.QUEUE_ADD, null);
-                        latch.countDown();
-                    }
-
-                    try {
-                        latch.await(4000, TimeUnit.MILLISECONDS);
-                    } catch (InterruptedException e) {
-                        break;
-                    }
-                }
+                speakAndWait(engine, chunk.text, params, uId);
             }
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
             callback.done();
+        }
+    }
+
+    private void speakAndWait(RemoteTextToSpeech engine, String text, Bundle params, String uId) {
+        final CountDownLatch latch = new CountDownLatch(1);
+
+        engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override
+            public void onStart(String utteranceId) {}
+
+            @Override
+            public void onDone(String utteranceId) {
+                if (utteranceId.equals(uId)) {
+                    latch.countDown();
+                }
+            }
+
+            @Override
+            public void onError(String utteranceId) {
+                latch.countDown();
+            }
+
+            @Override
+            public void onStop(String utteranceId, boolean interrupted) {
+                latch.countDown();
+            }
+        });
+
+        int result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, uId);
+
+        if (result == TextToSpeech.SUCCESS) {
+            try {
+                latch.await(4000, TimeUnit.MILLISECONDS);
+                if (!stopRequested) {
+                    Thread.sleep(80);
+                }
+            } catch (InterruptedException e) {
+                // Ignore
+            }
         }
     }
 
