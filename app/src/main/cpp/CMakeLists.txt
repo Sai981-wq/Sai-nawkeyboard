@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.4.1)
 
+project(shan_tts)
+
 add_library( 
         native-lib
         SHARED
@@ -16,3 +18,4 @@ target_link_libraries(
         native-lib
         ${log-lib} 
 )
+
