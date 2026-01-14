@@ -160,8 +160,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 engine.setPitch(userPitch);
 
                 CountDownLatch latch = new CountDownLatch(1);
-                String textId = "TXT_" + System.currentTimeMillis() + "_" + i;
-                String silenceId = textId + "_SILENCE";
+                String speechId = "TXT_" + System.currentTimeMillis() + "_" + i;
+                String silenceId = speechId + "_END";
 
                 engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                     @Override
@@ -186,20 +186,20 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 });
 
                 Bundle params = new Bundle(originalParams);
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, textId);
+                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, speechId);
 
-                int result = engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, textId);
+                int result = engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, speechId);
 
                 if (result == TextToSpeech.SUCCESS) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        engine.playSilentUtterance(150, TextToSpeech.QUEUE_ADD, silenceId);
+                        engine.playSilentUtterance(100, TextToSpeech.QUEUE_ADD, silenceId);
                     } else {
-                        engine.playSilence(150, TextToSpeech.QUEUE_ADD, null);
+                        engine.playSilence(100, TextToSpeech.QUEUE_ADD, null);
                         latch.countDown();
                     }
 
                     try {
-                        latch.await(5000, TimeUnit.MILLISECONDS);
+                        latch.await(4000, TimeUnit.MILLISECONDS);
                     } catch (InterruptedException e) {
                         break;
                     }
