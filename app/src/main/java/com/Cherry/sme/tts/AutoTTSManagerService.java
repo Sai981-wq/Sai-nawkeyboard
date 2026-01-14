@@ -13,11 +13,8 @@ import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
-import android.speech.tts.UtteranceProgressListener;
-
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.Locale;
 
 public class AutoTTSManagerService extends TextToSpeechService {
 
@@ -28,8 +25,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private boolean isRestarting = false;
     private Handler mainHandler;
-    private volatile boolean stopRequested = false;
 
+    private volatile boolean stopRequested = false;
     private String mLanguage = "eng";
     private String mCountry = "USA";
     private String mVariant = "";
@@ -144,69 +141,57 @@ public class AutoTTSManagerService extends TextToSpeechService {
         try {
             for (int i = 0; i < chunks.size(); i++) {
                 if (stopRequested) break;
-                
                 TTSUtils.Chunk chunk = chunks.get(i);
-                if (chunk.text.trim().isEmpty()) continue;
+                
+                if (chunk.text.trim().length() < 1) continue;
 
                 RemoteTextToSpeech engine;
-                if ("SHAN".equals(chunk.lang)) engine = shanEngine;
-                else if ("MYANMAR".equals(chunk.lang)) engine = burmeseEngine;
+                if (chunk.lang.equals("SHAN")) engine = shanEngine;
+                else if (chunk.lang.equals("MYANMAR")) engine = burmeseEngine;
                 else engine = englishEngine;
 
-                if (engine == null) continue;
+                if (engine == null) {
+                    triggerWatchdogRestart();
+                    break;
+                }
 
                 engine.setSpeechRate(userRate);
                 engine.setPitch(userPitch);
 
                 Bundle params = new Bundle(originalParams);
-                String uId = "ID_" + System.currentTimeMillis() + "_" + i;
+                String uId = "CH_" + System.currentTimeMillis() + "_" + i;
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, uId);
 
-                speakAndWait(engine, chunk.text, params, uId);
+                try {
+                    engine.speak(chunk.text, TextToSpeech.QUEUE_FLUSH, params, uId);
+
+                    int startWait = 0;
+                    while (!engine.isSpeaking() && startWait < 500 && !stopRequested) {
+                        Thread.sleep(10);
+                        startWait++;
+                    }
+
+                    while (!stopRequested) {
+                        if (!engine.isSpeaking()) {
+                            Thread.sleep(100);
+                            if (!engine.isSpeaking()) break;
+                        }
+                        Thread.sleep(25);
+                    }
+
+                    if (!stopRequested) {
+                        Thread.sleep(10);
+                    }
+
+                } catch (Exception e) {
+                    triggerWatchdogRestart();
+                    break;
+                }
             }
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
             callback.done();
-        }
-    }
-
-    private void speakAndWait(RemoteTextToSpeech engine, String text, Bundle params, String uId) {
-        final CountDownLatch latch = new CountDownLatch(1);
-
-        engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override
-            public void onStart(String utteranceId) {}
-
-            @Override
-            public void onDone(String utteranceId) {
-                if (utteranceId.equals(uId)) {
-                    latch.countDown();
-                }
-            }
-
-            @Override
-            public void onError(String utteranceId) {
-                latch.countDown();
-            }
-
-            @Override
-            public void onStop(String utteranceId, boolean interrupted) {
-                latch.countDown();
-            }
-        });
-
-        int result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, uId);
-
-        if (result == TextToSpeech.SUCCESS) {
-            try {
-                latch.await(4000, TimeUnit.MILLISECONDS);
-                if (!stopRequested) {
-                    Thread.sleep(80);
-                }
-            } catch (InterruptedException e) {
-                // Ignore
-            }
         }
     }
 
