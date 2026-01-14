@@ -180,7 +180,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     }
 
                     if (!stopRequested) {
-                        Thread.sleep(10);
+                        Thread.sleep(0);
                     }
 
                 } catch (Exception e) {
