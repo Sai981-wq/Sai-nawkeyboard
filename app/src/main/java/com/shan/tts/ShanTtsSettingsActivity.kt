@@ -34,18 +34,20 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         val btnResetSpeed = findViewById<Button>(R.id.btn_reset_speed)
         val btnResetPitch = findViewById<Button>(R.id.btn_reset_pitch)
 
-        val currentSpeed = prefs.getFloat(PREF_SPEED, 1.0f)
+        val currentSpeed = prefs.getFloat(PREF_SPEED, 0.8f)
         val currentPitch = prefs.getFloat(PREF_PITCH, 1.0f)
 
-        speedBar.progress = ((currentSpeed * 100) - 50).toInt()
+        speedBar.max = 180
+        speedBar.progress = ((currentSpeed * 100) - 20).toInt()
         updateSpeedLabel(currentSpeed)
 
+        pitchBar.max = 150
         pitchBar.progress = ((currentPitch * 100) - 50).toInt()
         updatePitchLabel(currentPitch)
 
         speedBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val value = (progress + 50) / 100f
+                val value = (progress + 20) / 100f
                 updateSpeedLabel(value)
                 prefs.edit().putFloat(PREF_SPEED, value).apply()
             }
@@ -54,11 +56,11 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         })
 
         btnResetSpeed.setOnClickListener {
-            speedBar.progress = 50
-            val value = 1.0f
+            speedBar.progress = 60 
+            val value = 0.8f
             updateSpeedLabel(value)
             prefs.edit().putFloat(PREF_SPEED, value).apply()
-            btnResetSpeed.announceForAccessibility("Speed reset")
+            btnResetSpeed.announceForAccessibility("Speed reset to zero point eight")
         }
 
         pitchBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -72,11 +74,11 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         })
 
         btnResetPitch.setOnClickListener {
-            pitchBar.progress = 50
+            pitchBar.progress = 50 
             val value = 1.0f
             updatePitchLabel(value)
             prefs.edit().putFloat(PREF_PITCH, value).apply()
-            btnResetPitch.announceForAccessibility("Pitch reset")
+            btnResetPitch.announceForAccessibility("Pitch reset to normal")
         }
     }
 

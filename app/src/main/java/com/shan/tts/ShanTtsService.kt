@@ -15,7 +15,6 @@ import java.io.DataInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.*
@@ -125,7 +124,7 @@ class ShanTtsService : TextToSpeechService() {
             val systemRate = request.speechRate / 100.0f
             val systemPitch = request.pitch / 100.0f
             val prefs = getSharedPreferences("shan_tts_prefs", MODE_PRIVATE)
-            val finalRate = (systemRate * prefs.getFloat("pref_speed", 1.0f)).coerceIn(0.5f, 4.0f)
+            val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
 
             if (charMap.isNullOrEmpty()) {
@@ -253,12 +252,12 @@ class ShanTtsService : TextToSpeechService() {
     private fun stripWavHeader(wavBytes: ByteArray): ByteArray {
         if (wavBytes.size < 44) return wavBytes
         val buffer = ByteBuffer.wrap(wavBytes).order(ByteOrder.LITTLE_ENDIAN)
-        if (buffer.getInt(0) != 0x46464952) return wavBytes // RIFF
+        if (buffer.getInt(0) != 0x46464952) return wavBytes
         var offset = 12
         while (offset + 8 <= wavBytes.size) {
             val chunkId = buffer.getInt(offset)
             val chunkSize = buffer.getInt(offset + 4)
-            if (chunkId == 0x61746164) { // data
+            if (chunkId == 0x61746164) {
                 val data = ByteArray(chunkSize)
                 System.arraycopy(wavBytes, offset + 8, data, 0, minOf(chunkSize, wavBytes.size - (offset + 8)))
                 return data
