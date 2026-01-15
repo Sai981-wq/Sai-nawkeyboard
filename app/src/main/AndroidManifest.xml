@@ -43,7 +43,7 @@
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
-                <action android:speech.tts.engine.CHECK_TTS_DATA" />
+                <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
