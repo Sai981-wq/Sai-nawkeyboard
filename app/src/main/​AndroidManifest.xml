@@ -19,13 +19,22 @@
             android:resource="@xml/tts_engine" />
 
         <activity
-            android:name=".DebugActivity"
+            android:name=".ShanTtsSettingsActivity"
+            android:label="Shan TTS Settings"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.CHECK_TTS_DATA" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
+
+        <activity
+            android:name=".DebugActivity"
+            android:exported="true" />
 
         <service
             android:name=".ShanTtsService"
@@ -57,11 +66,6 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".ShanTtsSettingsActivity"
-            android:label="Shan TTS Settings"
-            android:exported="true" />
 
     </application>
 </manifest>

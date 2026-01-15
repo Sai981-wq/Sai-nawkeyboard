@@ -37,14 +37,12 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         val currentSpeed = prefs.getFloat(PREF_SPEED, 1.0f)
         val currentPitch = prefs.getFloat(PREF_PITCH, 1.0f)
 
-        // Initial setup
         speedBar.progress = ((currentSpeed * 100) - 50).toInt()
         updateSpeedLabel(currentSpeed)
 
         pitchBar.progress = ((currentPitch * 100) - 50).toInt()
         updatePitchLabel(currentPitch)
 
-        // Listeners
         speedBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val value = (progress + 50) / 100f
@@ -83,11 +81,15 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     }
 
     private fun updateSpeedLabel(value: Float) {
-        speedLabel.text = "Rate: ${String.format("%.1f", value)}x"
+        val text = "Rate: ${String.format("%.1f", value)}x"
+        speedLabel.text = text
+        speedBar.contentDescription = text
     }
 
     private fun updatePitchLabel(value: Float) {
-        pitchLabel.text = "Pitch: ${String.format("%.1f", value)}x"
+        val text = "Pitch: ${String.format("%.1f", value)}x"
+        pitchLabel.text = text
+        pitchBar.contentDescription = text
     }
 }
 

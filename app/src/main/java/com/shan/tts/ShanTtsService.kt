@@ -88,7 +88,7 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     override fun onGetLanguage(): Array<String> {
-        return emptyArray()
+        return arrayOf("shn", "MMR", "")
     }
 
     override fun onStop() {
@@ -333,44 +333,40 @@ class ShanTtsService : TextToSpeechService() {
     private fun loadPcmFile(path: String): ByteArray = try {
         assets.open(path).use { assetStream ->
             if (!path.endsWith(".wav")) {
-                return assetStream.readBytes()
-            }
-
-            val stream = DataInputStream(assetStream)
-            val out = ByteArrayOutputStream()
-
-            val riffId = readString(stream, 4)
-            if (riffId != "RIFF") return ByteArray(0)
-
-            readIntLE(stream)
-
-            val waveId = readString(stream, 4)
-            if (waveId != "WAVE") return ByteArray(0)
-
-            var foundDataChunk = false
-            while (!foundDataChunk) {
-
-                val chunkId = readString(stream, 4)
-                val chunkSize = readIntLE(stream)
-
-                when (chunkId) {
-                    "fmt " -> {
-                        val bytesToSkip = chunkSize.toLong()
-                        if (stream.skip(bytesToSkip) != bytesToSkip) return ByteArray(0)
-                    }
-                    "data" -> {
-                        val pcmData = ByteArray(chunkSize)
-                        stream.readFully(pcmData)
-                        out.write(pcmData)
-                        foundDataChunk = true
-                    }
-                    else -> {
-                        val bytesToSkip = chunkSize.toLong()
-                        if (stream.skip(bytesToSkip) != bytesToSkip) return ByteArray(0)
+                assetStream.readBytes()
+            } else {
+                val stream = DataInputStream(assetStream)
+                val out = ByteArrayOutputStream()
+                val riffId = readString(stream, 4)
+                if (riffId != "RIFF") ByteArray(0) else {
+                    readIntLE(stream)
+                    val waveId = readString(stream, 4)
+                    if (waveId != "WAVE") ByteArray(0) else {
+                        var foundDataChunk = false
+                        while (!foundDataChunk) {
+                            val chunkId = readString(stream, 4)
+                            val chunkSize = readIntLE(stream)
+                            when (chunkId) {
+                                "fmt " -> {
+                                    val bytesToSkip = chunkSize.toLong()
+                                    if (stream.skip(bytesToSkip) != bytesToSkip) break
+                                }
+                                "data" -> {
+                                    val pcmData = ByteArray(chunkSize)
+                                    stream.readFully(pcmData)
+                                    out.write(pcmData)
+                                    foundDataChunk = true
+                                }
+                                else -> {
+                                    val bytesToSkip = chunkSize.toLong()
+                                    if (stream.skip(bytesToSkip) != bytesToSkip) break
+                                }
+                            }
+                        }
+                        out.toByteArray()
                     }
                 }
             }
-            out.toByteArray()
         }
     } catch (_: Exception) {
         ByteArray(0)
@@ -428,7 +424,6 @@ class ShanTtsService : TextToSpeechService() {
                         codec.releaseOutputBuffer(outIndex, false)
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) eosOut = true
                     }
-                    outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> { }
                 }
             }
 
@@ -464,68 +459,22 @@ class ShanTtsService : TextToSpeechService() {
     override fun onGetVoices(): MutableList<Voice> {
         return try {
             val shanLocale = Locale.Builder().setLanguage("shn").build()
-            val shanUsLocale = Locale.Builder().setLanguage("shn").setRegion("US").build()
-            val shanMmLocale = Locale.Builder().setLanguage("shn").setRegion("MM").build()
-
             val features = HashSet<String>()
             features.add(TextToSpeech.Engine.KEY_FEATURE_EMBEDDED_SYNTHESIS)
-
             val voices = mutableListOf<Voice>()
-
-            voices.add(
-                Voice(
-                    "shn", shanLocale, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL,
-                    false, features
-                )
-            )
-            voices.add(
-                Voice(
-                    "Shan-Voice", shanLocale, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL,
-                    false, features
-                )
-            )
-
-            voices.add(
-                Voice(
-                    "shn-us", shanUsLocale, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL,
-                    false, features
-                )
-            )
-
-            voices.add(
-                Voice(
-                    "shn-mm", shanMmLocale, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL,
-                    false, features
-                )
-            )
-
+            voices.add(Voice("shn", shanLocale, Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL, false, features))
             voices
-
         } catch (e: Exception) {
             mutableListOf()
         }
     }
 
     override fun onGetDefaultVoiceNameFor(lang: String, country: String, variant: String): String {
-        if (lang.equals("shn", ignoreCase = true)) {
-            if (country.equals("US", ignoreCase = true)) {
-                return "shn-us"
-            }
-            if (country.equals("MM", ignoreCase = true)) {
-                return "shn-mm"
-            }
-            return "shn"
-        }
         return "shn"
     }
 
     override fun onIsValidVoiceName(voiceName: String): Int {
-        return if (voiceName == "shn" || voiceName == "Shan-Voice" ||
-            voiceName == "shn-us" || voiceName == "shn-mm") {
-            TextToSpeech.SUCCESS
-        } else {
-            TextToSpeech.ERROR
-        }
+        return if (voiceName == "shn") TextToSpeech.SUCCESS else TextToSpeech.ERROR
     }
 
     override fun onGetFeaturesForLanguage(lang: String?, country: String?, variant: String?): MutableSet<String> {

@@ -91,7 +91,8 @@
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:layout_marginVertical="24dp"
-            android:background="@android:color/darker_gray" />
+            android:background="@android:color/darker_gray"
+            android:importantForAccessibility="no" />
 
         <TextView
             android:layout_width="wrap_content"
