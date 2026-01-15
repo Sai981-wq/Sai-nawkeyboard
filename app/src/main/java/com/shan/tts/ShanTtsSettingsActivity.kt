@@ -1,13 +1,13 @@
 package com.shan.tts
 
-import android.app.Activity
+import androidx.appcompat.app.AppCompatActivity
 import android.content.Context
 import android.os.Bundle
 import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
 
-class ShanTtsSettingsActivity : Activity() {
+class ShanTtsSettingsActivity : AppCompatActivity() {
 
     companion object {
         const val PREFS_NAME = "shan_tts_prefs"
@@ -30,7 +30,7 @@ class ShanTtsSettingsActivity : Activity() {
         pitchLabel = findViewById(R.id.tv_pitch_label)
         speedBar = findViewById(R.id.sb_speed)
         pitchBar = findViewById(R.id.sb_pitch)
-        
+
         val btnResetSpeed = findViewById<Button>(R.id.btn_reset_speed)
         val btnResetPitch = findViewById<Button>(R.id.btn_reset_pitch)
 
