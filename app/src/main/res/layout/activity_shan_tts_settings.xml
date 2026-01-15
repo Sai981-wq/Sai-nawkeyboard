@@ -15,7 +15,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginBottom="24dp"
-            android:text="Shan TTS Settings"
+            android:text="@string/settings_title"
             android:textColor="@android:color/black"
             android:textSize="24sp"
             android:textStyle="bold"
@@ -32,7 +32,7 @@
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
-                android:text="Rate: 1.0x"
+                android:text="@string/speed_label"
                 android:textColor="@android:color/black"
                 android:textSize="18sp" />
 
@@ -40,7 +40,7 @@
                 android:id="@+id/btn_reset_speed"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Reset"
+                android:text="@string/reset"
                 style="@style/Widget.AppCompat.Button.Small"/>
         </LinearLayout>
 
@@ -65,7 +65,7 @@
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
-                android:text="Pitch: 1.0x"
+                android:text="@string/pitch_label"
                 android:textColor="@android:color/black"
                 android:textSize="18sp" />
 
@@ -73,7 +73,7 @@
                 android:id="@+id/btn_reset_pitch"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Reset"
+                android:text="@string/reset"
                 style="@style/Widget.AppCompat.Button.Small"/>
         </LinearLayout>
 
@@ -97,7 +97,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginBottom="16dp"
-            android:text="About Shan TTS"
+            android:text="@string/about_header"
             android:textColor="@android:color/darker_gray"
             android:textSize="20sp"
             android:textStyle="bold"
@@ -109,7 +109,7 @@
             android:layout_marginBottom="32dp"
             android:gravity="center"
             android:lineSpacingMultiplier="1.3"
-            android:text="Created by: Sai Naw\n\nThis engine is dedicated to the Shan blind community.\n\nContact: sainaw1331@gmail.com"
+            android:text="@string/about_text"
             android:textColor="@android:color/black"
             android:textSize="16sp" />
 

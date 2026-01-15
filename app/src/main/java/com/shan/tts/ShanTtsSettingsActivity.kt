@@ -37,9 +37,14 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         val currentSpeed = prefs.getFloat(PREF_SPEED, 1.0f)
         val currentPitch = prefs.getFloat(PREF_PITCH, 1.0f)
 
+        // Initial setup
         speedBar.progress = ((currentSpeed * 100) - 50).toInt()
         updateSpeedLabel(currentSpeed)
 
+        pitchBar.progress = ((currentPitch * 100) - 50).toInt()
+        updatePitchLabel(currentPitch)
+
+        // Listeners
         speedBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val value = (progress + 50) / 100f
@@ -57,9 +62,6 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
             prefs.edit().putFloat(PREF_SPEED, value).apply()
             btnResetSpeed.announceForAccessibility("Speed reset")
         }
-
-        pitchBar.progress = ((currentPitch * 100) - 50).toInt()
-        updatePitchLabel(currentPitch)
 
         pitchBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
