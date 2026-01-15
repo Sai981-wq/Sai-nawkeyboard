@@ -1,6 +1,5 @@
 package com.shan.tts
 
-import android.content.Context
 import android.content.res.AssetFileDescriptor
 import android.media.AudioFormat
 import android.media.MediaCodec
@@ -11,18 +10,16 @@ import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.Voice
-import java.io.BufferedInputStream
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.*
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
+import java.util.zip.ZipFile
 
 class ShanTtsService : TextToSpeechService() {
 
@@ -33,7 +30,7 @@ class ShanTtsService : TextToSpeechService() {
         private const val OUTPUT_SAMPLE_RATE = 22050
         private const val OUTPUT_CHANNEL_COUNT = 1
         private const val OUTPUT_ENCODING = AudioFormat.ENCODING_PCM_16BIT
-        private const val ZIP_FILE_NAME = "audio_pcm.zip"
+        private const val ZIP_NAME = "audio_pcm.zip"
     }
 
     private external fun sonicCreateStream(sampleRate: Int, numChannels: Int): Long
@@ -47,10 +44,29 @@ class ShanTtsService : TextToSpeechService() {
 
     private var charMap: Map<String, String>? = null
     private var isStopped = false
+    private var zipFile: ZipFile? = null
+    private var localZipFile: File? = null
 
     override fun onCreate() {
         super.onCreate()
+        prepareZipFile()
         loadCharMap()
+    }
+
+    private fun prepareZipFile() {
+        try {
+            localZipFile = File(cacheDir, ZIP_NAME)
+            if (!localZipFile!!.exists()) {
+                assets.open(ZIP_NAME).use { input ->
+                    FileOutputStream(localZipFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            }
+            zipFile = ZipFile(localZipFile)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun loadCharMap() {
@@ -61,8 +77,14 @@ class ShanTtsService : TextToSpeechService() {
                     val trimmed = line.trim()
                     if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
                         val parts = trimmed.split("=", limit = 2)
-                        if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
-                            tempMap[parts[0].trim()] = parts[1].trim()
+                        if (parts.size == 2) {
+                            val key = parts[0].trim()
+                            val value = parts[1].trim()
+                            if (!key.equals("rate", ignoreCase = true) &&
+                                !key.equals("pitch", ignoreCase = true) &&
+                                !key.equals("speed", ignoreCase = true)) {
+                                tempMap[key] = value
+                            }
                         }
                     }
                 }
@@ -74,11 +96,11 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
-        return if (lang != null && lang.equals("shn", ignoreCase = true)) TextToSpeech.LANG_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
+        return if (lang.equals("shn", ignoreCase = true)) TextToSpeech.LANG_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
     }
 
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        return if (lang != null && lang.equals("shn", ignoreCase = true)) TextToSpeech.LANG_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
+        return onIsLanguageAvailable(lang, country, variant)
     }
 
     override fun onGetLanguage(): Array<String> = arrayOf("shn", "MMR", "")
@@ -100,9 +122,11 @@ class ShanTtsService : TextToSpeechService() {
                 return
             }
 
-            val prefs = getSharedPreferences("shan_tts_prefs", Context.MODE_PRIVATE)
-            val finalRate = ((request.speechRate / 100.0f) * prefs.getFloat("pref_speed", 1.0f)).coerceIn(0.5f, 4.0f)
-            val finalPitch = ((request.pitch / 100.0f) * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
+            val systemRate = request.speechRate / 100.0f
+            val systemPitch = request.pitch / 100.0f
+            val prefs = getSharedPreferences("shan_tts_prefs", MODE_PRIVATE)
+            val finalRate = (systemRate * prefs.getFloat("pref_speed", 1.0f)).coerceIn(0.5f, 4.0f)
+            val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
 
             if (charMap.isNullOrEmpty()) {
                 generateTestAudio(callback)
@@ -119,6 +143,11 @@ class ShanTtsService : TextToSpeechService() {
     private fun synthesizeShanText(text: String, callback: SynthesisCallback, rate: Float, pitch: Float) {
         val currentMap = charMap ?: return
         val units = splitTextIntoPlayableUnits(text, currentMap)
+        if (units.isEmpty()) {
+            generateSilentAudio(callback)
+            return
+        }
+
         val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
         sonicSetSpeed(streamId, rate)
         sonicSetPitch(streamId, pitch)
@@ -130,26 +159,38 @@ class ShanTtsService : TextToSpeechService() {
         try {
             for (unit in units) {
                 if (isStopped) break
-                when (unit) {
-                    "[NEWLINE]" -> { writeSilenceToSonic(streamId, 400); processSonicOutput(streamId, outputBuffer, callback); continue }
-                    "[SPACE]" -> { writeSilenceToSonic(streamId, 150); processSonicOutput(streamId, outputBuffer, callback); continue }
+
+                if (unit == "[NEWLINE]") {
+                    writeSilenceToSonic(streamId, 400)
+                    processSonicOutput(streamId, outputBuffer, callback)
+                    continue
+                }
+                if (unit == "[SPACE]") {
+                    writeSilenceToSonic(streamId, 150)
+                    processSonicOutput(streamId, outputBuffer, callback)
+                    continue
                 }
 
                 val baseName = currentMap[unit] ?: continue
                 val audioData = loadAudioFromZip(baseName) ?: continue
-                val (bytes, type) = audioData
+                val (rawBytes, type) = audioData
 
-                val rawBytes = if (type == "mp3") decodeMp3BytesToPcm(bytes) else if (type == "wav") stripWavHeader(bytes) else bytes
-                if (rawBytes.isEmpty()) continue
+                val pcmBytes = when (type) {
+                    "mp3" -> decodeMp3BytesToPcm(rawBytes)
+                    "wav" -> stripWavHeader(rawBytes)
+                    else -> rawBytes
+                }
 
-                val rawShorts = bytesToShorts(rawBytes)
-                var offset = 0
-                while (offset < rawShorts.size && !isStopped) {
-                    val len = minOf(bufferSize, rawShorts.size - offset)
-                    System.arraycopy(rawShorts, offset, shortBuffer, 0, len)
-                    sonicWriteShortToStream(streamId, shortBuffer, len)
+                if (pcmBytes.isEmpty()) continue
+
+                val rawShorts = bytesToShorts(pcmBytes)
+                var inputOffset = 0
+                while (inputOffset < rawShorts.size && !isStopped) {
+                    val inputLen = minOf(bufferSize, rawShorts.size - inputOffset)
+                    System.arraycopy(rawShorts, inputOffset, shortBuffer, 0, inputLen)
+                    sonicWriteShortToStream(streamId, shortBuffer, inputLen)
                     processSonicOutput(streamId, outputBuffer, callback)
-                    offset += len
+                    inputOffset += inputLen
                 }
             }
             sonicFlushStream(streamId)
@@ -160,34 +201,20 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun loadAudioFromZip(baseName: String): Pair<ByteArray, String>? {
-        return try {
-            assets.open(ZIP_FILE_NAME).use { inputStream ->
-                ZipInputStream(BufferedInputStream(inputStream)).use { zis ->
-                    var entry: ZipEntry? = zis.getNextEntry()
-                    while (entry != null) {
-                        val name = entry.name
-                        if (name.startsWith(baseName)) {
-                            val type = when {
-                                name.endsWith(".mp3") -> "mp3"
-                                name.endsWith(".wav") -> "wav"
-                                name.endsWith(".pcm") -> "pcm"
-                                else -> ""
-                            }
-                            if (type.isNotEmpty()) {
-                                return zis.readBytes() to type
-                            }
-                        }
-                        zis.closeEntry()
-                        entry = zis.getNextEntry()
-                    }
-                }
+        val zf = zipFile ?: return null
+        val extensions = listOf(".pcm", ".wav", ".mp3")
+        for (ext in extensions) {
+            val entry = zf.getEntry(baseName + ext) ?: zf.getEntry("audio_pcm/$baseName$ext") ?: zf.getEntry("audio/$baseName$ext")
+            if (entry != null) {
+                val type = if (ext == ".mp3") "mp3" else if (ext == ".wav") "wav" else "pcm"
+                return zf.getInputStream(entry).use { it.readBytes() } to type
             }
-            null
-        } catch (e: Exception) { null }
+        }
+        return null
     }
 
     private fun decodeMp3BytesToPcm(mp3Bytes: ByteArray): ByteArray {
-        val tempFile = File(cacheDir, "temp_decode.mp3")
+        val tempFile = File(cacheDir, "temp_dec.mp3")
         FileOutputStream(tempFile).use { it.write(mp3Bytes) }
         val out = ByteArrayOutputStream()
         val extractor = MediaExtractor()
@@ -200,7 +227,7 @@ class ShanTtsService : TextToSpeechService() {
             codec.start()
             val info = MediaCodec.BufferInfo()
             var eos = false
-            while (!eos) {
+            while (!eos && !isStopped) {
                 val inIdx = codec.dequeueInputBuffer(10000)
                 if (inIdx >= 0) {
                     val buf = codec.getInputBuffer(inIdx)
@@ -224,26 +251,21 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun stripWavHeader(wavBytes: ByteArray): ByteArray {
-        return try {
-            val bis = ByteArrayInputStream(wavBytes)
-            val dis = DataInputStream(bis)
-            val id = ByteArray(4); dis.readFully(id)
-            if (String(id) != "RIFF") return wavBytes
-            dis.skipBytes(4)
-            dis.readFully(id)
-            if (String(id) != "WAVE") return wavBytes
-            while (bis.available() > 0) {
-                dis.readFully(id)
-                val size = Integer.reverseBytes(dis.readInt())
-                if (String(id) == "data") {
-                    val data = ByteArray(size)
-                    dis.readFully(data)
-                    return data
-                }
-                dis.skipBytes(size)
+        if (wavBytes.size < 44) return wavBytes
+        val buffer = ByteBuffer.wrap(wavBytes).order(ByteOrder.LITTLE_ENDIAN)
+        if (buffer.getInt(0) != 0x46464952) return wavBytes // RIFF
+        var offset = 12
+        while (offset + 8 <= wavBytes.size) {
+            val chunkId = buffer.getInt(offset)
+            val chunkSize = buffer.getInt(offset + 4)
+            if (chunkId == 0x61746164) { // data
+                val data = ByteArray(chunkSize)
+                System.arraycopy(wavBytes, offset + 8, data, 0, minOf(chunkSize, wavBytes.size - (offset + 8)))
+                return data
             }
-            wavBytes
-        } catch (e: Exception) { wavBytes }
+            offset += 8 + chunkSize
+        }
+        return wavBytes
     }
 
     private fun processSonicOutput(streamId: Long, outputBuffer: ShortArray, callback: SynthesisCallback) {
@@ -279,14 +301,13 @@ class ShanTtsService : TextToSpeechService() {
         while (i < text.length) {
             var best = ""
             for (j in minOf(text.length, i + 20) downTo i + 1) {
-                val s = text.substring(i, j)
-                if (map.containsKey(s)) { best = s; break }
+                if (map.containsKey(text.substring(i, j))) { best = text.substring(i, j); break }
             }
             if (best.isNotEmpty()) { res.add(best); i += best.length }
             else {
-                val char = text.substring(i, i + 1)
-                if (char == "\n") res.add("[NEWLINE]") else if (char == " ") res.add("[SPACE]")
-                else if (!char.matches("\\s+".toRegex())) res.add(char)
+                val c = text.substring(i, i + 1)
+                if (c == "\n") res.add("[NEWLINE]") else if (c == " ") res.add("[SPACE]")
+                else if (!c.matches("\\s+".toRegex())) res.add(c)
                 i++
             }
         }
@@ -315,6 +336,11 @@ class ShanTtsService : TextToSpeechService() {
     override fun onGetDefaultVoiceNameFor(lang: String, country: String, variant: String): String = "shn"
     override fun onIsValidVoiceName(voiceName: String): Int = if (voiceName == "shn") TextToSpeech.SUCCESS else TextToSpeech.ERROR
     override fun onGetFeaturesForLanguage(lang: String?, country: String?, variant: String?): MutableSet<String> = hashSetOf(TextToSpeech.Engine.KEY_FEATURE_EMBEDDED_SYNTHESIS)
-    override fun onDestroy() { isStopped = true; super.onDestroy() }
+
+    override fun onDestroy() {
+        isStopped = true
+        try { zipFile?.close() } catch (_: Exception) {}
+        super.onDestroy()
+    }
 }
 
