@@ -49,12 +49,6 @@ class PanglongTtsService : TextToSpeechService() {
                 else -> Pair("burmese_model.onnx", "burmese_tokens.txt")
             }
 
-            val assetFiles = assets.list("") ?: emptyArray()
-            if (!assetFiles.contains(modelFile)) {
-                isModelLoading.set(false)
-                return
-            }
-
             val config = OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
                     vits = OfflineTtsVitsModelConfig(
@@ -134,12 +128,15 @@ class PanglongTtsService : TextToSpeechService() {
         }
 
         if (tts == null) {
+            AppLogger.log("⚠️ Waiting for $engineKey model...")
             preloadModel(engineKey)
             playSilence(callback)
             return
         }
 
         try {
+            AppLogger.log("📝 Input: $text")
+            
             var cleanText = text
             if (engineKey == "eng") {
                 cleanText = text.lowercase()
@@ -153,27 +150,28 @@ class PanglongTtsService : TextToSpeechService() {
                     .replace("7", " seven ")
                     .replace("8", " eight ")
                     .replace("9", " nine ")
-                    .replace(Regex("[^a-z\\s]"), "")
+                    .replace(Regex("[^a-z0-9\\s]"), "")
             }
             
+            AppLogger.log("🧹 Clean: $cleanText")
+            
             val generated = tts?.generate(cleanText)
-            if (generated == null || isStopped) {
+            if (generated == null) {
+                AppLogger.log("❌ Generation failed")
                 callback?.done()
                 return
             }
 
             val samples = generated.samples
-            val originalRate = generated.sampleRate
+            AppLogger.log("🔊 Samples: ${samples.size}")
 
-            if (samples.isNotEmpty()) {
+            if (samples.isNotEmpty() && !isStopped) {
                 val targetRate = 16000
-                val resampledSamples = if (originalRate != targetRate) {
-                    resample(samples, originalRate, targetRate)
-                } else {
-                    samples
-                }
-
+                val resampledSamples = resample(samples, generated.sampleRate, targetRate)
                 val audioBytes = floatArrayToByteArray(resampledSamples)
+                
+                AppLogger.log("📦 Bytes: ${audioBytes.size}")
+
                 callback?.start(targetRate, 16, 1)
                 
                 val maxBufferSize = 4096
@@ -185,15 +183,19 @@ class PanglongTtsService : TextToSpeechService() {
                     offset += bytesToWrite
                 }
                 callback?.done()
+                AppLogger.log("✅ Finished")
             } else {
+                AppLogger.log("🔇 Empty output")
                 playSilence(callback)
             }
         } catch (e: Throwable) {
+            AppLogger.log("🔥 Error: ${e.message}")
             playSilence(callback)
         }
     }
 
     private fun resample(input: FloatArray, originalRate: Int, targetRate: Int): FloatArray {
+        if (originalRate == targetRate) return input
         val ratio = originalRate.toDouble() / targetRate
         val newLength = (input.size / ratio).toInt()
         val output = FloatArray(newLength)
