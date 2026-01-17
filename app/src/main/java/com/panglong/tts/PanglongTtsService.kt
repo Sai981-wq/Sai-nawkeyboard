@@ -1,6 +1,7 @@
 package com.panglong.tts
 
 import android.content.Intent
+import android.media.AudioFormat
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -172,7 +173,7 @@ class PanglongTtsService : TextToSpeechService() {
                 
                 AppLogger.log("📦 Bytes: ${audioBytes.size}")
 
-                callback?.start(targetRate, 16, 1)
+                callback?.start(targetRate, AudioFormat.ENCODING_PCM_16BIT, 1)
                 
                 val maxBufferSize = 4096
                 var offset = 0
@@ -211,7 +212,7 @@ class PanglongTtsService : TextToSpeechService() {
 
     private fun playSilence(callback: SynthesisCallback?) {
         try {
-            callback?.start(16000, 16, 1)
+            callback?.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1)
             callback?.audioAvailable(ByteArray(3200), 0, 3200)
             callback?.done()
         } catch (e: Throwable) { }
