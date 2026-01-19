@@ -69,7 +69,12 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.9.0")
-    implementation("com.github.k2-fsa:sherpa-onnx:v1.10.42")
+    
+    // --- ပြင်ဆင်ထားသော နေရာ (Fixed) ---
+    // GitHub အစား Maven Central က Stable version ကို ပြောင်းသုံးထားပါတယ်
+    implementation("com.k2fsa.sherpa.onnx:sherpa-onnx-aar:1.10.35")
+    
     implementation("androidx.preference:preference:1.2.1")
-    implementation("com.github.woheller69:FreeDroidWarn:+")
+    
+    // FreeDroidWarn ကို ဖယ်ရှားလိုက်ပါပြီ (Error တက်စေတဲ့အတွက်)
 }
