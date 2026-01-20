@@ -28,7 +28,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private boolean isRestarting = false;
     private Handler mainHandler;
 
+    private volatile CountDownLatch currentLatch;
     private volatile boolean stopRequested = false;
+    
     private String mLanguage = "eng";
     private String mCountry = "USA";
     private String mVariant = "";
@@ -46,69 +48,52 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private synchronized void initEnginesStepByStep() {
         if (isRestarting) return;
-
-        String shanPkg = getBestEngine("pref_engine_shan");
         shutdownEngines();
 
-        shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(), shanPkg);
+        String shanPkg = getBestEngine("pref_engine_shan");
+        shanEngine = new RemoteTextToSpeech(this, status -> {
+            setupEngineListener(shanEngine); 
+            initBurmeseEngine();
+        }, shanPkg);
     }
 
     private void initBurmeseEngine() {
         String burmesePkg = getBestEngine("pref_engine_myanmar");
-        burmeseEngine = new RemoteTextToSpeech(this, status -> initEnglishEngine(), burmesePkg);
+        burmeseEngine = new RemoteTextToSpeech(this, status -> {
+            setupEngineListener(burmeseEngine);
+            initEnglishEngine();
+        }, burmesePkg);
     }
 
     private void initEnglishEngine() {
         String englishPkg = getBestEngine("pref_engine_english");
         englishEngine = new RemoteTextToSpeech(this, status -> {
+            setupEngineListener(englishEngine);
             isRestarting = false;
         }, englishPkg);
     }
 
-    private String getBestEngine(String prefKey) {
-        String pkg = prefs.getString(prefKey, null);
-        if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) {
-            return pkg;
-        }
-        String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
-        if (sysDef != null && !sysDef.equals(getPackageName())) {
-            return sysDef;
-        }
-        try {
-            Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
-            List<ResolveInfo> services = getPackageManager().queryIntentServices(intent, 0);
-            for (ResolveInfo info : services) {
-                String p = info.serviceInfo.packageName;
-                if (!p.equals(getPackageName())) return p;
+    private void setupEngineListener(RemoteTextToSpeech engine) {
+        if (engine == null) return;
+        engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override
+            public void onStart(String utteranceId) {
             }
-        } catch (Exception e) {}
-        return "com.google.android.tts";
-    }
 
-    private void shutdownEngines() {
-        if (shanEngine != null) {
-            try { shanEngine.shutdown(); } catch (Exception e) {}
-        }
-        if (burmeseEngine != null) {
-            try { burmeseEngine.shutdown(); } catch (Exception e) {}
-        }
-        if (englishEngine != null) {
-            try { englishEngine.shutdown(); } catch (Exception e) {}
-        }
-    }
+            @Override
+            public void onDone(String utteranceId) {
+                if (currentLatch != null) {
+                    currentLatch.countDown();
+                }
+            }
 
-    @Override
-    public void onDestroy() {
-        super.onDestroy();
-        shutdownEngines();
-    }
-
-    @Override
-    protected void onStop() {
-        stopRequested = true;
-        if (shanEngine != null) shanEngine.stop();
-        if (burmeseEngine != null) burmeseEngine.stop();
-        if (englishEngine != null) englishEngine.stop();
+            @Override
+            public void onError(String utteranceId) {
+                if (currentLatch != null) {
+                    currentLatch.countDown();
+                }
+            }
+        });
     }
 
     @Override
@@ -156,7 +141,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 boolean isEngineChanged = (currentEngine != null && targetEngine != currentEngine);
                 
                 if (isEngineChanged && batchText.length() > 0) {
-                    speakBatch(currentEngine, batchText.toString(), originalParams);
+                    speakAndWait(currentEngine, batchText.toString(), originalParams);
                     batchText.setLength(0);
                 }
 
@@ -165,7 +150,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
             }
 
             if (batchText.length() > 0 && currentEngine != null && !stopRequested) {
-                speakBatch(currentEngine, batchText.toString(), originalParams);
+                speakAndWait(currentEngine, batchText.toString(), originalParams);
             }
 
         } catch (Exception e) {
@@ -175,34 +160,68 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
     }
 
-    private void speakBatch(RemoteTextToSpeech engine, String text, Bundle params) {
+    private void speakAndWait(RemoteTextToSpeech engine, String text, Bundle params) {
         if (stopRequested) return;
 
-        final CountDownLatch latch = new CountDownLatch(1);
+        currentLatch = new CountDownLatch(1);
         String utteranceId = "ID_" + System.currentTimeMillis();
-
-        engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override
-            public void onStart(String utteranceId) {}
-
-            @Override
-            public void onDone(String utteranceId) {
-                latch.countDown();
-            }
-
-            @Override
-            public void onError(String utteranceId) {
-                latch.countDown();
-            }
-        });
 
         engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
         try {
-            latch.await(8000, TimeUnit.MILLISECONDS);
+            currentLatch.await(6000, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
+    }
+
+    private String getBestEngine(String prefKey) {
+        String pkg = prefs.getString(prefKey, null);
+        if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) {
+            return pkg;
+        }
+        String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
+        if (sysDef != null && !sysDef.equals(getPackageName())) {
+            return sysDef;
+        }
+        try {
+            Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
+            List<ResolveInfo> services = getPackageManager().queryIntentServices(intent, 0);
+            for (ResolveInfo info : services) {
+                String p = info.serviceInfo.packageName;
+                if (!p.equals(getPackageName())) return p;
+            }
+        } catch (Exception e) {}
+        return "com.google.android.tts";
+    }
+
+    private void shutdownEngines() {
+        if (shanEngine != null) {
+            try { shanEngine.shutdown(); } catch (Exception e) {}
+        }
+        if (burmeseEngine != null) {
+            try { burmeseEngine.shutdown(); } catch (Exception e) {}
+        }
+        if (englishEngine != null) {
+            try { englishEngine.shutdown(); } catch (Exception e) {}
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        shutdownEngines();
+    }
+
+    @Override
+    protected void onStop() {
+        stopRequested = true;
+        if (currentLatch != null) {
+            currentLatch.countDown();
+        }
+        if (shanEngine != null) shanEngine.stop();
+        if (burmeseEngine != null) burmeseEngine.stop();
+        if (englishEngine != null) englishEngine.stop();
     }
 
     @Override
