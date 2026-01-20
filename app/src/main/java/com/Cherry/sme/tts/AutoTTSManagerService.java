@@ -13,10 +13,7 @@ import android.speech.tts.SynthesisCallback;
 import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
-import android.speech.tts.UtteranceProgressListener;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 public class AutoTTSManagerService extends TextToSpeechService {
 
@@ -27,10 +24,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private boolean isRestarting = false;
     private Handler mainHandler;
-
-    private volatile CountDownLatch currentLatch;
     private volatile boolean stopRequested = false;
-    
+    private boolean enginesReady = false;
+
     private String mLanguage = "eng";
     private String mCountry = "USA";
     private String mVariant = "";
@@ -48,11 +44,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private synchronized void initEnginesStepByStep() {
         if (isRestarting) return;
+        enginesReady = false;
         shutdownEngines();
 
         String shanPkg = getBestEngine("pref_engine_shan");
         shanEngine = new RemoteTextToSpeech(this, status -> {
-            setupEngineListener(shanEngine); 
             initBurmeseEngine();
         }, shanPkg);
     }
@@ -60,7 +56,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initBurmeseEngine() {
         String burmesePkg = getBestEngine("pref_engine_myanmar");
         burmeseEngine = new RemoteTextToSpeech(this, status -> {
-            setupEngineListener(burmeseEngine);
             initEnglishEngine();
         }, burmesePkg);
     }
@@ -68,39 +63,16 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initEnglishEngine() {
         String englishPkg = getBestEngine("pref_engine_english");
         englishEngine = new RemoteTextToSpeech(this, status -> {
-            setupEngineListener(englishEngine);
             isRestarting = false;
+            enginesReady = true;
         }, englishPkg);
-    }
-
-    private void setupEngineListener(RemoteTextToSpeech engine) {
-        if (engine == null) return;
-        engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override
-            public void onStart(String utteranceId) {
-            }
-
-            @Override
-            public void onDone(String utteranceId) {
-                if (currentLatch != null) {
-                    currentLatch.countDown();
-                }
-            }
-
-            @Override
-            public void onError(String utteranceId) {
-                if (currentLatch != null) {
-                    currentLatch.countDown();
-                }
-            }
-        });
     }
 
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         stopRequested = false;
 
-        if (isRestarting) {
+        if (isRestarting || !enginesReady) {
             callback.error();
             return;
         }
@@ -135,14 +107,20 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 if (targetEngine == null) continue;
 
-                targetEngine.setSpeechRate(userRate);
-                targetEngine.setPitch(userPitch);
-
                 boolean isEngineChanged = (currentEngine != null && targetEngine != currentEngine);
                 
-                if (isEngineChanged && batchText.length() > 0) {
-                    speakAndWait(currentEngine, batchText.toString(), originalParams);
-                    batchText.setLength(0);
+                if (isEngineChanged) {
+                    if (batchText.length() > 0) {
+                        speakAndBlock(currentEngine, batchText.toString(), originalParams, userRate, userPitch);
+                        batchText.setLength(0);
+                    }
+                    
+                    if (currentEngine != null) {
+                        try {
+                           currentEngine.stop();
+                           Thread.sleep(50);
+                        } catch (Exception e) {}
+                    }
                 }
 
                 batchText.append(chunk.text).append(" ");
@@ -150,7 +128,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
             }
 
             if (batchText.length() > 0 && currentEngine != null && !stopRequested) {
-                speakAndWait(currentEngine, batchText.toString(), originalParams);
+                 speakAndBlock(currentEngine, batchText.toString(), originalParams, userRate, userPitch);
             }
 
         } catch (Exception e) {
@@ -160,19 +138,30 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
     }
 
-    private void speakAndWait(RemoteTextToSpeech engine, String text, Bundle params) {
-        if (stopRequested) return;
-
-        currentLatch = new CountDownLatch(1);
-        String utteranceId = "ID_" + System.currentTimeMillis();
-
-        engine.speak(text, TextToSpeech.QUEUE_ADD, params, utteranceId);
+    private void speakAndBlock(RemoteTextToSpeech engine, String text, Bundle params, float rate, float pitch) {
+        if (stopRequested || engine == null) return;
 
         try {
-            currentLatch.await(6000, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
+            engine.setSpeechRate(rate);
+            engine.setPitch(pitch);
+            
+            String uId = "ID_" + System.currentTimeMillis();
+            
+            engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, uId);
+
+            int startWait = 0;
+            while (!engine.isSpeaking() && startWait < 40 && !stopRequested) {
+                Thread.sleep(50);
+                startWait++;
+            }
+
+            if (!engine.isSpeaking()) return;
+
+            while (engine.isSpeaking() && !stopRequested) {
+                Thread.sleep(50);
+            }
+
+        } catch (Exception e) {}
     }
 
     private String getBestEngine(String prefKey) {
@@ -196,15 +185,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
     }
 
     private void shutdownEngines() {
-        if (shanEngine != null) {
-            try { shanEngine.shutdown(); } catch (Exception e) {}
-        }
-        if (burmeseEngine != null) {
-            try { burmeseEngine.shutdown(); } catch (Exception e) {}
-        }
-        if (englishEngine != null) {
-            try { englishEngine.shutdown(); } catch (Exception e) {}
-        }
+        try { if (shanEngine != null) shanEngine.shutdown(); } catch (Exception e) {}
+        try { if (burmeseEngine != null) burmeseEngine.shutdown(); } catch (Exception e) {}
+        try { if (englishEngine != null) englishEngine.shutdown(); } catch (Exception e) {}
     }
 
     @Override
@@ -216,12 +199,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected void onStop() {
         stopRequested = true;
-        if (currentLatch != null) {
-            currentLatch.countDown();
-        }
-        if (shanEngine != null) shanEngine.stop();
-        if (burmeseEngine != null) burmeseEngine.stop();
-        if (englishEngine != null) englishEngine.stop();
+        try { if (shanEngine != null) shanEngine.stop(); } catch (Exception e) {}
+        try { if (burmeseEngine != null) burmeseEngine.stop(); } catch (Exception e) {}
+        try { if (englishEngine != null) englishEngine.stop(); } catch (Exception e) {}
     }
 
     @Override
