@@ -35,10 +35,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onCreate() {
         super.onCreate();
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
-        
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         mainHandler = new Handler(Looper.getMainLooper());
-
         initEnginesStepByStep();
     }
 
@@ -46,18 +44,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (isRestarting) return;
         enginesReady = false;
         shutdownEngines();
-
         String shanPkg = getBestEngine("pref_engine_shan");
-        shanEngine = new RemoteTextToSpeech(this, status -> {
-            initBurmeseEngine();
-        }, shanPkg);
+        shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(), shanPkg);
     }
 
     private void initBurmeseEngine() {
         String burmesePkg = getBestEngine("pref_engine_myanmar");
-        burmeseEngine = new RemoteTextToSpeech(this, status -> {
-            initEnglishEngine();
-        }, burmesePkg);
+        burmeseEngine = new RemoteTextToSpeech(this, status -> initEnglishEngine(), burmesePkg);
     }
 
     private void initEnglishEngine() {
@@ -71,7 +64,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         stopRequested = false;
-
         if (isRestarting || !enginesReady) {
             callback.error();
             return;
@@ -79,58 +71,42 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         String text = request.getText();
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
-
         if (chunks.isEmpty()) {
             callback.done();
             return;
         }
 
         callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
-        Bundle originalParams = request.getParams();
-        float userRate = request.getSpeechRate() / 100.0f;
-        float userPitch = request.getPitch() / 100.0f;
+        Bundle params = request.getParams();
+        float rate = request.getSpeechRate() / 100.0f;
+        float pitch = request.getPitch() / 100.0f;
 
         try {
-            StringBuilder batchText = new StringBuilder();
+            StringBuilder buffer = new StringBuilder();
             RemoteTextToSpeech currentEngine = null;
+            String currentLang = "";
 
             for (int i = 0; i < chunks.size(); i++) {
                 if (stopRequested) break;
-                
                 TTSUtils.Chunk chunk = chunks.get(i);
                 if (chunk.text.trim().isEmpty()) continue;
 
-                RemoteTextToSpeech targetEngine;
-                if (chunk.lang.equals("SHAN")) targetEngine = shanEngine;
-                else if (chunk.lang.equals("MYANMAR")) targetEngine = burmeseEngine;
-                else targetEngine = englishEngine;
-
+                RemoteTextToSpeech targetEngine = getEngineByLang(chunk.lang);
                 if (targetEngine == null) continue;
 
-                boolean isEngineChanged = (currentEngine != null && targetEngine != currentEngine);
-                
-                if (isEngineChanged) {
-                    if (batchText.length() > 0) {
-                        speakAndBlock(currentEngine, batchText.toString(), originalParams, userRate, userPitch);
-                        batchText.setLength(0);
-                    }
-                    
-                    if (currentEngine != null) {
-                        try {
-                           currentEngine.stop();
-                           Thread.sleep(50);
-                        } catch (Exception e) {}
-                    }
+                if (currentEngine != null && (!chunk.lang.equals(currentLang) || buffer.length() > 400)) {
+                    speakSync(currentEngine, buffer.toString(), params, rate, pitch);
+                    buffer.setLength(0);
                 }
 
-                batchText.append(chunk.text).append(" ");
+                buffer.append(chunk.text).append(" ");
                 currentEngine = targetEngine;
+                currentLang = chunk.lang;
             }
 
-            if (batchText.length() > 0 && currentEngine != null && !stopRequested) {
-                 speakAndBlock(currentEngine, batchText.toString(), originalParams, userRate, userPitch);
+            if (buffer.length() > 0 && currentEngine != null && !stopRequested) {
+                speakSync(currentEngine, buffer.toString(), params, rate, pitch);
             }
-
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
@@ -138,47 +114,41 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
     }
 
-    private void speakAndBlock(RemoteTextToSpeech engine, String text, Bundle params, float rate, float pitch) {
-        if (stopRequested || engine == null) return;
+    private RemoteTextToSpeech getEngineByLang(String lang) {
+        if ("SHAN".equals(lang)) return shanEngine;
+        if ("MYANMAR".equals(lang)) return burmeseEngine;
+        return englishEngine;
+    }
 
+    private void speakSync(RemoteTextToSpeech engine, String text, Bundle params, float rate, float pitch) {
+        if (stopRequested || engine == null) return;
         try {
             engine.setSpeechRate(rate);
             engine.setPitch(pitch);
-            
-            String uId = "ID_" + System.currentTimeMillis();
-            
-            engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, uId);
+            String id = "U_" + System.currentTimeMillis();
+            engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, id);
 
-            int startWait = 0;
-            while (!engine.isSpeaking() && startWait < 40 && !stopRequested) {
-                Thread.sleep(50);
-                startWait++;
+            int w = 0;
+            while (!engine.isSpeaking() && w < 40 && !stopRequested) {
+                Thread.sleep(0);
+                w++;
             }
-
-            if (!engine.isSpeaking()) return;
-
             while (engine.isSpeaking() && !stopRequested) {
-                Thread.sleep(50);
+                Thread.sleep(0);
             }
-
         } catch (Exception e) {}
     }
 
     private String getBestEngine(String prefKey) {
         String pkg = prefs.getString(prefKey, null);
-        if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) {
-            return pkg;
-        }
+        if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) return pkg;
         String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
-        if (sysDef != null && !sysDef.equals(getPackageName())) {
-            return sysDef;
-        }
+        if (sysDef != null && !sysDef.equals(getPackageName())) return sysDef;
         try {
             Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
-            List<ResolveInfo> services = getPackageManager().queryIntentServices(intent, 0);
-            for (ResolveInfo info : services) {
-                String p = info.serviceInfo.packageName;
-                if (!p.equals(getPackageName())) return p;
+            List<ResolveInfo> s = getPackageManager().queryIntentServices(intent, 0);
+            for (ResolveInfo i : s) {
+                if (!i.serviceInfo.packageName.equals(getPackageName())) return i.serviceInfo.packageName;
             }
         } catch (Exception e) {}
         return "com.google.android.tts";
@@ -204,22 +174,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         try { if (englishEngine != null) englishEngine.stop(); } catch (Exception e) {}
     }
 
-    @Override
-    protected int onIsLanguageAvailable(String lang, String country, String variant) {
-        return TextToSpeech.LANG_AVAILABLE;
-    }
-
-    @Override
-    protected String[] onGetLanguage() {
-        return new String[]{"eng", "USA", ""};
-    }
-
-    @Override
-    protected int onLoadLanguage(String lang, String country, String variant) {
-        mLanguage = "eng";
-        mCountry = "USA";
-        mVariant = "";
-        return TextToSpeech.LANG_AVAILABLE;
-    }
+    @Override protected int onIsLanguageAvailable(String l, String c, String v) { return TextToSpeech.LANG_AVAILABLE; }
+    @Override protected String[] onGetLanguage() { return new String[]{"eng", "USA", ""}; }
+    @Override protected int onLoadLanguage(String l, String c, String v) { return TextToSpeech.LANG_AVAILABLE; }
 }
-
