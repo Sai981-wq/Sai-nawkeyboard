@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioFormat;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.speech.tts.SynthesisCallback;
@@ -71,9 +72,21 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 targetEngine.setSpeechRate(rate);
                 targetEngine.setPitch(pitch);
-                
+
                 String utteranceId = "ID_" + System.currentTimeMillis();
-                targetEngine.speakAndWait(chunk.text, params, utteranceId);
+                targetEngine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
+
+                int waitStart = 0;
+                while (!targetEngine.isSpeaking() && waitStart < 20 && !stopRequested) {
+                    SystemClock.sleep(50);
+                    waitStart++;
+                }
+
+                long startTime = System.currentTimeMillis();
+                while (targetEngine.isSpeaking() && !stopRequested) {
+                    if (System.currentTimeMillis() - startTime > 60000) break;
+                    SystemClock.sleep(50);
+                }
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -93,7 +106,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private String getBestEngine(String prefKey) {
         String pkg = prefs.getString(prefKey, null);
         if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) return pkg;
-        
+
         String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
         if (sysDef != null && !sysDef.equals(getPackageName())) return sysDef;
 
@@ -104,7 +117,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 if (!i.serviceInfo.packageName.equals(getPackageName())) return i.serviceInfo.packageName;
             }
         } catch (Exception e) {}
-        
+
         return "com.google.android.tts";
     }
 
