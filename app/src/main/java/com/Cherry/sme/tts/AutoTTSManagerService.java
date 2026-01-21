@@ -5,8 +5,6 @@ import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioFormat;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.speech.tts.SynthesisCallback;
@@ -21,96 +19,68 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private RemoteTextToSpeech burmeseEngine;
     private RemoteTextToSpeech englishEngine;
     private SharedPreferences prefs;
-
-    private boolean isRestarting = false;
-    private Handler mainHandler;
     private volatile boolean stopRequested = false;
-    private boolean enginesReady = false;
-
-    private String mLanguage = "eng";
-    private String mCountry = "USA";
-    private String mVariant = "";
 
     @Override
     public void onCreate() {
         super.onCreate();
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        mainHandler = new Handler(Looper.getMainLooper());
-        initEnginesStepByStep();
+        initAllEngines();
     }
 
-    private synchronized void initEnginesStepByStep() {
-        if (isRestarting) return;
-        enginesReady = false;
+    private void initAllEngines() {
         shutdownEngines();
+
         String shanPkg = getBestEngine("pref_engine_shan");
-        shanEngine = new RemoteTextToSpeech(this, status -> initBurmeseEngine(), shanPkg);
-    }
+        shanEngine = new RemoteTextToSpeech(this, status -> {}, shanPkg);
 
-    private void initBurmeseEngine() {
         String burmesePkg = getBestEngine("pref_engine_myanmar");
-        burmeseEngine = new RemoteTextToSpeech(this, status -> initEnglishEngine(), burmesePkg);
-    }
+        burmeseEngine = new RemoteTextToSpeech(this, status -> {}, burmesePkg);
 
-    private void initEnglishEngine() {
         String englishPkg = getBestEngine("pref_engine_english");
-        englishEngine = new RemoteTextToSpeech(this, status -> {
-            isRestarting = false;
-            enginesReady = true;
-        }, englishPkg);
+        englishEngine = new RemoteTextToSpeech(this, status -> {}, englishPkg);
     }
 
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         stopRequested = false;
-        if (isRestarting || !enginesReady) {
-            callback.error();
-            return;
-        }
-
         String text = request.getText();
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
+
         if (chunks.isEmpty()) {
             callback.done();
             return;
         }
 
-        callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
+        synchronized (callback) {
+            callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
+        }
+
         Bundle params = request.getParams();
         float rate = request.getSpeechRate() / 100.0f;
         float pitch = request.getPitch() / 100.0f;
 
         try {
-            StringBuilder buffer = new StringBuilder();
-            RemoteTextToSpeech currentEngine = null;
-            String currentLang = "";
-
-            for (int i = 0; i < chunks.size(); i++) {
+            for (TTSUtils.Chunk chunk : chunks) {
                 if (stopRequested) break;
-                TTSUtils.Chunk chunk = chunks.get(i);
                 if (chunk.text.trim().isEmpty()) continue;
 
                 RemoteTextToSpeech targetEngine = getEngineByLang(chunk.lang);
                 if (targetEngine == null) continue;
 
-                if (currentEngine != null && (!chunk.lang.equals(currentLang) || buffer.length() > 400)) {
-                    speakSync(currentEngine, buffer.toString(), params, rate, pitch);
-                    buffer.setLength(0);
-                }
-
-                buffer.append(chunk.text).append(" ");
-                currentEngine = targetEngine;
-                currentLang = chunk.lang;
-            }
-
-            if (buffer.length() > 0 && currentEngine != null && !stopRequested) {
-                speakSync(currentEngine, buffer.toString(), params, rate, pitch);
+                targetEngine.setSpeechRate(rate);
+                targetEngine.setPitch(pitch);
+                
+                String utteranceId = "ID_" + System.currentTimeMillis();
+                targetEngine.speakAndWait(chunk.text, params, utteranceId);
             }
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            callback.done();
+            synchronized (callback) {
+                callback.done();
+            }
         }
     }
 
@@ -120,30 +90,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
         return englishEngine;
     }
 
-    private void speakSync(RemoteTextToSpeech engine, String text, Bundle params, float rate, float pitch) {
-        if (stopRequested || engine == null) return;
-        try {
-            engine.setSpeechRate(rate);
-            engine.setPitch(pitch);
-            String id = "U_" + System.currentTimeMillis();
-            engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, id);
-
-            int w = 0;
-            while (!engine.isSpeaking() && w < 40 && !stopRequested) {
-                Thread.sleep(50);
-                w++;
-            }
-            while (engine.isSpeaking() && !stopRequested) {
-                Thread.sleep(50);
-            }
-        } catch (Exception e) {}
-    }
-
     private String getBestEngine(String prefKey) {
         String pkg = prefs.getString(prefKey, null);
         if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) return pkg;
+        
         String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
         if (sysDef != null && !sysDef.equals(getPackageName())) return sysDef;
+
         try {
             Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
             List<ResolveInfo> s = getPackageManager().queryIntentServices(intent, 0);
@@ -151,6 +104,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 if (!i.serviceInfo.packageName.equals(getPackageName())) return i.serviceInfo.packageName;
             }
         } catch (Exception e) {}
+        
         return "com.google.android.tts";
     }
 
