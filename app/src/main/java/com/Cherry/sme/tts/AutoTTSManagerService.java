@@ -130,11 +130,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
             int w = 0;
             while (!engine.isSpeaking() && w < 40 && !stopRequested) {
-                Thread.sleep(0);
+                Thread.sleep(50);
                 w++;
             }
             while (engine.isSpeaking() && !stopRequested) {
-                Thread.sleep(0);
+                Thread.sleep(50);
             }
         } catch (Exception e) {}
     }
@@ -178,3 +178,4 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override protected String[] onGetLanguage() { return new String[]{"eng", "USA", ""}; }
     @Override protected int onLoadLanguage(String l, String c, String v) { return TextToSpeech.LANG_AVAILABLE; }
 }
+
