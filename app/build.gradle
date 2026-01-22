@@ -1,42 +1,58 @@
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
 }
 
 android {
-    namespace 'com.sainaw.mm.board'
-    compileSdk 34
+    namespace 'com.cherry.sme.tts'
+    compileSdk 36
 
     defaultConfig {
-        applicationId 'com.sainaw.mm.board'
-        minSdk 21
-        targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        applicationId "com.cherry.sme.tts"
+        minSdk 24
+        targetSdk 36
+        versionCode 5
+        versionName "1.4.0"
     }
 
-    buildFeatures {
-        buildConfig false
+    signingConfigs {
+        release {
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
     }
 
     lintOptions {
         checkReleaseBuilds false
         abortOnError false
     }
-
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = '17'
-    }
 }
 
 dependencies {
-    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.20'
-    implementation 'androidx.core:core-ktx:1.9.0'
-    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
 }
 
+File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
+if (signingPropertiesFile.exists()) {
+    Properties props = new Properties()
+    props.load(new FileInputStream(signingPropertiesFile))
+    
+    android.signingConfigs.release.storeFile = rootProject.file('credentials/release.keystore')
+    android.signingConfigs.release.storePassword = props['storePassword']
+    android.signingConfigs.release.keyAlias = props['keyAlias']
+    android.signingConfigs.release.keyPassword = props['keyPassword']
+}
