@@ -30,8 +30,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private final UtteranceProgressListener globalListener = new UtteranceProgressListener() {
         @Override
-        public void onStart(String utteranceId) {
-        }
+        public void onStart(String utteranceId) {}
 
         @Override
         public void onDone(String utteranceId) {
@@ -52,7 +51,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
             if (utteranceId != null) {
                 CountDownLatch latch = utteranceLatches.remove(utteranceId);
                 if (latch != null) {
-                    latch.countDown();
+                    while (latch.getCount() > 0) {
+                        latch.countDown();
+                    }
                 }
             }
         }
@@ -61,7 +62,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onCreate() {
         super.onCreate();
-        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
         initAllEngines();
@@ -69,13 +69,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private void initAllEngines() {
         shutdownEngines();
-
         shanEngine = new RemoteTextToSpeech(this, getBestEngine("pref_engine_shan"));
         shanEngine.setOnUtteranceProgressListener(globalListener);
-
         burmeseEngine = new RemoteTextToSpeech(this, getBestEngine("pref_engine_myanmar"));
         burmeseEngine.setOnUtteranceProgressListener(globalListener);
-
         englishEngine = new RemoteTextToSpeech(this, getBestEngine("pref_engine_english"));
         englishEngine.setOnUtteranceProgressListener(globalListener);
     }
@@ -129,40 +126,47 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     continue;
                 }
 
-                long timeoutMs = 1500 + (chunk.text.length() * 100L);
-                
-                boolean completed = false;
                 try {
-                    completed = latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+                    // TalkBack အတွက် အရေးကြီးဆုံးအချက်:
+                    // Stop လုပ်တာနဲ့ ချက်ချင်းလွှတ်ပေးဖို့ Loop ပတ်ပြီးစစ်မယ်
+                    long timeout = 2000 + (chunk.text.length() * 100L);
+                    long waited = 0;
+                    while (!stopRequested && waited < timeout) {
+                        boolean done = latch.await(50, TimeUnit.MILLISECONDS);
+                        if (done) break;
+                        waited += 50;
+                    }
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
                     stopRequested = true;
                 }
 
-                if (!completed) {
-                    targetEngine.stop();
-                    utteranceLatches.remove(utteranceId);
-                }
-                
                 if (stopRequested) {
                     targetEngine.stop();
-                    break;
-                }
-
-                try {
-                    Thread.sleep(50);
-                } catch (InterruptedException e) {
                     break;
                 }
             }
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            utteranceLatches.clear();
             synchronized (callback) {
                 callback.done();
             }
         }
+    }
+
+    @Override
+    protected void onStop() {
+        stopRequested = true;
+        
+        // TalkBack ပွတ်လိုက်တာနဲ့ ချက်ချင်းအလုပ်လုပ်မည့်နေရာ
+        for (CountDownLatch latch : utteranceLatches.values()) {
+            while (latch.getCount() > 0) latch.countDown();
+        }
+        utteranceLatches.clear();
+
+        if (shanEngine != null) shanEngine.stop();
+        if (burmeseEngine != null) burmeseEngine.stop();
+        if (englishEngine != null) englishEngine.stop();
     }
 
     private RemoteTextToSpeech getEngineByLang(String lang) {
@@ -200,15 +204,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onDestroy() {
         super.onDestroy();
         shutdownEngines();
-    }
-
-    @Override
-    protected void onStop() {
-        stopRequested = true;
-        utteranceLatches.clear();
-        try { if (shanEngine != null) shanEngine.stop(); } catch (Exception e) {}
-        try { if (burmeseEngine != null) burmeseEngine.stop(); } catch (Exception e) {}
-        try { if (englishEngine != null) englishEngine.stop(); } catch (Exception e) {}
     }
 
     @Override protected int onIsLanguageAvailable(String l, String c, String v) { return TextToSpeech.LANG_AVAILABLE; }
