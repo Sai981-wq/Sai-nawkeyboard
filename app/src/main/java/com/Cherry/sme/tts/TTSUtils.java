@@ -32,7 +32,7 @@ public class TTSUtils {
             if (word.isEmpty()) continue;
             
             if (word.trim().isEmpty()) {
-                if (currentLang != null) {
+                if (currentBuffer.length() > 0) {
                     currentBuffer.append(word);
                 }
                 continue;
@@ -43,6 +43,10 @@ public class TTSUtils {
                 detectedLang = "SHAN";
             } else if (MYANMAR_PATTERN.matcher(word).find()) {
                 detectedLang = "MYANMAR";
+            }
+
+            if ("SHAN".equals(currentLang) && "MYANMAR".equals(detectedLang)) {
+                detectedLang = "SHAN";
             }
 
             if (currentLang == null) {
