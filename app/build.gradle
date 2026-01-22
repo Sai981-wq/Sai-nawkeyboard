@@ -16,7 +16,6 @@ android {
 
     signingConfigs {
         release {
-            // အောက်တွင် ဖြည့်ပါမည်
         }
     }
 
@@ -47,13 +46,11 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
 }
 
-// Keystore ချိတ်ဆက်မှု အပိုင်း
 File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
 if (signingPropertiesFile.exists()) {
     Properties props = new Properties()
     props.load(new FileInputStream(signingPropertiesFile))
     
-    // GitHub ပေါ်မှာရော ဖုန်းထဲမှာပါ အလုပ်လုပ်မည့် နည်းလမ်း
     android.signingConfigs.release.storeFile = rootProject.file('credentials/release.keystore')
     android.signingConfigs.release.storePassword = props['storePassword']
     android.signingConfigs.release.keyAlias = props['keyAlias']
