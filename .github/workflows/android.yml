@@ -25,8 +25,11 @@ jobs:
     - name: Build Release APK
       run: ./gradlew assembleRelease
 
+    - name: Rename APK for clarity
+      run: mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/My-Myanmar-TTS.apk
+
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: release-apk
-        path: app/build/outputs/apk/release/app-release.apk
+        name: My-Myanmar-TTS
+        path: app/build/outputs/apk/release/My-Myanmar-TTS.apk
