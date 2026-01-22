@@ -10,12 +10,13 @@ android {
         applicationId "com.cherry.sme.tts"
         minSdk 24
         targetSdk 36
-        versionCode 3
-        versionName "1.2.0"
+        versionCode 4
+        versionName "1.3.0"
     }
 
     signingConfigs {
         release {
+            // ယာယီနေရာချထားခြင်း (အောက်တွင် ပြန်ဖြည့်မည်)
         }
     }
 
@@ -46,14 +47,19 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
 }
 
+// Keystore ဖတ်သည့်နေရာ (အရေးကြီးဆုံး ပြင်ဆင်ချက်)
 File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
 if (signingPropertiesFile.exists()) {
     Properties props = new Properties()
     props.load(new FileInputStream(signingPropertiesFile))
     
-    android.signingConfigs.release.storeFile = file(props['storeFile'])
+    // StoreFile ကို ဖုန်းထဲက Path အတိုင်းမယူဘဲ၊ Project ထဲက Path ကို အတင်းယူခိုင်းမည်
+    android.signingConfigs.release.storeFile = rootProject.file('credentials/release.keystore')
+    
+    // ကျန်တာတွေကို ဖိုင်ထဲကအတိုင်း ယူမည်
     android.signingConfigs.release.storePassword = props['storePassword']
     android.signingConfigs.release.keyAlias = props['keyAlias']
     android.signingConfigs.release.keyPassword = props['keyPassword']
+} else {
+    println "Warning: Credentials file not found for signing!"
 }
-
