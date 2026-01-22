@@ -27,6 +27,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
         super.onCreate();
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        
+        TTSUtils.loadMapping(this);
+
         initAllEngines();
     }
 
