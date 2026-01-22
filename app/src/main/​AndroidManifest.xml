@@ -3,8 +3,8 @@
     package="com.sainaw.mm.board">
 
     <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <queries>
         <intent>
@@ -18,14 +18,15 @@
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
-        android:label="Sai Naw Keyboard"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
 
         <service
             android:name=".SaiNawKeyboardService"
             android:directBootAware="true"
             android:exported="true"
-            android:label="Sai Naw Keyboard"
+            android:label="@string/app_name"
             android:permission="android.permission.BIND_INPUT_METHOD">
             <intent-filter>
                 <action android:name="android.view.InputMethod" />
@@ -37,8 +38,8 @@
 
         <activity
             android:name=".SettingsActivity"
-            android:exported="true"
-            android:label="Sai Naw Keyboard">
+            android:label="@string/settings_name"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -48,14 +49,12 @@
         <activity
             android:name=".LanguageSettingsActivity"
             android:label="Languages"
-            android:parentActivityName=".SettingsActivity">
-        </activity>
+            android:parentActivityName=".SettingsActivity" />
 
         <activity
             android:name=".AccessibilitySettingsActivity"
-            android:label="Accessibility Options"
-            android:parentActivityName=".SettingsActivity">
-        </activity>
+            android:label="Accessibility"
+            android:parentActivityName=".SettingsActivity" />
 
     </application>
 </manifest>
