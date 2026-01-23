@@ -11,20 +11,20 @@ public class SaiNawLayoutManager {
     private final Context context;
     private final SaiNawKeyboardService service;
     
-    // Keyboards
     public Keyboard qwertyKeyboard, qwertyShiftKeyboard;
     public Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     public Keyboard shanKeyboard, shanShiftKeyboard;
     public Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
     public Keyboard numberKeyboard;
+    public Keyboard emojiKeyboard;
     
     private Keyboard currentKeyboard;
     private EditorInfo currentEditorInfo;
 
-    // States
     public boolean isCaps = false;
     public boolean isCapsLocked = false;
     public boolean isSymbols = false;
+    public boolean isEmoji = false;
     public int currentLanguageId = 0; 
     
     private List<Integer> enabledLanguages = new ArrayList<>();
@@ -61,6 +61,8 @@ public class SaiNawLayoutManager {
             shanKeyboard = new Keyboard(context, service.getResId("shan"));
             shanShiftKeyboard = new Keyboard(context, service.getResId("shan_shift"));
             
+            emojiKeyboard = new Keyboard(context, service.getResId("emoji"));
+            
             int symEnId = service.getResId("symbols");
             int symMmId = service.getResId("symbols_mm");
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(context, symEnId) : qwertyKeyboard;
@@ -87,8 +89,12 @@ public class SaiNawLayoutManager {
             inputType == EditorInfo.TYPE_CLASS_DATETIME) {
             currentKeyboard = numberKeyboard;
             isSymbols = true;
+            isEmoji = false;
         } else {
-            if (currentKeyboard == numberKeyboard) isSymbols = false;
+            if (currentKeyboard == numberKeyboard) {
+                isSymbols = false;
+                isEmoji = false;
+            }
             updateKeyboardLayout();
             return;
         }
@@ -98,7 +104,9 @@ public class SaiNawLayoutManager {
     public void updateKeyboardLayout() {
         try {
             Keyboard nextKeyboard;
-            if (isSymbols) {
+            if (isEmoji) {
+                nextKeyboard = emojiKeyboard;
+            } else if (isSymbols) {
                 if (currentKeyboard == numberKeyboard) nextKeyboard = numberKeyboard;
                 else nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard;
             } else {
@@ -123,21 +131,16 @@ public class SaiNawLayoutManager {
         }
     }
 
-    // *** FIX IS HERE ***
     private void updateEnterKeyLabel() {
         if (currentKeyboard == null || currentEditorInfo == null) return;
         
-        // Check if the input field is MULTI-LINE (Standard text area)
         boolean isMultiLine = (currentEditorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
-        
         int action = currentEditorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
         String label = "Enter"; 
 
         if (isMultiLine) {
-            // If it's multi-line, FORCE label to be "Enter" (ignoring 'Done')
             label = "Enter";
         } else {
-            // Only change label for Single-line fields
             switch (action) {
                 case EditorInfo.IME_ACTION_GO: label = "Go"; break;
                 case EditorInfo.IME_ACTION_NEXT: label = "Next"; break;
@@ -164,7 +167,12 @@ public class SaiNawLayoutManager {
         int currentIndex = enabledLanguages.indexOf(currentLanguageId);
         int nextIndex = (currentIndex + 1) % enabledLanguages.size();
         currentLanguageId = enabledLanguages.get(nextIndex);
-        isCaps = false; isSymbols = false; isCapsLocked = false;
+        
+        isCaps = false; 
+        isSymbols = false; 
+        isCapsLocked = false;
+        isEmoji = false;
+        
         updateKeyboardLayout();
     }
 
