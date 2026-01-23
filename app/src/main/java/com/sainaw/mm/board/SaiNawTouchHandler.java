@@ -20,7 +20,7 @@ public class SaiNawTouchHandler {
     private int lastHoverKeyIndex = -1;
     private boolean isLongPressHandled = false;
     private boolean isDeleteActive = false;
-
+    
     private int currentEmojiCode = 0;
 
     private final Runnable spaceLongPressTask = new Runnable() {
@@ -120,8 +120,8 @@ public class SaiNawTouchHandler {
 
                     Keyboard.Key key = layoutManager.getCurrentKeys().get(newKeyIndex);
                     int code = key.codes[0];
-                    
-                    if (code == 32) {
+
+                    if (code == 32) { 
                         handler.postDelayed(spaceLongPressTask, 3000); 
                     } else if (code == -5) {
                         handler.postDelayed(deleteStartTask, 2000);
@@ -129,7 +129,7 @@ public class SaiNawTouchHandler {
                         handler.postDelayed(shiftLongPressTask, 2000);
                     } else if (emojiManager.hasDescription(code)) {
                         currentEmojiCode = code;
-                        handler.postDelayed(emojiLongPressTask, 1000);
+                        handler.postDelayed(emojiLongPressTask, 1000); 
                     }
                 }
                 break;

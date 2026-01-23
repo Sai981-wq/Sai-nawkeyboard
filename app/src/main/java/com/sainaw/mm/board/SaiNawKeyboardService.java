@@ -67,10 +67,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final int MM_THWAY_HTOE = 4145;
     private static final int SHAN_E = 4228;
     private static final char ZWSP = '\u200B';
-    private static final int MM_I = 4141;
-    private static final int MM_U = 4143;
-    private static final int MM_UU = 4144;
-    private static final int MM_ANUSVARA = 4150;
+
+    private static final int KEYCODE_EMOJI = -7;
+    private static final int KEYCODE_ABC = -6;
 
     private final Runnable pendingCandidateUpdate = this::performCandidateSearch;
     
@@ -184,13 +183,23 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
-        if (key != null && key.text != null) {
-            ic.commitText(key.text, 1);
-            if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
-                layoutManager.isCaps = false;
-                layoutManager.updateKeyboardLayout();
+        if (key != null && key.label != null && key.label.length() > 0) {
+            if (primaryCode > 0 || (layoutManager.isEmoji && primaryCode > 0)) {
+                ic.commitText(key.label, 1);
+                
+                if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
+                    layoutManager.isCaps = false;
+                    layoutManager.updateKeyboardLayout();
+                }
+                
+                if (!layoutManager.isEmoji) {
+                    currentWord.append(key.label);
+                    triggerCandidateUpdate(200);
+                }
+                
+                if (useSmartEcho) announceText(key.label.toString());
+                return;
             }
-            return;
         }
 
         try {
@@ -231,13 +240,23 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 case -2:
                     layoutManager.isSymbols = true;
+                    layoutManager.isEmoji = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     announceText("Symbols");
                     break;
-
-                case -6:
+                
+                case KEYCODE_EMOJI:
+                    layoutManager.isEmoji = true;
                     layoutManager.isSymbols = false;
+                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                    layoutManager.updateKeyboardLayout();
+                    announceText("Emojis");
+                    break;
+
+                case KEYCODE_ABC:
+                    layoutManager.isSymbols = false;
+                    layoutManager.isEmoji = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
@@ -287,11 +306,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
 
                 default:
-                    inputLogic.processInput(ic, primaryCode, key);
+                    String charStr = new String(Character.toChars(primaryCode));
                     
-                    String charStr = (key != null && key.label != null && key.label.length() > 1) 
-                            ? key.label.toString() : String.valueOf((char) primaryCode);
-                    currentWord.append(charStr);
+                    if (layoutManager.isEmoji) {
+                        ic.commitText(charStr, 1);
+                    } else {
+                        inputLogic.processInput(ic, primaryCode, key);
+                        currentWord.append(charStr);
+                        triggerCandidateUpdate(200);
+                    }
 
                     if (useSmartEcho) {
                         String accumulatingWord = getCurrentWordForEcho();
@@ -304,7 +327,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         layoutManager.isCaps = false;
                         layoutManager.updateKeyboardLayout();
                     }
-                    triggerCandidateUpdate(200);
             }
         } catch (Exception e) { e.printStackTrace(); }
     }
@@ -312,36 +334,24 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private String getCurrentWordForEcho() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
-
         CharSequence text = ic.getTextBeforeCursor(100, 0); 
         if (text == null || text.length() == 0) return null;
-
         String s = text.toString();
         int lastSpaceIndex = s.lastIndexOf(' ');
-
-        if (lastSpaceIndex != -1) {
-            return s.substring(lastSpaceIndex + 1);
-        } else {
-            return s; 
-        }
+        if (lastSpaceIndex != -1) return s.substring(lastSpaceIndex + 1);
+        else return s; 
     }
     
     private String getLastWordForEcho() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
-
         CharSequence text = ic.getTextBeforeCursor(2000, 0); 
         if (text == null || text.length() == 0) return null;
-
         String s = text.toString();
         String trimmed = s.trim(); 
-        
         int lastSpaceIndex = trimmed.lastIndexOf(' ');
-        if (lastSpaceIndex != -1) {
-            return trimmed.substring(lastSpaceIndex + 1);
-        } else {
-            return trimmed;
-        }
+        if (lastSpaceIndex != -1) return trimmed.substring(lastSpaceIndex + 1);
+        else return trimmed;
     }
 
     public KeyboardView getKeyboardView() { return keyboardView; }

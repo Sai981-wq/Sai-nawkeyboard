@@ -22,13 +22,15 @@ public class SaiNawEmojiManager {
             
             String line;
             while ((line = reader.readLine()) != null) {
+                line = line.replace("", "").trim();
                 String[] parts = line.split("=");
+                
                 if (parts.length == 2) {
-                    String emoji = parts[0].trim();
+                    String emojiChar = parts[0].trim();
                     String desc = parts[1].trim();
                     
-                    if (!emoji.isEmpty()) {
-                        int codePoint = emoji.codePointAt(0);
+                    if (!emojiChar.isEmpty()) {
+                        int codePoint = emojiChar.codePointAt(0);
                         emojiMap.put(codePoint, desc);
                     }
                 }
@@ -50,3 +52,4 @@ public class SaiNawEmojiManager {
         return emojiMap.containsKey(code);
     }
 }
+
