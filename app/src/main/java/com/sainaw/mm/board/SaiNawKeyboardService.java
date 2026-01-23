@@ -196,6 +196,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         } catch (Exception e) { e.printStackTrace(); }
     }
 
+    public KeyboardView getKeyboardView() { return keyboardView; }
+
+    public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
+
+    public void announceText(String text) {
+        if (smartEcho != null) smartEcho.announceText(text);
+        else if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+            event.getText().add(text);
+            accessibilityManager.sendAccessibilityEvent(event);
+        }
+    }
+
     private void saveWordAndReset() {
         if (suggestionDB != null && currentWord.length() > 0) {
             final String normalized = textProcessor.normalizeText(currentWord.toString());
