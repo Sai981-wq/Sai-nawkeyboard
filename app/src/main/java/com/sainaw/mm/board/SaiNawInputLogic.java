@@ -34,37 +34,23 @@ public class SaiNawInputLogic {
 
         boolean handled = false;
 
-        if (primaryCode == MM_THWAY_HTOE || primaryCode == SHAN_E) {
-            CharSequence before = ic.getTextBeforeCursor(1, 0);
-            boolean isPrevConsonant = false;
-            
-            if (before != null && before.length() > 0) {
-                int prevCode = before.charAt(0);
-                isPrevConsonant = textProcessor.isConsonant(prevCode);
-            }
-
-            if (isPrevConsonant) {
-                ic.commitText(charStr, 1);
-            } else {
-                ic.commitText(String.valueOf(ZWSP) + charStr, 1);
-            }
-            return; 
-        }
-        
-        CharSequence lastTwo = ic.getTextBeforeCursor(2, 0);
-        if (lastTwo != null && lastTwo.length() == 2) {
-            if ((lastTwo.charAt(1) == MM_THWAY_HTOE || lastTwo.charAt(1) == SHAN_E) && lastTwo.charAt(0) == ZWSP) {
-                if (textProcessor.isConsonant(primaryCode)) {
+        // 1. Reordering: Consonant typed after Thway Htoe (ေ + က -> က + ေ)
+        if (textProcessor.isConsonant(primaryCode)) {
+            CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
+            if (lastOne != null && lastOne.length() > 0) {
+                char prev = lastOne.charAt(0);
+                if (prev == MM_THWAY_HTOE || prev == SHAN_E) {
                     ic.beginBatchEdit();
-                    ic.deleteSurroundingText(2, 0);
+                    ic.deleteSurroundingText(1, 0);
                     ic.commitText(charStr, 1);
-                    ic.commitText(String.valueOf(lastTwo.charAt(1)), 1);
+                    ic.commitText(String.valueOf(prev), 1);
                     ic.endBatchEdit();
                     handled = true;
                 }
             }
         }
         
+        // 2. Medial Reordering
         if (!handled && textProcessor.isMedial(primaryCode)) {
             CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
             if (lastOne != null && lastOne.length() > 0 && (lastOne.charAt(0) == MM_THWAY_HTOE || lastOne.charAt(0) == SHAN_E)) {
@@ -77,6 +63,7 @@ public class SaiNawInputLogic {
             }
         }
         
+        // 3. Vowel Stacking
         if (!handled) {
             CharSequence lastOne = ic.getTextBeforeCursor(1, 0);
             if (lastOne != null && lastOne.length() > 0) {

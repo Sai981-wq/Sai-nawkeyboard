@@ -64,10 +64,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Intent speechIntent;
     private boolean isListening = false;
 
-    private static final int MM_THWAY_HTOE = 4145;
-    private static final int SHAN_E = 4228;
-    private static final char ZWSP = '\u200B';
-
     private static final int KEYCODE_EMOJI = -7;
     private static final int KEYCODE_ABC = -6;
 
@@ -205,10 +201,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case -5:
-                    CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
-                    if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
-                        ic.deleteSurroundingText(1, 0);
-                    }
                     CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
                     ic.deleteSurroundingText(1, 0);
                     
@@ -336,6 +328,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (ic == null) return null;
         CharSequence text = ic.getTextBeforeCursor(100, 0); 
         if (text == null || text.length() == 0) return null;
+        
         String s = text.toString();
         int lastSpaceIndex = s.lastIndexOf(' ');
         if (lastSpaceIndex != -1) return s.substring(lastSpaceIndex + 1);
@@ -347,6 +340,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (ic == null) return null;
         CharSequence text = ic.getTextBeforeCursor(2000, 0); 
         if (text == null || text.length() == 0) return null;
+        
         String s = text.toString();
         String trimmed = s.trim(); 
         int lastSpaceIndex = trimmed.lastIndexOf(' ');
