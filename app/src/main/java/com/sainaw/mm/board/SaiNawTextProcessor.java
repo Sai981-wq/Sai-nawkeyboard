@@ -35,6 +35,17 @@ public class SaiNawTextProcessor {
                 chars[i] = prev;
             }
 
+            current = chars[i];
+            prev = chars[i-1];
+
+            if (isMedial(current) && (prev == '\u1031' || prev == '\u1084')) {
+                chars[i-1] = current;
+                chars[i] = prev;
+            }
+
+            current = chars[i];
+            prev = chars[i-1];
+
             if (current == '\u102D' && (prev == '\u102F' || prev == '\u1030')) {
                 chars[i-1] = current;
                 chars[i] = prev;

@@ -184,7 +184,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (ic == null) return;
 
         if (key != null && key.label != null && key.label.length() > 0) {
-            if (primaryCode > 0 || (layoutManager.isEmoji && primaryCode > 0)) {
+            if ((primaryCode > 0 && primaryCode != 32) || (layoutManager.isEmoji && primaryCode > 0)) {
                 ic.commitText(key.label, 1);
                 
                 if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
