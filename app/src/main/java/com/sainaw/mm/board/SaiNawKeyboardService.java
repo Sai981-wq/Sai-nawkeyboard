@@ -114,18 +114,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
             if (keyboardView != null) {
                 keyboardView.setOnKeyboardActionListener(this);
-                
-                // Accessibility Helper ကို ချိတ်ဆက်ခြင်း
-                // Note: handleInput ကို Listener အနေနဲ့ ထည့်ပေးလိုက်တာမို့ Double-tap လုပ်ရင် handleInput အလုပ်လုပ်ပါမယ်
                 accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager);
                 ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
                 
-                // Hover Logic: TouchHandler နဲ့ AccessibilityHelper နှစ်ခုလုံးကို အလုပ်လုပ်စေမယ့် နေရာ
                 keyboardView.setOnHoverListener((v, event) -> {
-                    // Lift to Type ဖွင့်ထားမှသာ TouchHandler က အလုပ်လုပ်မယ် (သူ့ထဲမှာ စစ်ထားပြီးသား)
                     if (touchHandler != null) touchHandler.handleHover(event);
-                    
-                    // TalkBack အတွက်ကတော့ အမြဲတမ်း dispatch လုပ်ပေးရမယ် (ဒါမှ အသံထွက်မယ်)
                     return (accessibilityHelper != null) ? accessibilityHelper.dispatchHoverEvent(event) : false;
                 });
             }
@@ -147,8 +140,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
-        
-        // Setting များကို အချိန်နဲ့ တပြေးညီ Update လုပ်ခြင်း
         SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         
         if (layoutManager != null) {
@@ -157,30 +148,30 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             layoutManager.determineKeyboardForInputType();
         }
 
-        // 1. Load Smart Echo Setting
         useSmartEcho = prefs.getBoolean("smart_echo", false);
-        
-        // 2. Load Phonetic Setting & Pass to Helper
         boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
+        
         if (accessibilityHelper != null) {
             accessibilityHelper.setPhoneticEnabled(usePhonetic);
         }
-
-        // 3. Load Lift-to-Type Setting & Pass to TouchHandler
-        if (touchHandler != null) {
-            touchHandler.loadSettings(prefs);
+        
+        if (phoneticManager != null && layoutManager != null) {
+            phoneticManager.setLanguageId(layoutManager.currentLanguageId);
         }
 
-        if (feedbackManager != null) {
-            feedbackManager.loadSettings(prefs);
-        }
+        if (touchHandler != null) touchHandler.loadSettings(prefs);
+        if (feedbackManager != null) feedbackManager.loadSettings(prefs);
         
         currentWord.setLength(0);
         triggerCandidateUpdate(0);
     }
 
     public void handleInput(int primaryCode, Keyboard.Key key) {
-        if (feedbackManager != null) feedbackManager.playSound(primaryCode);
+        if (feedbackManager != null) {
+            feedbackManager.playSound(primaryCode);
+            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+        }
+
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
@@ -244,23 +235,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void handleLanguageSwitch() {
         layoutManager.changeLanguage();
+        if (phoneticManager != null) {
+            phoneticManager.setLanguageId(layoutManager.currentLanguageId);
+        }
         if (smartEcho != null) smartEcho.announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : "Shan");
         updateHelperState();
     }
 
     private void handleEnter(InputConnection ic) {
         ic.commitText("\n", 1);
-        if (useSmartEcho && smartEcho != null) {
-            smartEcho.onWordFinished(ic);
-        }
+        if (useSmartEcho && smartEcho != null) smartEcho.onWordFinished(ic);
         saveWordAndReset();
     }
 
     private void handleSpace(InputConnection ic) {
         ic.commitText(" ", 1);
-        if (useSmartEcho && smartEcho != null) {
-            smartEcho.onWordFinished(ic); 
-        }
+        if (useSmartEcho && smartEcho != null) smartEcho.onWordFinished(ic); 
         saveWordAndReset();
     }
 

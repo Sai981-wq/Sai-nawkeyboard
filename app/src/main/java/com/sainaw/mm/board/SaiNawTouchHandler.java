@@ -1,10 +1,12 @@
 package com.sainaw.mm.board;
 
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.inputmethodservice.Keyboard;
 import android.view.MotionEvent;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.inputmethod.InputMethodManager;
 import java.util.List;
 
 public class SaiNawTouchHandler {
@@ -20,7 +22,6 @@ public class SaiNawTouchHandler {
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
 
-    // Runnables declaration only
     private final Runnable spaceLongPressTask;
     private final Runnable shiftLongPressTask;
     private final Runnable emojiLongPressTask;
@@ -36,11 +37,11 @@ public class SaiNawTouchHandler {
         this.feedbackManager = feedbackManager;
         this.emojiManager = emojiManager;
 
-        // Initialize Runnables INSIDE constructor
         this.spaceLongPressTask = () -> {
             isLongPressHandled = true;
             feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
-            service.showInputMethodPicker();
+            InputMethodManager imeManager = (InputMethodManager) service.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imeManager != null) imeManager.showInputMethodPicker();
         };
 
         this.shiftLongPressTask = () -> {
@@ -104,6 +105,8 @@ public class SaiNawTouchHandler {
                     lastHoverKeyIndex = newKeyIndex;
                     
                     if (newKeyIndex != -1) {
+                        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS);
+                        
                         Keyboard.Key key = layoutManager.getCurrentKeys().get(newKeyIndex);
                         int code = key.codes[0];
 
@@ -123,7 +126,6 @@ public class SaiNawTouchHandler {
                     if (lastHoverKeyIndex < layoutManager.getCurrentKeys().size()) {
                         Keyboard.Key key = layoutManager.getCurrentKeys().get(lastHoverKeyIndex);
                         if (key.codes[0] != -100) {
-                            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                             service.handleInput(key.codes[0], key);
                         }
                     }
