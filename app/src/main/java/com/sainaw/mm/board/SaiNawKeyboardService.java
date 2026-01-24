@@ -45,9 +45,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SaiNawTextProcessor textProcessor;
     private SaiNawInputLogic inputLogic;
     private SaiNawPhoneticManager phoneticManager;
-    private SaiNawEmojiManager emojiManager; // Emoji Manager
+    private SaiNawEmojiManager emojiManager;
     private SuggestionDB suggestionDB;
-
     private AccessibilityManager accessibilityManager;
 
     private KeyboardView keyboardView;
@@ -89,17 +88,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     public View onCreateInputView() {
         feedbackManager = new SaiNawFeedbackManager(this);
         layoutManager = new SaiNawLayoutManager(this);
-        
-        // Emoji Manager Initialize
         emojiManager = new SaiNawEmojiManager(this); 
-        
-        // TouchHandler ထဲသို့ emojiManager ထည့်ပေးရမည်
         touchHandler = new SaiNawTouchHandler(this, layoutManager, feedbackManager, emojiManager);
         
         textProcessor = new SaiNawTextProcessor();
         inputLogic = new SaiNawInputLogic(textProcessor, layoutManager);
         phoneticManager = new SaiNawPhoneticManager(this);
-        
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
 
         Context safeContext = getSafeContext();
@@ -108,7 +102,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         feedbackManager.loadSettings(prefs);
         touchHandler.loadSettings(prefs);
         layoutManager.initKeyboards(prefs);
-        
         useSmartEcho = prefs.getBoolean("smart_echo", false); 
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
@@ -158,14 +151,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         feedbackManager.loadSettings(prefs);
         touchHandler.loadSettings(prefs);
         layoutManager.initKeyboards(prefs); 
-        
         useSmartEcho = prefs.getBoolean("smart_echo", false); 
         boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
         
         if (accessibilityHelper != null) {
             accessibilityHelper.setPhoneticEnabled(usePhonetic);
         }
-
         if (phoneticManager != null) {
             phoneticManager.setLanguageId(layoutManager.currentLanguageId);
         }
@@ -176,7 +167,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // --- MAIN INPUT HANDLER ---
     public void handleInput(int primaryCode, Keyboard.Key key) {
         feedbackManager.playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -302,7 +292,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private String getCurrentWordForEcho() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
-        CharSequence text = ic.getTextBeforeCursor(100, 0); 
+        CharSequence text = ic.getTextBeforeCursor(50, 0); // Reduced to 50 for performance
         if (text == null || text.length() == 0) return null;
         String s = text.toString();
         int lastSpaceIndex = s.lastIndexOf(' ');
@@ -312,7 +302,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private String getLastWordForEcho() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
-        CharSequence text = ic.getTextBeforeCursor(2000, 0); 
+        // *** FIX: 2000 -> 100 (Freeze Fix) ***
+        CharSequence text = ic.getTextBeforeCursor(100, 0); 
         if (text == null || text.length() == 0) return null;
         String s = text.toString();
         String trimmed = s.trim(); 

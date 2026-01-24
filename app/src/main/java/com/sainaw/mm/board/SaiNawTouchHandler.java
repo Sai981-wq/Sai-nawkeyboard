@@ -18,7 +18,7 @@ public class SaiNawTouchHandler {
     
     private boolean isLiftToType = true;
     private int lastHoverKeyIndex = -1;
-    private boolean isLongPressHandled = false; // Long Press မိ/မမိ စစ်ဆေးမည့် Flag
+    private boolean isLongPressHandled = false;
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
 
@@ -38,17 +38,15 @@ public class SaiNawTouchHandler {
         this.feedbackManager = feedbackManager;
         this.emojiManager = emojiManager;
 
-        // --- Space Long Press ---
         this.spaceLongPressTask = () -> {
-            isLongPressHandled = true; // Long Press ဖြစ်သွားပြီ
+            isLongPressHandled = true;
             feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
             InputMethodManager imeManager = (InputMethodManager) service.getSystemService(Context.INPUT_METHOD_SERVICE);
             if (imeManager != null) imeManager.showInputMethodPicker();
         };
 
-        // --- Shift Long Press ---
         this.shiftLongPressTask = () -> {
-            isLongPressHandled = true; // Long Press ဖြစ်သွားပြီ
+            isLongPressHandled = true;
             layoutManager.isCapsLocked = true;
             layoutManager.isCaps = true;
             feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
@@ -56,22 +54,18 @@ public class SaiNawTouchHandler {
             service.announceText("Shift Locked");
         };
 
-        // --- Emoji Long Press Logic (ပြင်ဆင်ထားသော အပိုင်း) ---
+        // --- Emoji Long Press Logic ---
         this.emojiLongPressTask = () -> {
             if (currentEmojiCode != 0) {
                 String desc = emojiManager.getMmDescription(currentEmojiCode);
                 if (desc != null) {
-                    // ဒီနေရာမှာ True ပေးလိုက်တဲ့အတွက် လက်ကြွရင် စာမရိုက်တော့ပါ
-                    isLongPressHandled = true; 
-                    
+                    isLongPressHandled = true; // လက်ကြွရင် စာမရိုက်တော့ပါ (Cancel)
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
-                    // မြန်မာလို အသံထွက် ဖတ်ပြပါ
-                    service.announceText(desc); 
+                    service.announceText(desc); // မြန်မာလို ဖတ်ပြမည်
                 }
             }
         };
 
-        // --- Delete Long Press ---
         this.deleteLoopTask = new Runnable() {
             @Override
             public void run() {
@@ -122,17 +116,20 @@ public class SaiNawTouchHandler {
                         else if (code == -5) handler.postDelayed(deleteStartTask, 1200);
                         else if (code == -1) handler.postDelayed(shiftLongPressTask, 1200);
                         
-                        // Emoji ဖြစ်လျှင် 1.5 စက္ကန့် (1500ms) စောင့်ပါမည်
-                        else if (emojiManager.hasDescription(code)) {
-                            currentEmojiCode = code;
-                            handler.postDelayed(emojiLongPressTask, 1500);
+                        else {
+                            // *** FIX: Label ကနေ Code ရှာပြီးမှ စစ်ဆေးခြင်း ***
+                            int resolvedEmojiCode = resolveEmojiCode(key);
+                            if (resolvedEmojiCode != 0) {
+                                currentEmojiCode = resolvedEmojiCode;
+                                // 1.5 စက္ကန့် ဖိထားမှ အလုပ်လုပ်မည်
+                                handler.postDelayed(emojiLongPressTask, 1500);
+                            }
                         }
                     }
                 }
                 break;
 
-            case MotionEvent.ACTION_HOVER_EXIT: // လက်ကြွလိုက်သောအခါ
-                // Long Press မဖြစ်သေးမှသာ (isLongPressHandled == false) စာရိုက်မည်
+            case MotionEvent.ACTION_HOVER_EXIT:
                 if (!isLongPressHandled && lastHoverKeyIndex != -1 && y >= 0) {
                     if (lastHoverKeyIndex < layoutManager.getCurrentKeys().size()) {
                         Keyboard.Key key = layoutManager.getCurrentKeys().get(lastHoverKeyIndex);
@@ -141,11 +138,29 @@ public class SaiNawTouchHandler {
                         }
                     }
                 }
-                // Long Press ဖြစ်သွားပြီးသားဆိုရင် အပေါ်က if ထဲမဝင်ဘဲ ဒီနေရာရောက်ပြီး Reset ဖြစ်သွားမယ် (စာမရိုက်ပါ)
                 cancelAllLongPress();
                 lastHoverKeyIndex = -1;
                 break;
         }
+    }
+
+    // *** Helper Function: Emoji Code ရှာဖွေခြင်း ***
+    private int resolveEmojiCode(Keyboard.Key key) {
+        int code = key.codes[0];
+        
+        // 1. Code အတိုင်း Mapping ရှိလား စစ်မယ်
+        if (emojiManager.hasDescription(code)) {
+            return code;
+        }
+        
+        // 2. မရှိရင် Label (ဥပမာ "😀") ကနေ Code ပြန်ထုတ်ပြီး စစ်မယ်
+        if (key.label != null && key.label.length() > 0) {
+            int labelCode = Character.codePointAt(key.label, 0);
+            if (emojiManager.hasDescription(labelCode)) {
+                return labelCode;
+            }
+        }
+        return 0;
     }
 
     public void cancelAllLongPress() {
