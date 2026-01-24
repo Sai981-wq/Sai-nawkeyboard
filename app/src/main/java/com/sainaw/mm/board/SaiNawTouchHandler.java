@@ -5,7 +5,7 @@ import android.inputmethodservice.Keyboard;
 import android.view.MotionEvent;
 import android.os.Handler;
 import android.os.Looper;
-import java.util.List; // Error 2 ဖြေရှင်းချက်
+import java.util.List;
 
 public class SaiNawTouchHandler {
     private final SaiNawKeyboardService service;
@@ -20,50 +20,12 @@ public class SaiNawTouchHandler {
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
 
-    // Long Press Runnables
-    private final Runnable spaceLongPressTask = () -> {
-        isLongPressHandled = true;
-        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
-        service.showInputMethodPicker();
-    };
-
-    private final Runnable shiftLongPressTask = () -> {
-        isLongPressHandled = true;
-        layoutManager.isCapsLocked = true;
-        layoutManager.isCaps = true;
-        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
-        layoutManager.updateKeyboardLayout();
-        service.announceText("Shift Locked");
-    };
-
-    private final Runnable emojiLongPressTask = () -> {
-        if (currentEmojiCode != 0) {
-            String desc = emojiManager.getMmDescription(currentEmojiCode);
-            if (desc != null) {
-                isLongPressHandled = true;
-                feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
-                service.announceText(desc);
-            }
-        }
-    };
-
-    // Error 1 ဖြေရှင်းချက်: deleteLoopTask ကို deleteStartTask အပေါ်သို့ ရွှေ့လိုက်ပါ
-    private final Runnable deleteLoopTask = new Runnable() {
-        @Override
-        public void run() {
-            if (isDeleteActive) {
-                feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                service.handleInput(-5, null);
-                handler.postDelayed(this, 100);
-            }
-        }
-    };
-
-    private final Runnable deleteStartTask = () -> {
-        isLongPressHandled = true;
-        isDeleteActive = true;
-        handler.post(deleteLoopTask);
-    };
+    // Runnables declaration only
+    private final Runnable spaceLongPressTask;
+    private final Runnable shiftLongPressTask;
+    private final Runnable emojiLongPressTask;
+    private final Runnable deleteStartTask;
+    private final Runnable deleteLoopTask;
 
     public SaiNawTouchHandler(SaiNawKeyboardService service, 
                               SaiNawLayoutManager layoutManager, 
@@ -73,6 +35,50 @@ public class SaiNawTouchHandler {
         this.layoutManager = layoutManager;
         this.feedbackManager = feedbackManager;
         this.emojiManager = emojiManager;
+
+        // Initialize Runnables INSIDE constructor
+        this.spaceLongPressTask = () -> {
+            isLongPressHandled = true;
+            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
+            service.showInputMethodPicker();
+        };
+
+        this.shiftLongPressTask = () -> {
+            isLongPressHandled = true;
+            layoutManager.isCapsLocked = true;
+            layoutManager.isCaps = true;
+            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
+            layoutManager.updateKeyboardLayout();
+            service.announceText("Shift Locked");
+        };
+
+        this.emojiLongPressTask = () -> {
+            if (currentEmojiCode != 0) {
+                String desc = emojiManager.getMmDescription(currentEmojiCode);
+                if (desc != null) {
+                    isLongPressHandled = true;
+                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
+                    service.announceText(desc);
+                }
+            }
+        };
+
+        this.deleteLoopTask = new Runnable() {
+            @Override
+            public void run() {
+                if (isDeleteActive) {
+                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                    service.handleInput(-5, null);
+                    handler.postDelayed(this, 100);
+                }
+            }
+        };
+
+        this.deleteStartTask = () -> {
+            isLongPressHandled = true;
+            isDeleteActive = true;
+            handler.post(deleteLoopTask);
+        };
     }
 
     public void loadSettings(SharedPreferences prefs) {
