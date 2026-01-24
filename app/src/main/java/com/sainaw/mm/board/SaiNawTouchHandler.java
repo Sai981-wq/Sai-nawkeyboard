@@ -5,6 +5,7 @@ import android.inputmethodservice.Keyboard;
 import android.view.MotionEvent;
 import android.os.Handler;
 import android.os.Looper;
+import java.util.List; // Error 2 ဖြေရှင်းချက်
 
 public class SaiNawTouchHandler {
     private final SaiNawKeyboardService service;
@@ -46,12 +47,7 @@ public class SaiNawTouchHandler {
         }
     };
 
-    private final Runnable deleteStartTask = () -> {
-        isLongPressHandled = true;
-        isDeleteActive = true;
-        handler.post(deleteLoopTask);
-    };
-
+    // Error 1 ဖြေရှင်းချက်: deleteLoopTask ကို deleteStartTask အပေါ်သို့ ရွှေ့လိုက်ပါ
     private final Runnable deleteLoopTask = new Runnable() {
         @Override
         public void run() {
@@ -61,6 +57,12 @@ public class SaiNawTouchHandler {
                 handler.postDelayed(this, 100);
             }
         }
+    };
+
+    private final Runnable deleteStartTask = () -> {
+        isLongPressHandled = true;
+        isDeleteActive = true;
+        handler.post(deleteLoopTask);
     };
 
     public SaiNawTouchHandler(SaiNawKeyboardService service, 
@@ -74,12 +76,10 @@ public class SaiNawTouchHandler {
     }
 
     public void loadSettings(SharedPreferences prefs) {
-        // Setting ကနေ Lift to Type အဖွင့်အပိတ်ကို ဖတ်ပါမယ်
         isLiftToType = prefs.getBoolean("lift_to_type", true);
     }
 
     public void handleHover(MotionEvent event) {
-        // Lift to Type ပိတ်ထားရင် ဘာမှ ဆက်မလုပ်ပါ (Double tap ကို AccessibilityHelper က လုပ်ပါလိမ့်မယ်)
         if (!isLiftToType || layoutManager.getCurrentKeys() == null) {
             lastHoverKeyIndex = -1;
             return;
@@ -98,13 +98,9 @@ public class SaiNawTouchHandler {
                     lastHoverKeyIndex = newKeyIndex;
                     
                     if (newKeyIndex != -1) {
-                        // လက်တင်လိုက်ရင် အသံမမြည်စေတော့ပါ (AccessibilityHelper က ဖတ်ပေးမှာမို့လို့)
-                        // feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); 
-                        
                         Keyboard.Key key = layoutManager.getCurrentKeys().get(newKeyIndex);
                         int code = key.codes[0];
 
-                        // Long press logic
                         if (code == 32) handler.postDelayed(spaceLongPressTask, 1500);
                         else if (code == -5) handler.postDelayed(deleteStartTask, 1200);
                         else if (code == -1) handler.postDelayed(shiftLongPressTask, 1200);
@@ -151,13 +147,11 @@ public class SaiNawTouchHandler {
     private int getNearestKeyIndexFast(int x, int y) {
         if (layoutManager.getCurrentKeys() == null) return -1;
         
-        // အရင်ဆုံး လက်ရှိ Key ပေါ်မှာပဲ ရှိနေသေးလား စစ် (Performance ကောင်းအောင်)
         if (lastHoverKeyIndex >= 0 && lastHoverKeyIndex < layoutManager.getCurrentKeys().size()) {
             Keyboard.Key lastKey = layoutManager.getCurrentKeys().get(lastHoverKeyIndex);
             if (lastKey.isInside(x, y)) return lastHoverKeyIndex;
         }
 
-        // မဟုတ်မှ Loop ပတ်ရှာ
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key k = keys.get(i);
