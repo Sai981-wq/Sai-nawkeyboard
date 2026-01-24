@@ -22,7 +22,7 @@ public class SaiNawEmojiManager {
             
             String line;
             while ((line = reader.readLine()) != null) {
-                line = line.replaceAll("\\", "").trim();
+                line = line.replace("\\", "").trim();
                 String[] parts = line.split("=");
                 
                 if (parts.length == 2) {
@@ -52,3 +52,4 @@ public class SaiNawEmojiManager {
         return emojiMap.containsKey(code);
     }
 }
+
