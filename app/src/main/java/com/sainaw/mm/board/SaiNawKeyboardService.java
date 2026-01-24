@@ -14,15 +14,14 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.UserManager;
-import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.view.Gravity;
 import android.view.View;
-import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.core.view.ViewCompat;
@@ -43,7 +42,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SaiNawPhoneticManager phoneticManager;
     private SaiNawEmojiManager emojiManager;
     private SuggestionDB suggestionDB;
-    private AccessibilityManager accessibilityManager;
 
     private KeyboardView keyboardView;
     private LinearLayout candidateContainer;
@@ -81,26 +79,28 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public View onCreateInputView() {
         try {
+            Context safeContext = getSafeContext();
+            SharedPreferences prefs = safeContext.getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
+
             feedbackManager = new SaiNawFeedbackManager(this);
+            feedbackManager.loadSettings(prefs);
+
             layoutManager = new SaiNawLayoutManager(this);
+            layoutManager.initKeyboards(prefs);
+
             textProcessor = new SaiNawTextProcessor();
             inputLogic = new SaiNawInputLogic(textProcessor, layoutManager);
             smartEcho = new SaiNawSmartEcho(this);
+            
             phoneticManager = new SaiNawPhoneticManager(this);
             emojiManager = new SaiNawEmojiManager(this);
-            touchHandler = new SaiNawTouchHandler(this, layoutManager, feedbackManager, emojiManager);
-            accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
-
-            SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
-            feedbackManager.loadSettings(prefs);
-            touchHandler.loadSettings(prefs);
-            layoutManager.initKeyboards(prefs);
             
-            useSmartEcho = prefs.getBoolean("smart_echo", false); 
-            boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
-            boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
+            touchHandler = new SaiNawTouchHandler(this, layoutManager, feedbackManager, emojiManager);
+            touchHandler.loadSettings(prefs);
 
+            boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
             View layout = getLayoutInflater().inflate(isDarkTheme ? R.layout.input_view_dark : R.layout.input_view, null);
+            
             keyboardView = layout.findViewById(R.id.keyboard_view);
             candidateContainer = layout.findViewById(R.id.candidates_container);
             if (candidateContainer != null) initCandidateViews(isDarkTheme);
@@ -114,11 +114,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
             if (keyboardView != null) {
                 keyboardView.setOnKeyboardActionListener(this);
+                
+                // Accessibility Helper ကို ချိတ်ဆက်ခြင်း
+                // Note: handleInput ကို Listener အနေနဲ့ ထည့်ပေးလိုက်တာမို့ Double-tap လုပ်ရင် handleInput အလုပ်လုပ်ပါမယ်
                 accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager);
-                accessibilityHelper.setPhoneticEnabled(usePhonetic);
                 ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
+                
+                // Hover Logic: TouchHandler နဲ့ AccessibilityHelper နှစ်ခုလုံးကို အလုပ်လုပ်စေမယ့် နေရာ
                 keyboardView.setOnHoverListener((v, event) -> {
+                    // Lift to Type ဖွင့်ထားမှသာ TouchHandler က အလုပ်လုပ်မယ် (သူ့ထဲမှာ စစ်ထားပြီးသား)
                     if (touchHandler != null) touchHandler.handleHover(event);
+                    
+                    // TalkBack အတွက်ကတော့ အမြဲတမ်း dispatch လုပ်ပေးရမယ် (ဒါမှ အသံထွက်မယ်)
                     return (accessibilityHelper != null) ? accessibilityHelper.dispatchHoverEvent(event) : false;
                 });
             }
@@ -140,15 +147,33 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
+        
+        // Setting များကို အချိန်နဲ့ တပြေးညီ Update လုပ်ခြင်း
         SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
+        
         if (layoutManager != null) {
             layoutManager.initKeyboards(prefs);
             layoutManager.updateEditorInfo(info);
             layoutManager.determineKeyboardForInputType();
         }
+
+        // 1. Load Smart Echo Setting
         useSmartEcho = prefs.getBoolean("smart_echo", false);
+        
+        // 2. Load Phonetic Setting & Pass to Helper
         boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
-        if (accessibilityHelper != null) accessibilityHelper.setPhoneticEnabled(usePhonetic);
+        if (accessibilityHelper != null) {
+            accessibilityHelper.setPhoneticEnabled(usePhonetic);
+        }
+
+        // 3. Load Lift-to-Type Setting & Pass to TouchHandler
+        if (touchHandler != null) {
+            touchHandler.loadSettings(prefs);
+        }
+
+        if (feedbackManager != null) {
+            feedbackManager.loadSettings(prefs);
+        }
         
         currentWord.setLength(0);
         triggerCandidateUpdate(0);
@@ -245,6 +270,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         else { layoutManager.isSymbols = false; layoutManager.isEmoji = false; }
         layoutManager.updateKeyboardLayout();
         updateHelperState();
+    }
+
+    public void showInputMethodPicker() {
+        InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imeManager != null) imeManager.showInputMethodPicker();
     }
 
     public KeyboardView getKeyboardView() { return keyboardView; }
