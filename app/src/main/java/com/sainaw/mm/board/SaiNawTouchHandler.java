@@ -3,85 +3,67 @@ package com.sainaw.mm.board;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.inputmethodservice.Keyboard;
-import android.view.MotionEvent;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.view.MotionEvent;
 import android.view.inputmethod.InputMethodManager;
 import java.util.List;
 
 public class SaiNawTouchHandler {
     private final SaiNawKeyboardService service;
-    private final SaiNawLayoutManager layoutManager;
-    private final SaiNawFeedbackManager feedbackManager;
-    private final SaiNawEmojiManager emojiManager;
+    private final SaiNawUIHelper uiHelper;
     private final Handler handler = new Handler(Looper.getMainLooper());
     
     private boolean isLiftToType = true;
     private int lastHoverKeyIndex = -1;
     private boolean isLongPressHandled = false;
     private boolean isDeleteActive = false;
-    private int currentEmojiCode = 0;
 
-    // Runnables
-    private final Runnable spaceLongPressTask;
-    private final Runnable shiftLongPressTask;
-    private final Runnable emojiLongPressTask;
-    private final Runnable deleteStartTask;
-    private final Runnable deleteLoopTask;
-
-    public SaiNawTouchHandler(SaiNawKeyboardService service, 
-                              SaiNawLayoutManager layoutManager, 
-                              SaiNawFeedbackManager feedbackManager,
-                              SaiNawEmojiManager emojiManager) {
-        this.service = service;
-        this.layoutManager = layoutManager;
-        this.feedbackManager = feedbackManager;
-        this.emojiManager = emojiManager;
-
-        this.spaceLongPressTask = () -> {
+    private final Runnable spaceLongPressTask = new Runnable() {
+        @Override
+        public void run() {
             isLongPressHandled = true;
-            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
+            uiHelper.playVibrate(VibrationEffect.EFFECT_HEAVY_CLICK);
             InputMethodManager imeManager = (InputMethodManager) service.getSystemService(Context.INPUT_METHOD_SERVICE);
             if (imeManager != null) imeManager.showInputMethodPicker();
-        };
+        }
+    };
 
-        this.shiftLongPressTask = () -> {
+    private final Runnable shiftLongPressTask = new Runnable() {
+        @Override
+        public void run() {
             isLongPressHandled = true;
-            layoutManager.isCapsLocked = true;
-            layoutManager.isCaps = true;
-            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
-            layoutManager.updateKeyboardLayout();
-            service.announceText("Shift Locked");
-        };
+            uiHelper.playVibrate(VibrationEffect.EFFECT_HEAVY_CLICK);
+            uiHelper.announceText("Shift Locked");
+            // Shift Lock Logic ကို UIHelper မှာ Public ဖွင့်မပေးထားရင် Toggle နဲ့ပဲ သုံးပါမယ်
+            uiHelper.toggleShift(); 
+        }
+    };
 
-        // --- Emoji Long Press Logic ---
-        this.emojiLongPressTask = () -> {
-            if (currentEmojiCode != 0) {
-                String desc = emojiManager.getMmDescription(currentEmojiCode);
-                if (desc != null) {
-                    isLongPressHandled = true; // လက်ကြွရင် စာမရိုက်တော့ပါ (Cancel)
-                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
-                    service.announceText(desc); // မြန်မာလို ဖတ်ပြမည်
-                }
-            }
-        };
-
-        this.deleteLoopTask = new Runnable() {
-            @Override
-            public void run() {
-                if (isDeleteActive) {
-                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                    service.handleInput(-5, null);
-                    handler.postDelayed(this, 100);
-                }
-            }
-        };
-
-        this.deleteStartTask = () -> {
+    private final Runnable deleteStartTask = new Runnable() {
+        @Override
+        public void run() {
             isLongPressHandled = true;
             isDeleteActive = true;
             handler.post(deleteLoopTask);
-        };
+        }
+    };
+
+    private final Runnable deleteLoopTask = new Runnable() {
+        @Override
+        public void run() {
+            if (isDeleteActive) {
+                uiHelper.playVibrate(VibrationEffect.EFFECT_TICK);
+                service.onRelease(-5); // Service ရဲ့ Release ကို လှမ်းခေါ်မယ်
+                handler.postDelayed(this, 80);
+            }
+        }
+    };
+
+    public SaiNawTouchHandler(SaiNawKeyboardService service, SaiNawUIHelper uiHelper) {
+        this.service = service;
+        this.uiHelper = uiHelper;
     }
 
     public void loadSettings(SharedPreferences prefs) {
@@ -89,7 +71,7 @@ public class SaiNawTouchHandler {
     }
 
     public void handleHover(MotionEvent event) {
-        if (!isLiftToType || layoutManager.getCurrentKeys() == null) {
+        if (!isLiftToType || uiHelper.getCurrentKeyboard() == null) {
             lastHoverKeyIndex = -1;
             return;
         }
@@ -98,43 +80,44 @@ public class SaiNawTouchHandler {
         float x = event.getX();
         float y = event.getY();
 
+        if (y < 0) {
+            cancelAllLongPress();
+            lastHoverKeyIndex = -1;
+            return;
+        }
+
+        List<Keyboard.Key> keys = uiHelper.getCurrentKeyboard().getKeys();
+
         switch (action) {
             case MotionEvent.ACTION_HOVER_ENTER:
             case MotionEvent.ACTION_HOVER_MOVE:
-                int newKeyIndex = getNearestKeyIndexFast((int) x, (int) y);
-                if (newKeyIndex != lastHoverKeyIndex) {
+                int newKeyIndex = getNearestKeyIndexFast(x, y, keys);
+                if (newKeyIndex != -1 && newKeyIndex != lastHoverKeyIndex) {
                     cancelAllLongPress();
                     lastHoverKeyIndex = newKeyIndex;
-                    
-                    if (newKeyIndex != -1) {
-                        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS);
-                        
-                        Keyboard.Key key = layoutManager.getCurrentKeys().get(newKeyIndex);
-                        int code = key.codes[0];
+                    uiHelper.playVibrate(VibrationEffect.EFFECT_TICK);
 
-                        if (code == 32) handler.postDelayed(spaceLongPressTask, 1500);
-                        else if (code == -5) handler.postDelayed(deleteStartTask, 1200);
-                        else if (code == -1) handler.postDelayed(shiftLongPressTask, 1200);
-                        
-                        else {
-                            // *** FIX: Label ကနေ Code ရှာပြီးမှ စစ်ဆေးခြင်း ***
-                            int resolvedEmojiCode = resolveEmojiCode(key);
-                            if (resolvedEmojiCode != 0) {
-                                currentEmojiCode = resolvedEmojiCode;
-                                // 1.5 စက္ကန့် ဖိထားမှ အလုပ်လုပ်မည်
-                                handler.postDelayed(emojiLongPressTask, 1500);
-                            }
-                        }
+                    Keyboard.Key key = keys.get(newKeyIndex);
+                    int code = key.codes[0];
+                    
+                    if (code == 32) { // SPACE
+                        handler.postDelayed(spaceLongPressTask, 1500); 
+                    } else if (code == -5) { // DELETE
+                        handler.postDelayed(deleteStartTask, 800);
+                    } else if (code == -1) { // SHIFT
+                        handler.postDelayed(shiftLongPressTask, 1500);
                     }
                 }
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
-                if (!isLongPressHandled && lastHoverKeyIndex != -1 && y >= 0) {
-                    if (lastHoverKeyIndex < layoutManager.getCurrentKeys().size()) {
-                        Keyboard.Key key = layoutManager.getCurrentKeys().get(lastHoverKeyIndex);
+                if (y < 0) { cancelAllLongPress(); lastHoverKeyIndex = -1; return; }
+                if (!isLongPressHandled) {
+                    if (lastHoverKeyIndex != -1 && lastHoverKeyIndex < keys.size()) {
+                        Keyboard.Key key = keys.get(lastHoverKeyIndex);
                         if (key.codes[0] != -100) {
-                            service.handleInput(key.codes[0], key);
+                            uiHelper.playVibrate(VibrationEffect.EFFECT_CLICK);
+                            service.onRelease(key.codes[0]); // Input
                         }
                     }
                 }
@@ -144,53 +127,33 @@ public class SaiNawTouchHandler {
         }
     }
 
-    // *** Helper Function: Emoji Code ရှာဖွေခြင်း ***
-    private int resolveEmojiCode(Keyboard.Key key) {
-        int code = key.codes[0];
-        
-        // 1. Code အတိုင်း Mapping ရှိလား စစ်မယ်
-        if (emojiManager.hasDescription(code)) {
-            return code;
-        }
-        
-        // 2. မရှိရင် Label (ဥပမာ "😀") ကနေ Code ပြန်ထုတ်ပြီး စစ်မယ်
-        if (key.label != null && key.label.length() > 0) {
-            int labelCode = Character.codePointAt(key.label, 0);
-            if (emojiManager.hasDescription(labelCode)) {
-                return labelCode;
-            }
-        }
-        return 0;
-    }
-
     public void cancelAllLongPress() {
         isLongPressHandled = false;
         isDeleteActive = false;
-        currentEmojiCode = 0;
         handler.removeCallbacks(spaceLongPressTask);
         handler.removeCallbacks(deleteStartTask);
         handler.removeCallbacks(deleteLoopTask);
         handler.removeCallbacks(shiftLongPressTask);
-        handler.removeCallbacks(emojiLongPressTask);
     }
     
-    public void reset() { 
-        lastHoverKeyIndex = -1; 
-        cancelAllLongPress();
-    }
+    public void reset() { lastHoverKeyIndex = -1; }
 
-    private int getNearestKeyIndexFast(int x, int y) {
-        if (layoutManager.getCurrentKeys() == null) return -1;
+    private int getNearestKeyIndexFast(float x, float y, List<Keyboard.Key> keys) {
+        if (keys == null) return -1;
         
-        if (lastHoverKeyIndex >= 0 && lastHoverKeyIndex < layoutManager.getCurrentKeys().size()) {
-            Keyboard.Key lastKey = layoutManager.getCurrentKeys().get(lastHoverKeyIndex);
-            if (lastKey.isInside(x, y)) return lastHoverKeyIndex;
+        // Check last key first for optimization
+        if (lastHoverKeyIndex >= 0 && lastHoverKeyIndex < keys.size()) {
+            Keyboard.Key lastKey = keys.get(lastHoverKeyIndex);
+            if (lastKey.isInside((int)x, (int)y)) {
+                return lastHoverKeyIndex;
+            }
         }
-
-        List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
+        
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key k = keys.get(i);
-            if (k.isInside(x, y)) return (k.codes[0] == -100) ? -1 : i;
+            if (k.isInside((int)x, (int)y)) {
+                return i;
+            }
         }
         return -1;
     }
