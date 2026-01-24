@@ -1,17 +1,14 @@
 package com.sainaw.mm.board;
 
-import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
-import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.inputmethodservice.InputMethodService;
 import android.inputmethodservice.Keyboard;
 import android.inputmethodservice.KeyboardView;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -23,13 +20,11 @@ import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.view.Gravity;
 import android.view.View;
-import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import java.util.ArrayList;
 import java.util.List;
@@ -103,6 +98,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             
             useSmartEcho = prefs.getBoolean("smart_echo", false); 
             boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
+            boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
 
             View layout = getLayoutInflater().inflate(isDarkTheme ? R.layout.input_view_dark : R.layout.input_view, null);
             keyboardView = layout.findViewById(R.id.keyboard_view);
@@ -119,6 +115,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (keyboardView != null) {
                 keyboardView.setOnKeyboardActionListener(this);
                 accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager);
+                accessibilityHelper.setPhoneticEnabled(usePhonetic);
                 ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
                 keyboardView.setOnHoverListener((v, event) -> {
                     if (touchHandler != null) touchHandler.handleHover(event);
@@ -150,6 +147,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             layoutManager.determineKeyboardForInputType();
         }
         useSmartEcho = prefs.getBoolean("smart_echo", false);
+        boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
+        if (accessibilityHelper != null) accessibilityHelper.setPhoneticEnabled(usePhonetic);
+        
         currentWord.setLength(0);
         triggerCandidateUpdate(0);
     }
@@ -173,20 +173,27 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
 
             if (primaryCode > 0) {
+                String charStr = (key != null && key.label != null) ? key.label.toString() : String.valueOf((char) primaryCode);
+                
                 if (layoutManager.isShanOrMyanmar() && !layoutManager.isEmoji) {
                     inputLogic.processInput(ic, primaryCode, key);
-                    String charStr = (key != null && key.label != null) ? key.label.toString() : String.valueOf((char) primaryCode);
+                } else {
+                    ic.commitText(charStr, 1);
+                }
+
+                if (useSmartEcho && smartEcho != null) {
+                    smartEcho.onCharTyped(ic, charStr);
+                }
+
+                if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
+                    layoutManager.isCaps = false;
+                    layoutManager.updateKeyboardLayout();
+                    updateHelperState();
+                }
+                
+                if (layoutManager.isShanOrMyanmar()) {
                     currentWord.append(charStr);
                     triggerCandidateUpdate(200);
-                    if (useSmartEcho && smartEcho != null) smartEcho.onCharTyped(ic);
-                } else {
-                    String charStr = (key != null && key.label != null) ? key.label.toString() : String.valueOf((char) primaryCode);
-                    ic.commitText(charStr, 1);
-                    if (useSmartEcho && smartEcho != null) smartEcho.announceText(charStr);
-                    if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
-                        layoutManager.isCaps = false;
-                        layoutManager.updateKeyboardLayout();
-                    }
                 }
             }
         } catch (Exception e) { e.printStackTrace(); }
@@ -195,7 +202,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void handleDelete(InputConnection ic) {
         CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
         if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) ic.deleteSurroundingText(1, 0);
-        CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
         ic.deleteSurroundingText(1, 0);
         if (useSmartEcho && smartEcho != null) smartEcho.announceText("Delete");
         if (currentWord.length() > 0) {
@@ -208,6 +214,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         layoutManager.isCaps = !layoutManager.isCaps;
         layoutManager.updateKeyboardLayout();
         if (smartEcho != null) smartEcho.announceText(layoutManager.isCaps ? "Shift On" : "Shift Off");
+        updateHelperState();
     }
 
     private void handleLanguageSwitch() {
@@ -218,12 +225,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void handleEnter(InputConnection ic) {
         ic.commitText("\n", 1);
+        if (useSmartEcho && smartEcho != null) {
+            smartEcho.onWordFinished(ic);
+        }
         saveWordAndReset();
     }
 
     private void handleSpace(InputConnection ic) {
         ic.commitText(" ", 1);
-        if (useSmartEcho && smartEcho != null) smartEcho.onSpaceTyped(ic);
+        if (useSmartEcho && smartEcho != null) {
+            smartEcho.onWordFinished(ic); 
+        }
         saveWordAndReset();
     }
 
@@ -232,6 +244,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         else if (code == -2) { layoutManager.isSymbols = true; layoutManager.isEmoji = false; }
         else { layoutManager.isSymbols = false; layoutManager.isEmoji = false; }
         layoutManager.updateKeyboardLayout();
+        updateHelperState();
     }
 
     public KeyboardView getKeyboardView() { return keyboardView; }
