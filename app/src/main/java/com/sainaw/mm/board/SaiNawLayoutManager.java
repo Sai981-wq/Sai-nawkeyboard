@@ -11,20 +11,22 @@ public class SaiNawLayoutManager {
     private final Context context;
     private final SaiNawKeyboardService service;
     
+    // Keyboards
     public Keyboard qwertyKeyboard, qwertyShiftKeyboard;
     public Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     public Keyboard shanKeyboard, shanShiftKeyboard;
     public Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
     public Keyboard numberKeyboard;
-    public Keyboard emojiKeyboard;
+    public Keyboard emojiKeyboard; // Emoji Keyboard
     
     private Keyboard currentKeyboard;
     private EditorInfo currentEditorInfo;
 
+    // States
     public boolean isCaps = false;
     public boolean isCapsLocked = false;
     public boolean isSymbols = false;
-    public boolean isEmoji = false;
+    public boolean isEmoji = false; // Emoji State
     public int currentLanguageId = 0; 
     
     private List<Integer> enabledLanguages = new ArrayList<>();
@@ -61,8 +63,6 @@ public class SaiNawLayoutManager {
             shanKeyboard = new Keyboard(context, service.getResId("shan"));
             shanShiftKeyboard = new Keyboard(context, service.getResId("shan_shift"));
             
-            emojiKeyboard = new Keyboard(context, service.getResId("emoji"));
-            
             int symEnId = service.getResId("symbols");
             int symMmId = service.getResId("symbols_mm");
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(context, symEnId) : qwertyKeyboard;
@@ -70,6 +70,11 @@ public class SaiNawLayoutManager {
 
             int numPadId = service.getResId("number_pad");
             numberKeyboard = (numPadId != 0) ? new Keyboard(context, numPadId) : symbolsEnKeyboard;
+
+            // Added Emoji Keyboard Init
+            int emojiId = service.getResId("emoji");
+            emojiKeyboard = (emojiId != 0) ? new Keyboard(context, emojiId) : symbolsEnKeyboard;
+            
         } catch (Exception e) {
             e.printStackTrace();
             qwertyKeyboard = new Keyboard(context, service.getResId("qwerty"));
@@ -89,12 +94,8 @@ public class SaiNawLayoutManager {
             inputType == EditorInfo.TYPE_CLASS_DATETIME) {
             currentKeyboard = numberKeyboard;
             isSymbols = true;
-            isEmoji = false;
         } else {
-            if (currentKeyboard == numberKeyboard) {
-                isSymbols = false;
-                isEmoji = false;
-            }
+            if (currentKeyboard == numberKeyboard) isSymbols = false;
             updateKeyboardLayout();
             return;
         }
@@ -105,6 +106,7 @@ public class SaiNawLayoutManager {
         try {
             Keyboard nextKeyboard;
             if (isEmoji) {
+                // Check Emoji State First
                 nextKeyboard = emojiKeyboard;
             } else if (isSymbols) {
                 if (currentKeyboard == numberKeyboard) nextKeyboard = numberKeyboard;
@@ -135,6 +137,7 @@ public class SaiNawLayoutManager {
         if (currentKeyboard == null || currentEditorInfo == null) return;
         
         boolean isMultiLine = (currentEditorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
+        
         int action = currentEditorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
         String label = "Enter"; 
 
@@ -171,7 +174,7 @@ public class SaiNawLayoutManager {
         isCaps = false; 
         isSymbols = false; 
         isCapsLocked = false;
-        isEmoji = false;
+        isEmoji = false; // Reset Emoji
         
         updateKeyboardLayout();
     }

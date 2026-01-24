@@ -6,8 +6,10 @@ import android.media.AudioManager;
 import android.os.Build;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+// Import line အမှားကို ဖျက်လိုက်ပါပြီ
 
 public class SaiNawFeedbackManager {
+    // Constants
     public static final int HAPTIC_FOCUS = 0;
     public static final int HAPTIC_TYPE = 1;
     public static final int HAPTIC_LONG_PRESS = 2;
@@ -16,6 +18,7 @@ public class SaiNawFeedbackManager {
     private final AudioManager audioManager;
     private final Vibrator vibrator;
     
+    // Settings
     private boolean isVibrateOn = true;
     private boolean isSoundOn = true;
 
@@ -55,9 +58,9 @@ public class SaiNawFeedbackManager {
         if (!isSoundOn || audioManager == null) return;
         try {
             int soundEffect = AudioManager.FX_KEYPRESS_STANDARD;
-            if (primaryCode == -5) soundEffect = AudioManager.FX_KEYPRESS_DELETE;
-            else if (primaryCode == 32) soundEffect = AudioManager.FX_KEYPRESS_SPACEBAR;
-            else if (primaryCode == -4) soundEffect = AudioManager.FX_KEYPRESS_RETURN;
+            if (primaryCode == -5) soundEffect = AudioManager.FX_KEYPRESS_DELETE; // CODE_DELETE
+            else if (primaryCode == 32) soundEffect = AudioManager.FX_KEYPRESS_SPACEBAR; // CODE_SPACE
+            else if (primaryCode == -4) soundEffect = AudioManager.FX_KEYPRESS_RETURN; // CODE_ENTER
             audioManager.playSoundEffect(soundEffect, 1.0f);
         } catch (Exception e) {
             e.printStackTrace();

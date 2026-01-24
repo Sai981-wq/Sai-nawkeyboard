@@ -7,6 +7,7 @@ import android.os.UserManager;
 
 public class SaiNawSettingsManager {
 
+    // Keys (SettingsActivity နဲ့ တူရပါမယ်)
     private static final String PREF_NAME = "KeyboardPrefs";
     private static final String KEY_VIBRATE = "vibrate_on";
     private static final String KEY_SOUND = "sound_on";
@@ -16,9 +17,11 @@ public class SaiNawSettingsManager {
     private static final String KEY_SMART_ECHO = "smart_echo";
     private static final String KEY_PHONETIC_SOUNDS = "use_phonetic_sounds";
     
+    // Language Keys
     public static final String KEY_ENABLE_MM = "enable_mm";
     public static final String KEY_ENABLE_SHAN = "enable_shan";
 
+    // Variables
     private boolean vibrateOn;
     private boolean soundOn;
     private boolean darkTheme;
@@ -44,11 +47,13 @@ public class SaiNawSettingsManager {
         darkTheme = prefs.getBoolean(KEY_THEME, false);
         showNumberRow = prefs.getBoolean(KEY_NUMBER_ROW, false);
         
+        // Accessibility Settings
         liftToType = prefs.getBoolean(KEY_LIFT_TO_TYPE, true);
         smartEcho = prefs.getBoolean(KEY_SMART_ECHO, false);
         phoneticSounds = prefs.getBoolean(KEY_PHONETIC_SOUNDS, true);
     }
 
+    // Direct Boot Context Helper
     private Context getSafeContext(Context context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             UserManager um = (UserManager) context.getSystemService(Context.USER_SERVICE);
@@ -59,6 +64,7 @@ public class SaiNawSettingsManager {
         return context;
     }
 
+    // --- Getters ---
     public boolean isVibrateOn() { return vibrateOn; }
     public boolean isSoundOn() { return soundOn; }
     public boolean isDarkTheme() { return darkTheme; }
@@ -67,6 +73,6 @@ public class SaiNawSettingsManager {
     public boolean isSmartEcho() { return smartEcho; }
     public boolean isPhoneticSounds() { return phoneticSounds; }
     
+    // Accessor for raw prefs (needed for LayoutManager)
     public SharedPreferences getPrefs() { return prefs; }
 }
-

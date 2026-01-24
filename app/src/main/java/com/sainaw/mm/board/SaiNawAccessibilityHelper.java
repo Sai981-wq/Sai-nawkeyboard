@@ -16,7 +16,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
-    private boolean isPhoneticEnabled = true;
+    private boolean isPhoneticEnabled = true; // Setting variable
     private OnAccessibilityKeyListener listener;
     private SaiNawPhoneticManager phoneticManager;
 
@@ -24,6 +24,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
     }
 
+    // Constructor accepts PhoneticManager
     public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, SaiNawPhoneticManager manager) {
         super(view);
         this.view = view;
@@ -56,8 +57,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         int closestIndex = HOST_ID;
         int minDistSq = Integer.MAX_VALUE; 
-        int thresholdSq = 150 * 150;
-
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.codes[0] == -100) continue;
@@ -71,7 +70,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 closestIndex = i;
             }
         }
-        return (minDistSq <= thresholdSq) ? closestIndex : HOST_ID;
+        return closestIndex;
     }
 
     @Override
@@ -126,15 +125,19 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
 
+        // Dynamic Label logic
         if (code == -4 && key.label != null) return key.label.toString();
 
+        // 1. If Phonetic Sounds are enabled, try mapping
         if (isPhoneticEnabled) {
             String phonetic = phoneticManager.getPronunciation(code);
+            // If mapping exists, return it (e.g., "ကကြီး")
             if (!phonetic.equals(String.valueOf((char)code))) {
                 return phonetic;
             }
         }
 
+        // 2. Fallback to standard labels
         if (code == -5) return "Delete";
         if (code == -1) return isCaps ? "Shift On" : "Shift";
         if (code == 32) return "Space";
