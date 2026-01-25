@@ -1,8 +1,12 @@
 package com.sainaw.mm.board;
 
+import android.content.Context;
 import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
@@ -14,6 +18,7 @@ import java.util.List;
 
 public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private final View view;
+    private final Vibrator vibrator;
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
@@ -30,6 +35,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.view = view;
         this.listener = listener;
         this.phoneticManager = manager;
+        this.vibrator = (Vibrator) view.getContext().getSystemService(Context.VIBRATOR_SERVICE);
     }
 
     public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
@@ -115,7 +121,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 if (keys != null && virtualViewId >= 0 && virtualViewId < keys.size()) {
                     Keyboard.Key key = keys.get(virtualViewId);
                     
-                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                    performCustomHapticFeedback(key.codes[0]);
                     
                     if (listener != null) listener.onAccessibilityKeyClick(key.codes[0], key);
                     return true;
@@ -123,6 +129,26 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             }
         }
         return false; 
+    }
+
+    private void performCustomHapticFeedback(int keyCode) {
+        if (vibrator == null || !vibrator.hasVibrator()) {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            return;
+        }
+
+        boolean isSpecialKey = (keyCode == 32 || keyCode == -5 || keyCode == 10 || keyCode == -1 || keyCode == -2);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int effectId = isSpecialKey ? VibrationEffect.EFFECT_HEAVY_CLICK : VibrationEffect.EFFECT_CLICK;
+            vibrator.vibrate(VibrationEffect.createPredefined(effectId));
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            long duration = isSpecialKey ? 30 : 10;
+            int amplitude = isSpecialKey ? 100 : 40;
+            vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
+        } else {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+        }
     }
 
     private String getKeyDescription(Keyboard.Key key) {

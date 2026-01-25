@@ -29,8 +29,15 @@ public class SaiNawSmartEcho {
         if (text == null || text.length() == 0) return;
 
         String s = text.toString();
-        int lastSpaceIndex = s.lastIndexOf(' ');
+        
+        int lastNewLineIndex = s.lastIndexOf('\n');
+        if (lastNewLineIndex != -1) {
+            s = s.substring(lastNewLineIndex + 1);
+        }
 
+        if (s.isEmpty()) return;
+
+        int lastSpaceIndex = s.lastIndexOf(' ');
         if (lastSpaceIndex != -1) {
             announceText(s.substring(lastSpaceIndex + 1));
         } else {
@@ -47,6 +54,12 @@ public class SaiNawSmartEcho {
         }
 
         String s = text.toString();
+        
+        int lastNewLineIndex = s.lastIndexOf('\n');
+        if (lastNewLineIndex != -1) {
+            s = s.substring(lastNewLineIndex + 1);
+        }
+
         String trimmed = s.trim();
         
         if (trimmed.isEmpty()) {
