@@ -19,6 +19,7 @@ import java.util.List;
 public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private final View view;
     private final Vibrator vibrator;
+    private final Rect tempRect = new Rect();
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
@@ -62,7 +63,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         int closestIndex = HOST_ID;
-        int minDistSq = Integer.MAX_VALUE; 
+        int minDistSq = Integer.MAX_VALUE;
+        int thresholdSq = 150 * 150; 
+
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.codes[0] == -100) continue;
@@ -71,12 +74,13 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             int dx = x - keyCenterX;
             int dy = y - keyCenterY;
             int distSq = (dx * dx) + (dy * dy);
+            
             if (distSq < minDistSq) {
                 minDistSq = distSq;
                 closestIndex = i;
             }
         }
-        return closestIndex;
+        return (minDistSq <= thresholdSq) ? closestIndex : HOST_ID;
     }
 
     @Override
@@ -107,10 +111,15 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         node.setContentDescription(description);
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
+        
         int right = key.x + key.width;
         int bottom = key.y + key.height;
-        if (right <= 0 || bottom <= 0) node.setBoundsInParent(new Rect(0,0,1,1));
-        else node.setBoundsInParent(new Rect(key.x, key.y, right, bottom));
+        if (right <= 0 || bottom <= 0) {
+            tempRect.set(0, 0, 1, 1);
+        } else {
+            tempRect.set(key.x, key.y, right, bottom);
+        }
+        node.setBoundsInParent(tempRect);
     }
 
     @Override
@@ -120,34 +129,60 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 List<Keyboard.Key> keys = currentKeyboard.getKeys();
                 if (keys != null && virtualViewId >= 0 && virtualViewId < keys.size()) {
                     Keyboard.Key key = keys.get(virtualViewId);
-                    
-                    performCustomHapticFeedback(key.codes[0]);
-                    
+                    performSmartHapticFeedback(key.codes[0]);
                     if (listener != null) listener.onAccessibilityKeyClick(key.codes[0], key);
                     return true;
                 }
             }
         }
-        return false; 
+        return false;
     }
 
-    private void performCustomHapticFeedback(int keyCode) {
+    private void performSmartHapticFeedback(int keyCode) {
         if (vibrator == null || !vibrator.hasVibrator()) {
-            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
             return;
         }
 
-        boolean isSpecialKey = (keyCode == 32 || keyCode == -5 || keyCode == 10 || keyCode == -1 || keyCode == -2);
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            int effectId = isSpecialKey ? VibrationEffect.EFFECT_HEAVY_CLICK : VibrationEffect.EFFECT_CLICK;
-            vibrator.vibrate(VibrationEffect.createPredefined(effectId));
+            int effectId;
+            if (keyCode == -5) { 
+                effectId = VibrationEffect.EFFECT_HEAVY_CLICK;
+            } else if (keyCode == 32 || keyCode == -4) {
+                effectId = VibrationEffect.EFFECT_HEAVY_CLICK;
+            } else if (keyCode == -1 || keyCode == -2 || keyCode == -6) {
+                effectId = VibrationEffect.EFFECT_CLICK;
+            } else {
+                effectId = VibrationEffect.EFFECT_CLICK;
+            }
+            try {
+                vibrator.vibrate(VibrationEffect.createPredefined(effectId));
+            } catch (Exception e) {
+                vibrator.vibrate(VibrationEffect.createOneShot(25, 180));
+            }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            long duration = isSpecialKey ? 30 : 10;
-            int amplitude = isSpecialKey ? 100 : 40;
-            vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
+            long duration;
+            int amplitude;
+            
+            if (keyCode == -5) {
+                duration = 45; 
+                amplitude = 255;
+            } else if (keyCode == 32 || keyCode == -4) {
+                duration = 35; 
+                amplitude = 200;
+            } else if (keyCode == -1 || keyCode == -2) {
+                duration = 25; 
+                amplitude = 150;
+            } else {
+                duration = 20; 
+                amplitude = 120; 
+            }
+            try {
+                vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
+            } catch (Exception e) {
+                vibrator.vibrate(25);
+            }
         } else {
-            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            vibrator.vibrate(25);
         }
     }
 
@@ -158,7 +193,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
         if (isPhoneticEnabled) {
             String phonetic = phoneticManager.getPronunciation(code);
-            if (!phonetic.equals(String.valueOf((char)code))) {
+            if (phonetic != null && !phonetic.equals(String.valueOf((char)code))) {
                 return phonetic;
             }
         }

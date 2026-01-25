@@ -15,7 +15,7 @@ public class SaiNawSmartEcho {
 
     private String getCurrentLine(InputConnection ic) {
         if (ic == null) return "";
-        CharSequence text = ic.getTextBeforeCursor(100, 0);
+        CharSequence text = ic.getTextBeforeCursor(150, 0);
         if (text == null || text.length() == 0) return "";
         
         String s = text.toString();

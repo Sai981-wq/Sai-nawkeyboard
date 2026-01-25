@@ -3,8 +3,7 @@
     android:settingsActivity="com.sainaw.mm.board.SettingsActivity"
     android:supportsSwitchingToNextInputMethod="true">
     <subtype
-        android:label="Myanmar"
-        android:imeSubtypeLocale="my_MM"
+        android:label="Sai Naw Keyboard"
         android:imeSubtypeMode="keyboard" />
 </input-method>
 
