@@ -183,7 +183,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         try {
             switch (primaryCode) {
-                case -5: // DELETE
+                case -5: 
                     CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
                     if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
                         ic.deleteSurroundingText(1, 0);
@@ -202,7 +202,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 case -10: startVoiceInput(); break; 
 
-                case -1: // SHIFT
+                case -1: 
                     if (layoutManager.isCapsLocked) {
                         layoutManager.isCapsLocked = false;
                         layoutManager.isCaps = false;
@@ -215,7 +215,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     layoutManager.updateKeyboardLayout();
                     break;
 
-                case -2: // SYMBOL ON
+                case -2: 
                     layoutManager.isSymbols = true;
                     layoutManager.isEmoji = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
@@ -223,7 +223,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     announceText("Symbols");
                     break;
 
-                case -6: // SYMBOL OFF
+                case -6: 
                     layoutManager.isSymbols = false;
                     layoutManager.isEmoji = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
@@ -231,7 +231,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
                     break;
                     
-                case KEYCODE_EMOJI: // -7 (EMOJI ON)
+                case KEYCODE_EMOJI: 
                     layoutManager.isEmoji = true;
                     layoutManager.isSymbols = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
@@ -239,7 +239,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     announceText("Emoji");
                     break;
 
-                case -101: // LANG CHANGE
+                case -101: 
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.changeLanguage();
                     touchHandler.reset(); 
@@ -248,7 +248,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (accessibilityHelper != null) accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps);
                     break;
 
-                case -4: // ENTER
+                case -4: 
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     EditorInfo editorInfo = getCurrentInputEditorInfo();
                     boolean isMultiLine = (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
@@ -261,7 +261,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     saveWordAndReset();
                     break;
 
-                case 32: // SPACE
+                case 32: 
                     ic.commitText(" ", 1);
                     if (useSmartEcho) {
                         String lastWord = getLastWordForEcho();
@@ -271,7 +271,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     saveWordAndReset();
                     break;
 
-                default: // CHARACTER INPUT
+                default: 
                     inputLogic.processInput(ic, primaryCode, key);
                     String charStr = (key != null && key.label != null && key.label.length() > 1) 
                             ? key.label.toString() : String.valueOf((char) primaryCode);
@@ -292,21 +292,26 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private String getCurrentWordForEcho() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
-        CharSequence text = ic.getTextBeforeCursor(50, 0); // Reduced to 50 for performance
+        CharSequence text = ic.getTextBeforeCursor(100, 0);
         if (text == null || text.length() == 0) return null;
         String s = text.toString();
-        int lastSpaceIndex = s.lastIndexOf(' ');
-        return (lastSpaceIndex != -1) ? s.substring(lastSpaceIndex + 1) : s;
+        int lastNewLine = s.lastIndexOf('\n');
+        String currentLine = (lastNewLine != -1) ? s.substring(lastNewLine + 1) : s;
+        if (currentLine.isEmpty()) return null;
+        int lastSpaceIndex = currentLine.lastIndexOf(' ');
+        return (lastSpaceIndex != -1) ? currentLine.substring(lastSpaceIndex + 1) : currentLine;
     }
     
     private String getLastWordForEcho() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
-        // *** FIX: 2000 -> 100 (Freeze Fix) ***
         CharSequence text = ic.getTextBeforeCursor(100, 0); 
         if (text == null || text.length() == 0) return null;
         String s = text.toString();
-        String trimmed = s.trim(); 
+        int lastNewLine = s.lastIndexOf('\n');
+        String currentLine = (lastNewLine != -1) ? s.substring(lastNewLine + 1) : s;
+        String trimmed = currentLine.trim(); 
+        if (trimmed.isEmpty()) return null;
         int lastSpaceIndex = trimmed.lastIndexOf(' ');
         return (lastSpaceIndex != -1) ? trimmed.substring(lastSpaceIndex + 1) : trimmed;
     }

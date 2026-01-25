@@ -15,7 +15,7 @@ public class SaiNawSmartEcho {
 
     private String getCurrentLine(InputConnection ic) {
         if (ic == null) return "";
-        CharSequence text = ic.getTextBeforeCursor(2000, 0);
+        CharSequence text = ic.getTextBeforeCursor(100, 0);
         if (text == null || text.length() == 0) return "";
         
         String s = text.toString();
@@ -27,7 +27,7 @@ public class SaiNawSmartEcho {
     }
 
     public void announceText(String text) {
-        if (accessibilityManager != null && accessibilityManager.isEnabled() && !text.isEmpty()) {
+        if (accessibilityManager != null && accessibilityManager.isEnabled() && text != null && !text.isEmpty()) {
             AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
             event.getText().add(text);
             accessibilityManager.sendAccessibilityEvent(event);
