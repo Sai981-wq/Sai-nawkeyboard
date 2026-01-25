@@ -25,7 +25,7 @@ public class SaiNawSmartEcho {
 
     public void onCharTyped(InputConnection ic) {
         if (ic == null) return;
-        CharSequence text = ic.getTextBeforeCursor(150, 0);
+        CharSequence text = ic.getTextBeforeCursor(2000, 0);
         if (text == null || text.length() == 0) return;
 
         String s = text.toString();
@@ -40,7 +40,7 @@ public class SaiNawSmartEcho {
 
     public void onSpaceTyped(InputConnection ic) {
         if (ic == null) return;
-        CharSequence text = ic.getTextBeforeCursor(150, 0);
+        CharSequence text = ic.getTextBeforeCursor(2000, 0);
         if (text == null || text.length() == 0) {
             announceText("Space");
             return;
@@ -64,7 +64,7 @@ public class SaiNawSmartEcho {
 
     public void onEnterTyped(InputConnection ic) {
         if (ic == null) return;
-        CharSequence text = ic.getTextBeforeCursor(150, 0);
+        CharSequence text = ic.getTextBeforeCursor(2000, 0);
         if (text == null || text.length() == 0) {
             announceText("Enter");
             return;
