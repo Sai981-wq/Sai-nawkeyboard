@@ -14,10 +14,16 @@ android {
         versionName "1.0"
     }
 
+    signingConfigs {
+        release {
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
     compileOptions {
@@ -32,3 +38,13 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 }
 
+File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
+if (signingPropertiesFile.exists()) {
+    Properties props = new Properties()
+    props.load(new FileInputStream(signingPropertiesFile))
+    
+    android.signingConfigs.release.storeFile = rootProject.file('credentials/release.keystore')
+    android.signingConfigs.release.storePassword = props['storePassword']
+    android.signingConfigs.release.keyAlias = props['keyAlias']
+    android.signingConfigs.release.keyPassword = props['keyPassword']
+}
