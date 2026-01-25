@@ -23,36 +23,31 @@ public class SaiNawSmartEcho {
         }
     }
 
-    // စာလုံးရိုက်နေချိန် (Accumulative Echo)
     public void onCharTyped(InputConnection ic) {
         if (ic == null) return;
-        // Look back 2000 chars to handle long sentences without spaces
-        CharSequence text = ic.getTextBeforeCursor(2000, 0);
+        CharSequence text = ic.getTextBeforeCursor(150, 0);
         if (text == null || text.length() == 0) return;
 
         String s = text.toString();
         int lastSpaceIndex = s.lastIndexOf(' ');
 
         if (lastSpaceIndex != -1) {
-            // Read from the last space
             announceText(s.substring(lastSpaceIndex + 1));
         } else {
-            // No space found, read everything
             announceText(s);
         }
     }
 
-    // Space ရိုက်လိုက်ချိန် (Last Word Echo)
     public void onSpaceTyped(InputConnection ic) {
         if (ic == null) return;
-        CharSequence text = ic.getTextBeforeCursor(2000, 0);
+        CharSequence text = ic.getTextBeforeCursor(150, 0);
         if (text == null || text.length() == 0) {
             announceText("Space");
             return;
         }
 
         String s = text.toString();
-        String trimmed = s.trim(); // Remove the trailing space to find the word
+        String trimmed = s.trim();
         
         if (trimmed.isEmpty()) {
             announceText("Space");
@@ -66,4 +61,29 @@ public class SaiNawSmartEcho {
             announceText(trimmed);
         }
     }
+
+    public void onEnterTyped(InputConnection ic) {
+        if (ic == null) return;
+        CharSequence text = ic.getTextBeforeCursor(150, 0);
+        if (text == null || text.length() == 0) {
+            announceText("Enter");
+            return;
+        }
+
+        String s = text.toString();
+        String trimmed = s.trim();
+        
+        if (trimmed.isEmpty()) {
+            announceText("Enter");
+            return;
+        }
+
+        int lastSpaceIndex = trimmed.lastIndexOf(' ');
+        if (lastSpaceIndex != -1) {
+            announceText(trimmed.substring(lastSpaceIndex + 1));
+        } else {
+            announceText(trimmed);
+        }
+    }
 }
+

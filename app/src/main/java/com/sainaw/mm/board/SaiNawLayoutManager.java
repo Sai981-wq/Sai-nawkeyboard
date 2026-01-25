@@ -11,22 +11,20 @@ public class SaiNawLayoutManager {
     private final Context context;
     private final SaiNawKeyboardService service;
     
-    // Keyboards
     public Keyboard qwertyKeyboard, qwertyShiftKeyboard;
     public Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     public Keyboard shanKeyboard, shanShiftKeyboard;
     public Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
     public Keyboard numberKeyboard;
-    public Keyboard emojiKeyboard; // Emoji Keyboard
+    public Keyboard emojiKeyboard;
     
     private Keyboard currentKeyboard;
     private EditorInfo currentEditorInfo;
 
-    // States
     public boolean isCaps = false;
     public boolean isCapsLocked = false;
     public boolean isSymbols = false;
-    public boolean isEmoji = false; // Emoji State
+    public boolean isEmoji = false;
     public int currentLanguageId = 0; 
     
     private List<Integer> enabledLanguages = new ArrayList<>();
@@ -71,7 +69,6 @@ public class SaiNawLayoutManager {
             int numPadId = service.getResId("number_pad");
             numberKeyboard = (numPadId != 0) ? new Keyboard(context, numPadId) : symbolsEnKeyboard;
 
-            // Added Emoji Keyboard Init
             int emojiId = service.getResId("emoji");
             emojiKeyboard = (emojiId != 0) ? new Keyboard(context, emojiId) : symbolsEnKeyboard;
             
@@ -86,6 +83,8 @@ public class SaiNawLayoutManager {
     }
 
     public void determineKeyboardForInputType() {
+        isEmoji = false;
+
         if (currentEditorInfo == null) return;
         
         int inputType = currentEditorInfo.inputType & EditorInfo.TYPE_MASK_CLASS;
@@ -106,7 +105,6 @@ public class SaiNawLayoutManager {
         try {
             Keyboard nextKeyboard;
             if (isEmoji) {
-                // Check Emoji State First
                 nextKeyboard = emojiKeyboard;
             } else if (isSymbols) {
                 if (currentKeyboard == numberKeyboard) nextKeyboard = numberKeyboard;
@@ -174,7 +172,7 @@ public class SaiNawLayoutManager {
         isCaps = false; 
         isSymbols = false; 
         isCapsLocked = false;
-        isEmoji = false; // Reset Emoji
+        isEmoji = false;
         
         updateKeyboardLayout();
     }
