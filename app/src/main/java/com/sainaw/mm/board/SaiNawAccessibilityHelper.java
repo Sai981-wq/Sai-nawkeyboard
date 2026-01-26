@@ -1,12 +1,8 @@
 package com.sainaw.mm.board;
 
-import android.content.Context;
 import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.VibrationEffect;
-import android.os.Vibrator;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import androidx.annotation.NonNull;
@@ -17,8 +13,6 @@ import java.util.List;
 
 public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private final View view;
-    private final Vibrator vibrator;
-    private final Rect tempRect = new Rect();
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
@@ -35,7 +29,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.view = view;
         this.listener = listener;
         this.phoneticManager = manager;
-        this.vibrator = (Vibrator) view.getContext().getSystemService(Context.VIBRATOR_SERVICE);
     }
 
     public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
@@ -62,25 +55,21 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         int closestIndex = HOST_ID;
-        int minDistSq = Integer.MAX_VALUE;
-        int thresholdSq = 180 * 180; 
-
+        int minDistSq = Integer.MAX_VALUE; 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.codes[0] == -100) continue;
-            
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
             int dx = x - keyCenterX;
             int dy = y - keyCenterY;
             int distSq = (dx * dx) + (dy * dy);
-            
             if (distSq < minDistSq) {
                 minDistSq = distSq;
                 closestIndex = i;
             }
         }
-        return (minDistSq <= thresholdSq) ? closestIndex : HOST_ID;
+        return closestIndex;
     }
 
     @Override
@@ -111,15 +100,10 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         node.setContentDescription(description);
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
-        
         int right = key.x + key.width;
         int bottom = key.y + key.height;
-        if (right <= 0 || bottom <= 0) {
-            tempRect.set(0, 0, 1, 1);
-        } else {
-            tempRect.set(key.x, key.y, right, bottom);
-        }
-        node.setBoundsInParent(tempRect);
+        if (right <= 0 || bottom <= 0) node.setBoundsInParent(new Rect(0,0,1,1));
+        else node.setBoundsInParent(new Rect(key.x, key.y, right, bottom));
     }
 
     @Override
@@ -129,55 +113,12 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 List<Keyboard.Key> keys = currentKeyboard.getKeys();
                 if (keys != null && virtualViewId >= 0 && virtualViewId < keys.size()) {
                     Keyboard.Key key = keys.get(virtualViewId);
-                    
-                    forceHapticFeedback(key.codes[0]);
-
-                    if (listener != null) {
-                        listener.onAccessibilityKeyClick(key.codes[0], key);
-                    }
+                    if (listener != null) listener.onAccessibilityKeyClick(key.codes[0], key);
                     return true;
                 }
             }
         }
-        return false;
-    }
-
-    private void forceHapticFeedback(int keyCode) {
-        if (vibrator == null || !vibrator.hasVibrator()) {
-            return;
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                int effectId;
-                if (keyCode == -5 || keyCode == 32 || keyCode == -4 || keyCode == 10) {
-                    effectId = VibrationEffect.EFFECT_HEAVY_CLICK;
-                } else {
-                    effectId = VibrationEffect.EFFECT_CLICK;
-                }
-                vibrator.vibrate(VibrationEffect.createPredefined(effectId));
-            } catch (Exception e) {
-                vibrator.vibrate(VibrationEffect.createOneShot(40, 200));
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            try {
-                long duration;
-                int amplitude;
-                
-                if (keyCode == -5 || keyCode == 32 || keyCode == -4) {
-                    duration = 50; 
-                    amplitude = 255; 
-                } else {
-                    duration = 35; 
-                    amplitude = 180; 
-                }
-                vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
-            } catch (Exception e) {
-                vibrator.vibrate(40);
-            }
-        } else {
-            vibrator.vibrate(40);
-        }
+        return false; 
     }
 
     private String getKeyDescription(Keyboard.Key key) {
