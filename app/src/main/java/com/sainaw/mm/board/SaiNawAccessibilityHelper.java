@@ -7,7 +7,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
-import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import androidx.annotation.NonNull;
@@ -64,11 +63,12 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         int closestIndex = HOST_ID;
         int minDistSq = Integer.MAX_VALUE;
-        int thresholdSq = 150 * 150; 
+        int thresholdSq = 180 * 180; 
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.codes[0] == -100) continue;
+            
             int keyCenterX = key.x + (key.width / 2);
             int keyCenterY = key.y + (key.height / 2);
             int dx = x - keyCenterX;
@@ -129,8 +129,12 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 List<Keyboard.Key> keys = currentKeyboard.getKeys();
                 if (keys != null && virtualViewId >= 0 && virtualViewId < keys.size()) {
                     Keyboard.Key key = keys.get(virtualViewId);
-                    performSmartHapticFeedback(key.codes[0]);
-                    if (listener != null) listener.onAccessibilityKeyClick(key.codes[0], key);
+                    
+                    forceHapticFeedback(key.codes[0]);
+
+                    if (listener != null) {
+                        listener.onAccessibilityKeyClick(key.codes[0], key);
+                    }
                     return true;
                 }
             }
@@ -138,51 +142,41 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         return false;
     }
 
-    private void performSmartHapticFeedback(int keyCode) {
+    private void forceHapticFeedback(int keyCode) {
         if (vibrator == null || !vibrator.hasVibrator()) {
             return;
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            int effectId;
-            if (keyCode == -5) { 
-                effectId = VibrationEffect.EFFECT_HEAVY_CLICK;
-            } else if (keyCode == 32 || keyCode == -4) {
-                effectId = VibrationEffect.EFFECT_HEAVY_CLICK;
-            } else if (keyCode == -1 || keyCode == -2 || keyCode == -6) {
-                effectId = VibrationEffect.EFFECT_CLICK;
-            } else {
-                effectId = VibrationEffect.EFFECT_CLICK;
-            }
             try {
+                int effectId;
+                if (keyCode == -5 || keyCode == 32 || keyCode == -4 || keyCode == 10) {
+                    effectId = VibrationEffect.EFFECT_HEAVY_CLICK;
+                } else {
+                    effectId = VibrationEffect.EFFECT_CLICK;
+                }
                 vibrator.vibrate(VibrationEffect.createPredefined(effectId));
             } catch (Exception e) {
-                vibrator.vibrate(VibrationEffect.createOneShot(25, 180));
+                vibrator.vibrate(VibrationEffect.createOneShot(40, 200));
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            long duration;
-            int amplitude;
-            
-            if (keyCode == -5) {
-                duration = 45; 
-                amplitude = 255;
-            } else if (keyCode == 32 || keyCode == -4) {
-                duration = 35; 
-                amplitude = 200;
-            } else if (keyCode == -1 || keyCode == -2) {
-                duration = 25; 
-                amplitude = 150;
-            } else {
-                duration = 20; 
-                amplitude = 120; 
-            }
             try {
+                long duration;
+                int amplitude;
+                
+                if (keyCode == -5 || keyCode == 32 || keyCode == -4) {
+                    duration = 50; 
+                    amplitude = 255; 
+                } else {
+                    duration = 35; 
+                    amplitude = 180; 
+                }
                 vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
             } catch (Exception e) {
-                vibrator.vibrate(25);
+                vibrator.vibrate(40);
             }
         } else {
-            vibrator.vibrate(25);
+            vibrator.vibrate(40);
         }
     }
 
