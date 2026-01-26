@@ -130,6 +130,8 @@ public class SaiNawTouchHandler {
                     if (lastHoverKeyIndex < layoutManager.getCurrentKeys().size()) {
                         Keyboard.Key key = layoutManager.getCurrentKeys().get(lastHoverKeyIndex);
                         if (key.codes[0] != -100) {
+                            // ဒီနေရာမှာ Vibration အသစ်ထည့်ပေးလိုက်ပါတယ်
+                            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                             service.handleInput(key.codes[0], key);
                         }
                     }
