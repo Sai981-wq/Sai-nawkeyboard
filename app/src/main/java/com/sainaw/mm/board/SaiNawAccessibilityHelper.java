@@ -5,11 +5,13 @@ import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityManager; // Added
+import android.view.accessibility.AccessibilityManager;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
@@ -19,7 +21,8 @@ import java.util.List;
 public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private final View view;
     private final Vibrator vibrator;
-    private final AccessibilityManager accessibilityManager; // Added Manager
+    private final AccessibilityManager accessibilityManager;
+    private final Handler handler = new Handler(Looper.getMainLooper()); // Handler ထည့်သွင်းထားသည်
     private final Rect tempRect = new Rect();
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
@@ -41,7 +44,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.phoneticManager = manager;
         this.emojiManager = emojiManager;
         this.vibrator = (Vibrator) view.getContext().getSystemService(Context.VIBRATOR_SERVICE);
-        // Initialize AccessibilityManager
         this.accessibilityManager = (AccessibilityManager) view.getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
     }
 
@@ -120,7 +122,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
         
-        // Add Long Click Action for Accessibility
         node.addAction(AccessibilityNodeInfoCompat.ACTION_LONG_CLICK);
         node.setLongClickable(true);
         
@@ -154,12 +155,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 String desc = emojiManager.getMmDescription(emojiCode);
                 if (desc != null) {
                     performLongPressFeedback();
-                    // Use direct announcement for better reliability
-                    announceTextDirectly(desc);
+                    announceTextWithDelay(desc); // Delay ထည့်ထားသော Method ကိုခေါ်ပါမည်
                     return true;
                 }
             }
-            // Fallback for Shift/Delete Long press if needed
+            // Fallback for other keys if needed
              if (key.codes[0] == -1 || key.codes[0] == -5) {
                  performLongPressFeedback();
                  return true;
@@ -168,12 +168,14 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         return false;
     }
 
-    // Direct announcement method
-    private void announceTextDirectly(String text) {
+    // Delay ဖြင့် အသံထွက်ပေးမည့် Method
+    private void announceTextWithDelay(String text) {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
-            event.getText().add(text);
-            accessibilityManager.sendAccessibilityEvent(event);
+            handler.postDelayed(() -> {
+                AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+                event.getText().add(text);
+                accessibilityManager.sendAccessibilityEvent(event);
+            }, 150); // 150ms Delay
         }
     }
 
