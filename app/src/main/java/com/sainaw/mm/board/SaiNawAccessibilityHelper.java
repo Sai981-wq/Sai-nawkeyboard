@@ -9,6 +9,7 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager; // Added
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
@@ -18,6 +19,7 @@ import java.util.List;
 public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private final View view;
     private final Vibrator vibrator;
+    private final AccessibilityManager accessibilityManager; // Added Manager
     private final Rect tempRect = new Rect();
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
@@ -39,6 +41,8 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.phoneticManager = manager;
         this.emojiManager = emojiManager;
         this.vibrator = (Vibrator) view.getContext().getSystemService(Context.VIBRATOR_SERVICE);
+        // Initialize AccessibilityManager
+        this.accessibilityManager = (AccessibilityManager) view.getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
     }
 
     public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
@@ -116,6 +120,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
         
+        // Add Long Click Action for Accessibility
         node.addAction(AccessibilityNodeInfoCompat.ACTION_LONG_CLICK);
         node.setLongClickable(true);
         
@@ -149,12 +154,27 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 String desc = emojiManager.getMmDescription(emojiCode);
                 if (desc != null) {
                     performLongPressFeedback();
-                    view.announceForAccessibility(desc);
+                    // Use direct announcement for better reliability
+                    announceTextDirectly(desc);
                     return true;
                 }
             }
+            // Fallback for Shift/Delete Long press if needed
+             if (key.codes[0] == -1 || key.codes[0] == -5) {
+                 performLongPressFeedback();
+                 return true;
+             }
         }
         return false;
+    }
+
+    // Direct announcement method
+    private void announceTextDirectly(String text) {
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+            event.getText().add(text);
+            accessibilityManager.sendAccessibilityEvent(event);
+        }
     }
 
     private int resolveEmojiCode(Keyboard.Key key) {
