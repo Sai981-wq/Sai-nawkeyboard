@@ -120,7 +120,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setOnKeyboardActionListener(this);
         keyboardView.setOnTouchListener((v, event) -> false);
         
-        accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager);
+        // Pass emojiManager to accessibilityHelper
+        accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager, emojiManager);
         boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
         accessibilityHelper.setPhoneticEnabled(usePhonetic);
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);

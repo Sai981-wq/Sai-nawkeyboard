@@ -25,16 +25,19 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private boolean isPhoneticEnabled = true;
     private OnAccessibilityKeyListener listener;
     private SaiNawPhoneticManager phoneticManager;
+    private SaiNawEmojiManager emojiManager;
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
     }
 
-    public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, SaiNawPhoneticManager manager) {
+    public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, 
+                                     SaiNawPhoneticManager manager, SaiNawEmojiManager emojiManager) {
         super(view);
         this.view = view;
         this.listener = listener;
         this.phoneticManager = manager;
+        this.emojiManager = emojiManager;
         this.vibrator = (Vibrator) view.getContext().getSystemService(Context.VIBRATOR_SERVICE);
     }
 
@@ -109,8 +112,12 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         Keyboard.Key key = keys.get(virtualViewId);
         String description = getKeyDescription(key);
         node.setContentDescription(description);
+        
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
+        
+        node.addAction(AccessibilityNodeInfoCompat.ACTION_LONG_CLICK);
+        node.setLongClickable(true);
         
         int right = key.x + key.width;
         int bottom = key.y + key.height;
@@ -124,22 +131,54 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     @Override
     protected boolean onPerformActionForVirtualView(int virtualViewId, int action, @Nullable Bundle arguments) {
-        if (action == AccessibilityNodeInfoCompat.ACTION_CLICK) {
-            if (currentKeyboard != null) {
-                List<Keyboard.Key> keys = currentKeyboard.getKeys();
-                if (keys != null && virtualViewId >= 0 && virtualViewId < keys.size()) {
-                    Keyboard.Key key = keys.get(virtualViewId);
-                    
-                    forceHapticFeedback(key.codes[0]);
+        if (currentKeyboard == null) return false;
+        List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) return false;
+        
+        Keyboard.Key key = keys.get(virtualViewId);
 
-                    if (listener != null) {
-                        listener.onAccessibilityKeyClick(key.codes[0], key);
-                    }
+        if (action == AccessibilityNodeInfoCompat.ACTION_CLICK) {
+            forceHapticFeedback(key.codes[0]);
+            if (listener != null) {
+                listener.onAccessibilityKeyClick(key.codes[0], key);
+            }
+            return true;
+        } else if (action == AccessibilityNodeInfoCompat.ACTION_LONG_CLICK) {
+            int emojiCode = resolveEmojiCode(key);
+            if (emojiCode != 0 && emojiManager != null) {
+                String desc = emojiManager.getMmDescription(emojiCode);
+                if (desc != null) {
+                    performLongPressFeedback();
+                    view.announceForAccessibility(desc);
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    private int resolveEmojiCode(Keyboard.Key key) {
+        int code = key.codes[0];
+        if (emojiManager != null && emojiManager.hasDescription(code)) {
+            return code;
+        }
+        if (key.label != null && key.label.length() > 0 && emojiManager != null) {
+            int labelCode = Character.codePointAt(key.label, 0);
+            if (emojiManager.hasDescription(labelCode)) {
+                return labelCode;
+            }
+        }
+        return 0;
+    }
+
+    private void performLongPressFeedback() {
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE));
+        } else {
+            vibrator.vibrate(80);
+        }
     }
 
     private void forceHapticFeedback(int keyCode) {

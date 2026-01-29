@@ -16,7 +16,7 @@ public class SaiNawTextProcessor {
     }
 
     public boolean isMedial(int code) {
-        return (code >= 4155 && code <= 4158) || (code == 4226);
+        return (code >= '\u103B' && code <= '\u103E') || (code == '\u1082');
     }
 
     public String normalizeText(String input) {
@@ -30,14 +30,37 @@ public class SaiNawTextProcessor {
             char current = chars[i];
             char prev = chars[i-1];
 
-            if ((prev == '\u1031' || prev == '\u1084') && isConsonant(current)) {
-                chars[i-1] = current;
-                chars[i] = prev;
-            }
+            if (prev == '\u1031' || prev == '\u1084') {
+                if (isMedial(current)) {
+                    chars[i-1] = current;
+                    chars[i] = prev;
+                } 
+                else if (isConsonant(current)) {
+                    boolean shouldSwap = true;
+                    
+                    if (i + 1 < len) {
+                        char nextChar = chars[i+1];
+                        if (nextChar == '\u103A' || nextChar == '\u1039') {
+                            shouldSwap = false;
+                        }
+                    }
 
-            if ((prev == '\u1031' || prev == '\u1084') && isMedial(current)) {
-                chars[i-1] = current;
-                chars[i] = prev;
+                    if (shouldSwap) {
+                        boolean isAlreadyAttached = false;
+                        if (i >= 2) {
+                            char prevPrev = chars[i-2];
+                            if (isConsonant(prevPrev) || isMedial(prevPrev)) {
+                                isAlreadyAttached = true;
+                            }
+                        }
+                        
+                        if (!isAlreadyAttached) {
+                            chars[i-1] = current;
+                            chars[i] = prev;
+                        }
+                    }
+                }
+                continue;
             }
 
             if (current == '\u102D' && (prev == '\u102F' || prev == '\u1030')) {
