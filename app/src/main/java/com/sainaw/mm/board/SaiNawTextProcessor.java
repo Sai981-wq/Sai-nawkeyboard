@@ -5,14 +5,14 @@ public class SaiNawTextProcessor {
     private static final char ZWSP = '\u200B';
 
     public boolean isConsonant(int c) {
-        return (c >= '\u1000' && c <= '\u102A') || 
-               (c == '\u103F') ||                   
-               (c >= '\u1040' && c <= '\u1049') || 
-               (c == '\u104E') ||                   
-               (c >= '\u1050' && c <= '\u1055') || 
-               (c >= '\u1075' && c <= '\u1081') || 
-               (c >= '\uA9E0' && c <= '\uA9E6') || 
-               (c >= '\uAA60' && c <= '\uAA6F');   
+        return (c >= '\u1000' && c <= '\u102A') ||
+               (c == '\u103F') ||
+               (c >= '\u1040' && c <= '\u1049') ||
+               (c == '\u104E') ||
+               (c >= '\u1050' && c <= '\u1055') ||
+               (c >= '\u1075' && c <= '\u1081') ||
+               (c >= '\uA9E0' && c <= '\uA9E6') ||
+               (c >= '\uAA60' && c <= '\uAA6F');
     }
 
     public boolean isMedial(int code) {
@@ -21,25 +21,24 @@ public class SaiNawTextProcessor {
 
     public String normalizeText(String input) {
         if (input == null || input.isEmpty()) return input;
-        
+
         String cleanStr = input.replace(String.valueOf(ZWSP), "");
         char[] chars = cleanStr.toCharArray();
         int len = chars.length;
 
         for (int i = 1; i < len; i++) {
             char current = chars[i];
-            char prev = chars[i-1];
+            char prev = chars[i - 1];
 
             if (prev == '\u1031' || prev == '\u1084') {
                 if (isMedial(current)) {
-                    chars[i-1] = current;
+                    chars[i - 1] = current;
                     chars[i] = prev;
-                } 
-                else if (isConsonant(current)) {
+                } else if (isConsonant(current)) {
                     boolean shouldSwap = true;
-                    
+
                     if (i + 1 < len) {
-                        char nextChar = chars[i+1];
+                        char nextChar = chars[i + 1];
                         if (nextChar == '\u103A' || nextChar == '\u1039') {
                             shouldSwap = false;
                         }
@@ -48,14 +47,14 @@ public class SaiNawTextProcessor {
                     if (shouldSwap) {
                         boolean isAlreadyAttached = false;
                         if (i >= 2) {
-                            char prevPrev = chars[i-2];
+                            char prevPrev = chars[i - 2];
                             if (isConsonant(prevPrev) || isMedial(prevPrev)) {
                                 isAlreadyAttached = true;
                             }
                         }
-                        
+
                         if (!isAlreadyAttached) {
-                            chars[i-1] = current;
+                            chars[i - 1] = current;
                             chars[i] = prev;
                         }
                     }
@@ -64,22 +63,22 @@ public class SaiNawTextProcessor {
             }
 
             if (current == '\u102D' && (prev == '\u102F' || prev == '\u1030')) {
-                chars[i-1] = current;
+                chars[i - 1] = current;
                 chars[i] = prev;
             }
 
             if (current == '\u102F' && prev == '\u1036') {
-                chars[i-1] = current;
+                chars[i - 1] = current;
                 chars[i] = prev;
             }
-            
+
             if (current == '\u102F' && prev == '\u1037') {
-                chars[i-1] = current;
+                chars[i - 1] = current;
                 chars[i] = prev;
             }
 
             if (current == '\u103D' && prev == '\u103E') {
-                chars[i-1] = current;
+                chars[i - 1] = current;
                 chars[i] = prev;
             }
         }
@@ -92,12 +91,12 @@ public class SaiNawTextProcessor {
         String text = textBefore.toString();
         int endIndex = text.length();
         int startIndex = endIndex;
-        
+
         boolean isKilledOrStacked = false;
 
         for (int i = endIndex - 1; i >= 0; i--) {
             char c = text.charAt(i);
-            
+
             if (c == '\u103A' || c == '\u1039') {
                 isKilledOrStacked = true;
                 continue;
@@ -105,20 +104,18 @@ public class SaiNawTextProcessor {
 
             if (isConsonant(c)) {
                 if (isKilledOrStacked) {
-                    isKilledOrStacked = false; 
+                    isKilledOrStacked = false;
                 } else {
                     if (i > 0 && text.charAt(i - 1) == '\u1039') {
-                        continue; 
+                        continue;
                     }
                     startIndex = i;
-                    break; 
+                    break;
                 }
-            } 
-            else if (c == ' ' || c == '\n' || c == '\t') {
+            } else if (c == ' ' || c == '\n' || c == '\t') {
                 startIndex = i + 1;
                 break;
-            } 
-            else {
+            } else {
                 if (isKilledOrStacked) isKilledOrStacked = false;
             }
         }

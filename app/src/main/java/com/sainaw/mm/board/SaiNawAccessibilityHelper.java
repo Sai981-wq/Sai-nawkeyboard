@@ -5,8 +5,6 @@ import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.view.View;
@@ -19,10 +17,8 @@ import androidx.customview.widget.ExploreByTouchHelper;
 import java.util.List;
 
 public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
-    private final View view;
     private final Vibrator vibrator;
     private final AccessibilityManager accessibilityManager;
-    private final Handler handler = new Handler(Looper.getMainLooper()); // Handler ထည့်သွင်းထားသည်
     private final Rect tempRect = new Rect();
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
@@ -39,7 +35,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, 
                                      SaiNawPhoneticManager manager, SaiNawEmojiManager emojiManager) {
         super(view);
-        this.view = view;
         this.listener = listener;
         this.phoneticManager = manager;
         this.emojiManager = emojiManager;
@@ -155,11 +150,10 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 String desc = emojiManager.getMmDescription(emojiCode);
                 if (desc != null) {
                     performLongPressFeedback();
-                    announceTextWithDelay(desc); // Delay ထည့်ထားသော Method ကိုခေါ်ပါမည်
+                    announceTextImmediate(desc);
                     return true;
                 }
             }
-            // Fallback for other keys if needed
              if (key.codes[0] == -1 || key.codes[0] == -5) {
                  performLongPressFeedback();
                  return true;
@@ -168,14 +162,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         return false;
     }
 
-    // Delay ဖြင့် အသံထွက်ပေးမည့် Method
-    private void announceTextWithDelay(String text) {
+    private void announceTextImmediate(String text) {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-            handler.postDelayed(() -> {
-                AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
-                event.getText().add(text);
-                accessibilityManager.sendAccessibilityEvent(event);
-            }, 150); // 150ms Delay
+            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+            event.getText().add(text);
+            accessibilityManager.sendAccessibilityEvent(event);
         }
     }
 
