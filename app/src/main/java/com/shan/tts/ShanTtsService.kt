@@ -168,10 +168,10 @@ class ShanTtsService : TextToSpeechService() {
 
                 var pauseDuration = 0
                 when (unit) {
-                    "[NEWLINE]" -> pauseDuration = 600
+                    "[NEWLINE]" -> pauseDuration = 300
                     "။", ".", "?" -> pauseDuration = 500
                     "၊", ",", ";" -> pauseDuration = 200
-                    "[SPACE]" -> pauseDuration = 100
+                    "[SPACE]" -> pauseDuration = 200
                 }
 
                 if (pauseDuration > 0) {
@@ -233,8 +233,14 @@ class ShanTtsService : TextToSpeechService() {
                 val c = text.substring(i, i + 1)
                 if (c == "\n") {
                     res.add("[NEWLINE]")
+                    while (i + 1 < text.length && text.substring(i + 1, i + 2) == "\n") {
+                        i++
+                    }
                 } else if (c == " ") {
                     res.add("[SPACE]")
+                    while (i + 1 < text.length && text.substring(i + 1, i + 2) == " ") {
+                        i++
+                    }
                 } else if (c == "၊" || c == "," || c == "။" || c == "." || c == "?" || c == ";") {
                     res.add(c)
                 } else if (!c.matches("\\s+".toRegex())) {
