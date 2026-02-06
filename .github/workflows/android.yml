@@ -1,7 +1,9 @@
-name: Build Release APK
+name: Android Build
 
 on:
   push:
+    branches: [ "main" ]
+  pull_request:
     branches: [ "main" ]
 
 jobs:
@@ -11,6 +13,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        lfs: true
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -25,11 +29,9 @@ jobs:
     - name: Build Release APK
       run: ./gradlew assembleRelease
 
-    - name: Rename APK for clarity
-      run: mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/My-Myanmar-TTS.apk
-
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: My-Myanmar-TTS
-        path: app/build/outputs/apk/release/My-Myanmar-TTS.apk
+        name: app-release
+        path: app/build/outputs/apk/release/*.apk
+
