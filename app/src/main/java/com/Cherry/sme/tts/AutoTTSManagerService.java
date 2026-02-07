@@ -32,12 +32,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private final UtteranceProgressListener globalListener = new UtteranceProgressListener() {
         @Override
         public void onStart(String utteranceId) {
-            // LogCollector.addLog("Listener", "Started: " + utteranceId);
+             LogCollector.addLog("Listener", "Started: " + utteranceId);
         }
 
         @Override
         public void onDone(String utteranceId) {
-            // LogCollector.addLog("Listener", "Done: " + utteranceId);
+             LogCollector.addLog("Listener", "Done: " + utteranceId);
             releaseLatch(utteranceId);
         }
 
@@ -68,7 +68,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onCreate() {
         super.onCreate();
-        LogCollector.clear(); // Service စတိုင်း Log အဟောင်းရှင်းမယ်
+        LogCollector.clear(); 
         LogCollector.addLog("Service", "AutoTTS Service Created");
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
@@ -92,7 +92,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         stopRequested = false;
         String text = request.getText();
-        // LogCollector.addLog("Process", "Received text: " + (text.length() > 20 ? text.substring(0, 20) + "..." : text));
+        
+        // LogCollector.addLog("Process", "Received: " + text); // လိုအပ်ရင်ဖွင့်ကြည့်နိုင်သည်
 
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
 
@@ -102,6 +103,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
 
         synchronized (callback) {
+            // Callback start မခေါ်ခင် စောင့်ကြည့်မယ်၊ တချို့ Engine တွေက ဒါခေါ်ရင် Error တက်တတ်လို့
             callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
         }
 
@@ -122,20 +124,26 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 RemoteTextToSpeech targetEngine = getEngineByLang(chunk.lang);
                 if (targetEngine == null) {
-                    LogCollector.addLog("Error", "No engine found for: " + chunk.lang);
+                    LogCollector.addLog("Error", "No engine for: " + chunk.lang);
                     continue;
                 }
 
+                // ============================================================
+                // FIX: Language Setting Priority (mya -> mmr -> my)
+                // ============================================================
                 try {
                     if ("MYANMAR".equals(chunk.lang)) {
-                        int res = targetEngine.setLanguage(new Locale("my", "MM"));
+                        // SM Myanmar အသစ်အတွက် "mya" ကို အရင်ဆုံး စမ်းမယ်
+                        int res = targetEngine.setLanguage(new Locale("mya", "MM"));
+                        
                         if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                            LogCollector.addLog("Lang", "my_MM failed, trying mya_MM");
-                            res = targetEngine.setLanguage(new Locale("mya", "MM"));
+                            // မရရင် "mmr" ကို စမ်းမယ်
+                            res = targetEngine.setLanguage(new Locale("mmr", "MM"));
                         }
+                        
                         if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                            LogCollector.addLog("Lang", "mya_MM failed, trying mmr_MM");
-                            targetEngine.setLanguage(new Locale("mmr", "MM"));
+                            // နောက်ဆုံးမှ "my" ကို စမ်းမယ်
+                            targetEngine.setLanguage(new Locale("my", "MM"));
                         }
                     } else if ("SHAN".equals(chunk.lang)) {
                         targetEngine.setLanguage(new Locale("shn", "MM")); 
@@ -143,8 +151,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
                         targetEngine.setLanguage(Locale.US);
                     }
                 } catch (Exception e) {
-                    LogCollector.addLog("Exception", "SetLang Error: " + e.getMessage());
+                    LogCollector.addLog("LangError", e.getMessage());
                 }
+                // ============================================================
 
                 targetEngine.setSpeechRate(rate);
                 targetEngine.setPitch(pitch);
@@ -155,23 +164,29 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 CountDownLatch latch = new CountDownLatch(1);
                 utteranceLatches.put(utteranceId, latch);
 
+                // Speak Result ကို Log ထုတ်မယ်
                 int result = targetEngine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
-                
-                // ဒီနေရာမှာ အရေးကြီးဆုံး Log ပါ
+
                 if (result == TextToSpeech.ERROR) {
-                    LogCollector.addLog("Speak", "❌ Speak ERROR for: " + chunk.lang);
+                    LogCollector.addLog("Speak", "❌ ERROR for: " + chunk.lang);
                     utteranceLatches.remove(utteranceId);
                     continue;
-                } 
-                // else { LogCollector.addLog("Speak", "✅ Request sent: " + chunk.lang); }
+                } else {
+                    // LogCollector.addLog("Speak", "✅ Sent to " + targetEngine.getLabel());
+                }
 
                 try {
-                    long timeout = 2000 + (chunk.text.length() * 100L);
+                    // Timeout ကို ပိုမြန်အောင် လျှော့ချလိုက်မယ် (2000 -> 1500)
+                    long timeout = 1500 + (chunk.text.length() * 100L);
                     long waited = 0;
                     while (!stopRequested && waited < timeout) {
-                        boolean done = latch.await(50, TimeUnit.MILLISECONDS);
+                        boolean done = latch.await(100, TimeUnit.MILLISECONDS);
                         if (done) break;
-                        waited += 50;
+                        waited += 100;
+                    }
+                    // Timeout ဖြစ်သွားရင် Log မှတ်မယ်
+                    if (waited >= timeout) {
+                        // LogCollector.addLog("Timeout", "No callback from " + chunk.lang);
                     }
                 } catch (InterruptedException e) {
                     stopRequested = true;
@@ -183,8 +198,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 }
             }
         } catch (Exception e) {
-            LogCollector.addLog("Exception", "Synthesize Loop: " + e.getMessage());
-            e.printStackTrace();
+            LogCollector.addLog("Exception", "Loop: " + e.getMessage());
         } finally {
             synchronized (callback) {
                 callback.done();
@@ -206,6 +220,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (burmeseEngine != null) burmeseEngine.stop();
         if (englishEngine != null) englishEngine.stop();
     }
+    
+    // ... (ကျန်တဲ့ Method တွေ အတူတူပဲ) ...
 
     private RemoteTextToSpeech getEngineByLang(String lang) {
         if ("SHAN".equals(lang)) return shanEngine;
