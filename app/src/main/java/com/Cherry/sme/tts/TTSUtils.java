@@ -11,9 +11,9 @@ import java.util.regex.Pattern;
 
 public class TTSUtils {
 
-    // ရှမ်းစာလုံးများအတွက် သီးသန့် Range (Unicode)
+    // ရှမ်း Pattern
     private static final Pattern SHAN_PATTERN = Pattern.compile("[\\u1022\\u1035\\u1062\\u1064\\u1067-\\u106D\\u1075-\\u108F\\u1090-\\u109F\\uAA60-\\uAA7F]");
-    // မြန်မာစာလုံးများ Range (1000-109F)
+    // မြန်မာ Pattern
     private static final Pattern MYANMAR_PATTERN = Pattern.compile("[\\u1000-\\u109F]");
     
     private static final Map<String, String> wordMapping = new HashMap<>();
@@ -39,16 +39,13 @@ public class TTSUtils {
                     while ((line = reader.readLine()) != null) {
                         line = line.trim();
                         if (line.isEmpty()) continue;
-
                         String[] parts = line.split("=");
                         if (parts.length == 2) {
                             wordMapping.put(parts[0].trim(), parts[1].trim());
                         }
                     }
                     reader.close();
-                } catch (Exception e) {
-                    // Mapping file မရှိရင် ကျော်သွားမည်
-                }
+                } catch (Exception e) {}
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -60,7 +57,6 @@ public class TTSUtils {
         if (text == null || text.trim().isEmpty()) return chunks;
 
         StringBuilder currentBuffer = new StringBuilder();
-        // ပထမဆုံး စာလုံးရဲ့ Language ကိုယူပြီး စမယ်
         String currentLang = null;
 
         for (int i = 0; i < text.length(); i++) {
@@ -68,8 +64,8 @@ public class TTSUtils {
             String charStr = String.valueOf(c);
             String detectedLang;
 
-            // Space (သို့) ပုဒ်ဖြတ်ပုဒ်ရပ်များဖြစ်ရင် ယခင် Language အတိုင်း ဆက်သွားမယ်
             if (Character.isWhitespace(c) || isPunctuation(c)) {
+                // Space တွေ့ရင် လက်ရှိ Language အတိုင်းဆက်သွား၊ မရှိသေးရင် English
                 detectedLang = (currentLang != null) ? currentLang : "ENGLISH";
             } else {
                 detectedLang = identifyLang(charStr);
@@ -81,7 +77,6 @@ public class TTSUtils {
             } else if (currentLang.equals(detectedLang)) {
                 currentBuffer.append(c);
             } else {
-                // Language ပြောင်းသွားရင် လက်ရှိ Buffer ကို Chunk အဖြစ်သိမ်းမယ်
                 chunks.add(new Chunk(currentBuffer.toString(), currentLang));
                 currentBuffer.setLength(0);
                 currentBuffer.append(c);
@@ -89,7 +84,6 @@ public class TTSUtils {
             }
         }
 
-        // နောက်ဆုံးကျန်တာကို ထည့်မယ်
         if (currentBuffer.length() > 0) {
             if (currentLang == null) currentLang = "ENGLISH";
             chunks.add(new Chunk(currentBuffer.toString(), currentLang));
@@ -102,13 +96,13 @@ public class TTSUtils {
         if (wordMapping.containsKey(text)) {
             return wordMapping.get(text);
         }
-        // ရှမ်း Range ကို အရင်စစ်ရမယ် (မြန်မာ Range ထဲမှာ ရှမ်းတချို့ ပါနေလို့)
         if (SHAN_PATTERN.matcher(text).find()) {
             return "SHAN";
         }
         if (MYANMAR_PATTERN.matcher(text).find()) {
             return "MYANMAR";
         }
+        // ကျန်တာမှန်သမျှ English
         return "ENGLISH";
     }
 

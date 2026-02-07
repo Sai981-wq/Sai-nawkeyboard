@@ -5,26 +5,14 @@ import android.speech.tts.TextToSpeech;
 
 public class RemoteTextToSpeech extends TextToSpeech {
 
-    private String engineLabel;
+    // Constructor အဟောင်း (မသုံးတော့ပါ)
+    // public RemoteTextToSpeech(Context context, String engineName) { ... }
 
-    public RemoteTextToSpeech(Context context, String engineName) {
-        super(context, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                LogCollector.addLog("RemoteTTS", engineName + " : Initialized SUCCESS ✅");
-            } else {
-                LogCollector.addLog("RemoteTTS", engineName + " : Initialized FAILED ❌");
-            }
-        }, engineName);
-        this.engineLabel = engineName;
-    }
-
-    @Override
-    public int setOnUtteranceProgressListener(android.speech.tts.UtteranceProgressListener listener) {
-        return super.setOnUtteranceProgressListener(listener);
-    }
-    
-    public String getLabel() {
-        return engineLabel;
+    // Constructor အသစ် - Listener လက်ခံနိုင်အောင် ပြင်ထားသည်
+    public class RemoteTextToSpeech extends TextToSpeech {
+        public RemoteTextToSpeech(Context context, OnInitListener listener, String engineName) {
+            super(context, listener, engineName);
+        }
     }
 }
 
