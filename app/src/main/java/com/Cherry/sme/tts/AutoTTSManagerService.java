@@ -3,8 +3,6 @@ package com.cherry.sme.tts;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
-import android.media.AudioFormat;
-import android.media.AudioManager;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
@@ -13,7 +11,7 @@ import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
 import android.speech.tts.UtteranceProgressListener;
-import android.speech.tts.Voice; 
+import android.speech.tts.Voice;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -45,12 +43,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         @Override
         public void onError(String utteranceId) {
-            LogCollector.addLog("Listener", "Error on: " + utteranceId);
+            LogCollector.addLog("Listener", "Error (Generic) on: " + utteranceId);
             releaseLatch(utteranceId);
         }
 
         @Override
         public void onError(String utteranceId, int errorCode) {
+            // Error -5 (ERROR_OUTPUT) ဆိုရင် Audio Stream ပြဿနာပါ
             LogCollector.addLog("Listener", "Error (" + errorCode + ") on: " + utteranceId);
             releaseLatch(utteranceId);
         }
@@ -95,32 +94,26 @@ public class AutoTTSManagerService extends TextToSpeechService {
         stopRequested = false;
         String text = request.getText();
         
-        // စာသားအမှန်တကယ်ပါမပါ စစ်မယ်
         if (text == null || text.trim().isEmpty()) {
             callback.done();
             return;
         }
 
-        List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
-
-        if (chunks.isEmpty()) {
-            callback.done();
-            return;
-        }
-
-        synchronized (callback) {
-            callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
-        }
+        // IMPORTANT: callback.start() ကို ဖယ်လိုက်ပါပြီ။
+        // AutoTTS က ကိုယ်တိုင်အသံမထွက်ဘဲ Proxy အနေနဲ့ပဲ လုပ်မှာမို့ Audio Line ကို မပိတ်သင့်ပါဘူး။
 
         Bundle requestParams = request.getParams();
         Bundle params = new Bundle();
         if (requestParams != null) {
             params.putAll(requestParams);
         }
-        params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC);
+        // IMPORTANT: STREAM_MUSIC ကို အသေမသတ်မှတ်တော့ပါဘူး။ Engine ကို လွတ်လပ်ခွင့်ပေးလိုက်ပါတယ်။
+        // params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC);
 
         float rate = request.getSpeechRate() / 100.0f;
         float pitch = request.getPitch() / 100.0f;
+
+        List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
 
         try {
             for (TTSUtils.Chunk chunk : chunks) {
@@ -135,34 +128,21 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 try {
                     if ("MYANMAR".equals(chunk.lang)) {
+                        // 1. Language အရင်သတ်မှတ်မယ် (Standard "my" ကို ဦးစားပေး)
+                        int res = targetEngine.setLanguage(new Locale("my", "MM"));
+                        if (res < 0) res = targetEngine.setLanguage(new Locale("mya", "MM"));
+                        if (res < 0) res = targetEngine.setLanguage(new Locale("mya"));
                         
-                        // 1. Language အရင်သတ်မှတ်မယ် (mya -> my -> mmr)
-                        Locale[] localesToCheck = {
-                            new Locale("mya", "MM"),
-                            new Locale("mya"),
-                            new Locale("my", "MM"),
-                            new Locale("mmr", "MM")
-                        };
-                        
-                        int langResult = TextToSpeech.LANG_NOT_SUPPORTED;
-                        for (Locale loc : localesToCheck) {
-                            langResult = targetEngine.setLanguage(loc);
-                            if (langResult != TextToSpeech.LANG_MISSING_DATA && langResult != TextToSpeech.LANG_NOT_SUPPORTED) {
-                                // LogCollector.addLog("Lang", "Accepted: " + loc.toString());
-                                break;
-                            }
-                        }
-
-                        // 2. အရေးကြီးဆုံးအချက် - Voice ကိုပါ ရှာပြီး Set လုပ်မယ်
+                        // 2. Voice ကို အတိအကျ ရှာပြီး သတ်မှတ်မယ် (ဒါက အရေးကြီးဆုံးပါ)
                         try {
                             Set<Voice> voices = targetEngine.getVoices();
                             if (voices != null) {
                                 for (Voice v : voices) {
+                                    // Voice နာမည်ထဲမှာ myanmar သို့ my ပါရင် ယူမယ်
                                     String vName = v.getName().toLowerCase();
-                                    // Voice နာမည်ထဲမှာ my, myanmar, burmese ပါရင် ရွေးမယ်
                                     if (vName.contains("my") || vName.contains("burmese") || vName.contains("mya")) {
                                         targetEngine.setVoice(v);
-                                        // LogCollector.addLog("Voice", "Set Voice to: " + v.getName());
+                                        // LogCollector.addLog("Voice", "Selected: " + v.getName());
                                         break;
                                     }
                                 }
@@ -189,25 +169,28 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 CountDownLatch latch = new CountDownLatch(1);
                 utteranceLatches.put(utteranceId, latch);
 
+                // Log text to debug
+                // LogCollector.addLog("Speaking", "[" + chunk.lang + "] " + (chunk.text.length() > 10 ? chunk.text.substring(0,10) + "..." : chunk.text));
+
                 int result = targetEngine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
                 if (result == TextToSpeech.ERROR) {
-                    LogCollector.addLog("Speak", "❌ ERROR for: " + chunk.lang);
+                    LogCollector.addLog("Speak", "❌ ERROR (Start) for: " + chunk.lang);
                     utteranceLatches.remove(utteranceId);
                     continue;
                 }
 
                 try {
-                    // Timeout တိုးပေးထားမယ် (3.5 Sec)
-                    long timeout = 3500 + (chunk.text.length() * 100L);
+                    // Timeout
+                    long timeout = 4000 + (chunk.text.length() * 100L);
                     long waited = 0;
                     while (!stopRequested && waited < timeout) {
-                        boolean done = latch.await(100, TimeUnit.MILLISECONDS);
+                        boolean done = latch.await(50, TimeUnit.MILLISECONDS);
                         if (done) break;
-                        waited += 100;
+                        waited += 50;
                     }
                     if (waited >= timeout) {
-                        LogCollector.addLog("Timeout", "No audio from " + chunk.lang);
+                         LogCollector.addLog("Timeout", "Waited too long for: " + chunk.lang);
                     }
                 } catch (InterruptedException e) {
                     stopRequested = true;
@@ -220,7 +203,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
             }
         } catch (Exception e) {
             LogCollector.addLog("Exception", "Loop: " + e.getMessage());
+            e.printStackTrace();
         } finally {
+            // Callback done ကို နောက်ဆုံးမှ ခေါ်မယ်
             synchronized (callback) {
                 callback.done();
             }
