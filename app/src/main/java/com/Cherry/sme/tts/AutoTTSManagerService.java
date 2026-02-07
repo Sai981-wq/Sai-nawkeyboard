@@ -112,18 +112,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         Bundle params = new Bundle();
 
-        // ============================================================
-        // FIX: Use String literal "audioAttributes" instead of constant
-        // to avoid "cannot find symbol" error during build.
-        // ============================================================
         AudioAttributes audioAttributes = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
         
-        // KEY_PARAM_AUDIO_ATTRIBUTES အစား "audioAttributes" ဟု တိုက်ရိုက်သုံးခြင်း
         params.putParcelable("audioAttributes", audioAttributes);
-
 
         float rate = request.getSpeechRate() / 100.0f;
         float pitch = request.getPitch() / 100.0f;
