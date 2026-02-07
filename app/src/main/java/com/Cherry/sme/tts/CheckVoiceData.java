@@ -12,10 +12,7 @@ public class CheckVoiceData extends Activity {
         super.onCreate(savedInstanceState);
         
         ArrayList<String> available = new ArrayList<>();
-        available.add("eng-USA"); // English ပြန်ထည့်ထားသည်
-        available.add("my-MM");
-        available.add("mya-MM");
-        available.add("shn-MM");
+        available.add("eng-USA");
 
         Intent data = new Intent();
         data.putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, available);

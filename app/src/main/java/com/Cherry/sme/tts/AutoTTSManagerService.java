@@ -3,6 +3,7 @@ package com.cherry.sme.tts;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
+import android.media.AudioManager;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
@@ -45,13 +46,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         @Override
         public void onError(String utteranceId) {
-            LogCollector.addLog("Listener", "Error on: " + utteranceId);
             releaseLatch(utteranceId);
         }
 
         @Override
         public void onError(String utteranceId, int errorCode) {
-            LogCollector.addLog("Listener", "Error (" + errorCode + ") on: " + utteranceId);
             releaseLatch(utteranceId);
         }
 
@@ -70,7 +69,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onCreate() {
         super.onCreate();
-        LogCollector.clear(); 
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
         initAllEngines();
@@ -79,22 +77,18 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initAllEngines() {
         shutdownEngines();
 
-        // Use getApplicationContext() to avoid context leaks and binding issues
         shanEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
             if(status == TextToSpeech.SUCCESS) isShanReady = true;
-            LogCollector.addLog("ShanTTS", status == TextToSpeech.SUCCESS ? "Ready" : "Failed");
         }, getBestEngine("pref_engine_shan"));
         shanEngine.setOnUtteranceProgressListener(globalListener);
         
         burmeseEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
             if(status == TextToSpeech.SUCCESS) isBurmeseReady = true;
-            LogCollector.addLog("BurmeseTTS", status == TextToSpeech.SUCCESS ? "Ready" : "Failed");
         }, getBestEngine("pref_engine_myanmar"));
         burmeseEngine.setOnUtteranceProgressListener(globalListener);
 
         englishEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
             if(status == TextToSpeech.SUCCESS) isEnglishReady = true;
-            LogCollector.addLog("EnglishTTS", status == TextToSpeech.SUCCESS ? "Ready" : "Failed");
         }, getBestEngine("pref_engine_english"));
         englishEngine.setOnUtteranceProgressListener(globalListener);
     }
@@ -115,13 +109,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
             return;
         }
 
-        // ============================================================
-        // FIX for Error (-5): Do NOT copy params from request.
-        // System params often conflict with Target Engine's output stream.
-        // ============================================================
         Bundle params = new Bundle();
-        // params.putAll(request.getParams()); // <--- REMOVED (This caused Error -5)
-        // params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC); // <--- REMOVED
+        params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, 10);
 
         float rate = request.getSpeechRate() / 100.0f;
         float pitch = request.getPitch() / 100.0f;
@@ -168,18 +157,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 targetEngine.setPitch(pitch);
 
                 String utteranceId = String.valueOf(System.nanoTime());
-                // Only pass Utterance ID. Do not pass Stream keys.
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
                 
                 CountDownLatch latch = new CountDownLatch(1);
                 utteranceLatches.put(utteranceId, latch);
 
-                // Use QUEUE_ADD to queue chunks
                 int result = targetEngine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
                 if (result == TextToSpeech.ERROR) {
                     utteranceLatches.remove(utteranceId);
-                    LogCollector.addLog("Speak", "Error calling speak for " + chunk.lang);
                     continue;
                 }
 
