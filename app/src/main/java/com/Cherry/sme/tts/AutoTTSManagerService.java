@@ -13,8 +13,10 @@ import android.speech.tts.SynthesisRequest;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
 import android.speech.tts.UtteranceProgressListener;
+import android.speech.tts.Voice; 
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -93,6 +95,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
         stopRequested = false;
         String text = request.getText();
         
+        // စာသားအမှန်တကယ်ပါမပါ စစ်မယ်
+        if (text == null || text.trim().isEmpty()) {
+            callback.done();
+            return;
+        }
+
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
 
         if (chunks.isEmpty()) {
@@ -127,18 +135,40 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 try {
                     if ("MYANMAR".equals(chunk.lang)) {
-                        int res = targetEngine.setLanguage(new Locale("mya", "MM"));
                         
-                        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                            res = targetEngine.setLanguage(new Locale("mya"));
+                        // 1. Language အရင်သတ်မှတ်မယ် (mya -> my -> mmr)
+                        Locale[] localesToCheck = {
+                            new Locale("mya", "MM"),
+                            new Locale("mya"),
+                            new Locale("my", "MM"),
+                            new Locale("mmr", "MM")
+                        };
+                        
+                        int langResult = TextToSpeech.LANG_NOT_SUPPORTED;
+                        for (Locale loc : localesToCheck) {
+                            langResult = targetEngine.setLanguage(loc);
+                            if (langResult != TextToSpeech.LANG_MISSING_DATA && langResult != TextToSpeech.LANG_NOT_SUPPORTED) {
+                                // LogCollector.addLog("Lang", "Accepted: " + loc.toString());
+                                break;
+                            }
                         }
 
-                        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                             res = targetEngine.setLanguage(new Locale("mmr", "MM"));
-                        }
-                        
-                        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                             targetEngine.setLanguage(new Locale("my", "MM"));
+                        // 2. အရေးကြီးဆုံးအချက် - Voice ကိုပါ ရှာပြီး Set လုပ်မယ်
+                        try {
+                            Set<Voice> voices = targetEngine.getVoices();
+                            if (voices != null) {
+                                for (Voice v : voices) {
+                                    String vName = v.getName().toLowerCase();
+                                    // Voice နာမည်ထဲမှာ my, myanmar, burmese ပါရင် ရွေးမယ်
+                                    if (vName.contains("my") || vName.contains("burmese") || vName.contains("mya")) {
+                                        targetEngine.setVoice(v);
+                                        // LogCollector.addLog("Voice", "Set Voice to: " + v.getName());
+                                        break;
+                                    }
+                                }
+                            }
+                        } catch (Exception ve) {
+                            LogCollector.addLog("VoiceError", ve.getMessage());
                         }
 
                     } else if ("SHAN".equals(chunk.lang)) {
@@ -168,12 +198,16 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 }
 
                 try {
-                    long timeout = 3000 + (chunk.text.length() * 100L);
+                    // Timeout တိုးပေးထားမယ် (3.5 Sec)
+                    long timeout = 3500 + (chunk.text.length() * 100L);
                     long waited = 0;
                     while (!stopRequested && waited < timeout) {
                         boolean done = latch.await(100, TimeUnit.MILLISECONDS);
                         if (done) break;
                         waited += 100;
+                    }
+                    if (waited >= timeout) {
+                        LogCollector.addLog("Timeout", "No audio from " + chunk.lang);
                     }
                 } catch (InterruptedException e) {
                     stopRequested = true;
