@@ -3,7 +3,6 @@ package com.cherry.sme.tts;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
-import android.media.AudioManager;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
@@ -24,11 +23,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private RemoteTextToSpeech shanEngine;
     private RemoteTextToSpeech burmeseEngine;
-    private RemoteTextToSpeech englishEngine; // English Engine ပြန်ထည့်ထားသည်
+    private RemoteTextToSpeech englishEngine;
     
     private volatile boolean isShanReady = false;
     private volatile boolean isBurmeseReady = false;
-    private volatile boolean isEnglishReady = false; // Flag ပြန်ထည့်ထားသည်
+    private volatile boolean isEnglishReady = false;
 
     private SharedPreferences prefs;
     private volatile boolean stopRequested = false;
@@ -80,22 +79,20 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void initAllEngines() {
         shutdownEngines();
 
-        // Shan Engine
-        shanEngine = new RemoteTextToSpeech(this, status -> {
+        // Use getApplicationContext() to avoid context leaks and binding issues
+        shanEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
             if(status == TextToSpeech.SUCCESS) isShanReady = true;
             LogCollector.addLog("ShanTTS", status == TextToSpeech.SUCCESS ? "Ready" : "Failed");
         }, getBestEngine("pref_engine_shan"));
         shanEngine.setOnUtteranceProgressListener(globalListener);
         
-        // Burmese Engine
-        burmeseEngine = new RemoteTextToSpeech(this, status -> {
+        burmeseEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
             if(status == TextToSpeech.SUCCESS) isBurmeseReady = true;
             LogCollector.addLog("BurmeseTTS", status == TextToSpeech.SUCCESS ? "Ready" : "Failed");
         }, getBestEngine("pref_engine_myanmar"));
         burmeseEngine.setOnUtteranceProgressListener(globalListener);
 
-        // English Engine (ပြန်ထည့်ထားသည်)
-        englishEngine = new RemoteTextToSpeech(this, status -> {
+        englishEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
             if(status == TextToSpeech.SUCCESS) isEnglishReady = true;
             LogCollector.addLog("EnglishTTS", status == TextToSpeech.SUCCESS ? "Ready" : "Failed");
         }, getBestEngine("pref_engine_english"));
@@ -118,12 +115,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
             return;
         }
 
-        Bundle requestParams = request.getParams();
+        // ============================================================
+        // FIX for Error (-5): Do NOT copy params from request.
+        // System params often conflict with Target Engine's output stream.
+        // ============================================================
         Bundle params = new Bundle();
-        if (requestParams != null) {
-            params.putAll(requestParams);
-        }
-        params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC);
+        // params.putAll(request.getParams()); // <--- REMOVED (This caused Error -5)
+        // params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC); // <--- REMOVED
 
         float rate = request.getSpeechRate() / 100.0f;
         float pitch = request.getPitch() / 100.0f;
@@ -162,7 +160,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     } else if ("SHAN".equals(chunk.lang)) {
                         targetEngine.setLanguage(new Locale("shn")); 
                     } else {
-                        // English အတွက် US Locale သတ်မှတ်
                         targetEngine.setLanguage(Locale.US);
                     }
                 } catch (Exception e) {}
@@ -171,15 +168,18 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 targetEngine.setPitch(pitch);
 
                 String utteranceId = String.valueOf(System.nanoTime());
+                // Only pass Utterance ID. Do not pass Stream keys.
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
                 
                 CountDownLatch latch = new CountDownLatch(1);
                 utteranceLatches.put(utteranceId, latch);
 
+                // Use QUEUE_ADD to queue chunks
                 int result = targetEngine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
 
                 if (result == TextToSpeech.ERROR) {
                     utteranceLatches.remove(utteranceId);
+                    LogCollector.addLog("Speak", "Error calling speak for " + chunk.lang);
                     continue;
                 }
 
@@ -216,7 +216,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         while (System.currentTimeMillis() - start < timeout) {
             if ("SHAN".equals(lang) && isShanReady) return true;
             if ("MYANMAR".equals(lang) && isBurmeseReady) return true;
-            if ("ENGLISH".equals(lang) && isEnglishReady) return true; // English Check
+            if ("ENGLISH".equals(lang) && isEnglishReady) return true;
             try { Thread.sleep(50); } catch (InterruptedException e) {}
         }
         return false;
@@ -231,13 +231,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
         utteranceLatches.clear();
         if (shanEngine != null) shanEngine.stop();
         if (burmeseEngine != null) burmeseEngine.stop();
-        if (englishEngine != null) englishEngine.stop(); // Stop English
+        if (englishEngine != null) englishEngine.stop();
     }
 
     private RemoteTextToSpeech getEngineByLang(String lang) {
         if ("SHAN".equals(lang)) return shanEngine;
         if ("MYANMAR".equals(lang)) return burmeseEngine;
-        return englishEngine; // Default to English
+        return englishEngine;
     }
 
     private String getBestEngine(String prefKey) {
