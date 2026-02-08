@@ -13,6 +13,7 @@ public class TTSUtils {
 
     private static final Pattern SHAN_PATTERN = Pattern.compile("[\\u1022\\u1035\\u1062\\u1064\\u1067-\\u106D\\u1075-\\u108F\\u1090-\\u109F\\uaa60-\\uaa7f]");
     private static final Pattern MYANMAR_PATTERN = Pattern.compile("[\\u1000-\\u109F]");
+    private static final Pattern ENGLISH_CHAR_PATTERN = Pattern.compile("[a-zA-Z]");
     
     private static final Map<String, String> wordMapping = new HashMap<>();
 
@@ -82,6 +83,14 @@ public class TTSUtils {
                     detectedLang = "SHAN";
                 } else if (MYANMAR_PATTERN.matcher(word).find()) {
                     detectedLang = "MYANMAR";
+                } else {
+                    if (ENGLISH_CHAR_PATTERN.matcher(word).find()) {
+                        detectedLang = "ENGLISH";
+                    } else if (currentLang != null) {
+                        detectedLang = currentLang;
+                    } else {
+                        detectedLang = "ENGLISH";
+                    }
                 }
             }
 

@@ -122,6 +122,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
         float rate = request.getSpeechRate() / 100.0f;
         float pitch = request.getPitch() / 100.0f;
 
+        RemoteTextToSpeech previousEngine = null;
+
         try {
             for (TTSUtils.Chunk chunk : chunks) {
                 if (stopRequested) break;
@@ -133,6 +135,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 if (!waitForEngine(chunk.lang)) {
                     continue;
                 }
+
+                if (previousEngine != null && previousEngine != targetEngine) {
+                    try {
+                        Thread.sleep(150); 
+                    } catch (InterruptedException e) {}
+                }
+                previousEngine = targetEngine;
 
                 try {
                     if ("MYANMAR".equals(chunk.lang)) {
