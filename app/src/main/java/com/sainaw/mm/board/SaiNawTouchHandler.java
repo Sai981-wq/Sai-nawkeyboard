@@ -22,6 +22,7 @@ public class SaiNawTouchHandler {
     private boolean isLongPressHandled = false;
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
+    private static final int CANCEL_THRESHOLD_Y = -100;
 
     private final Runnable spaceLongPressTask;
     private final Runnable shiftLongPressTask;
@@ -129,8 +130,13 @@ public class SaiNawTouchHandler {
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
+                if (y < CANCEL_THRESHOLD_Y) {
+                    cancelAllLongPress();
+                    lastHoverKeyIndex = -1;
+                    return; 
+                }
+
                 if (!isLongPressHandled && lastHoverKeyIndex != -1) {
-                    // Using Math.max(0, y) logic implicitly here by checking lastHoverKeyIndex
                     if (lastHoverKeyIndex < layoutManager.getCurrentKeys().size()) {
                         Keyboard.Key key = layoutManager.getCurrentKeys().get(lastHoverKeyIndex);
                         if (key.codes[0] != -100) {
@@ -181,6 +187,10 @@ public class SaiNawTouchHandler {
         if (layoutManager.getCurrentKeys() == null) return -1;
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         
+        if (y < CANCEL_THRESHOLD_Y) {
+            return -1;
+        }
+
         int touchY = Math.max(0, y);
         int bestKeyIndex = -1;
         int minDistance = Integer.MAX_VALUE;
