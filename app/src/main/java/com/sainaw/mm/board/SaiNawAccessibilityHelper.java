@@ -27,6 +27,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private OnAccessibilityKeyListener listener;
     private SaiNawPhoneticManager phoneticManager;
     private SaiNawEmojiManager emojiManager;
+    private int lastFoundIndex = HOST_ID;
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
@@ -66,20 +67,43 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         
-        int touchPadding = 12; 
+        int closestIndex = HOST_ID;
+        int minDistSq = Integer.MAX_VALUE;
+        int stickyBonus = 900; 
+        int maxDistThresholdSq = 2500; 
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
-            if (key.codes[0] == -100) continue; 
+            if (key.codes[0] == -100) continue;
             
-            Rect keyRect = new Rect(key.x, key.y, key.x + key.width, key.y + key.height);
-            keyRect.inset(touchPadding, touchPadding);
-            
-            if (keyRect.contains(x, y)) {
-                return i;
+            int dx = 0;
+            int dy = 0;
+
+            if (x < key.x) dx = key.x - x;
+            else if (x > key.x + key.width) dx = x - (key.x + key.width);
+
+            if (y < key.y) dy = key.y - y;
+            else if (y > key.y + key.height) dy = y - (key.y + key.height);
+
+            int distSq = (dx * dx) + (dy * dy);
+
+            if (i == lastFoundIndex) {
+                distSq -= stickyBonus; 
+            }
+
+            if (distSq < minDistSq) {
+                minDistSq = distSq;
+                closestIndex = i;
             }
         }
-        return HOST_ID;
+
+        if (minDistSq > maxDistThresholdSq) {
+            lastFoundIndex = HOST_ID;
+            return HOST_ID;
+        }
+
+        lastFoundIndex = closestIndex;
+        return closestIndex;
     }
 
     @Override
