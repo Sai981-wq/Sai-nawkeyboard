@@ -1,11 +1,15 @@
 package com.cherry.sme.tts;
 
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.speech.tts.SynthesisCallback;
@@ -33,6 +37,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private SharedPreferences prefs;
     private volatile boolean stopRequested = false;
+    private PowerManager.WakeLock wakeLock;
+    private AudioManager audioManager;
     
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
@@ -72,6 +78,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
+        
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (pm != null) {
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:ForceSpeak");
+            wakeLock.setReferenceCounted(false);
+        }
+
         initAllEngines();
     }
 
@@ -94,29 +109,52 @@ public class AutoTTSManagerService extends TextToSpeechService {
         englishEngine.setOnUtteranceProgressListener(globalListener);
     }
 
+    private void requestAudioFocus() {
+        if (audioManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                AudioAttributes playbackAttributes = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build();
+                AudioFocusRequest focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                        .setAudioAttributes(playbackAttributes)
+                        .build();
+                audioManager.requestAudioFocus(focusRequest);
+            } else {
+                audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK);
+            }
+        }
+    }
+
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
+        if (wakeLock != null && !wakeLock.isHeld()) {
+            wakeLock.acquire(10 * 60 * 1000L);
+        }
+        
+        requestAudioFocus();
+
         stopRequested = false;
         String text = request.getText();
         
         if (text == null || text.trim().isEmpty()) {
+            releaseWakeLock();
             callback.done();
             return;
         }
 
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
         if (chunks.isEmpty()) {
+            releaseWakeLock();
             callback.done();
             return;
         }
 
         Bundle params = new Bundle();
-
         AudioAttributes audioAttributes = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
-        
         params.putParcelable("audioAttributes", audioAttributes);
 
         float rate = request.getSpeechRate() / 100.0f;
@@ -137,9 +175,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 }
 
                 if (previousEngine != null && previousEngine != targetEngine) {
-                    try {
-                        Thread.sleep(150); 
-                    } catch (InterruptedException e) {}
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        targetEngine.playSilentUtterance(50, TextToSpeech.QUEUE_ADD, null);
+                    }
                 }
                 previousEngine = targetEngine;
 
@@ -205,9 +243,18 @@ public class AutoTTSManagerService extends TextToSpeechService {
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
+            releaseWakeLock();
             synchronized (callback) {
                 callback.done();
             }
+        }
+    }
+
+    private void releaseWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try {
+                wakeLock.release();
+            } catch (Exception e) {}
         }
     }
 
@@ -231,6 +278,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
             while (latch.getCount() > 0) latch.countDown();
         }
         utteranceLatches.clear();
+        releaseWakeLock();
+        
         if (shanEngine != null) shanEngine.stop();
         if (burmeseEngine != null) burmeseEngine.stop();
         if (englishEngine != null) englishEngine.stop();
@@ -271,6 +320,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onDestroy() {
         super.onDestroy();
         shutdownEngines();
+        releaseWakeLock();
     }
 
     @Override protected int onIsLanguageAvailable(String l, String c, String v) { return TextToSpeech.LANG_AVAILABLE; }

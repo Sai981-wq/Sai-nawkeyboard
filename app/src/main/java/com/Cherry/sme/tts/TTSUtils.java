@@ -72,21 +72,37 @@ public class TTSUtils {
             }
 
             String trimmedWord = word.trim();
-            String detectedLang = "ENGLISH";
+            String detectedLang = null;
             boolean isMapForced = false;
 
             if (wordMapping.containsKey(trimmedWord)) {
                 detectedLang = wordMapping.get(trimmedWord);
                 isMapForced = true;
             } else {
-                if (SHAN_PATTERN.matcher(word).find()) {
+                boolean isShan = SHAN_PATTERN.matcher(word).find();
+                boolean isMyanmar = MYANMAR_PATTERN.matcher(word).find();
+                boolean isEnglish = ENGLISH_CHAR_PATTERN.matcher(word).find();
+
+                if (isShan) {
                     detectedLang = "SHAN";
-                } else if (MYANMAR_PATTERN.matcher(word).find()) {
+                } else if (isMyanmar) {
                     detectedLang = "MYANMAR";
+                } else if (isEnglish) {
+                    detectedLang = "ENGLISH";
                 } else {
-                    if (ENGLISH_CHAR_PATTERN.matcher(word).find()) {
-                        detectedLang = "ENGLISH";
-                    } else if (currentLang != null) {
+                    boolean isForeign = false;
+                    for (char c : word.toCharArray()) {
+                        if (Character.isLetter(c)) {
+                            isForeign = true; 
+                            break;
+                        }
+                    }
+                    
+                    if (isForeign) {
+                        continue; 
+                    }
+                    
+                    if (currentLang != null) {
                         detectedLang = currentLang;
                     } else {
                         detectedLang = "ENGLISH";
