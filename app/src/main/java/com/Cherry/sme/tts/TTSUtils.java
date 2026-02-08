@@ -11,9 +11,8 @@ import java.util.regex.Pattern;
 
 public class TTSUtils {
 
-    private static final Pattern SHAN_SPECIFIC_PATTERN = Pattern.compile("[\\u1022\\u1035\\u1062\\u1064\\u1067-\\u106D\\u1075-\\u108F\\u1090-\\u109F\\uaa60-\\uaa7f]");
-    private static final Pattern MYANMAR_RANGE_PATTERN = Pattern.compile("[\\u1000-\\u109F]");
-    private static final Pattern ENGLISH_CHAR_PATTERN = Pattern.compile("[a-zA-Z]");
+    private static final Pattern SHAN_PATTERN = Pattern.compile("[\\u1022\\u1035\\u1062\\u1064\\u1067-\\u106D\\u1075-\\u108F\\u1090-\\u109F\\uaa60-\\uaa7f]");
+    private static final Pattern MYANMAR_PATTERN = Pattern.compile("[\\u1000-\\u109F]");
     
     private static final Map<String, String> wordMapping = new HashMap<>();
 
@@ -72,40 +71,22 @@ public class TTSUtils {
             }
 
             String trimmedWord = word.trim();
-            String detectedLang = null;
+            String detectedLang = "ENGLISH";
+            boolean isMapForced = false;
 
             if (wordMapping.containsKey(trimmedWord)) {
                 detectedLang = wordMapping.get(trimmedWord);
+                isMapForced = true;
             } else {
-                boolean hasShanSpecific = SHAN_SPECIFIC_PATTERN.matcher(word).find();
-                boolean hasMyanmarRange = MYANMAR_RANGE_PATTERN.matcher(word).find();
-                boolean hasEnglish = ENGLISH_CHAR_PATTERN.matcher(word).find();
-
-                if (hasShanSpecific) {
+                if (SHAN_PATTERN.matcher(word).find()) {
                     detectedLang = "SHAN";
-                } else if (hasMyanmarRange) {
+                } else if (MYANMAR_PATTERN.matcher(word).find()) {
                     detectedLang = "MYANMAR";
-                } else if (hasEnglish) {
-                    detectedLang = "ENGLISH";
-                } else {
-                    boolean isForeign = false;
-                    for (char c : word.toCharArray()) {
-                        if (Character.isLetter(c)) { 
-                            isForeign = true;
-                            break;
-                        }
-                    }
-
-                    if (isForeign) {
-                        continue; 
-                    }
-
-                    if (currentLang != null) {
-                        detectedLang = currentLang;
-                    } else {
-                        detectedLang = "ENGLISH";
-                    }
                 }
+            }
+
+            if (!isMapForced && "SHAN".equals(currentLang) && "MYANMAR".equals(detectedLang)) {
+                detectedLang = "SHAN";
             }
 
             if (currentLang == null) {
@@ -128,4 +109,3 @@ public class TTSUtils {
         return chunks;
     }
 }
-
