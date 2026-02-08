@@ -67,43 +67,84 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         
-        int closestIndex = HOST_ID;
-        int minDistSq = Integer.MAX_VALUE;
-        int stickyBonus = 900; 
-        int maxDistThresholdSq = 2500; 
+        int touchY = Math.max(0, y);
+        int bestKeyIndex = HOST_ID;
+        int minDistance = Integer.MAX_VALUE;
+        int stickinessThreshold = 20;
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key.codes[0] == -100) continue;
-            
-            int dx = 0;
-            int dy = 0;
 
-            if (x < key.x) dx = key.x - x;
-            else if (x > key.x + key.width) dx = x - (key.x + key.width);
+            Rect touchRect = new Rect(key.x, key.y, key.x + key.width, key.y + key.height);
 
-            if (y < key.y) dy = key.y - y;
-            else if (y > key.y + key.height) dy = y - (key.y + key.height);
-
-            int distSq = (dx * dx) + (dy * dy);
-
-            if (i == lastFoundIndex) {
-                distSq -= stickyBonus; 
+            if (isFunctionalKey(key.codes[0])) {
+                touchRect.inset(15, 20, 15, 15);
+            } else {
+                touchRect.inset(-5, 0, -5, -20);
             }
 
-            if (distSq < minDistSq) {
-                minDistSq = distSq;
-                closestIndex = i;
+            if (touchRect.contains(x, touchY)) {
+                if (i == lastFoundIndex) {
+                    return i;
+                }
+                
+                if (lastFoundIndex != HOST_ID && 
+                    isFunctionalKey(key.codes[0]) && 
+                    !isFunctionalKey(keys.get(lastFoundIndex).codes[0])) {
+                     
+                     if (Math.abs(x - keys.get(lastFoundIndex).x) < stickinessThreshold ||
+                         Math.abs(touchY - keys.get(lastFoundIndex).y) < stickinessThreshold) {
+                         continue;
+                     }
+                }
+
+                bestKeyIndex = i;
+                
+                if (!isFunctionalKey(key.codes[0])) {
+                    lastFoundIndex = i;
+                    return i;
+                }
             }
         }
 
-        if (minDistSq > maxDistThresholdSq) {
-            lastFoundIndex = HOST_ID;
-            return HOST_ID;
-        }
+        if (bestKeyIndex == HOST_ID) {
+            int maxDist = 50 * 50;
+            for (int i = 0; i < keys.size(); i++) {
+                Keyboard.Key key = keys.get(i);
+                int dist = getDistanceSq(key, x, touchY);
+                
+                if (isFunctionalKey(key.codes[0])) {
+                    dist += 2000;
+                }
 
-        lastFoundIndex = closestIndex;
-        return closestIndex;
+                if (dist < minDistance && dist < maxDist) {
+                    minDistance = dist;
+                    bestKeyIndex = i;
+                }
+            }
+        }
+        
+        if (bestKeyIndex != HOST_ID) {
+            lastFoundIndex = bestKeyIndex;
+        }
+        return bestKeyIndex;
+    }
+
+    private boolean isFunctionalKey(int code) {
+        return code == -5 || code == -1 || code == -4 || code == -2 || code == -101;
+    }
+
+    private int getDistanceSq(Keyboard.Key key, int x, int y) {
+        int dx = 0;
+        int dy = 0;
+        if (x < key.x) dx = key.x - x;
+        else if (x > key.x + key.width) dx = x - (key.x + key.width);
+        
+        if (y < key.y) dy = key.y - y;
+        else if (y > key.y + key.height) dy = y - (key.y + key.height);
+        
+        return (dx * dx) + (dy * dy);
     }
 
     @Override
