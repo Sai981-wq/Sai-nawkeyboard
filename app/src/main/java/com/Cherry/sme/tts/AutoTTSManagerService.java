@@ -1,15 +1,10 @@
 package com.cherry.sme.tts;
 
-import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
-import android.media.AudioFocusRequest;
-import android.media.AudioManager;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.speech.tts.SynthesisCallback;
@@ -35,10 +30,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private volatile boolean isBurmeseReady = false;
     private volatile boolean isEnglishReady = false;
 
+    private boolean isShanConfigured = false;
+    private boolean isBurmeseConfigured = false;
+    private boolean isEnglishConfigured = false;
+
     private SharedPreferences prefs;
     private volatile boolean stopRequested = false;
-    private PowerManager.WakeLock wakeLock;
-    private AudioManager audioManager;
     
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
@@ -78,20 +75,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
-        
-        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        
-        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        if (pm != null) {
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AutoTTS:ForceSpeak");
-            wakeLock.setReferenceCounted(false);
-        }
-
         initAllEngines();
     }
 
     private void initAllEngines() {
         shutdownEngines();
+        
+        isShanConfigured = false;
+        isBurmeseConfigured = false;
+        isEnglishConfigured = false;
 
         shanEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
             if(status == TextToSpeech.SUCCESS) isShanReady = true;
@@ -109,61 +101,70 @@ public class AutoTTSManagerService extends TextToSpeechService {
         englishEngine.setOnUtteranceProgressListener(globalListener);
     }
 
-    private void requestAudioFocus() {
-        if (audioManager != null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                AudioAttributes playbackAttributes = new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build();
-                AudioFocusRequest focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-                        .setAudioAttributes(playbackAttributes)
-                        .build();
-                audioManager.requestAudioFocus(focusRequest);
-            } else {
-                audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK);
+    private void configureEngineIfNeeded(RemoteTextToSpeech engine, String lang) {
+        try {
+            if ("MYANMAR".equals(lang) && !isBurmeseConfigured) {
+                int res = engine.setLanguage(new Locale("mya"));
+                if (res < 0) res = engine.setLanguage(new Locale("mya", "MM"));
+                if (res < 0) engine.setLanguage(new Locale("my"));
+                
+                try {
+                    Set<Voice> voices = engine.getVoices();
+                    if (voices != null) {
+                        for (Voice v : voices) {
+                            String vName = v.getName().toLowerCase();
+                            if (vName.contains("my") || vName.contains("burmese") || vName.contains("mya")) {
+                                engine.setVoice(v);
+                                break;
+                            }
+                        }
+                    }
+                } catch (Exception ve) {}
+                isBurmeseConfigured = true;
+
+            } else if ("SHAN".equals(lang) && !isShanConfigured) {
+                engine.setLanguage(new Locale("shn")); 
+                isShanConfigured = true;
+
+            } else if ("ENGLISH".equals(lang) && !isEnglishConfigured) {
+                engine.setLanguage(Locale.US);
+                isEnglishConfigured = true;
             }
-        }
+        } catch (Exception e) {}
     }
 
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
-        if (wakeLock != null && !wakeLock.isHeld()) {
-            wakeLock.acquire(10 * 60 * 1000L);
-        }
-        
-        requestAudioFocus();
-
         stopRequested = false;
         String text = request.getText();
         
         if (text == null || text.trim().isEmpty()) {
-            releaseWakeLock();
             callback.done();
             return;
         }
 
         List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
         if (chunks.isEmpty()) {
-            releaseWakeLock();
             callback.done();
             return;
         }
 
         Bundle params = new Bundle();
+
         AudioAttributes audioAttributes = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
+        
         params.putParcelable("audioAttributes", audioAttributes);
 
         float rate = request.getSpeechRate() / 100.0f;
         float pitch = request.getPitch() / 100.0f;
 
-        RemoteTextToSpeech previousEngine = null;
-
         try {
-            for (TTSUtils.Chunk chunk : chunks) {
+            for (int i = 0; i < chunks.size(); i++) {
+                TTSUtils.Chunk chunk = chunks.get(i);
+                
                 if (stopRequested) break;
                 if (chunk.text.trim().isEmpty()) continue;
 
@@ -174,38 +175,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     continue;
                 }
 
-                if (previousEngine != null && previousEngine != targetEngine) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        targetEngine.playSilentUtterance(50, TextToSpeech.QUEUE_ADD, null);
-                    }
-                }
-                previousEngine = targetEngine;
-
-                try {
-                    if ("MYANMAR".equals(chunk.lang)) {
-                        int res = targetEngine.setLanguage(new Locale("mya"));
-                        if (res < 0) res = targetEngine.setLanguage(new Locale("mya", "MM"));
-                        if (res < 0) targetEngine.setLanguage(new Locale("my"));
-                        
-                        try {
-                            Set<Voice> voices = targetEngine.getVoices();
-                            if (voices != null) {
-                                for (Voice v : voices) {
-                                    String vName = v.getName().toLowerCase();
-                                    if (vName.contains("my") || vName.contains("burmese") || vName.contains("mya")) {
-                                        targetEngine.setVoice(v);
-                                        break;
-                                    }
-                                }
-                            }
-                        } catch (Exception ve) {}
-
-                    } else if ("SHAN".equals(chunk.lang)) {
-                        targetEngine.setLanguage(new Locale("shn")); 
-                    } else {
-                        targetEngine.setLanguage(Locale.US);
-                    }
-                } catch (Exception e) {}
+                configureEngineIfNeeded(targetEngine, chunk.lang);
 
                 targetEngine.setSpeechRate(rate);
                 targetEngine.setPitch(pitch);
@@ -224,12 +194,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 }
 
                 try {
-                    long timeout = 4000 + (chunk.text.length() * 100L);
-                    long waited = 0;
-                    while (!stopRequested && waited < timeout) {
-                        boolean done = latch.await(50, TimeUnit.MILLISECONDS);
-                        if (done) break;
-                        waited += 50;
+                    long timeout = 5000 + (chunk.text.length() * 150L);
+                    boolean done = latch.await(timeout, TimeUnit.MILLISECONDS);
+                    
+                    if (!done) {
+                        utteranceLatches.remove(utteranceId);
+                    }
+
+                    if (i < chunks.size() - 1) {
+                         Thread.sleep(15); 
                     }
                 } catch (InterruptedException e) {
                     stopRequested = true;
@@ -243,23 +216,14 @@ public class AutoTTSManagerService extends TextToSpeechService {
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            releaseWakeLock();
             synchronized (callback) {
                 callback.done();
             }
         }
     }
 
-    private void releaseWakeLock() {
-        if (wakeLock != null && wakeLock.isHeld()) {
-            try {
-                wakeLock.release();
-            } catch (Exception e) {}
-        }
-    }
-
     private boolean waitForEngine(String lang) {
-        long timeout = 2000;
+        long timeout = 2500;
         long start = System.currentTimeMillis();
         
         while (System.currentTimeMillis() - start < timeout) {
@@ -278,8 +242,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
             while (latch.getCount() > 0) latch.countDown();
         }
         utteranceLatches.clear();
-        releaseWakeLock();
-        
         if (shanEngine != null) shanEngine.stop();
         if (burmeseEngine != null) burmeseEngine.stop();
         if (englishEngine != null) englishEngine.stop();
@@ -320,7 +282,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onDestroy() {
         super.onDestroy();
         shutdownEngines();
-        releaseWakeLock();
     }
 
     @Override protected int onIsLanguageAvailable(String l, String c, String v) { return TextToSpeech.LANG_AVAILABLE; }
