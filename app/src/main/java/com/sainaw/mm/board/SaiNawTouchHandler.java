@@ -22,7 +22,9 @@ public class SaiNawTouchHandler {
     private boolean isLongPressHandled = false;
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
-    private static final int CANCEL_THRESHOLD_Y = -100;
+
+    // Adjusted Threshold: Reduced to -60 to be more sensitive for Shan/Myanmar/Emoji layouts
+    private static final int CANCEL_THRESHOLD_Y = -60;
 
     private final Runnable spaceLongPressTask;
     private final Runnable shiftLongPressTask;
@@ -268,4 +270,3 @@ public class SaiNawTouchHandler {
         return (dx * dx) + (dy * dy);
     }
 }
-
