@@ -3,15 +3,15 @@ plugins {
 }
 
 android {
-    namespace 'com.cherry.sme.tts'
-    compileSdk 36
+    namespace 'com.sainaw.mm.board'
+    compileSdk 34
 
     defaultConfig {
-        applicationId "com.cherry.sme.tts"
-        minSdk 24
-        targetSdk 36
-        versionCode 7
-        versionName "2.5.0"
+        applicationId "com.sainaw.mm.board"
+        minSdk 21
+        targetSdk 34
+        versionCode 4
+        versionName "4.0"
     }
 
     signingConfigs {
@@ -21,29 +21,21 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled true
-            shrinkResources true
+            minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
     }
-
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-
-    lintOptions {
-        checkReleaseBuilds false
-        abortOnError false
-    }
 }
 
 dependencies {
-    implementation fileTree(dir: 'libs', include: ['*.jar'])
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'com.google.android.material:material:1.12.0'
-    implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 }
 
 File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
@@ -56,3 +48,4 @@ if (signingPropertiesFile.exists()) {
     android.signingConfigs.release.keyAlias = props['keyAlias']
     android.signingConfigs.release.keyPassword = props['keyPassword']
 }
+
