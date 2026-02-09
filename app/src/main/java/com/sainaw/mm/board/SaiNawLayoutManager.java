@@ -52,12 +52,14 @@ public class SaiNawLayoutManager {
         loadLanguageSettings(prefs);
         try {
             boolean showNumRow = prefs.getBoolean("number_row", false);
-            String engSuffix = showNumRow ? "_num" : "";
+            String suffix = showNumRow ? "_num" : "";
             
-            qwertyKeyboard = new Keyboard(context, service.getResId("qwerty" + engSuffix));
+            qwertyKeyboard = new Keyboard(context, service.getResId("qwerty" + suffix));
             qwertyShiftKeyboard = new Keyboard(context, service.getResId("qwerty_shift"));
-            myanmarKeyboard = new Keyboard(context, service.getResId("myanmar"));
+            
+            myanmarKeyboard = new Keyboard(context, service.getResId("myanmar" + suffix));
             myanmarShiftKeyboard = new Keyboard(context, service.getResId("myanmar_shift"));
+            
             shanKeyboard = new Keyboard(context, service.getResId("shan"));
             shanShiftKeyboard = new Keyboard(context, service.getResId("shan_shift"));
             
@@ -75,6 +77,7 @@ public class SaiNawLayoutManager {
         } catch (Exception e) {
             e.printStackTrace();
             qwertyKeyboard = new Keyboard(context, service.getResId("qwerty"));
+            myanmarKeyboard = new Keyboard(context, service.getResId("myanmar"));
         }
     }
 
