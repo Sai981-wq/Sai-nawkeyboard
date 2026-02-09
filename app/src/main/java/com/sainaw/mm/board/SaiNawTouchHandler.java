@@ -187,6 +187,7 @@ public class SaiNawTouchHandler {
 
         int bestKeyIndex = -1;
         int stickinessThreshold = 20;
+        int sideExpansion = 20; 
 
         int size = keys.size();
         for (int i = 0; i < size; i++) {
@@ -198,9 +199,9 @@ public class SaiNawTouchHandler {
             tempRect.set(key.x, key.y, key.x + key.width, key.y + key.height);
 
             if (isFunctionalKey(key.codes[0])) {
-                tempRect.inset(15, 20);
+                tempRect.inset(-sideExpansion, -20);
             } else {
-                tempRect.inset(-5, 0);
+                tempRect.inset(-sideExpansion, 0);
                 tempRect.bottom += 20;
             }
 
