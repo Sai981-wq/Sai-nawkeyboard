@@ -68,7 +68,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null || keys.isEmpty()) return HOST_ID;
         
-        // Strict Check: y < 0 ဖြစ်ရင် ဘာမှ မရွေးဘူး
         if (y < 0) return HOST_ID;
 
         int touchY = y;
@@ -83,20 +82,16 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             Keyboard.Key key = keys.get(i);
             if (key == null || key.codes == null || key.codes.length == 0 || key.codes[0] == -100) continue;
 
-            Rect touchRect = new Rect(key.x, key.y, key.x + key.width, key.y + key.height);
+            tempRect.set(key.x, key.y, key.x + key.width, key.y + key.height);
 
             if (isFunctionalKey(key.codes[0])) {
-                touchRect.inset(15, 20, 15, 15);
+                tempRect.inset(15, 20);
             } else {
-                if (key.y < 10) {
-                    // Top Row အတွက် အပေါ်ဘက်ကို မချဲ့ပါ
-                    touchRect.inset(-5, 0, -5, -20);
-                } else {
-                    touchRect.inset(-5, 0, -5, -20);
-                }
+                tempRect.inset(-5, 0);
+                tempRect.bottom += 20;
             }
 
-            if (touchRect.contains(x, touchY)) {
+            if (tempRect.contains(x, touchY)) {
                 if (i == lastFoundIndex) {
                     return i;
                 }
@@ -120,7 +115,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             }
         }
 
-        // Fallback Logic (အပေါ်ဘောင်ကျော်နေရင် မရှာတော့ပါ)
         if (bestKeyIndex == HOST_ID) {
             if (y < 0) return HOST_ID;
 

@@ -16,6 +16,7 @@ public class SaiNawTouchHandler {
     private final SaiNawFeedbackManager feedbackManager;
     private final SaiNawEmojiManager emojiManager;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Rect tempRect = new Rect();
     
     private boolean isLiftToType = true;
     private int lastHoverKeyIndex = -1;
@@ -127,7 +128,6 @@ public class SaiNawTouchHandler {
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
-                // y < 0 ဖြစ်တာနဲ့ ချက်ချင်း Cancel လုပ်မယ် (QWERTY လိုမျိုး)
                 if (y < 0) {
                     cancelAllLongPress();
                     lastHoverKeyIndex = -1;
@@ -183,11 +183,9 @@ public class SaiNawTouchHandler {
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         if (keys == null || keys.isEmpty()) return -1;
         
-        // Strict Check: အပေါ်ဘောင်ကျော်တာနဲ့ ချက်ချင်း -1 ပြန်မယ်
         if (y < 0) return -1;
 
         int bestKeyIndex = -1;
-        // Tolerance မသုံးတော့ပါ (Strict Touch)
         int stickinessThreshold = 20;
 
         int size = keys.size();
@@ -197,21 +195,16 @@ public class SaiNawTouchHandler {
             Keyboard.Key key = keys.get(i);
             if (key == null || key.codes[0] == -100) continue;
 
-            Rect touchRect = new Rect(key.x, key.y, key.x + key.width, key.y + key.height);
+            tempRect.set(key.x, key.y, key.x + key.width, key.y + key.height);
 
             if (isFunctionalKey(key.codes[0])) {
-                touchRect.inset(15, 20, 15, 15);
+                tempRect.inset(15, 20);
             } else {
-                if (key.y < 10) {
-                    // Top Row အတွက် အပေါ်ဘက်ကို လုံးဝ မချဲ့တော့ပါ (Strict Top Boundary)
-                    // ဒါမှ Slide Up လုပ်ရင် ချက်ချင်းလွတ်သွားမှာ ဖြစ်ပါတယ်
-                    touchRect.inset(-5, 0, -5, -20);
-                } else {
-                    touchRect.inset(-5, 0, -5, -20);
-                }
+                tempRect.inset(-5, 0);
+                tempRect.bottom += 20;
             }
 
-            if (touchRect.contains(x, y)) {
+            if (tempRect.contains(x, y)) {
                 if (i == lastHoverKeyIndex) {
                     return i;
                 }
@@ -234,9 +227,6 @@ public class SaiNawTouchHandler {
                 }
             }
         }
-        
-        // အကယ်၍ ဘယ် Key မှ မထိရင် -1 ပဲ ပြန်မယ် (Fallback Distance Check မလုပ်တော့ပါ)
-        // ဒါမှ Cancel လုပ်ချင်လို့ လွတ်နေတဲ့နေရာ ဆွဲလိုက်ရင် ဘေးကကောင် ပါမလာမှာပါ
         return bestKeyIndex;
     }
 
