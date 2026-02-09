@@ -1,108 +1,147 @@
 package com.sainaw.mm.board;
 
-import android.content.ContentValues;
-import android.content.Context;
-import android.database.Cursor;
-import android.database.sqlite.SQLiteDatabase;
-import android.database.sqlite.SQLiteOpenHelper;
-import java.util.ArrayList;
-import java.util.List;
+public class SaiNawTextProcessor {
 
-public class SuggestionDB extends SQLiteOpenHelper {
+    private static final char ZWSP = '\u200B';
 
-    private static final String DATABASE_NAME = "sainaw_dict.db";
-    private static final int DATABASE_VERSION = 1;
-    private static final String TABLE_SUGGESTIONS = "suggestions";
-    private static final String COLUMN_ID = "id";
-    private static final String COLUMN_WORD = "word";
-    private static final String COLUMN_FREQUENCY = "frequency";
-
-    private final SaiNawTextProcessor textProcessor;
-
-    public SuggestionDB(Context context) {
-        super(context, DATABASE_NAME, null, DATABASE_VERSION);
-        this.textProcessor = new SaiNawTextProcessor();
+    public boolean isConsonant(int c) {
+        return (c >= '\u1000' && c <= '\u102A') ||
+               (c == '\u103F') ||
+               (c >= '\u1040' && c <= '\u1049') ||
+               (c == '\u104E') ||
+               (c >= '\u1050' && c <= '\u1055') ||
+               (c >= '\u1075' && c <= '\u1081') ||
+               (c >= '\uA9E0' && c <= '\uA9E6') ||
+               (c >= '\uAA60' && c <= '\uAA6F');
     }
 
-    @Override
-    public void onCreate(SQLiteDatabase db) {
-        String CREATE_TABLE = "CREATE TABLE " + TABLE_SUGGESTIONS + "("
-                + COLUMN_ID + " INTEGER PRIMARY KEY AUTOINCREMENT,"
-                + COLUMN_WORD + " TEXT UNIQUE,"
-                + COLUMN_FREQUENCY + " INTEGER DEFAULT 1" + ")";
-        db.execSQL(CREATE_TABLE);
+    public boolean isMedial(int code) {
+        return (code >= '\u103B' && code <= '\u103E') || (code == '\u1082');
     }
 
-    @Override
-    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE_SUGGESTIONS);
-        onCreate(db);
+    public String normalizeText(String input) {
+        if (input == null || input.isEmpty()) return input;
+
+        String cleanStr = input.replace(String.valueOf(ZWSP), "");
+        char[] chars = cleanStr.toCharArray();
+        int len = chars.length;
+
+        for (int i = 1; i < len; i++) {
+            char current = chars[i];
+            char prev = chars[i - 1];
+
+            if (prev == '\u1031' || prev == '\u1084') {
+                if (isMedial(current)) {
+                    chars[i - 1] = current;
+                    chars[i] = prev;
+                } else if (isConsonant(current)) {
+                    boolean shouldSwap = true;
+
+                    if (i + 1 < len) {
+                        char nextChar = chars[i + 1];
+                        if (nextChar == '\u103A' || nextChar == '\u1039') {
+                            shouldSwap = false;
+                        }
+                    }
+
+                    if (shouldSwap) {
+                        boolean isAlreadyAttached = false;
+                        if (i >= 2) {
+                            char prevPrev = chars[i - 2];
+                            if (isConsonant(prevPrev) || isMedial(prevPrev)) {
+                                isAlreadyAttached = true;
+                            }
+                        }
+
+                        if (!isAlreadyAttached) {
+                            chars[i - 1] = current;
+                            chars[i] = prev;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if (current == '\u102D' && (prev == '\u102F' || prev == '\u1030')) {
+                chars[i - 1] = current;
+                chars[i] = prev;
+            }
+
+            if (current == '\u102F' && prev == '\u1036') {
+                chars[i - 1] = current;
+                chars[i] = prev;
+            }
+
+            if (current == '\u102F' && prev == '\u1037') {
+                chars[i - 1] = current;
+                chars[i] = prev;
+            }
+
+            if (current == '\u103D' && prev == '\u103E') {
+                chars[i - 1] = current;
+                chars[i] = prev;
+            }
+        }
+        return new String(chars);
     }
 
-    public void insertWord(String word) {
-        if (word == null || word.trim().isEmpty()) return;
+    public String getSyllableToSpeak(CharSequence textBefore) {
+        if (textBefore == null || textBefore.length() == 0) return null;
 
-        String normalizedWord = textProcessor.normalizeText(word);
-        if (normalizedWord == null || normalizedWord.trim().isEmpty()) return;
+        String text = textBefore.toString();
+        int endIndex = text.length();
+        int startIndex = endIndex;
 
-        SQLiteDatabase db = this.getWritableDatabase();
-        Cursor cursor = null;
+        boolean isKilledOrStacked = false;
 
-        try {
-            cursor = db.query(TABLE_SUGGESTIONS, new String[]{COLUMN_FREQUENCY},
-                    COLUMN_WORD + "=?", new String[]{normalizedWord},
-                    null, null, null);
+        for (int i = endIndex - 1; i >= 0; i--) {
+            char c = text.charAt(i);
 
-            if (cursor != null && cursor.moveToFirst()) {
-                int currentFreq = cursor.getInt(0);
-                ContentValues values = new ContentValues();
-                values.put(COLUMN_FREQUENCY, currentFreq + 1);
-                db.update(TABLE_SUGGESTIONS, values, COLUMN_WORD + "=?", new String[]{normalizedWord});
+            if (c == '\u103A' || c == '\u1039') {
+                isKilledOrStacked = true;
+                continue;
+            }
+
+            if (isConsonant(c)) {
+                if (isKilledOrStacked) {
+                    isKilledOrStacked = false;
+                } else {
+                    if (i > 0 && text.charAt(i - 1) == '\u1039') {
+                        continue;
+                    }
+                    startIndex = i;
+                    break;
+                }
+            } else if (c == ' ' || c == '\n' || c == '\t') {
+                startIndex = i + 1;
+                break;
             } else {
-                ContentValues values = new ContentValues();
-                values.put(COLUMN_WORD, normalizedWord);
-                values.put(COLUMN_FREQUENCY, 1);
-                db.insert(TABLE_SUGGESTIONS, null, values);
-            }
-        } finally {
-            if (cursor != null) {
-                cursor.close();
+                if (isKilledOrStacked) isKilledOrStacked = false;
             }
         }
+
+        if (startIndex < endIndex) {
+            String syllable = text.substring(startIndex, endIndex);
+            return syllable.replace(String.valueOf(ZWSP), "");
+        }
+        return null;
     }
 
-    public List<String> getSuggestions(String input) {
-        List<String> suggestions = new ArrayList<>();
-        if (input == null || input.trim().isEmpty()) return suggestions;
+    public String getWordForEcho(CharSequence textBefore) {
+        if (textBefore == null || textBefore.length() == 0) return null;
 
-        String normalizedInput = textProcessor.normalizeText(input);
-        
-        SQLiteDatabase db = this.getReadableDatabase();
-        Cursor cursor = null;
-
-        try {
-            cursor = db.query(TABLE_SUGGESTIONS, new String[]{COLUMN_WORD},
-                    COLUMN_WORD + " LIKE ?", new String[]{normalizedInput + "%"},
-                    null, null, COLUMN_FREQUENCY + " DESC", "5");
-
-            if (cursor != null && cursor.moveToFirst()) {
-                do {
-                    suggestions.add(cursor.getString(0));
-                } while (cursor.moveToNext());
-            }
-        } finally {
-            if (cursor != null) {
-                cursor.close();
+        String text = textBefore.toString();
+        int lastSpaceIndex = -1;
+        for (int i = text.length() - 1; i >= 0; i--) {
+            char c = text.charAt(i);
+            if (c == ' ' || c == '\n' || c == '\t') {
+                lastSpaceIndex = i;
+                break;
             }
         }
-        return suggestions;
-    }
 
-    public void deleteWord(String word) {
-        if (word == null) return;
-        String normalizedWord = textProcessor.normalizeText(word);
-        SQLiteDatabase db = this.getWritableDatabase();
-        db.delete(TABLE_SUGGESTIONS, COLUMN_WORD + "=?", new String[]{normalizedWord});
+        String word = (lastSpaceIndex == -1) ? text : text.substring(lastSpaceIndex + 1);
+        return word.replace(String.valueOf(ZWSP), "").trim();
     }
 }
 
