@@ -68,11 +68,13 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null || keys.isEmpty()) return HOST_ID;
         
+        // Strict Check: y < 0 ဖြစ်ရင် ဘာမှ မရွေးဘူး
+        if (y < 0) return HOST_ID;
+
         int touchY = y;
         int bestKeyIndex = HOST_ID;
         int minDistance = Integer.MAX_VALUE;
         int stickinessThreshold = 20;
-        int verticalSlipTolerance = 40;
 
         int size = keys.size();
         for (int i = 0; i < size; i++) {
@@ -87,7 +89,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 touchRect.inset(15, 20, 15, 15);
             } else {
                 if (key.y < 10) {
-                    touchRect.top -= verticalSlipTolerance; 
+                    // Top Row အတွက် အပေါ်ဘက်ကို မချဲ့ပါ
                     touchRect.inset(-5, 0, -5, -20);
                 } else {
                     touchRect.inset(-5, 0, -5, -20);
@@ -118,10 +120,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             }
         }
 
+        // Fallback Logic (အပေါ်ဘောင်ကျော်နေရင် မရှာတော့ပါ)
         if (bestKeyIndex == HOST_ID) {
-            if (y < -verticalSlipTolerance) {
-                return HOST_ID;
-            }
+            if (y < 0) return HOST_ID;
 
             int maxDist = 50 * 50;
             for (int i = 0; i < size; i++) {

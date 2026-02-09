@@ -22,9 +22,6 @@ public class SaiNawTouchHandler {
     private boolean isLongPressHandled = false;
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
-    
-    private static final int SEEK_TOLERANCE = 40;
-    private static final int COMMIT_TOLERANCE = 20;
 
     private final Runnable spaceLongPressTask;
     private final Runnable shiftLongPressTask;
@@ -130,7 +127,8 @@ public class SaiNawTouchHandler {
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
-                if (y < -COMMIT_TOLERANCE) {
+                // y < 0 ဖြစ်တာနဲ့ ချက်ချင်း Cancel လုပ်မယ် (QWERTY လိုမျိုး)
+                if (y < 0) {
                     cancelAllLongPress();
                     lastHoverKeyIndex = -1;
                     return; 
@@ -185,8 +183,11 @@ public class SaiNawTouchHandler {
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         if (keys == null || keys.isEmpty()) return -1;
         
+        // Strict Check: အပေါ်ဘောင်ကျော်တာနဲ့ ချက်ချင်း -1 ပြန်မယ်
+        if (y < 0) return -1;
+
         int bestKeyIndex = -1;
-        int minDistance = Integer.MAX_VALUE;
+        // Tolerance မသုံးတော့ပါ (Strict Touch)
         int stickinessThreshold = 20;
 
         int size = keys.size();
@@ -202,7 +203,8 @@ public class SaiNawTouchHandler {
                 touchRect.inset(15, 20, 15, 15);
             } else {
                 if (key.y < 10) {
-                    touchRect.top -= SEEK_TOLERANCE; 
+                    // Top Row အတွက် အပေါ်ဘက်ကို လုံးဝ မချဲ့တော့ပါ (Strict Top Boundary)
+                    // ဒါမှ Slide Up လုပ်ရင် ချက်ချင်းလွတ်သွားမှာ ဖြစ်ပါတယ်
                     touchRect.inset(-5, 0, -5, -20);
                 } else {
                     touchRect.inset(-5, 0, -5, -20);
@@ -232,47 +234,14 @@ public class SaiNawTouchHandler {
                 }
             }
         }
-
-        if (bestKeyIndex == -1) {
-            if (y < -SEEK_TOLERANCE) {
-                return -1;
-            }
-
-            int maxDist = 50 * 50;
-            for (int i = 0; i < size; i++) {
-                if (i >= keys.size()) break;
-                
-                Keyboard.Key key = keys.get(i);
-                int dist = getDistanceSq(key, x, y);
-                
-                if (isFunctionalKey(key.codes[0])) {
-                    dist += 2000;
-                }
-
-                if (dist < minDistance && dist < maxDist) {
-                    minDistance = dist;
-                    bestKeyIndex = i;
-                }
-            }
-        }
         
+        // အကယ်၍ ဘယ် Key မှ မထိရင် -1 ပဲ ပြန်မယ် (Fallback Distance Check မလုပ်တော့ပါ)
+        // ဒါမှ Cancel လုပ်ချင်လို့ လွတ်နေတဲ့နေရာ ဆွဲလိုက်ရင် ဘေးကကောင် ပါမလာမှာပါ
         return bestKeyIndex;
     }
 
     private boolean isFunctionalKey(int code) {
         return code == -5 || code == -1 || code == -4 || code == -2 || code == -101;
-    }
-
-    private int getDistanceSq(Keyboard.Key key, int x, int y) {
-        int dx = 0;
-        int dy = 0;
-        if (x < key.x) dx = key.x - x;
-        else if (x > key.x + key.width) dx = x - (key.x + key.width);
-        
-        if (y < key.y) dy = key.y - y;
-        else if (y > key.y + key.height) dy = y - (key.y + key.height);
-        
-        return (dx * dx) + (dy * dy);
     }
 }
 
