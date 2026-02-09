@@ -3,7 +3,7 @@
     android:keyWidth="10%p"
     android:horizontalGap="0px"
     android:verticalGap="0px"
-    android:keyHeight="60dp">
+    android:keyHeight="50dp">
 
     <Row>
         <Key android:codes="4161" android:keyLabel="၁" android:keyWidth="9%p" android:keyEdgeFlags="left"/>
@@ -17,6 +17,17 @@
         <Key android:codes="4169" android:keyLabel="၉" android:keyWidth="9%p"/>
         <Key android:codes="4160" android:keyLabel="၀" android:keyWidth="9%p"/>
         <Key android:codes="-10" android:keyLabel="🎤" android:keyWidth="10%p" android:keyEdgeFlags="right"/>
+    </Row>
+
+    <Row>
+        <Key android:codes="4104" android:keyLabel="ဈ" android:keyWidth="12.5%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="4125" android:keyLabel="ဝ" android:keyWidth="12.5%p"/>
+        <Key android:codes="4107" android:keyLabel="ဋ" android:keyWidth="12.5%p"/>
+        <Key android:codes="4138" android:keyLabel="ဪ" android:keyWidth="12.5%p"/>
+        <Key android:codes="4123" android:keyLabel="ရ" android:keyWidth="12.5%p"/>
+        <Key android:codes="4098" android:keyLabel="ဂ" android:keyWidth="12.5%p"/>
+        <Key android:codes="4127" android:keyLabel="ဟ" android:keyWidth="12.5%p"/>
+        <Key android:codes="4175" android:keyLabel="၏" android:keyWidth="12.5%p" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row>
