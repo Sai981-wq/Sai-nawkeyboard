@@ -22,7 +22,9 @@ public class SaiNawTouchHandler {
     private boolean isLongPressHandled = false;
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
-    private static final int VERTICAL_SLIP_TOLERANCE = 40;
+    
+    private static final int SEEK_TOLERANCE = 40;
+    private static final int COMMIT_TOLERANCE = 20;
 
     private final Runnable spaceLongPressTask;
     private final Runnable shiftLongPressTask;
@@ -128,7 +130,7 @@ public class SaiNawTouchHandler {
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
-                if (y < -VERTICAL_SLIP_TOLERANCE) {
+                if (y < -COMMIT_TOLERANCE) {
                     cancelAllLongPress();
                     lastHoverKeyIndex = -1;
                     return; 
@@ -200,7 +202,7 @@ public class SaiNawTouchHandler {
                 touchRect.inset(15, 20, 15, 15);
             } else {
                 if (key.y < 10) {
-                    touchRect.top -= VERTICAL_SLIP_TOLERANCE; 
+                    touchRect.top -= SEEK_TOLERANCE; 
                     touchRect.inset(-5, 0, -5, -20);
                 } else {
                     touchRect.inset(-5, 0, -5, -20);
@@ -232,7 +234,7 @@ public class SaiNawTouchHandler {
         }
 
         if (bestKeyIndex == -1) {
-            if (y < -VERTICAL_SLIP_TOLERANCE) {
+            if (y < -SEEK_TOLERANCE) {
                 return -1;
             }
 
