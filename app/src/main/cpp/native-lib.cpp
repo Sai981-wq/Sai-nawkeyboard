@@ -1,6 +1,12 @@
 #include <jni.h>
 #include <string>
+#include <vector>
 #include "sonic.h"
+#include "libopus/include/opus.h"
+
+OpusDecoder *decoder = nullptr;
+int OPUS_SAMPLE_RATE = 16000;
+int OPUS_CHANNELS = 1;
 
 extern "C" {
 
@@ -50,4 +56,44 @@ Java_com_shan_tts_ShanTtsService_sonicSamplesAvailable(JNIEnv *env, jobject thiz
     return sonicSamplesAvailable((sonicStream) streamId);
 }
 
+JNIEXPORT void JNICALL
+Java_com_shan_tts_ShanTtsService_initOpusDecoder(JNIEnv *env, jobject thiz, jint sampleRate) {
+    int error;
+    OPUS_SAMPLE_RATE = sampleRate;
+    if (decoder != nullptr) {
+        opus_decoder_destroy(decoder);
+    }
+    decoder = opus_decoder_create(OPUS_SAMPLE_RATE, OPUS_CHANNELS, &error);
 }
+
+JNIEXPORT jshortArray JNICALL
+Java_com_shan_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jbyteArray encodedData, jint len) {
+    if (decoder == nullptr) return nullptr;
+
+    jbyte *opusData = env->GetByteArrayElements(encodedData, nullptr);
+    std::vector<opus_int16> pcmOutput(5760);
+
+    int samplesDecoded = opus_decode(decoder, (const unsigned char *)opusData, len, pcmOutput.data(), 5760, 0);
+
+    env->ReleaseByteArrayElements(encodedData, opusData, 0);
+
+    if (samplesDecoded < 0) {
+        return nullptr;
+    }
+
+    jshortArray result = env->NewShortArray(samplesDecoded);
+    env->SetShortArrayRegion(result, 0, samplesDecoded, pcmOutput.data());
+
+    return result;
+}
+
+JNIEXPORT void JNICALL
+Java_com_shan_tts_ShanTtsService_destroyOpusDecoder(JNIEnv *env, jobject thiz) {
+    if (decoder != nullptr) {
+        opus_decoder_destroy(decoder);
+        decoder = nullptr;
+    }
+}
+
+}
+
