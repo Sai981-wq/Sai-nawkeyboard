@@ -61,7 +61,7 @@ class ShanTtsService : TextToSpeechService() {
 
     private fun copyAssetToFile(filename: String) {
         val file = File(filesDir, filename)
-        if (!file.exists()) { 
+        if (!file.exists() || file.length() == 0L) { 
             try {
                 assets.open(filename).use { input ->
                     FileOutputStream(file).use { output ->
