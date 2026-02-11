@@ -2,20 +2,19 @@ cmake_minimum_required(VERSION 3.4.1)
 
 project(shan_tts)
 
-# --- 1. Libopus Setup (Opus ဖိုင်များ လမ်းကြောင်း) ---
+# --- 1. Libopus Setup ---
 set(OPUS_DIR ${CMAKE_SOURCE_DIR}/libopus)
 
-# Include ဖိုဒါများကို ညွှန်ပြခြင်း
+# Include Directories
 include_directories(
         ${OPUS_DIR}/include
         ${OPUS_DIR}/celt
         ${OPUS_DIR}/silk
-        ${OPUS_DIR}/silk/fixed  # Fixed Point အတွက်
+        ${OPUS_DIR}/silk/fixed
         ${CMAKE_SOURCE_DIR}
 )
 
-# Opus Source Files များကို စုစည်းခြင်း
-# (မှတ်ချက်: silk/float မပါဘဲ silk/fixed ကိုပဲ ယူပါမယ်)
+# --- 2. Gather Sources (အားလုံးကို အရင်ယူမယ်) ---
 file(GLOB OPUS_SOURCES
         "${OPUS_DIR}/src/*.c"
         "${OPUS_DIR}/celt/*.c"
@@ -23,23 +22,37 @@ file(GLOB OPUS_SOURCES
         "${OPUS_DIR}/silk/fixed/*.c"
 )
 
-# --- 2. Build Definitions (အရေးကြီးဆုံးအပိုင်း) ---
-# FIXED_POINT ကို ထည့်ပေးလိုက်မှ main_FLP.h ကို မရှာတော့ဘဲ main_FIX.h ကို သုံးပါလိမ့်မယ်
-add_definitions(
-        -DOPUS_BUILD 
-        -DUSE_ALLOCA 
-        -DHAVE_LRINT 
-        -DHAVE_LRINTF 
-        -DFIXED_POINT
+# --- 3. Exclude Unwanted Files (မလိုချင်တာတွေ ပြန်ထုတ်မယ်) ---
+# Demo ဖိုင်တွေနဲ့ Tool ဖိုင်တွေမှာ main() ပါလို့ Error တက်စေပါတယ်
+file(GLOB OPUS_EXCLUDED
+        "${OPUS_DIR}/src/*_demo.c"        # demo ဖိုင်များ (ဥပမာ repacketizer_demo.c)
+        "${OPUS_DIR}/celt/*_demo.c"       # celt demo ဖိုင်များ (ဥပမာ opus_custom_demo.c)
+        "${OPUS_DIR}/src/opus_compare.c"  # compare tool
+        "${OPUS_DIR}/src/qext_compare.c"  # qext tool (Error တက်နေသောကောင်)
+        "${OPUS_DIR}/src/mlp_train.c"     # training tool
 )
 
-# --- 3. Build Library (Sonic + Opus ပေါင်းစပ်ခြင်း) ---
+# စာရင်းထဲကနေ မလိုတဲ့ဖိုင်တွေကို ဖယ်ရှားခြင်း
+if (OPUS_EXCLUDED)
+    list(REMOVE_ITEM OPUS_SOURCES ${OPUS_EXCLUDED})
+endif()
+
+# --- 4. Definitions ---
+add_definitions(
+        -DOPUS_BUILD
+        -DUSE_ALLOCA
+        -DHAVE_LRINT
+        -DHAVE_LRINTF
+        -DFIXED_POINT  # Fixed Point Mode (မဖြစ်မနေပါရမည်)
+)
+
+# --- 5. Build Library ---
 add_library(
         native-lib
         SHARED
-        native-lib.cpp   # JNI Bridge
-        sonic.c          # Sonic Source
-        ${OPUS_SOURCES}  # Opus Source
+        native-lib.cpp
+        sonic.c
+        ${OPUS_SOURCES}
 )
 
 find_library(
