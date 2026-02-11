@@ -3,8 +3,8 @@
 #include <vector>
 #include <cstring>
 #include "sonic.h"
-#include <opus/opus.h>
-#include <opus/opusfile.h>
+#include <opus.h>
+#include <opusfile.h>
 
 extern "C" {
 
