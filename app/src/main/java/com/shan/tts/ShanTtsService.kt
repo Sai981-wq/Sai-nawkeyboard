@@ -24,6 +24,7 @@ class ShanTtsService : TextToSpeechService() {
         private const val OUTPUT_ENCODING = AudioFormat.ENCODING_PCM_16BIT
         private const val BIN_FILENAME = "audio.bin"
         private const val INDEX_FILENAME = "index.txt"
+        private const val SPEED_REDUCTION_FACTOR = 0.6f
     }
 
     private external fun sonicCreateStream(sampleRate: Int, numChannels: Int): Long
@@ -166,7 +167,7 @@ class ShanTtsService : TextToSpeechService() {
         }
 
         val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
-        sonicSetSpeed(streamId, rate)
+        sonicSetSpeed(streamId, rate * SPEED_REDUCTION_FACTOR)
         sonicSetPitch(streamId, pitch)
 
         val bufferSize = 4096
