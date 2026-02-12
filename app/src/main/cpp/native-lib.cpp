@@ -122,14 +122,24 @@ Java_com_shan_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jbyteArra
     }
 
     std::vector<opus_int16> pcmOutput;
-    opus_int16 buffer[5760]; 
     
-    while (true) {
-        int samples = op_read(of, buffer, 5760, NULL);
-        if (samples <= 0) break;
+    // Buffer size to read from Opus (48kHz)
+    // 120ms @ 48kHz = 5760 samples
+    opus_int16 buffer[5760 * 2]; // *2 for stereo safety
 
-        for (int i = 0; i < samples; i++) {
-             pcmOutput.push_back(buffer[i]);
+    while (true) {
+        int samplesRead = op_read(of, buffer, 5760, NULL);
+        if (samplesRead <= 0) break;
+
+        int channels = op_channel_count(of, -1);
+        
+        // Manual Resample: 48000Hz -> 16000Hz
+        // We take every 3rd sample (Skip 2)
+        for (int i = 0; i < samplesRead; i += 3) {
+            if (i * channels < samplesRead * channels) {
+                // Always take the first channel (Mono)
+                pcmOutput.push_back(buffer[i * channels]);
+            }
         }
     }
 

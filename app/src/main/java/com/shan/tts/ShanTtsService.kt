@@ -19,7 +19,7 @@ class ShanTtsService : TextToSpeechService() {
         init {
             System.loadLibrary("native-lib")
         }
-        private const val OUTPUT_SAMPLE_RATE = 48000
+        private const val OUTPUT_SAMPLE_RATE = 16000
         private const val OUTPUT_CHANNEL_COUNT = 1
         private const val OUTPUT_ENCODING = AudioFormat.ENCODING_PCM_16BIT
         private const val BIN_FILENAME = "audio.bin"
