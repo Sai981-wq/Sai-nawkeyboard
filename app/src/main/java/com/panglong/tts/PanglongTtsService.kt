@@ -29,6 +29,9 @@ class PanglongTtsService : TextToSpeechService() {
     private var shnTokenMap: Map<Char, Long> = emptyMap()
     private var myaTokenMap: Map<Char, Long> = emptyMap()
     private var currentLanguage: String = "shn"
+    
+    @Volatile
+    private var isCancelled = false
 
     override fun onCreate() {
         super.onCreate()
@@ -125,10 +128,13 @@ class PanglongTtsService : TextToSpeechService() {
     }
 
     override fun onStop() {
+        isCancelled = true
     }
 
     override fun onSynthesizeText(request: SynthesisRequest?, callback: SynthesisCallback?) {
         if (request == null || callback == null) return
+        
+        isCancelled = false
 
         val text = request.charSequenceText?.toString() ?: request.text ?: return
         val lang = request.language ?: currentLanguage
@@ -168,7 +174,7 @@ class PanglongTtsService : TextToSpeechService() {
             val pcmBuffer = ByteArray(bufferSize * 2)
 
             for (sentence in sentences) {
-                if (request.isCancelled) {
+                if (isCancelled) {
                     break
                 }
 
@@ -182,6 +188,8 @@ class PanglongTtsService : TextToSpeechService() {
                 if (chunkAudio != null) {
                     var pos = 0
                     while (pos < chunkAudio.size) {
+                        if (isCancelled) break
+                        
                         val remaining = chunkAudio.size - pos
                         val count = minOf(bufferSize, remaining)
                         for (j in 0 until count) {
