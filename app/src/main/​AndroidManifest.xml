@@ -1,49 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:requestLegacyExternalStorage="true"
-        android:theme="@style/Theme.ShanTts">
+        android:theme="@style/Theme.PanglongTts">
 
         <meta-data
             android:name="android.speech.tts"
             android:resource="@xml/tts_engine" />
 
         <activity
-            android:name=".ShanTtsSettingsActivity"
+            android:name=".PanglongTtsSettingsActivity"
             android:label="@string/app_name"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.CHECK_TTS_DATA" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
         </activity>
 
-        <activity
-            android:name=".DebugActivity"
-            android:exported="true" />
-
         <service
-            android:name=".ShanTtsService"
-            android:label="Shan TTS"
+            android:name=".PanglongTtsService"
+            android:label="Panglong TTS"
             android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.TTS_SERVICE" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <meta-data
+                android:name="android.speech.tts"
+                android:resource="@xml/tts_engine" />
         </service>
 
         <activity
@@ -65,7 +54,5 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
-
     </application>
 </manifest>
-
