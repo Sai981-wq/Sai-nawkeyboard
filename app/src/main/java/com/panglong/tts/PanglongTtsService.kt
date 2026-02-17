@@ -41,7 +41,7 @@ class PanglongTtsService : TextToSpeechService() {
             val myaModelPath = copyAssetToInternal("mya/model.onnx")
 
             val sessionOptions = OrtSession.SessionOptions()
-            sessionOptions.setIntraOpNumThreads(4)
+            sessionOptions.setIntraOpNumThreads(2)
 
             shnSession = ortEnv?.createSession(shnModelPath, sessionOptions)
             myaSession = ortEnv?.createSession(myaModelPath, sessionOptions)
@@ -274,4 +274,4 @@ class PanglongTtsService : TextToSpeechService() {
         super.onDestroy()
     }
 }
-   
+
