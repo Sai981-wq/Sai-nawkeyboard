@@ -40,8 +40,15 @@ class PanglongTtsService : TextToSpeechService() {
             val shnModelPath = copyAssetToInternal("shn/model.onnx")
             val myaModelPath = copyAssetToInternal("mya/model.onnx")
 
-            val sessionOptions = OrtSession.SessionOptions()
-            sessionOptions.setIntraOpNumThreads(2)
+            val sessionOptions = OrtSession.SessionOptions().apply {
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                setIntraOpNumThreads(1)
+                try {
+                    addNnapi()
+                } catch (e: Exception) {
+                    Log.w(TAG, "NNAPI not supported on this device, falling back to CPU")
+                }
+            }
 
             shnSession = ortEnv?.createSession(shnModelPath, sessionOptions)
             myaSession = ortEnv?.createSession(myaModelPath, sessionOptions)
