@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace 'com.panglong.tts'
-    compileSdk 35
+    compileSdk 34
 
     defaultConfig {
         applicationId "com.panglong.tts"
         minSdk 24
-        targetSdk 35
+        targetSdk 34
         versionCode 1
         versionName "1.0"
         ndk {
@@ -26,12 +26,12 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
     }
 
     kotlinOptions {
-        jvmTarget = '17'
+        jvmTarget = '1.8'
     }
 
     buildFeatures {
@@ -40,8 +40,10 @@ android {
 }
 
 dependencies {
-    implementation 'androidx.core:core-ktx:1.15.0'
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'com.google.android.material:material:1.12.0'
-    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.17.0'
+    implementation 'androidx.core:core-ktx:1.10.1'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.9.0'
+    
+    // Sherpa-ONNX for Piper TTS
+    implementation 'com.k2fsa.sherpa.onnx:sherpa-onnx:1.12.25'
 }
