@@ -28,7 +28,7 @@ jobs:
       run: ./gradlew assembleRelease
 
     - name: Install Android Build Tools 29.0.3
-      run: sdkmanager "build-tools;29.0.3"
+      run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;29.0.3"
 
     - name: Sign APK
       uses: r0adkll/sign-android-release@v1
@@ -48,3 +48,4 @@ jobs:
       with:
         name: SaiNaw-Keyboard
         path: app/build/outputs/apk/release/SaiNaw-Keyboard.apk
+
