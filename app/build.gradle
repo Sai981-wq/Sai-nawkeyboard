@@ -48,4 +48,3 @@ if (signingPropertiesFile.exists()) {
     android.signingConfigs.release.keyAlias = props['keyAlias']
     android.signingConfigs.release.keyPassword = props['keyPassword']
 }
-
