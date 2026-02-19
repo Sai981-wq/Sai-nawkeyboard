@@ -1,7 +1,9 @@
-name: Build Release APK
+name: Android Build
 
 on:
   push:
+    branches: [ "main" ]
+  pull_request:
     branches: [ "main" ]
 
 jobs:
@@ -27,12 +29,19 @@ jobs:
     - name: Build Release APK
       run: ./gradlew assembleRelease
 
-    - name: Rename APK for clarity
-      run: mv app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/My-Myanmar-TTS.apk
+    - name: Sign APK
+      uses: r0adkll/sign-android-release@v1
+      id: sign_app
+      with:
+        releaseDirectory: app/build/outputs/apk/release
+        signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+        alias: shan_key
+        keyStorePassword: 123456
+        keyPassword: 123456
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: My-Myanmar-TTS
-        path: app/build/outputs/apk/release/My-Myanmar-TTS.apk
+        name: app-release
+        path: app/build/outputs/apk/release/*.apk
 
