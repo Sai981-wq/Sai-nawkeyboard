@@ -1,4 +1,4 @@
-name: Build Release APK
+name: Android Build
 
 on:
   push:
@@ -27,25 +27,8 @@ jobs:
     - name: Build Release APK
       run: ./gradlew assembleRelease
 
-    - name: Install Android Build Tools 29.0.3
-      run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;29.0.3"
-
-    - name: Sign APK
-      uses: r0adkll/sign-android-release@v1
-      id: sign_app
-      with:
-        releaseDirectory: app/build/outputs/apk/release
-        signingKeyBase64: ${{ secrets.SIGNING_KEY }}
-        alias: shan_key
-        keyStorePassword: 123456
-        keyPassword: 123456
-
-    - name: Rename APK for clarity
-      run: mv ${{steps.sign_app.outputs.signedReleaseFile}} app/build/outputs/apk/release/SaiNaw-Keyboard.apk
-
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: SaiNaw-Keyboard
-        path: app/build/outputs/apk/release/SaiNaw-Keyboard.apk
-
+        name: SaiNaw-Keyboard-Release
+        path: app/build/outputs/apk/release/*.apk
