@@ -1,2 +1,0 @@
--keep class ai.onnxruntime.** { *; }
--keep class com.panglong.tts.** { *; }

@@ -1,20 +1,21 @@
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
 }
 
 android {
-    namespace 'com.panglong.tts'
+    namespace 'com.sainaw.mm.board'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.panglong.tts"
-        minSdk 24
+        applicationId "com.sainaw.mm.board"
+        minSdk 21
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
-        ndk {
-            abiFilters "armeabi-v7a", "arm64-v8a"
+        versionCode 45
+        versionName "4.5"
+    }
+
+    signingConfigs {
+        release {
         }
     }
 
@@ -22,28 +23,29 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
-
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-
-    kotlinOptions {
-        jvmTarget = '1.8'
-    }
-
-    buildFeatures {
-        viewBinding true
-    }
 }
 
 dependencies {
-    implementation 'androidx.core:core-ktx:1.10.1'
     implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'com.google.android.material:material:1.9.0'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+}
+
+File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
+if (signingPropertiesFile.exists()) {
+    Properties props = new Properties()
+    props.load(new FileInputStream(signingPropertiesFile))
     
-    implementation 'com.k2fsa.sherpa.onnx:sherpa-onnx:1.10.16'
+    android.signingConfigs.release.storeFile = rootProject.file('credentials/release.keystore')
+    android.signingConfigs.release.storePassword = props['storePassword']
+    android.signingConfigs.release.keyAlias = props['keyAlias']
+    android.signingConfigs.release.keyPassword = props['keyPassword']
 }
 

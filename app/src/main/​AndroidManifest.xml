@@ -1,58 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.sainaw.mm.board">
+
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
-        android:theme="@style/Theme.PanglongTts">
+        android:icon="@drawable/ic_launcher"
+        android:label="Sai Naw Keyboard"
+        android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
 
-        <meta-data
-            android:name="android.speech.tts"
-            android:resource="@xml/tts_engine" />
+        <service
+            android:name=".SaiNawKeyboardService"
+            android:directBootAware="true"
+            android:exported="true"
+            android:label="Sai Naw Keyboard"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
+        </service>
 
         <activity
-            android:name=".PanglongTtsSettingsActivity"
-            android:label="@string/app_name"
-            android:exported="true">
+            android:name=".SettingsActivity"
+            android:exported="true"
+            android:label="Sai Naw Keyboard">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".PanglongTtsService"
-            android:label="Panglong TTS"
-            android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.TTS_SERVICE" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-            <meta-data
-                android:name="android.speech.tts"
-                android:resource="@xml/tts_engine" />
-        </service>
-
         <activity
-            android:name=".CheckVoiceData"
-            android:exported="true"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar">
-            <intent-filter>
-                <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
+            android:name=".LanguageSettingsActivity"
+            android:label="Languages"
+            android:parentActivityName=".SettingsActivity">
         </activity>
 
         <activity
-            android:name=".GetSampleText"
-            android:exported="true"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar">
-            <intent-filter>
-                <action android:name="android.speech.tts.engine.GET_SAMPLE_TEXT" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
+            android:name=".AccessibilitySettingsActivity"
+            android:label="Accessibility Options"
+            android:parentActivityName=".SettingsActivity">
         </activity>
+
     </application>
 </manifest>
+
