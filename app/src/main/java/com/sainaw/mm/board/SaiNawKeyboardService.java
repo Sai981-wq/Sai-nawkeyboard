@@ -120,7 +120,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setOnKeyboardActionListener(this);
         keyboardView.setOnTouchListener((v, event) -> false);
         
-        // Pass emojiManager to accessibilityHelper
         accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager, emojiManager);
         boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
         accessibilityHelper.setPhoneticEnabled(usePhonetic);
@@ -160,6 +159,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
         if (phoneticManager != null) {
             phoneticManager.setLanguageId(layoutManager.currentLanguageId);
+        }
+
+        if (layoutManager != null) {
+            layoutManager.isCaps = false;
+            layoutManager.isCapsLocked = false;
+            layoutManager.isSymbols = false;
+            layoutManager.isEmoji = false;
         }
         
         currentWord.setLength(0);
@@ -204,16 +210,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 case -10: startVoiceInput(); break; 
 
                 case -1: 
-                    if (layoutManager.isCapsLocked) {
-                        layoutManager.isCapsLocked = false;
-                        layoutManager.isCaps = false;
-                        announceText("Shift Off");
-                    } else {
+                    if (layoutManager.isSymbols) {
                         layoutManager.isCaps = !layoutManager.isCaps;
-                        announceText(layoutManager.isCaps ? "Shift On" : "Shift Off");
+                        announceText(layoutManager.isCaps ? "More Symbols" : "Symbols");
+                    } else {
+                        if (layoutManager.isCapsLocked) {
+                            layoutManager.isCapsLocked = false;
+                            layoutManager.isCaps = false;
+                            announceText("Shift Off");
+                        } else {
+                            layoutManager.isCaps = !layoutManager.isCaps;
+                            announceText(layoutManager.isCaps ? "Shift On" : "Shift Off");
+                        }
                     }
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
+                    updateHelperState();
                     break;
 
                 case -2: 
@@ -222,6 +234,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     announceText("Symbols");
+                    updateHelperState();
                     break;
 
                 case -6: 
@@ -230,6 +243,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
+                    updateHelperState();
                     break;
                     
                 case KEYCODE_EMOJI: 
@@ -238,6 +252,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     announceText("Emoji");
+                    updateHelperState();
                     break;
 
                 case -101: 
@@ -246,7 +261,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     touchHandler.reset(); 
                     if (phoneticManager != null) phoneticManager.setLanguageId(layoutManager.currentLanguageId);
                     announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
-                    if (accessibilityHelper != null) accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps);
+                    updateHelperState();
                     break;
 
                 case -4: 
@@ -284,6 +299,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
                         layoutManager.isCaps = false;
                         layoutManager.updateKeyboardLayout();
+                        updateHelperState();
                     }
                     triggerCandidateUpdate(200);
             }
@@ -318,9 +334,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     public KeyboardView getKeyboardView() { return keyboardView; }
+
     public void updateHelperState() { 
-        if (accessibilityHelper != null) accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps); 
+        if (accessibilityHelper != null) {
+            accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps, layoutManager.isSymbols); 
+        }
     }
+
     public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
 
     public void announceText(String text) {
@@ -454,6 +474,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         feedbackManager.playSound(0);
         if (layoutManager.isCaps && !layoutManager.isCapsLocked) { 
             layoutManager.isCaps = false; layoutManager.updateKeyboardLayout(); 
+            updateHelperState();
         }
     }
     @Override public void onPress(int p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); } 
