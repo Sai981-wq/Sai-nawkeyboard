@@ -295,7 +295,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
 
                 default: 
-                    inputLogic.processInput(ic, primaryCode, key);
+                    if (!textProcessor.handleCustomInsert(ic, primaryCode)) {
+                        inputLogic.processInput(ic, primaryCode, key);
+                    }
                     String charStr = (key != null && key.label != null && key.label.length() > 1) 
                             ? key.label.toString() : String.valueOf((char) primaryCode);
                     currentWord.append(charStr);
