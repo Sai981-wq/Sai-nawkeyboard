@@ -191,16 +191,23 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try {
             switch (primaryCode) {
                 case -5: 
-                    CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
-                    if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
+                    if (!textProcessor.handleCustomBackspace(ic)) {
+                        CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
+                        if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
+                            ic.deleteSurroundingText(1, 0);
+                        }
+                        CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
                         ic.deleteSurroundingText(1, 0);
+                        if (useSmartEcho) {
+                            if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
+                            else announceText("Delete");
+                        }
+                    } else {
+                        if (useSmartEcho) {
+                            announceText("Deleted");
+                        }
                     }
-                    CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
-                    ic.deleteSurroundingText(1, 0);
-                    if (useSmartEcho) {
-                        if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
-                        else announceText("Delete");
-                    }
+                    
                     if (currentWord.length() > 0) {
                         currentWord.deleteCharAt(currentWord.length() - 1);
                         triggerCandidateUpdate(50);
