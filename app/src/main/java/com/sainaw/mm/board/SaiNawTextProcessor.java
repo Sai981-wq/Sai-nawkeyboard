@@ -146,6 +146,28 @@ public class SaiNawTextProcessor {
         return word.replace(String.valueOf(ZWSP), "").trim();
     }
 
+    public boolean handleCustomInsert(InputConnection ic, int primaryCode) {
+        if (ic == null) return false;
+
+        if (isConsonant(primaryCode) || isMedial(primaryCode)) {
+            CharSequence beforeCursor = ic.getTextBeforeCursor(2, 0);
+            if (beforeCursor != null && beforeCursor.length() >= 2) {
+                int len = beforeCursor.length();
+                char prevChar = beforeCursor.charAt(len - 2);
+                char lastChar = beforeCursor.charAt(len - 1);
+
+                if (prevChar == '\u1031' && lastChar == '\u200B') {
+                    ic.beginBatchEdit();
+                    ic.deleteSurroundingText(2, 0);
+                    ic.commitText(String.valueOf((char) primaryCode) + "\u1031", 1);
+                    ic.endBatchEdit();
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     public boolean handleCustomBackspace(InputConnection ic) {
         if (ic == null) return false;
 
