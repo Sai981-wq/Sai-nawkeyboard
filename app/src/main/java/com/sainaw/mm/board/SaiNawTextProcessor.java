@@ -149,35 +149,50 @@ public class SaiNawTextProcessor {
     public boolean handleCustomBackspace(InputConnection ic) {
         if (ic == null) return false;
 
-        CharSequence beforeCursor = ic.getTextBeforeCursor(2, 0);
+        CharSequence beforeCursor = ic.getTextBeforeCursor(4, 0);
+        if (beforeCursor == null || beforeCursor.length() == 0) return false;
 
-        if (beforeCursor != null && beforeCursor.length() >= 2) {
-            int len = beforeCursor.length();
-            char prevChar = beforeCursor.charAt(len - 2);
-            char lastChar = beforeCursor.charAt(len - 1);
+        String text = beforeCursor.toString();
+        int deleteCount = 0;
+
+        boolean hasTrailingZWSP = false;
+        if (text.endsWith("\u200B")) {
+            hasTrailingZWSP = true;
+            text = text.substring(0, text.length() - 1);
+            deleteCount = 1; 
+        }
+
+        int len = text.length();
+
+        if (len >= 2) {
+            char lastChar = text.charAt(len - 1);
+            char prevChar = text.charAt(len - 2);
 
             if (lastChar == '\u1031') {
                 if (isConsonant(prevChar)) {
+                    deleteCount += 2; 
                     ic.beginBatchEdit();
-                    ic.deleteSurroundingText(2, 0);
-                    ic.commitText("\u1031\u200B", 1);
+                    ic.deleteSurroundingText(deleteCount, 0);
+                    ic.commitText("\u1031\u200B", 1); 
                     ic.endBatchEdit();
                     return true;
                 } else if (isMedial(prevChar)) {
+                    deleteCount += 2;
                     ic.beginBatchEdit();
-                    ic.deleteSurroundingText(2, 0);
+                    ic.deleteSurroundingText(deleteCount, 0);
                     ic.commitText("\u1031", 1);
                     ic.endBatchEdit();
                     return true;
                 }
             }
+        }
 
-            if (prevChar == '\u1031' && lastChar == '\u200B') {
-                ic.beginBatchEdit();
-                ic.deleteSurroundingText(2, 0);
-                ic.endBatchEdit();
-                return true;
-            }
+        if (hasTrailingZWSP && len >= 1 && text.charAt(len - 1) == '\u1031') {
+            deleteCount += 1; 
+            ic.beginBatchEdit();
+            ic.deleteSurroundingText(deleteCount, 0);
+            ic.endBatchEdit();
+            return true;
         }
 
         return false;
