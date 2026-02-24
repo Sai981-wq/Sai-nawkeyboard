@@ -59,7 +59,7 @@
 
     <Row android:rowEdgeFlags="bottom">
         <Key android:codes="-2" android:keyLabel="\?123" android:keyWidth="10%p" android:keyEdgeFlags="left"/>
-        <Key android:codes="-7" android:keyLabel="😊" android:keyWidth="10%p"/>
+        <Key android:codes="-7" android:keyLabel="emoji" android:keyWidth="10%p"/>
         <Key android:codes="-101" android:keyIcon="@drawable/ic_keyboard_language" android:keyWidth="10%p"/>
         <Key android:codes="4170" android:keyLabel="၊" android:keyWidth="10%p"/>
         <Key android:codes="32" android:keyLabel="SPACE" android:keyWidth="24%p" android:isRepeatable="true"/>
