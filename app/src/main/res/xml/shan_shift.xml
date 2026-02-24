@@ -1,57 +1,56 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Keyboard xmlns:android="http://schemas.android.com/apk/res/android"
-    android:keyWidth="10%p" 
-    android:horizontalGap="0px" 
-    android:verticalGap="0px" 
+    android:keyWidth="10.2%p"
+    android:horizontalGap="1%p"
+    android:verticalGap="1.5%p"
     android:keyHeight="50dp">
 
     <Row>
-        <Key android:codes="0" android:keyLabel="ႂ်" android:keyOutputText="ႂ်" android:keyWidth="11.11%p" android:keyEdgeFlags="left"/>
-        <Key android:codes="0" android:keyLabel="ၵ်" android:keyOutputText="ၵ်" android:keyWidth="11.11%p"/>
-        <Key android:codes="0" android:keyLabel="င်" android:keyOutputText="င်" android:keyWidth="11.11%p"/>
-        <Key android:codes="0" android:keyLabel="ၺ်" android:keyOutputText="ၺ်" android:keyWidth="11.11%p"/>
-        <Key android:codes="0" android:keyLabel="တ်" android:keyOutputText="တ်" android:keyWidth="11.11%p"/>
-        <Key android:codes="0" android:keyLabel="ၼ်" android:keyOutputText="ၼ်" android:keyWidth="11.11%p"/>
-        <Key android:codes="0" android:keyLabel="ပ်" android:keyOutputText="ပ်" android:keyWidth="11.11%p"/>
-        <Key android:codes="0" android:keyLabel="မ်" android:keyOutputText="မ်" android:keyWidth="11.11%p"/>
-        <Key android:codes="0" android:keyLabel="ဝ်" android:keyOutputText="ဝ်" android:keyWidth="11.11%p" android:keyEdgeFlags="right"/>
+        <Key android:codes="0" android:keyLabel="ႂ်" android:keyOutputText="ႂ်" android:keyEdgeFlags="left"/>
+        <Key android:codes="0" android:keyLabel="ၵ်" android:keyOutputText="ၵ်"/>
+        <Key android:codes="0" android:keyLabel="င်" android:keyOutputText="င်"/>
+        <Key android:codes="0" android:keyLabel="ၺ်" android:keyOutputText="ၺ်"/>
+        <Key android:codes="0" android:keyLabel="တ်" android:keyOutputText="တ်"/>
+        <Key android:codes="0" android:keyLabel="ၼ်" android:keyOutputText="ၼ်"/>
+        <Key android:codes="0" android:keyLabel="ပ်" android:keyOutputText="ပ်"/>
+        <Key android:codes="0" android:keyLabel="မ်" android:keyOutputText="မ်"/>
+        <Key android:codes="0" android:keyLabel="ဝ်" android:keyOutputText="ဝ်" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row>
-        <Key android:codes="4149" android:keyLabel="ဵ" android:keyWidth="11.11%p" android:keyEdgeFlags="left"/>
-        <Key android:codes="4229" android:keyLabel="ႅ" android:keyWidth="11.11%p"/>
-        <Key android:codes="4142" android:keyLabel="ီ" android:keyWidth="11.11%p"/>
-        <Key android:codes="4194" android:keyLabel="ၢ" android:keyWidth="11.11%p"/>
-        <Key android:codes="4230" android:keyLabel="ႆ" android:keyWidth="11.11%p"/>
-        <Key android:codes="4226" android:keyLabel="ႂ" android:keyWidth="11.11%p"/>
-        <Key android:codes="4234" android:keyLabel="ႊ" android:keyWidth="11.11%p"/>
-        <Key android:codes="4155" android:keyLabel="ျ" android:keyWidth="11.11%p"/>
-        <Key android:codes="4156" android:keyLabel="ြ" android:keyWidth="11.11%p" android:keyEdgeFlags="right"/>
+        <Key android:codes="4149" android:keyLabel="ဵ" android:keyEdgeFlags="left"/>
+        <Key android:codes="4229" android:keyLabel="ႅ"/>
+        <Key android:codes="4142" android:keyLabel="ီ"/>
+        <Key android:codes="4194" android:keyLabel="ၢ"/>
+        <Key android:codes="4230" android:keyLabel="ႆ"/>
+        <Key android:codes="4226" android:keyLabel="ႂ"/>
+        <Key android:codes="4234" android:keyLabel="ႊ"/>
+        <Key android:codes="4155" android:keyLabel="ျ"/>
+        <Key android:codes="4156" android:keyLabel="ြ" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row>
-        <Key android:codes="-1" android:keyLabel="SHIFT" android:keyWidth="9.09%p" android:isModifier="true" android:isSticky="true" android:keyEdgeFlags="left"/>
-        <Key android:codes="4222" android:keyLabel="ၾ" android:keyWidth="9.09%p"/>
-        <Key android:codes="4123" android:keyLabel="ရ" android:keyWidth="9.09%p"/>
-        
-        <Key android:codes="0" android:keyLabel="ၢႆ" android:keyOutputText="ၢႆ" android:keyWidth="9.09%p"/>
-        <Key android:codes="0" android:keyLabel="ွႆ" android:keyOutputText="ွႆ" android:keyWidth="9.09%p"/>
-        <Key android:codes="0" android:keyLabel="ႂႃ" android:keyOutputText="ႂႃ" android:keyWidth="9.09%p"/>
-        <Key android:codes="0" android:keyLabel="ႂၢ" android:keyOutputText="ႂၢ" android:keyWidth="9.09%p"/>
-        <Key android:codes="0" android:keyLabel="ေႃ" android:keyOutputText="ေႃ" android:keyWidth="9.09%p"/>
-        <Key android:codes="0" android:keyLabel="ို" android:keyOutputText="ို" android:keyWidth="9.09%p"/>
-        <Key android:codes="0" android:keyLabel="ိူ" android:keyOutputText="ိူ" android:keyWidth="9.09%p"/>
-        
-        <Key android:codes="-5" android:keyLabel="DEL" android:keyWidth="9.09%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
+        <Key android:codes="-1" android:keyIcon="@drawable/ic_keyboard_shift" android:keyWidth="13.5%p" android:isModifier="true" android:isSticky="true" android:keyEdgeFlags="left"/>
+        <Key android:codes="4222" android:keyLabel="ၾ" android:keyWidth="7%p"/>
+        <Key android:codes="4123" android:keyLabel="ရ" android:keyWidth="7%p"/>
+        <Key android:codes="0" android:keyLabel="ၢႆ" android:keyOutputText="ၢႆ" android:keyWidth="7%p"/>
+        <Key android:codes="0" android:keyLabel="ွႆ" android:keyOutputText="ွႆ" android:keyWidth="7%p"/>
+        <Key android:codes="0" android:keyLabel="ႂႃ" android:keyOutputText="ႂႃ" android:keyWidth="7%p"/>
+        <Key android:codes="0" android:keyLabel="ႂၢ" android:keyOutputText="ႂၢ" android:keyWidth="7%p"/>
+        <Key android:codes="0" android:keyLabel="ေႃ" android:keyOutputText="ေႃ" android:keyWidth="7%p"/>
+        <Key android:codes="0" android:keyLabel="ို" android:keyOutputText="ို" android:keyWidth="7%p"/>
+        <Key android:codes="0" android:keyLabel="ိူ" android:keyOutputText="ိူ" android:keyWidth="7%p"/>
+        <Key android:codes="-5" android:keyIcon="@drawable/ic_keyboard_backspace" android:keyWidth="13.5%p" android:isRepeatable="true" android:keyEdgeFlags="right"/>
     </Row>
 
     <Row android:rowEdgeFlags="bottom">
-        <Key android:codes="-2"  android:keyLabel="123" android:keyWidth="15%p" android:keyEdgeFlags="left"/>
+        <Key android:codes="-2" android:keyLabel="123" android:keyWidth="10%p" android:keyEdgeFlags="left"/>
         <Key android:codes="4171" android:keyLabel="။" android:keyWidth="10%p"/>
-        <Key android:codes="-101" android:keyLabel="🌐" android:keyWidth="10%p"/>
-        <Key android:codes="32"  android:keyLabel="SPACE" android:keyWidth="40%p"/>
+        <Key android:codes="-101" android:keyIcon="@drawable/ic_keyboard_language" android:keyWidth="10%p"/>
+        <Key android:codes="32" android:keyLabel="SPACE" android:keyWidth="30%p" android:isRepeatable="true"/>
         <Key android:codes="4170" android:keyLabel="၊" android:keyWidth="10%p"/>
-        <Key android:codes="-4"  android:keyLabel="⏎" android:keyWidth="15%p" android:keyEdgeFlags="right"/>
+        <Key android:codes="-7" android:keyLabel="😊" android:keyWidth="10%p"/>
+        <Key android:codes="-4" android:keyIcon="@drawable/ic_keyboard_return" android:keyWidth="14%p" android:keyEdgeFlags="right"/>
     </Row>
 </Keyboard>
 
