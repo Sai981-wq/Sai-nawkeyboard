@@ -1,5 +1,7 @@
 package com.sainaw.mm.board;
 
+import android.view.inputmethod.InputConnection;
+
 public class SaiNawTextProcessor {
 
     private static final char ZWSP = '\u200B';
@@ -142,6 +144,35 @@ public class SaiNawTextProcessor {
 
         String word = (lastSpaceIndex == -1) ? text : text.substring(lastSpaceIndex + 1);
         return word.replace(String.valueOf(ZWSP), "").trim();
+    }
+
+    public boolean handleCustomBackspace(InputConnection ic) {
+        if (ic == null) return false;
+
+        CharSequence beforeCursor = ic.getTextBeforeCursor(2, 0);
+
+        if (beforeCursor != null && beforeCursor.length() >= 2) {
+            char prevChar = beforeCursor.charAt(0);
+            char lastChar = beforeCursor.charAt(1);
+
+            if (lastChar == '\u1031' && (isConsonant(prevChar) || isMedial(prevChar))) {
+                ic.deleteSurroundingText(2, 0);
+
+                if (isConsonant(prevChar)) {
+                    ic.commitText("\u1031\u200B", 1);
+                } else if (isMedial(prevChar)) {
+                    ic.commitText("\u1031", 1);
+                }
+                return true;
+            }
+
+            if (prevChar == '\u1031' && lastChar == '\u200B') {
+                ic.deleteSurroundingText(2, 0);
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 
