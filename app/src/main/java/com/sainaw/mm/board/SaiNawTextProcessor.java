@@ -152,22 +152,30 @@ public class SaiNawTextProcessor {
         CharSequence beforeCursor = ic.getTextBeforeCursor(2, 0);
 
         if (beforeCursor != null && beforeCursor.length() >= 2) {
-            char prevChar = beforeCursor.charAt(0);
-            char lastChar = beforeCursor.charAt(1);
+            int len = beforeCursor.length();
+            char prevChar = beforeCursor.charAt(len - 2);
+            char lastChar = beforeCursor.charAt(len - 1);
 
-            if (lastChar == '\u1031' && (isConsonant(prevChar) || isMedial(prevChar))) {
-                ic.deleteSurroundingText(2, 0);
-
+            if (lastChar == '\u1031') {
                 if (isConsonant(prevChar)) {
+                    ic.beginBatchEdit();
+                    ic.deleteSurroundingText(2, 0);
                     ic.commitText("\u1031\u200B", 1);
+                    ic.endBatchEdit();
+                    return true;
                 } else if (isMedial(prevChar)) {
+                    ic.beginBatchEdit();
+                    ic.deleteSurroundingText(2, 0);
                     ic.commitText("\u1031", 1);
+                    ic.endBatchEdit();
+                    return true;
                 }
-                return true;
             }
 
             if (prevChar == '\u1031' && lastChar == '\u200B') {
+                ic.beginBatchEdit();
                 ic.deleteSurroundingText(2, 0);
+                ic.endBatchEdit();
                 return true;
             }
         }
