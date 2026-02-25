@@ -95,13 +95,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         phoneticManager = new SaiNawPhoneticManager(this);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
 
-        Context safeContext = getSafeContext();
-        SharedPreferences prefs = safeContext.getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
-        
-        feedbackManager.loadSettings(prefs);
-        touchHandler.loadSettings(prefs);
-        layoutManager.initKeyboards(prefs);
-        useSmartEcho = prefs.getBoolean("smart_echo", false); 
+        SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
+        applyAllSettings(prefs);
 
         boolean isDarkTheme = prefs.getBoolean("dark_theme", false);
         View layout = getLayoutInflater().inflate(isDarkTheme ? R.layout.input_view_dark : R.layout.input_view, null);
@@ -117,7 +112,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
 
         keyboardView.setOnKeyboardActionListener(this);
-        
         accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager, emojiManager);
         accessibilityHelper.setPhoneticEnabled(prefs.getBoolean("use_phonetic_sounds", true));
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
@@ -136,12 +130,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
-        
-        useSmartEcho = prefs.getBoolean("smart_echo", false); 
-        if (touchHandler != null) touchHandler.loadSettings(prefs);
-        if (accessibilityHelper != null) {
-            accessibilityHelper.setPhoneticEnabled(prefs.getBoolean("use_phonetic_sounds", true));
-        }
+        applyAllSettings(prefs);
         
         layoutManager.isCaps = false;
         layoutManager.isCapsLocked = false;
@@ -153,6 +142,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         layoutManager.determineKeyboardForInputType();
         updateHelperState();
         triggerCandidateUpdate(0);
+    }
+
+    private void applyAllSettings(SharedPreferences prefs) {
+        if (feedbackManager != null) feedbackManager.loadSettings(prefs);
+        if (touchHandler != null) touchHandler.loadSettings(prefs);
+        if (layoutManager != null) layoutManager.initKeyboards(prefs);
+        useSmartEcho = prefs.getBoolean("smart_echo", false);
+        if (accessibilityHelper != null) {
+            accessibilityHelper.setPhoneticEnabled(prefs.getBoolean("use_phonetic_sounds", true));
+        }
     }
 
     public void handleInput(int primaryCode, Keyboard.Key key) {
@@ -171,31 +170,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
 
         switch (primaryCode) {
-            case -5: 
-                handleDelete(ic);
-                break;
-            case -10: 
-                startVoiceInput(); 
-                break; 
-            case -1: 
-                handleShift();
-                break;
-            case -2: 
-            case -6: 
-            case KEYCODE_EMOJI:
-                handleKeyboardModeChange(primaryCode);
-                break;
-            case -101: 
-                handleLanguageChange();
-                break;
-            case -4: 
-                handleEnter(ic);
-                break;
-            case 32: 
-                handleSpace(ic);
-                break;
-            default: 
-                handleDefaultInput(ic, primaryCode, key);
+            case -5: handleDelete(ic); break;
+            case -10: startVoiceInput(); break; 
+            case -1: handleShift(); break;
+            case -2: case -6: case KEYCODE_EMOJI: handleKeyboardModeChange(primaryCode); break;
+            case -101: handleLanguageChange(); break;
+            case -4: handleEnter(ic); break;
+            case 32: handleSpace(ic); break;
+            default: handleDefaultInput(ic, primaryCode, key);
         }
     }
 
@@ -207,10 +189,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
                 else announceText("Delete");
             }
-        } else if (useSmartEcho) {
-            announceText("Deleted");
-        }
-        
+        } else if (useSmartEcho) announceText("Deleted");
         if (currentWord.length() > 0) {
             currentWord.deleteCharAt(currentWord.length() - 1);
             triggerCandidateUpdate(50);
@@ -340,13 +319,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    public int getResId(String name) {
-        return getResources().getIdentifier(name, "xml", getPackageName());
-    }
-
-    public KeyboardView getKeyboardView() {
-        return keyboardView;
-    }
+    public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
+    public KeyboardView getKeyboardView() { return keyboardView; }
 
     public void announceText(String text) {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
@@ -480,7 +454,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onPress(int p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); } 
     @Override public void onRelease(int p) { if(touchHandler!=null) touchHandler.cancelAllLongPress(); }
     @Override public void swipeLeft() {} @Override public void swipeRight() {} @Override public void swipeDown() {} @Override public void swipeUp() {}
-    
     @Override public void onDestroy() { 
         super.onDestroy(); 
         if(speechRecognizer!=null) speechRecognizer.destroy(); 

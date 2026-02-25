@@ -21,36 +21,32 @@ public class SettingsActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
 
-        // App Title Bar နာမည်ပြောင်းချင်ရင် ဒီမှာချိတ်နိုင်ပါတယ်
         if (getSupportActionBar() != null) {
             getSupportActionBar().setTitle(R.string.settings_name);
         }
 
         prefs = getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
 
-        // Setup Buttons
         setupButton(R.id.btn_enable_keyboard, v -> startActivity(new Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)));
         
         setupButton(R.id.btn_select_keyboard, v -> {
             InputMethodManager imeManager = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             if (imeManager != null) imeManager.showInputMethodPicker();
-            else Toast.makeText(this, R.string.error_toast, Toast.LENGTH_SHORT).show(); // Changed to R.string
+            else Toast.makeText(this, R.string.error_toast, Toast.LENGTH_SHORT).show();
         });
 
-        // Sub-Menu Navigation
         setupButton(R.id.btn_languages, v -> startActivity(new Intent(this, LanguageSettingsActivity.class)));
         setupButton(R.id.btn_accessibility, v -> startActivity(new Intent(this, AccessibilitySettingsActivity.class)));
-        // User Dictionary မသုံးသေးရင် ဒီလိုင်းကို Comment ပိတ်ထားနိုင်ပါတယ်
-        // setupButton(R.id.btn_user_dictionary, v -> startActivity(new Intent(this, UserDictionaryActivity.class)));
-        
-        // About Button with XML Strings
         setupButton(R.id.btn_about, v -> showAboutDialog());
 
-        // General Switches
         setupSwitch(R.id.switch_vibrate, "vibrate_on", true);
         setupSwitch(R.id.switch_sound, "sound_on", false);
         setupSwitch(R.id.switch_theme, "dark_theme", false);
         setupSwitch(R.id.switch_number_row, "number_row", false);
+        
+        setupSwitch(R.id.switch_smart_echo, "smart_echo", false);
+        setupSwitch(R.id.switch_lift_to_type, "lift_to_type", true);
+        setupSwitch(R.id.switch_phonetic, "use_phonetic_sounds", true);
     }
 
     private void setupButton(int id, android.view.View.OnClickListener listener) {
@@ -68,12 +64,11 @@ public class SettingsActivity extends AppCompatActivity {
         }
     }
 
-    // *** ဒီနေရာမှာ Strings.xml နဲ့ ချိတ်ထားပါတယ် ***
     private void showAboutDialog() {
         new AlertDialog.Builder(this)
-                .setTitle(R.string.about_title)      // "About Sai Naw Keyboard"
-                .setMessage(R.string.about_message)  // "Version: 1.0.0..."
-                .setPositiveButton(R.string.btn_ok, null) // "OK"
+                .setTitle(R.string.about_title)
+                .setMessage(R.string.about_message)
+                .setPositiveButton(R.string.btn_ok, null)
                 .show();
     }
 }
