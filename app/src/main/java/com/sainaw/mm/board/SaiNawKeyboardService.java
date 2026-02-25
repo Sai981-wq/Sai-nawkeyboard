@@ -62,6 +62,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SpeechRecognizer speechRecognizer;
     private Intent speechIntent;
     private boolean isListening = false;
+    private Runnable announceRunnable;
 
     private static final int KEYCODE_EMOJI = -7;
     private static final char ZWSP = '\u200B';
@@ -160,11 +161,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
-            if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
-                layoutManager.isCaps = false;
-                layoutManager.updateKeyboardLayout();
-                updateHelperState();
-            }
+            checkAutoShiftOff();
             return;
         }
 
@@ -180,6 +177,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
+    private void checkAutoShiftOff() {
+        if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
+            layoutManager.isCaps = false;
+            layoutManager.updateKeyboardLayout();
+            updateHelperState();
+        }
+    }
+
     private void handleDelete(InputConnection ic) {
         if (!textProcessor.handleCustomBackspace(ic)) {
             CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
@@ -190,8 +195,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         } else if (useSmartEcho) announceText("Deleted");
         if (currentWord.length() > 0) {
-            currentWord.deleteCharAt(currentWord.length() - 1);
-            triggerCandidateUpdate(50);
+            currentWord.setLength(currentWord.length() - 1);
+            triggerCandidateUpdate(150);
         }
     }
 
@@ -276,12 +281,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             String accumulatingWord = getCurrentWordForEcho();
             if (accumulatingWord != null) announceText(accumulatingWord);
         }
-        if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
-            layoutManager.isCaps = false;
-            layoutManager.updateKeyboardLayout();
-            updateHelperState();
-        }
-        triggerCandidateUpdate(200);
+        checkAutoShiftOff();
+        triggerCandidateUpdate(150);
     }
 
     private String getLanguageName() {
@@ -323,11 +324,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     public void announceText(String text) {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-            handler.postDelayed(() -> {
+            if (announceRunnable != null) handler.removeCallbacks(announceRunnable);
+            announceRunnable = () -> {
                 AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
                 event.getText().add(text);
                 accessibilityManager.sendAccessibilityEvent(event);
-            }, 100); 
+            };
+            handler.postDelayed(announceRunnable, 50); 
         }
     }
 
@@ -346,7 +349,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void triggerCandidateUpdate(long delayMillis) {
         handler.removeCallbacks(pendingCandidateUpdate);
-        handler.postDelayed(pendingCandidateUpdate, delayMillis);
+        handler.postDelayed(pendingCandidateUpdate, Math.max(delayMillis, 150));
     }
 
     private void saveWordAndReset() {
@@ -445,10 +448,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onText(CharSequence t) { 
         getCurrentInputConnection().commitText(t, 1); 
         feedbackManager.playSound(0);
-        if (layoutManager.isCaps && !layoutManager.isCapsLocked) { 
-            layoutManager.isCaps = false; layoutManager.updateKeyboardLayout(); 
-            updateHelperState();
-        }
+        checkAutoShiftOff();
     }
     @Override public void onPress(int p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); } 
     @Override public void onRelease(int p) { if(touchHandler!=null) touchHandler.cancelAllLongPress(); }
@@ -461,6 +461,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if(isReceiverRegistered) unregisterReceiver(userUnlockReceiver);
         if(touchHandler!=null) touchHandler.cancelAllLongPress();
         handler.removeCallbacks(pendingCandidateUpdate);
+        if (feedbackManager != null) feedbackManager.shutdown();
     }
 }
 
