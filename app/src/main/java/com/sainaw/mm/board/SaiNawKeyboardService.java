@@ -116,6 +116,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             isReceiverRegistered = true;
         }
 
+        keyboardView.setLongClickable(false);
         keyboardView.setOnKeyboardActionListener(this);
         
         accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager, emojiManager);
@@ -123,12 +124,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         
         keyboardView.setOnHoverListener((v, event) -> {
-            if (accessibilityHelper.dispatchHoverEvent(event)) {
-                touchHandler.cancelAllLongPress();
-                return true;
-            }
+            accessibilityHelper.dispatchHoverEvent(event);
             touchHandler.handleHover(event);
-            return false;
+            return true;
         });
 
         setupSpeechRecognizer();
