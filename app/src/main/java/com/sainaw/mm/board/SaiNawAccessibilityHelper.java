@@ -176,11 +176,5 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
         return (label != null && !label.isEmpty()) ? label : "Unlabeled Key";
     }
-
-    @Override
-    public void onDetachedFromWebView() {
-        super.onDetachedFromWebView();
-        feedbackExecutor.shutdown();
-    }
 }
 
