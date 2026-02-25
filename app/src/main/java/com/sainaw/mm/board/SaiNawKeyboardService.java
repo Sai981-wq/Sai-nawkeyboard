@@ -351,7 +351,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     public void updateHelperState() { 
         if (accessibilityHelper != null) {
-            accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps, layoutManager.isSymbols); 
+            accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps); 
         }
     }
 
