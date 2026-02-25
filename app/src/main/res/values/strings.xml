@@ -6,7 +6,7 @@
 
     <string name="error_toast">Error launching picker</string>
     <string name="about_title">About Sai Naw Keyboard</string>
-    <string name="about_message">Version: 4.5\n\nDeveloped by: Sai Naw\n\nDedicated to the Shan and Myanmar visually impaired communities.\n\nDesigned for seamless typing with Screen reader support.\n\nContact: sainaw1331@gmail.com</string>
+    <string name="about_message">Version: 5.1\n\nDeveloped by: Sai Naw\n\nDedicated to the Shan and Myanmar visually impaired communities.\n\nDesigned for seamless typing with Screen reader support.\n\nContact: sainaw1331@gmail.com</string>
     <string name="btn_ok">OK</string>
 </resources>
 
