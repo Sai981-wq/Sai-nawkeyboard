@@ -2,7 +2,6 @@ package com.sainaw.mm.board;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.view.MotionEvent;
 import android.os.Handler;
@@ -130,19 +129,21 @@ public class SaiNawTouchHandler {
 
     private void handleHoverExit(MotionEvent event) {
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
+        
         if (keys == null || lastHoverKeyIndex == -1 || lastHoverKeyIndex >= keys.size()) {
             cancelAllLongPress();
             lastHoverKeyIndex = -1;
             return;
         }
 
-        if (event.getY() >= 0 && !isLongPressHandled) {
+        if (!isLongPressHandled) {
             Keyboard.Key key = keys.get(lastHoverKeyIndex);
-            if (key.codes[0] != -100) {
+            if (key != null && key.codes[0] != -100) {
                 feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                 service.handleInput(key.codes[0], key);
             }
         }
+        
         cancelAllLongPress();
         lastHoverKeyIndex = -1;
     }
@@ -187,9 +188,7 @@ public class SaiNawTouchHandler {
             int bottom = key.y + key.height;
 
             if (key.codes[0] == -5) {
-                top -= 25; 
-                left -= 10;
-                right += 10;
+                top -= 25; left -= 10; right += 10;
             } else if (key.codes[0] != -1 && key.codes[0] != -4 && key.codes[0] != -2 && key.codes[0] != -101) {
                 bottom -= 5; 
             }
