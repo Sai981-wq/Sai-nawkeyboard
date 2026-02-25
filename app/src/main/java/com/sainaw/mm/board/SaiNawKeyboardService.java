@@ -125,14 +125,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         accessibilityHelper.setPhoneticEnabled(usePhonetic);
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         
+        // ပြင်ဆင်ထားသော Lift-to-Type နှင့် TalkBack တွဲဖက် အလုပ်လုပ်မည့်အပိုင်း
         keyboardView.setOnHoverListener((v, event) -> {
-            boolean handled = accessibilityHelper.dispatchHoverEvent(event);
-            if (handled) {
-                touchHandler.cancelAllLongPress();
-                return true;
+            if (accessibilityHelper != null) {
+                accessibilityHelper.dispatchHoverEvent(event);
             }
-            touchHandler.handleHover(event);
-            return false;
+            if (touchHandler != null) {
+                touchHandler.handleHover(event);
+            }
+            return true;
         });
 
         setupSpeechRecognizer();
