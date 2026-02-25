@@ -126,13 +126,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         
         keyboardView.setOnHoverListener((v, event) -> {
-            boolean handled = accessibilityHelper.dispatchHoverEvent(event);
-            if (handled) {
-                touchHandler.cancelAllLongPress();
-                return true;
-            }
+            accessibilityHelper.dispatchHoverEvent(event);
             touchHandler.handleHover(event);
-            return false;
+            return true;
         });
 
         setupSpeechRecognizer();
