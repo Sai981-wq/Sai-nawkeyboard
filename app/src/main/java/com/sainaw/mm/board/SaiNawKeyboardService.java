@@ -1,4 +1,4 @@
-package com.mm.board;
+package com.sainaw.mm.board;
 
 import android.Manifest;
 import android.content.BroadcastReceiver;
@@ -505,3 +505,4 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         handler.removeCallbacks(pendingCandidateUpdate);
     }
 }
+
