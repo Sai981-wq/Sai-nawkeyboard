@@ -1,182 +1,213 @@
 package com.sainaw.mm.board;
 
 import android.content.Context;
-import android.graphics.Rect;
+import android.content.SharedPreferences;
 import android.inputmethodservice.Keyboard;
-import android.os.Build;
-import android.os.Bundle;
-import android.os.VibrationEffect;
-import android.os.Vibrator;
-import android.view.View;
-import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityManager;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
-import androidx.customview.widget.ExploreByTouchHelper;
+import android.view.MotionEvent;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.inputmethod.InputMethodManager;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
-public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
-    private final Vibrator vibrator;
-    private final AccessibilityManager accessibilityManager;
-    private final Rect tempRect = new Rect();
-    private final ExecutorService feedbackExecutor = Executors.newSingleThreadExecutor();
-    private Keyboard currentKeyboard;
-    private boolean isShanOrMyanmar = false;
-    private boolean isCaps = false;
-    private boolean isSymbols = false;
-    private boolean isPhoneticEnabled = true;
-    private OnAccessibilityKeyListener listener;
-    private SaiNawPhoneticManager phoneticManager;
-    private SaiNawEmojiManager emojiManager;
+public class SaiNawTouchHandler {
+    private final SaiNawKeyboardService service;
+    private final SaiNawLayoutManager layoutManager;
+    private final SaiNawFeedbackManager feedbackManager;
+    private final SaiNawEmojiManager emojiManager;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    
+    private boolean isLiftToType = true;
+    private int lastHoverKeyIndex = -1;
+    private boolean isLongPressHandled = false;
+    private boolean isDeleteActive = false;
+    private int currentEmojiCode = 0;
+    private final float density;
 
-    public interface OnAccessibilityKeyListener {
-        void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
-    }
+    private final Runnable spaceLongPressTask;
+    private final Runnable shiftLongPressTask;
+    private final Runnable emojiLongPressTask;
+    private final Runnable deleteStartTask;
+    private final Runnable deleteLoopTask;
 
-    public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, 
-                                     SaiNawPhoneticManager manager, SaiNawEmojiManager emojiManager) {
-        super(view);
-        this.listener = listener;
-        this.phoneticManager = manager;
+    public SaiNawTouchHandler(SaiNawKeyboardService service, 
+                              SaiNawLayoutManager layoutManager, 
+                              SaiNawFeedbackManager feedbackManager,
+                              SaiNawEmojiManager emojiManager) {
+        this.service = service;
+        this.layoutManager = layoutManager;
+        this.feedbackManager = feedbackManager;
         this.emojiManager = emojiManager;
-        this.vibrator = (Vibrator) view.getContext().getSystemService(Context.VIBRATOR_SERVICE);
-        this.accessibilityManager = (AccessibilityManager) view.getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
+        this.density = service.getResources().getDisplayMetrics().density;
+
+        this.spaceLongPressTask = () -> {
+            isLongPressHandled = true;
+            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
+            InputMethodManager imeManager = (InputMethodManager) service.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imeManager != null) imeManager.showInputMethodPicker();
+        };
+
+        this.shiftLongPressTask = () -> {
+            isLongPressHandled = true;
+            layoutManager.isCapsLocked = true;
+            layoutManager.isCaps = true;
+            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
+            layoutManager.updateKeyboardLayout();
+            service.announceText("Shift Locked");
+        };
+
+        this.emojiLongPressTask = () -> {
+            if (currentEmojiCode != 0) {
+                String desc = emojiManager.getMmDescription(currentEmojiCode);
+                if (desc != null) {
+                    isLongPressHandled = true;
+                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
+                    service.announceText(desc);
+                }
+            }
+        };
+
+        this.deleteLoopTask = new Runnable() {
+            @Override
+            public void run() {
+                if (isDeleteActive) {
+                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                    service.handleInput(-5, null);
+                    handler.postDelayed(this, 100);
+                }
+            }
+        };
+
+        this.deleteStartTask = () -> {
+            isLongPressHandled = true;
+            isDeleteActive = true;
+            handler.post(deleteLoopTask);
+        };
     }
 
-    public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps, boolean isSymbols) {
-        this.currentKeyboard = keyboard;
-        this.isShanOrMyanmar = isShanOrMyanmar;
-        this.isCaps = isCaps;
-        this.isSymbols = isSymbols;
-        invalidateRoot();
+    private int dpToPx(int dp) {
+        return (int) (dp * density + 0.5f);
     }
 
-    public void setPhoneticEnabled(boolean enabled) {
-        this.isPhoneticEnabled = enabled;
+    public void loadSettings(SharedPreferences prefs) {
+        isLiftToType = prefs.getBoolean("lift_to_type", true);
     }
 
-    @Override
-    protected int getVirtualViewAt(float x, float y) {
-        if (currentKeyboard == null) return HOST_ID;
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys == null) return HOST_ID;
+    public void handleHover(MotionEvent event) {
+        if (!isLiftToType) return;
 
-        int ix = (int) x;
-        int iy = (int) y;
+        int action = event.getAction();
+        if (action == MotionEvent.ACTION_HOVER_EXIT) {
+            handleHoverExit(event);
+            return;
+        }
+
+        if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE) {
+            int newKeyIndex = getNearestKeyIndexFast((int) event.getX(), (int) event.getY());
+            if (newKeyIndex != lastHoverKeyIndex) {
+                cancelAllLongPress();
+                lastHoverKeyIndex = newKeyIndex;
+                if (newKeyIndex != -1) {
+                    onKeyFocused(newKeyIndex);
+                }
+            }
+        }
+    }
+
+    private void onKeyFocused(int index) {
+        List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
+        if (keys == null || index >= keys.size()) return;
+
+        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS);
+        Keyboard.Key key = keys.get(index);
+        int code = key.codes[0];
+
+        if (code == 32) handler.postDelayed(spaceLongPressTask, 1200);
+        else if (code == -5) handler.postDelayed(deleteStartTask, 1000);
+        else if (code == -1) handler.postDelayed(shiftLongPressTask, 1000);
+        else {
+            int resolvedEmojiCode = resolveEmojiCode(key);
+            if (resolvedEmojiCode != 0) {
+                currentEmojiCode = resolvedEmojiCode;
+                handler.postDelayed(emojiLongPressTask, 800);
+            }
+        }
+    }
+
+    private void handleHoverExit(MotionEvent event) {
+        List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
+        if (keys == null || lastHoverKeyIndex == -1 || lastHoverKeyIndex >= keys.size()) {
+            cancelAllLongPress();
+            lastHoverKeyIndex = -1;
+            return;
+        }
+
+        if (!isLongPressHandled) {
+            Keyboard.Key key = keys.get(lastHoverKeyIndex);
+            if (key != null && key.codes[0] != -100) {
+                feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                service.handleInput(key.codes[0], key);
+            }
+        }
+        cancelAllLongPress();
+        lastHoverKeyIndex = -1;
+    }
+
+    private int resolveEmojiCode(Keyboard.Key key) {
+        int code = key.codes[0];
+        if (emojiManager.hasDescription(code)) return code;
+        if (key.label != null && key.label.length() > 0) {
+            int labelCode = Character.codePointAt(key.label, 0);
+            if (emojiManager.hasDescription(labelCode)) return labelCode;
+        }
+        return 0;
+    }
+
+    public void cancelAllLongPress() {
+        isLongPressHandled = false;
+        isDeleteActive = false;
+        currentEmojiCode = 0;
+        handler.removeCallbacks(spaceLongPressTask);
+        handler.removeCallbacks(deleteStartTask);
+        handler.removeCallbacks(deleteLoopTask);
+        handler.removeCallbacks(shiftLongPressTask);
+        handler.removeCallbacks(emojiLongPressTask);
+    }
+    
+    public void reset() { 
+        lastHoverKeyIndex = -1; 
+        cancelAllLongPress();
+    }
+
+    private int getNearestKeyIndexFast(int x, int y) {
+        List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
+        if (keys == null || y < 0) return -1;
+
+        int closestKeyIndex = -1;
+        long minDistanceSq = Long.MAX_VALUE;
 
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
-            if (key == null || key.codes == null || key.codes.length == 0 || key.codes[0] == -100) continue;
-            if (key.isInside(ix, iy)) return i;
-        }
-        return HOST_ID;
-    }
+            if (key == null || key.codes[0] == -100) continue;
 
-    @Override
-    protected void getVisibleVirtualViews(List<Integer> virtualViewIds) {
-        if (currentKeyboard == null) return;
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys == null) return;
-        for (int i = 0; i < keys.size(); i++) {
-            if (keys.get(i).codes[0] != -100) virtualViewIds.add(i);
-        }
-    }
+            int centerX = key.x + (key.width / 2);
+            int centerY = key.y + (key.height / 2);
 
-    @Override
-    protected void onPopulateNodeForVirtualView(int virtualViewId, @NonNull AccessibilityNodeInfoCompat node) {
-        if (currentKeyboard == null) {
-            node.setContentDescription("");
-            node.setBoundsInParent(new Rect(0, 0, 1, 1));
-            return;
-        }
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) {
-            node.setContentDescription("");
-            node.setBoundsInParent(new Rect(0, 0, 1, 1));
-            return;
-        }
-        
-        Keyboard.Key key = keys.get(virtualViewId);
-        node.setContentDescription(getKeyDescription(key));
-        node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
-        node.setClickable(true);
-        
-        tempRect.set(key.x, key.y, key.x + key.width, key.y + key.height);
-        node.setBoundsInParent(tempRect);
-    }
+            long dx = x - centerX;
+            long dy = y - centerY;
+            long distanceSq = (dx * dx) + (dy * dy);
 
-    @Override
-    protected boolean onPerformActionForVirtualView(int virtualViewId, int action, @Nullable Bundle arguments) {
-        if (currentKeyboard == null) return false;
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) return false;
-        
-        Keyboard.Key key = keys.get(virtualViewId);
-
-        if (action == AccessibilityNodeInfoCompat.ACTION_CLICK) {
-            forceHapticFeedback(key.codes[0]);
-            if (listener != null) {
-                listener.onAccessibilityKeyClick(key.codes[0], key);
-            }
-            return true;
-        }
-        return false;
-    }
-
-    private void forceHapticFeedback(int keyCode) {
-        if (vibrator == null || !vibrator.hasVibrator()) return;
-        feedbackExecutor.execute(() -> {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    int effectId = (keyCode == -5 || keyCode == 32 || keyCode == -4) ? 
-                            VibrationEffect.EFFECT_HEAVY_CLICK : VibrationEffect.EFFECT_CLICK;
-                    vibrator.vibrate(VibrationEffect.createPredefined(effectId));
-                } else {
-                    vibrator.vibrate(40);
-                }
-            } catch (Exception e) {}
-        });
-    }
-
-    private String getKeyDescription(Keyboard.Key key) {
-        int code = key.codes[0];
-
-        // ၁။ Function Keys တွေကို အရင်ဖတ်ခိုင်းမယ်
-        if (code == -5) return "Delete";
-        if (code == 32) return "Space";
-        if (code == -4) return (key.label != null) ? key.label.toString() : "Enter";
-        if (code == -1) {
-            if (isSymbols) return isCaps ? "Symbols" : "More Symbols";
-            return isCaps ? "Shift On" : "Shift Off";
-        }
-        if (code == -2) return "Symbols";
-        if (code == -6) return "Alphabet";
-        if (code == -101) return "Switch Language";
-        if (code == -10) return "Voice Typing";
-
-        // ၂။ Phonetic Manager ရှိရင် Phonetic အရင်ဖတ်မယ်
-        if (isPhoneticEnabled && phoneticManager != null) {
-            String phonetic = phoneticManager.getPronunciation(code);
-            if (phonetic != null && !phonetic.isEmpty()) return phonetic;
-        }
-
-        // ၃။ ပုံမှန် စာလုံးတွေအတွက် logic
-        String label = (key.label != null) ? key.label.toString() :
-                      (key.text != null ? key.text.toString() : null);
-
-        if (label == null || label.isEmpty()) return "Unlabeled Key";
-
-        // ၄။ အင်္ဂလိပ်စာလုံး အကြီး/အသေး ခွဲဖတ်ပေးတဲ့ logic
-        if (!isShanOrMyanmar && isCaps) {
-            if (label.length() == 1 && Character.isLetter(label.charAt(0))) {
-                return "Capital " + label;
+            if (distanceSq < minDistanceSq) {
+                minDistanceSq = distanceSq;
+                closestKeyIndex = i;
             }
         }
 
-        return label;
+        if (closestKeyIndex != -1) {
+            long threshold = dpToPx(60);
+            if (minDistanceSq > (threshold * threshold)) return -1;
+        }
+
+        return closestKeyIndex;
     }
 }
 
