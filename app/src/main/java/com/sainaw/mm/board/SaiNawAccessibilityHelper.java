@@ -146,18 +146,41 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
+
         if (code == -4 && key.label != null) return key.label.toString();
+
         if (isPhoneticEnabled && phoneticManager != null) {
             String phonetic = phoneticManager.getPronunciation(code);
-            if (phonetic != null) return phonetic;
+            if (phonetic != null && !phonetic.isEmpty()) return phonetic;
         }
-        if (code == -5) return "Delete";
-        if (code == -1) return isCaps ? "Shift On" : "Shift";
-        if (code == 32) return "Space";
-        if (code == -2) return "Symbols";
-        if (code == -101) return "Switch Language";
-        
-        return (key.label != null) ? key.label.toString() : "";
+
+        switch (code) {
+            case -5: return "Delete";
+            case 32: return "Space";
+            case -1:
+                if (isSymbols) return isCaps ? "Symbols" : "More Symbols";
+                return isCaps ? "Shift On" : "Shift";
+            case -2: return "Symbol Keyboard";
+            case -6: return "Alphabet Keyboard";
+            case -101: return "Switch Language";
+            case -10: return "Voice Typing";
+            case -100: return "";
+        }
+
+        String label = (key.label != null) ? key.label.toString() :
+                      (key.text != null ? key.text.toString() : null);
+
+        if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
+            return "Capital " + label;
+        }
+
+        return (label != null && !label.isEmpty()) ? label : "Unlabeled Key";
+    }
+
+    @Override
+    public void onDetachedFromWebView() {
+        super.onDetachedFromWebView();
+        feedbackExecutor.shutdown();
     }
 }
 
