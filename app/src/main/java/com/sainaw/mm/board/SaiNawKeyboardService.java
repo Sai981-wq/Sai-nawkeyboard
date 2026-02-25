@@ -30,6 +30,7 @@ import android.view.inputmethod.InputConnection;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.ViewCompat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -40,7 +41,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SaiNawFeedbackManager feedbackManager;
     private SaiNawLayoutManager layoutManager;
     private SaiNawTouchHandler touchHandler;
-    private SaiNawAccessibilityDelegate accessibilityDelegate;
+    private SaiNawAccessibilityHelper accessibilityHelper;
     private SaiNawTextProcessor textProcessor;
     private SaiNawInputLogic inputLogic;
     private SaiNawPhoneticManager phoneticManager;
@@ -89,7 +90,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         layoutManager = new SaiNawLayoutManager(this);
         emojiManager = new SaiNawEmojiManager(this); 
         touchHandler = new SaiNawTouchHandler(this, layoutManager, feedbackManager, emojiManager);
-        
         textProcessor = new SaiNawTextProcessor();
         inputLogic = new SaiNawInputLogic(textProcessor, layoutManager);
         phoneticManager = new SaiNawPhoneticManager(this);
@@ -117,22 +117,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
 
         keyboardView.setOnKeyboardActionListener(this);
-        keyboardView.setOnTouchListener((v, event) -> false);
         
-        accessibilityDelegate = new SaiNawAccessibilityDelegate(keyboardView, this::handleInput, phoneticManager, emojiManager);
-        boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
-        accessibilityDelegate.setPhoneticEnabled(usePhonetic);
+        accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager, emojiManager);
+        accessibilityHelper.setPhoneticEnabled(prefs.getBoolean("use_phonetic_sounds", true));
+        ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         
         keyboardView.setOnHoverListener((v, event) -> {
-            boolean isTalkBackActive = accessibilityManager != null && 
-                                       accessibilityManager.isEnabled() && 
-                                       accessibilityManager.isTouchExplorationEnabled();
-            if (isTalkBackActive) {
-                return accessibilityDelegate.onHoverEvent(event);
-            } else {
-                touchHandler.handleHover(event);
+            if (accessibilityHelper.dispatchHoverEvent(event)) {
+                touchHandler.cancelAllLongPress();
                 return true;
             }
+            touchHandler.handleHover(event);
+            return false;
         });
 
         setupSpeechRecognizer();
@@ -140,42 +136,24 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     @Override
-    public void onStartInput(EditorInfo attribute, boolean restarting) {
-        super.onStartInput(attribute, restarting);
-        if (layoutManager != null) {
-            layoutManager.updateEditorInfo(attribute);
-            layoutManager.determineKeyboardForInputType();
-        }
-    }
-
-    @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
-        
         SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
-        feedbackManager.loadSettings(prefs);
-        touchHandler.loadSettings(prefs);
-        layoutManager.initKeyboards(prefs); 
-        useSmartEcho = prefs.getBoolean("smart_echo", false); 
-        boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
         
-        if (accessibilityDelegate != null) {
-            accessibilityDelegate.setPhoneticEnabled(usePhonetic);
+        useSmartEcho = prefs.getBoolean("smart_echo", false); 
+        if (accessibilityHelper != null) {
+            accessibilityHelper.setPhoneticEnabled(prefs.getBoolean("use_phonetic_sounds", true));
         }
-        if (phoneticManager != null) {
-            phoneticManager.setLanguageId(layoutManager.currentLanguageId);
-        }
-
-        if (layoutManager != null) {
-            layoutManager.isCaps = false;
-            layoutManager.isCapsLocked = false;
-            layoutManager.isSymbols = false;
-            layoutManager.isEmoji = false;
-        }
+        
+        layoutManager.isCaps = false;
+        layoutManager.isCapsLocked = false;
+        layoutManager.isSymbols = false;
+        layoutManager.isEmoji = false;
         
         currentWord.setLength(0);
         layoutManager.updateEditorInfo(info);
         layoutManager.determineKeyboardForInputType();
+        updateHelperState();
         triggerCandidateUpdate(0);
     }
 
@@ -189,173 +167,189 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
                 layoutManager.isCaps = false;
                 layoutManager.updateKeyboardLayout();
+                updateHelperState();
             }
             return;
         }
 
-        try {
-            switch (primaryCode) {
-                case -5: 
-                    if (!textProcessor.handleCustomBackspace(ic)) {
-                        CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
-                        if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
-                            ic.deleteSurroundingText(1, 0);
-                        }
-                        CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
-                        ic.deleteSurroundingText(1, 0);
-                        if (useSmartEcho) {
-                            if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
-                            else announceText("Delete");
-                        }
-                    } else {
-                        if (useSmartEcho) {
-                            announceText("Deleted");
-                        }
-                    }
-                    
-                    if (currentWord.length() > 0) {
-                        currentWord.deleteCharAt(currentWord.length() - 1);
-                        triggerCandidateUpdate(50);
-                    }
-                    break;
+        switch (primaryCode) {
+            case -5: 
+                handleDelete(ic);
+                break;
 
-                case -10: startVoiceInput(); break; 
+            case -10: 
+                startVoiceInput(); 
+                break; 
 
-                case -1: 
-                    if (layoutManager.isSymbols) {
-                        layoutManager.isCaps = !layoutManager.isCaps;
-                        announceText(layoutManager.isCaps ? "More Symbols" : "Symbols");
-                    } else {
-                        if (layoutManager.isCapsLocked) {
-                            layoutManager.isCapsLocked = false;
-                            layoutManager.isCaps = false;
-                            announceText("Shift Off");
-                        } else {
-                            layoutManager.isCaps = !layoutManager.isCaps;
-                            announceText(layoutManager.isCaps ? "Shift On" : "Shift Off");
-                        }
-                    }
-                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                    layoutManager.updateKeyboardLayout();
-                    updateHelperState();
-                    break;
+            case -1: 
+                handleShift();
+                break;
 
-                case -2: 
-                    layoutManager.isSymbols = true;
-                    layoutManager.isEmoji = false;
-                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                    layoutManager.updateKeyboardLayout();
-                    announceText("Symbols");
-                    updateHelperState();
-                    break;
+            case -2: 
+            case -6: 
+            case KEYCODE_EMOJI:
+                handleKeyboardModeChange(primaryCode);
+                break;
 
-                case -6: 
-                    layoutManager.isSymbols = false;
-                    layoutManager.isEmoji = false;
-                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                    layoutManager.updateKeyboardLayout();
-                    announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
-                    updateHelperState();
-                    break;
-                    
-                case KEYCODE_EMOJI: 
-                    layoutManager.isEmoji = true;
-                    layoutManager.isSymbols = false;
-                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                    layoutManager.updateKeyboardLayout();
-                    announceText("Emoji");
-                    updateHelperState();
-                    break;
+            case -101: 
+                handleLanguageChange();
+                break;
 
-                case -101: 
-                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                    layoutManager.changeLanguage();
-                    touchHandler.reset(); 
-                    if (phoneticManager != null) phoneticManager.setLanguageId(layoutManager.currentLanguageId);
-                    announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
-                    updateHelperState();
-                    break;
+            case -4: 
+                handleEnter(ic);
+                break;
 
-                case -4: 
-                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                    EditorInfo editorInfo = getCurrentInputEditorInfo();
-                    boolean isMultiLine = (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
-                    if (!isMultiLine && (editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION) != EditorInfo.IME_ACTION_NONE) {
-                        sendDefaultEditorAction(true);
-                    } else {
-                        ic.commitText("\n", 1);
-                    }
-                    if (useSmartEcho) announceText("Enter");
-                    saveWordAndReset();
-                    break;
+            case 32: 
+                handleSpace(ic);
+                break;
 
-                case 32: 
-                    ic.commitText(" ", 1);
-                    if (useSmartEcho) {
-                        String lastWord = getLastWordForEcho();
-                        if (lastWord != null && !lastWord.isEmpty()) announceText(lastWord);
-                        else announceText("Space");
-                    }
-                    saveWordAndReset();
-                    break;
+            default: 
+                handleDefaultInput(ic, primaryCode, key);
+        }
+    }
 
-                default: 
-                    if (!textProcessor.handleCustomInsert(ic, primaryCode)) {
-                        inputLogic.processInput(ic, primaryCode, key);
-                    }
-                    String charStr = (key != null && key.label != null && key.label.length() > 1) 
-                            ? key.label.toString() : String.valueOf((char) primaryCode);
-                    currentWord.append(charStr);
-                    if (useSmartEcho) {
-                        String accumulatingWord = getCurrentWordForEcho();
-                        if (accumulatingWord != null && !accumulatingWord.isEmpty()) announceText(accumulatingWord);
-                    }
-                    if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
-                        layoutManager.isCaps = false;
-                        layoutManager.updateKeyboardLayout();
-                        updateHelperState();
-                    }
-                    triggerCandidateUpdate(200);
+    private void handleDelete(InputConnection ic) {
+        if (!textProcessor.handleCustomBackspace(ic)) {
+            CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
+            ic.deleteSurroundingText(1, 0);
+            if (useSmartEcho) {
+                if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
+                else announceText("Delete");
             }
-        } catch (Exception e) { e.printStackTrace(); }
+        } else if (useSmartEcho) {
+            announceText("Deleted");
+        }
+        
+        if (currentWord.length() > 0) {
+            currentWord.deleteCharAt(currentWord.length() - 1);
+            triggerCandidateUpdate(50);
+        }
+    }
+
+    private void handleShift() {
+        if (layoutManager.isSymbols) {
+            layoutManager.isCaps = !layoutManager.isCaps;
+            announceText(layoutManager.isCaps ? "More Symbols" : "Symbols");
+        } else {
+            if (layoutManager.isCapsLocked) {
+                layoutManager.isCapsLocked = false;
+                layoutManager.isCaps = false;
+                announceText("Shift Off");
+            } else {
+                layoutManager.isCaps = !layoutManager.isCaps;
+                announceText(layoutManager.isCaps ? "Shift On" : "Shift Off");
+            }
+        }
+        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+        layoutManager.updateKeyboardLayout();
+        updateHelperState();
+    }
+
+    private void handleKeyboardModeChange(int primaryCode) {
+        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+        if (primaryCode == -2) {
+            layoutManager.isSymbols = true;
+            layoutManager.isEmoji = false;
+            announceText("Symbols");
+        } else if (primaryCode == -6) {
+            layoutManager.isSymbols = false;
+            layoutManager.isEmoji = false;
+            announceText(getLanguageName());
+        } else {
+            layoutManager.isEmoji = true;
+            layoutManager.isSymbols = false;
+            announceText("Emoji");
+        }
+        layoutManager.updateKeyboardLayout();
+        updateHelperState();
+    }
+
+    private void handleLanguageChange() {
+        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+        layoutManager.changeLanguage();
+        touchHandler.reset(); 
+        if (phoneticManager != null) phoneticManager.setLanguageId(layoutManager.currentLanguageId);
+        announceText(getLanguageName());
+        layoutManager.updateKeyboardLayout();
+        updateHelperState();
+    }
+
+    private void handleEnter(InputConnection ic) {
+        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+        EditorInfo info = getCurrentInputEditorInfo();
+        if ((info.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) == 0 && 
+            (info.imeOptions & EditorInfo.IME_MASK_ACTION) != EditorInfo.IME_ACTION_NONE) {
+            sendDefaultEditorAction(true);
+        } else {
+            ic.commitText("\n", 1);
+        }
+        if (useSmartEcho) announceText("Enter");
+        saveWordAndReset();
+    }
+
+    private void handleSpace(InputConnection ic) {
+        ic.commitText(" ", 1);
+        if (useSmartEcho) {
+            String lastWord = getLastWordForEcho();
+            announceText(lastWord != null && !lastWord.isEmpty() ? lastWord : "Space");
+        }
+        saveWordAndReset();
+    }
+
+    private void handleDefaultInput(InputConnection ic, int primaryCode, Keyboard.Key key) {
+        if (!textProcessor.handleCustomInsert(ic, primaryCode)) {
+            inputLogic.processInput(ic, primaryCode, key);
+        }
+        String charStr = (key != null && key.label != null && key.label.length() > 1) 
+                ? key.label.toString() : String.valueOf((char) primaryCode);
+        currentWord.append(charStr);
+        if (useSmartEcho) {
+            String accumulatingWord = getCurrentWordForEcho();
+            if (accumulatingWord != null) announceText(accumulatingWord);
+        }
+        if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
+            layoutManager.isCaps = false;
+            layoutManager.updateKeyboardLayout();
+            updateHelperState();
+        }
+        triggerCandidateUpdate(200);
+    }
+
+    private String getLanguageName() {
+        switch(layoutManager.currentLanguageId) {
+            case 1: return "Myanmar";
+            case 2: return "Shan";
+            default: return "English";
+        }
     }
 
     private String getCurrentWordForEcho() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
-        CharSequence text = ic.getTextBeforeCursor(100, 0);
+        CharSequence text = ic.getTextBeforeCursor(50, 0);
         if (text == null || text.length() == 0) return null;
         String s = text.toString();
-        int lastNewLine = s.lastIndexOf('\n');
-        String currentLine = (lastNewLine != -1) ? s.substring(lastNewLine + 1) : s;
-        if (currentLine.isEmpty()) return null;
-        int lastSpaceIndex = currentLine.lastIndexOf(' ');
-        return (lastSpaceIndex != -1) ? currentLine.substring(lastSpaceIndex + 1) : currentLine;
+        int lastSpace = s.lastIndexOf(' ');
+        int lastNL = s.lastIndexOf('\n');
+        int start = Math.max(lastSpace, lastNL) + 1;
+        return (start < s.length()) ? s.substring(start) : null;
     }
     
     private String getLastWordForEcho() {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
-        CharSequence text = ic.getTextBeforeCursor(100, 0); 
-        if (text == null || text.length() == 0) return null;
-        String s = text.toString();
-        int lastNewLine = s.lastIndexOf('\n');
-        String currentLine = (lastNewLine != -1) ? s.substring(lastNewLine + 1) : s;
-        String trimmed = currentLine.trim(); 
-        if (trimmed.isEmpty()) return null;
-        int lastSpaceIndex = trimmed.lastIndexOf(' ');
-        return (lastSpaceIndex != -1) ? trimmed.substring(lastSpaceIndex + 1) : trimmed;
+        CharSequence text = ic.getTextBeforeCursor(50, 0); 
+        if (text == null) return null;
+        String[] words = text.toString().trim().split("\\s+");
+        return (words.length > 0) ? words[words.length - 1] : null;
     }
-
-    public KeyboardView getKeyboardView() { return keyboardView; }
 
     public void updateHelperState() { 
-        if (accessibilityDelegate != null) {
-            accessibilityDelegate.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps, layoutManager.isSymbols); 
+        if (accessibilityHelper != null && layoutManager != null) {
+            accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), 
+                layoutManager.isShanOrMyanmar(), layoutManager.isCaps, layoutManager.isSymbols); 
         }
     }
-
-    public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
 
     public void announceText(String text) {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
@@ -363,7 +357,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
                 event.getText().add(text);
                 accessibilityManager.sendAccessibilityEvent(event);
-            }, 150); 
+            }, 100); 
         }
     }
 
@@ -409,6 +403,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         tv.setTag(suggestions.get(i));
                         tv.setVisibility(View.VISIBLE);
                         tv.setOnClickListener(candidateListener);
+                        tv.setContentDescription("Suggestion: " + suggestions.get(i));
                     } else tv.setVisibility(View.GONE);
                 }
             });
@@ -451,11 +446,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void startVoiceInput() {
         if (speechRecognizer == null) return;
-        if (isListening) {
-            speechRecognizer.stopListening();
-            isListening = false;
-            return;
-        }
+        if (isListening) { speechRecognizer.stopListening(); isListening = false; return; }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
             intent.setData(Uri.parse("package:" + getPackageName()));
@@ -463,9 +454,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             startActivity(intent); 
             return;
         }
-        handler.post(() -> {
-            try { speechRecognizer.startListening(speechIntent); isListening = true; } catch (Exception e) {}
-        });
+        handler.post(() -> { try { speechRecognizer.startListening(speechIntent); isListening = true; } catch (Exception e) {} });
     }
 
     private void initCandidateViews(boolean isDarkTheme) {
@@ -492,16 +481,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
     @Override public void onPress(int p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); } 
-    @Override public void onRelease(int p) { touchHandler.cancelAllLongPress(); }
+    @Override public void onRelease(int p) { if(touchHandler!=null) touchHandler.cancelAllLongPress(); }
     @Override public void swipeLeft() {} @Override public void swipeRight() {} @Override public void swipeDown() {} @Override public void swipeUp() {}
     
     @Override public void onDestroy() { 
         super.onDestroy(); 
         if(speechRecognizer!=null) speechRecognizer.destroy(); 
-        if(dbExecutor != null && !dbExecutor.isShutdown()) dbExecutor.shutdown();
+        if(dbExecutor != null) dbExecutor.shutdown();
         if(suggestionDB!=null) suggestionDB.close();
         if(isReceiverRegistered) unregisterReceiver(userUnlockReceiver);
-        touchHandler.cancelAllLongPress();
+        if(touchHandler!=null) touchHandler.cancelAllLongPress();
         handler.removeCallbacks(pendingCandidateUpdate);
     }
 }

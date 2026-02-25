@@ -185,50 +185,29 @@ public class SaiNawTouchHandler {
         
         if (y < 0) return -1;
 
-        int bestKeyIndex = -1;
-        int stickinessThreshold = 20;
-        int sideExpansion = 20; 
-
         int size = keys.size();
         for (int i = 0; i < size; i++) {
-            if (i >= keys.size()) break;
-
             Keyboard.Key key = keys.get(i);
             if (key == null || key.codes[0] == -100) continue;
 
-            tempRect.set(key.x, key.y, key.x + key.width, key.y + key.height);
+            int left = key.x;
+            int top = key.y;
+            int right = key.x + key.width;
+            int bottom = key.y + key.height;
 
-            if (isFunctionalKey(key.codes[0])) {
-                tempRect.inset(-sideExpansion, -20);
-            } else {
-                tempRect.inset(-sideExpansion, 0);
-                tempRect.bottom += 20;
+            if (key.codes[0] == -5) {
+                top -= 25; 
+                left -= 10;
+                right += 10;
+            } else if (!isFunctionalKey(key.codes[0])) {
+                bottom -= 5; 
             }
 
-            if (tempRect.contains(x, y)) {
-                if (i == lastHoverKeyIndex) {
-                    return i;
-                }
-                
-                if (lastHoverKeyIndex != -1 && lastHoverKeyIndex < keys.size() &&
-                    isFunctionalKey(key.codes[0]) && 
-                    !isFunctionalKey(keys.get(lastHoverKeyIndex).codes[0])) {
-                     
-                     Keyboard.Key lastKey = keys.get(lastHoverKeyIndex);
-                     if (Math.abs(x - lastKey.x) < stickinessThreshold ||
-                         Math.abs(y - lastKey.y) < stickinessThreshold) {
-                         continue;
-                     }
-                }
-
-                bestKeyIndex = i;
-                
-                if (!isFunctionalKey(key.codes[0])) {
-                    return i;
-                }
+            if (x >= left && x < right && y >= top && y < bottom) {
+                return i;
             }
         }
-        return bestKeyIndex;
+        return -1;
     }
 
     private boolean isFunctionalKey(int code) {

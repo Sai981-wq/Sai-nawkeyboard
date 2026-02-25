@@ -1,0 +1,254 @@
+package com.sainaw.mm.board;
+
+import android.content.Context;
+import android.graphics.Rect;
+import android.inputmethodservice.Keyboard;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.view.View;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
+import androidx.customview.widget.ExploreByTouchHelper;
+import java.util.List;
+
+public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
+    private final Vibrator vibrator;
+    private final AccessibilityManager accessibilityManager;
+    private final Rect tempRect = new Rect();
+    private Keyboard currentKeyboard;
+    private boolean isShanOrMyanmar = false;
+    private boolean isCaps = false;
+    private boolean isSymbols = false;
+    private boolean isPhoneticEnabled = true;
+    private OnAccessibilityKeyListener listener;
+    private SaiNawPhoneticManager phoneticManager;
+    private SaiNawEmojiManager emojiManager;
+
+    public interface OnAccessibilityKeyListener {
+        void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
+    }
+
+    public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, 
+                                     SaiNawPhoneticManager manager, SaiNawEmojiManager emojiManager) {
+        super(view);
+        this.listener = listener;
+        this.phoneticManager = manager;
+        this.emojiManager = emojiManager;
+        this.vibrator = (Vibrator) view.getContext().getSystemService(Context.VIBRATOR_SERVICE);
+        this.accessibilityManager = (AccessibilityManager) view.getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
+    }
+
+    public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps, boolean isSymbols) {
+        this.currentKeyboard = keyboard;
+        this.isShanOrMyanmar = isShanOrMyanmar;
+        this.isCaps = isCaps;
+        this.isSymbols = isSymbols;
+        invalidateRoot();
+        sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+    }
+
+    public void setPhoneticEnabled(boolean enabled) {
+        this.isPhoneticEnabled = enabled;
+    }
+
+    @Override
+    protected int getVirtualViewAt(float x, float y) {
+        if (currentKeyboard == null) return HOST_ID;
+        List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys == null || keys.isEmpty()) return HOST_ID;
+
+        int touchX = (int) x;
+        int touchY = (int) y;
+
+        for (int i = 0; i < keys.size(); i++) {
+            Keyboard.Key key = keys.get(i);
+            if (key == null || key.codes == null || key.codes.length == 0 || key.codes[0] == -100) continue;
+
+            int left = key.x;
+            int top = key.y;
+            int right = key.x + key.width;
+            int bottom = key.y + key.height;
+
+            if (key.codes[0] == -5) {
+                top -= 20; 
+            }
+
+            if (touchX >= left && touchX < right && touchY >= top && touchY < bottom) {
+                return i;
+            }
+        }
+        return HOST_ID;
+    }
+
+    @Override
+    protected void getVisibleVirtualViews(List<Integer> virtualViewIds) {
+        if (currentKeyboard == null) return;
+        List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys == null) return;
+        for (int i = 0; i < keys.size(); i++) {
+            if (keys.get(i).codes[0] != -100) virtualViewIds.add(i);
+        }
+    }
+
+    @Override
+    protected void onPopulateNodeForVirtualView(int virtualViewId, @NonNull AccessibilityNodeInfoCompat node) {
+        if (currentKeyboard == null) {
+            node.setContentDescription("");
+            node.setBoundsInParent(new Rect(0, 0, 1, 1));
+            return;
+        }
+        List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) {
+            node.setContentDescription("");
+            node.setBoundsInParent(new Rect(0, 0, 1, 1));
+            return;
+        }
+        
+        Keyboard.Key key = keys.get(virtualViewId);
+        String description = getKeyDescription(key);
+        node.setContentDescription(description);
+        
+        node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
+        node.setClickable(true);
+        node.addAction(AccessibilityNodeInfoCompat.ACTION_LONG_CLICK);
+        node.setLongClickable(true);
+        
+        int left = key.x;
+        int top = key.y;
+        int right = key.x + key.width;
+        int bottom = key.y + key.height;
+
+        if (key.codes[0] == -5) {
+            top -= 20;
+        }
+
+        tempRect.set(left, top, right, bottom);
+        node.setBoundsInParent(tempRect);
+    }
+
+    @Override
+    protected boolean onPerformActionForVirtualView(int virtualViewId, int action, @Nullable Bundle arguments) {
+        if (currentKeyboard == null) return false;
+        List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) return false;
+        
+        Keyboard.Key key = keys.get(virtualViewId);
+
+        if (action == AccessibilityNodeInfoCompat.ACTION_CLICK) {
+            forceHapticFeedback(key.codes[0]);
+            if (listener != null) {
+                listener.onAccessibilityKeyClick(key.codes[0], key);
+            }
+            return true;
+        } else if (action == AccessibilityNodeInfoCompat.ACTION_LONG_CLICK) {
+            int emojiCode = resolveEmojiCode(key);
+            if (emojiCode != 0 && emojiManager != null) {
+                String desc = emojiManager.getMmDescription(emojiCode);
+                if (desc != null) {
+                    performLongPressFeedback();
+                    announceTextImmediate(desc);
+                    return true;
+                }
+            }
+             if (key.codes[0] == -1 || key.codes[0] == -5) {
+                 performLongPressFeedback();
+                 return true;
+             }
+        }
+        return false;
+    }
+
+    private void announceTextImmediate(String text) {
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+            event.getText().add(text);
+            accessibilityManager.sendAccessibilityEvent(event);
+        }
+    }
+
+    private int resolveEmojiCode(Keyboard.Key key) {
+        int code = key.codes[0];
+        if (emojiManager != null && emojiManager.hasDescription(code)) {
+            return code;
+        }
+        if (key.label != null && key.label.length() > 0 && emojiManager != null) {
+            int labelCode = Character.codePointAt(key.label, 0);
+            if (emojiManager.hasDescription(labelCode)) {
+                return labelCode;
+            }
+        }
+        return 0;
+    }
+
+    private void performLongPressFeedback() {
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE));
+        } else {
+            vibrator.vibrate(80);
+        }
+    }
+
+    private void forceHapticFeedback(int keyCode) {
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                int effectId = (keyCode == -5 || keyCode == 32 || keyCode == -4 || keyCode == 10) ? 
+                        VibrationEffect.EFFECT_HEAVY_CLICK : VibrationEffect.EFFECT_CLICK;
+                vibrator.vibrate(VibrationEffect.createPredefined(effectId));
+            } catch (Exception e) {
+                vibrator.vibrate(VibrationEffect.createOneShot(40, 200));
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                long duration = (keyCode == -5 || keyCode == 32 || keyCode == -4) ? 50 : 35;
+                int amplitude = (keyCode == -5 || keyCode == 32 || keyCode == -4) ? 255 : 180;
+                vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
+            } catch (Exception e) {
+                vibrator.vibrate(40);
+            }
+        } else {
+            vibrator.vibrate(40);
+        }
+    }
+
+    private String getKeyDescription(Keyboard.Key key) {
+        int code = key.codes[0];
+        if (code == -4 && key.label != null) return key.label.toString();
+
+        if (isPhoneticEnabled && phoneticManager != null) {
+            String phonetic = phoneticManager.getPronunciation(code);
+            if (phonetic != null && !phonetic.equals(String.valueOf((char)code))) {
+                return phonetic;
+            }
+        }
+
+        if (code == -5) return "Delete";
+        if (code == -1) {
+            if (isSymbols) return isCaps ? "Symbols" : "More Symbols";
+            return isCaps ? "Shift On" : "Shift";
+        }
+        if (code == 32) return "Space";
+        if (code == -2) return "Symbol Keyboard";
+        if (code == -6) return "Alphabet Keyboard";
+        if (code == -101) return "Switch Language";
+        if (code == -10) return "Voice Typing";
+        if (code == -100) return ""; 
+
+        String label = (key.label != null) ? key.label.toString() : (key.text != null ? key.text.toString() : null);
+
+        if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
+             return "Capital " + label;
+        }
+
+        return label != null ? label : "Unlabeled Key";
+    }
+}
+
