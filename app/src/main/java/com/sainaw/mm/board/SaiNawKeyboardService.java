@@ -1,4 +1,4 @@
-mm.board;
+package com.mm.board;
 
 import android.Manifest;
 import android.content.BroadcastReceiver;
