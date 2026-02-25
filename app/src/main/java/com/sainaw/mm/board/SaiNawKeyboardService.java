@@ -176,33 +176,26 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             case -5: 
                 handleDelete(ic);
                 break;
-
             case -10: 
                 startVoiceInput(); 
                 break; 
-
             case -1: 
                 handleShift();
                 break;
-
             case -2: 
             case -6: 
             case KEYCODE_EMOJI:
                 handleKeyboardModeChange(primaryCode);
                 break;
-
             case -101: 
                 handleLanguageChange();
                 break;
-
             case -4: 
                 handleEnter(ic);
                 break;
-
             case 32: 
                 handleSpace(ic);
                 break;
-
             default: 
                 handleDefaultInput(ic, primaryCode, key);
         }
@@ -329,9 +322,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         CharSequence text = ic.getTextBeforeCursor(50, 0);
         if (text == null || text.length() == 0) return null;
         String s = text.toString();
-        int lastSpace = s.lastIndexOf(' ');
-        int lastNL = s.lastIndexOf('\n');
-        int start = Math.max(lastSpace, lastNL) + 1;
+        int start = Math.max(s.lastIndexOf(' '), s.lastIndexOf('\n')) + 1;
         return (start < s.length()) ? s.substring(start) : null;
     }
     
@@ -349,6 +340,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), 
                 layoutManager.isShanOrMyanmar(), layoutManager.isCaps, layoutManager.isSymbols); 
         }
+    }
+
+    public int getResId(String name) {
+        return getResources().getIdentifier(name, "xml", getPackageName());
+    }
+
+    public KeyboardView getKeyboardView() {
+        return keyboardView;
     }
 
     public void announceText(String text) {
