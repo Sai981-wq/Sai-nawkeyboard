@@ -14,7 +14,7 @@ public class SaiNawLayoutManager {
     public Keyboard qwertyKeyboard, qwertyShiftKeyboard;
     public Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     public Keyboard shanKeyboard, shanShiftKeyboard;
-    public Keyboard symbolsEnKeyboard, symbolsEnShiftKeyboard, symbolsMmKeyboard, symbolsMmShiftKeyboard;
+    public Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
     public Keyboard numberKeyboard;
     public Keyboard emojiKeyboard;
     
@@ -28,7 +28,6 @@ public class SaiNawLayoutManager {
     public int currentLanguageId = 0; 
     
     private List<Integer> enabledLanguages = new ArrayList<>();
-    private boolean lastNumberRowState = false;
 
     public SaiNawLayoutManager(SaiNawKeyboardService service) {
         this.service = service;
@@ -51,32 +50,23 @@ public class SaiNawLayoutManager {
 
     public void initKeyboards(SharedPreferences prefs) {
         loadLanguageSettings(prefs);
-        boolean showNumRow = prefs.getBoolean("number_row", false);
-        
-        if (qwertyKeyboard != null && lastNumberRowState == showNumRow) {
-            return;
-        }
-
-        lastNumberRowState = showNumRow;
         try {
+            boolean showNumRow = prefs.getBoolean("number_row", false);
             String suffix = showNumRow ? "_num" : "";
             
             qwertyKeyboard = new Keyboard(context, service.getResId("qwerty" + suffix));
             qwertyShiftKeyboard = new Keyboard(context, service.getResId("qwerty_shift"));
+            
             myanmarKeyboard = new Keyboard(context, service.getResId("myanmar" + suffix));
             myanmarShiftKeyboard = new Keyboard(context, service.getResId("myanmar_shift"));
+            
             shanKeyboard = new Keyboard(context, service.getResId("shan"));
             shanShiftKeyboard = new Keyboard(context, service.getResId("shan_shift"));
             
             int symEnId = service.getResId("symbols");
-            int symEnShiftId = service.getResId("symbols_shift");
             int symMmId = service.getResId("symbols_mm");
-            int symMmShiftId = service.getResId("symbols_mm_shift");
-            
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(context, symEnId) : qwertyKeyboard;
-            symbolsEnShiftKeyboard = (symEnShiftId != 0) ? new Keyboard(context, symEnShiftId) : symbolsEnKeyboard;
             symbolsMmKeyboard = (symMmId != 0) ? new Keyboard(context, symMmId) : symbolsEnKeyboard;
-            symbolsMmShiftKeyboard = (symMmShiftId != 0) ? new Keyboard(context, symMmShiftId) : symbolsMmKeyboard;
 
             int numPadId = service.getResId("number_pad");
             numberKeyboard = (numPadId != 0) ? new Keyboard(context, numPadId) : symbolsEnKeyboard;
@@ -86,10 +76,8 @@ public class SaiNawLayoutManager {
             
         } catch (Exception e) {
             e.printStackTrace();
-            if (qwertyKeyboard == null) {
-                qwertyKeyboard = new Keyboard(context, service.getResId("qwerty"));
-                myanmarKeyboard = new Keyboard(context, service.getResId("myanmar"));
-            }
+            qwertyKeyboard = new Keyboard(context, service.getResId("qwerty"));
+            myanmarKeyboard = new Keyboard(context, service.getResId("myanmar"));
         }
     }
 
@@ -99,6 +87,7 @@ public class SaiNawLayoutManager {
 
     public void determineKeyboardForInputType() {
         isEmoji = false;
+
         if (currentEditorInfo == null) return;
         
         int inputType = currentEditorInfo.inputType & EditorInfo.TYPE_MASK_CLASS;
@@ -116,33 +105,28 @@ public class SaiNawLayoutManager {
     }
 
     public void updateKeyboardLayout() {
-        Keyboard nextKeyboard;
-        if (isEmoji) {
-            nextKeyboard = emojiKeyboard;
-        } else if (isSymbols) {
-            if (currentKeyboard == numberKeyboard) {
-                nextKeyboard = numberKeyboard;
+        try {
+            Keyboard nextKeyboard;
+            if (isEmoji) {
+                nextKeyboard = emojiKeyboard;
+            } else if (isSymbols) {
+                if (currentKeyboard == numberKeyboard) nextKeyboard = numberKeyboard;
+                else nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard;
             } else {
-                if (currentLanguageId == 1) {
-                    nextKeyboard = isCaps ? symbolsMmShiftKeyboard : symbolsMmKeyboard;
-                } else {
-                    nextKeyboard = isCaps ? symbolsEnShiftKeyboard : symbolsEnKeyboard;
-                }
+                if (currentLanguageId == 1) nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
+                else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
+                else nextKeyboard = isCaps ? qwertyShiftKeyboard : qwertyKeyboard;
             }
-        } else {
-            if (currentLanguageId == 1) nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
-            else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
-            else nextKeyboard = isCaps ? qwertyShiftKeyboard : qwertyKeyboard;
-        }
-        
-        if (currentKeyboard != nextKeyboard) {
             currentKeyboard = nextKeyboard;
+            applyKeyboard();
+        } catch (Exception e) {
+            currentKeyboard = qwertyKeyboard;
             applyKeyboard();
         }
     }
 
     private void applyKeyboard() {
-        if (service.getKeyboardView() != null && currentKeyboard != null) {
+        if (service.getKeyboardView() != null) {
             updateEnterKeyLabel(); 
             service.getKeyboardView().setKeyboard(currentKeyboard);
             service.getKeyboardView().invalidateAllKeys();
@@ -154,8 +138,9 @@ public class SaiNawLayoutManager {
         if (currentKeyboard == null || currentEditorInfo == null) return;
         
         boolean isMultiLine = (currentEditorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
+        
         int action = currentEditorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
-        String label; 
+        String label = "Enter"; 
 
         if (isMultiLine) {
             label = "Enter";
@@ -170,9 +155,12 @@ public class SaiNawLayoutManager {
             }
         }
 
-        for (Keyboard.Key key : currentKeyboard.getKeys()) {
+        List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        for (Keyboard.Key key : keys) {
             if (key.codes[0] == -4) { 
                 key.label = label; 
+                key.icon = null; 
+                key.iconPreview = null;
                 break;
             }
         }
