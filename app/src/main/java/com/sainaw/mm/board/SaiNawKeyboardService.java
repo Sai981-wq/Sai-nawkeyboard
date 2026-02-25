@@ -116,7 +116,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             isReceiverRegistered = true;
         }
 
-        keyboardView.setLongClickable(false);
         keyboardView.setOnKeyboardActionListener(this);
         
         accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager, emojiManager);
@@ -139,6 +138,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         
         useSmartEcho = prefs.getBoolean("smart_echo", false); 
+        if (touchHandler != null) touchHandler.loadSettings(prefs);
         if (accessibilityHelper != null) {
             accessibilityHelper.setPhoneticEnabled(prefs.getBoolean("use_phonetic_sounds", true));
         }
