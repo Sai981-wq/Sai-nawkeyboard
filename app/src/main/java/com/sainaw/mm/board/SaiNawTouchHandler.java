@@ -21,6 +21,7 @@ public class SaiNawTouchHandler {
     private boolean isLongPressHandled = false;
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
+    private final float density;
 
     private final Runnable spaceLongPressTask;
     private final Runnable shiftLongPressTask;
@@ -36,6 +37,7 @@ public class SaiNawTouchHandler {
         this.layoutManager = layoutManager;
         this.feedbackManager = feedbackManager;
         this.emojiManager = emojiManager;
+        this.density = service.getResources().getDisplayMetrics().density;
 
         this.spaceLongPressTask = () -> {
             isLongPressHandled = true;
@@ -80,6 +82,10 @@ public class SaiNawTouchHandler {
             isDeleteActive = true;
             handler.post(deleteLoopTask);
         };
+    }
+
+    private int dpToPx(int dp) {
+        return (int) (dp * density + 0.5f);
     }
 
     public void loadSettings(SharedPreferences prefs) {
@@ -178,22 +184,21 @@ public class SaiNawTouchHandler {
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         if (keys == null || y < 0) return -1;
 
+        int delTopExtra = dpToPx(25);
+        int delSideExtra = dpToPx(10);
+
         for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key == null || key.codes[0] == -100) continue;
 
-            int left = key.x;
-            int top = key.y;
-            int right = key.x + key.width;
-            int bottom = key.y + key.height;
-
             if (key.codes[0] == -5) {
-                top -= 25; left -= 10; right += 10;
-            } else if (key.codes[0] != -1 && key.codes[0] != -4 && key.codes[0] != -2 && key.codes[0] != -101) {
-                bottom -= 5; 
+                if (x >= (key.x - delSideExtra) && x < (key.x + key.width + delSideExtra) &&
+                    y >= (key.y - delTopExtra) && y < (key.y + key.height)) {
+                    return i;
+                }
+            } else {
+                if (key.isInside(x, y)) return i;
             }
-
-            if (x >= left && x < right && y >= top && y < bottom) return i;
         }
         return -1;
     }
