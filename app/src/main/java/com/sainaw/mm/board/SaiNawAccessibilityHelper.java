@@ -15,18 +15,14 @@ import androidx.annotation.Nullable;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
 import androidx.customview.widget.ExploreByTouchHelper;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private final Vibrator vibrator;
     private final AccessibilityManager accessibilityManager;
     private final Rect tempRect = new Rect();
-    private final ExecutorService feedbackExecutor = Executors.newSingleThreadExecutor();
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
-    private boolean isSymbols = false;
     private boolean isPhoneticEnabled = true;
     private OnAccessibilityKeyListener listener;
     private SaiNawPhoneticManager phoneticManager;
@@ -47,12 +43,10 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.accessibilityManager = (AccessibilityManager) view.getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
     }
 
-    // Service နဲ့ ချိတ်ဆက်ဖို့ isSymbols ကို ထည့်ပေးထားပါတယ် (မူရင်း logic ကို မထိခိုက်ပါဘူး)
-    public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps, boolean isSymbols) {
+    public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
-        this.isSymbols = isSymbols;
         invalidateRoot();
         sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
@@ -61,7 +55,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.isPhoneticEnabled = enabled;
     }
 
-    // အစ်ကို့ရဲ့ မူရင်း getVirtualViewAt အတိုင်း ပြန်ထားပါတယ်
     @Override
     protected int getVirtualViewAt(float x, float y) {
         if (currentKeyboard == null) return HOST_ID;
@@ -70,7 +63,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         return getNearestKeyIndex((int) x, (int) y);
     }
 
-    // အစ်ကို့ရဲ့ မူရင်း getNearestKeyIndex အတိုင်း အတိအကျ ပြန်ထားပါတယ်
     private int getNearestKeyIndex(int x, int y) {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
@@ -190,8 +182,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             return;
         }
         Keyboard.Key key = keys.get(virtualViewId);
-        
-        // အစ်ကို့ရဲ့ မူရင်း getKeyDescription ကို အတိအကျ ပြန်ခေါ်ထားပါတယ်
         String description = getKeyDescription(key);
         node.setContentDescription(description);
         
@@ -265,58 +255,54 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         return 0;
     }
 
-    // တုန်ခါမှုကြောင့် ဟမ်းတာ မဖြစ်ရအောင် Thread လေးပဲ ခွဲပေးထားပါတယ်
     private void performLongPressFeedback() {
         if (vibrator == null || !vibrator.hasVibrator()) return;
-        feedbackExecutor.execute(() -> {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE));
-            } else {
-                vibrator.vibrate(80);
-            }
-        });
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE));
+        } else {
+            vibrator.vibrate(80);
+        }
     }
 
     private void forceHapticFeedback(int keyCode) {
         if (vibrator == null || !vibrator.hasVibrator()) {
             return;
         }
-        feedbackExecutor.execute(() -> {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                try {
-                    int effectId;
-                    if (keyCode == -5 || keyCode == 32 || keyCode == -4 || keyCode == 10) {
-                        effectId = VibrationEffect.EFFECT_HEAVY_CLICK;
-                    } else {
-                        effectId = VibrationEffect.EFFECT_CLICK;
-                    }
-                    vibrator.vibrate(VibrationEffect.createPredefined(effectId));
-                } catch (Exception e) {
-                    vibrator.vibrate(VibrationEffect.createOneShot(40, 200));
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                int effectId;
+                if (keyCode == -5 || keyCode == 32 || keyCode == -4 || keyCode == 10) {
+                    effectId = VibrationEffect.EFFECT_HEAVY_CLICK;
+                } else {
+                    effectId = VibrationEffect.EFFECT_CLICK;
                 }
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                try {
-                    long duration;
-                    int amplitude;
-                    
-                    if (keyCode == -5 || keyCode == 32 || keyCode == -4) {
-                        duration = 50; 
-                        amplitude = 255; 
-                    } else {
-                        duration = 35; 
-                        amplitude = 180; 
-                    }
-                    vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
-                } catch (Exception e) {
-                    vibrator.vibrate(40);
+                vibrator.vibrate(VibrationEffect.createPredefined(effectId));
+            } catch (Exception e) {
+                vibrator.vibrate(VibrationEffect.createOneShot(40, 200));
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                long duration;
+                int amplitude;
+                
+                if (keyCode == -5 || keyCode == 32 || keyCode == -4) {
+                    duration = 50; 
+                    amplitude = 255; 
+                } else {
+                    duration = 35; 
+                    amplitude = 180; 
                 }
-            } else {
+                vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
+            } catch (Exception e) {
                 vibrator.vibrate(40);
             }
-        });
+        } else {
+            vibrator.vibrate(40);
+        }
     }
 
-    // အစ်ကို့ရဲ့ မူရင်း getKeyDescription အတိုင်း အတိအကျ ပြန်ထားပါတယ်
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
 
