@@ -28,7 +28,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private OnAccessibilityKeyListener listener;
     private SaiNawPhoneticManager phoneticManager;
     private SaiNawEmojiManager emojiManager;
-    private int lastFoundIndex = HOST_ID;
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
@@ -62,102 +61,20 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null || keys.isEmpty()) return HOST_ID;
-        return getNearestKeyIndex((int) x, (int) y);
-    }
 
-    private int getNearestKeyIndex(int x, int y) {
-        if (currentKeyboard == null) return HOST_ID;
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys == null || keys.isEmpty()) return HOST_ID;
-        
-        if (y < 0) return HOST_ID;
+        int touchX = (int) x;
+        int touchY = (int) y;
 
-        int touchY = y;
-        int bestKeyIndex = HOST_ID;
-        int minDistance = Integer.MAX_VALUE;
-        int stickinessThreshold = 20;
-        int sideExpansion = 20;
-
-        int size = keys.size();
-        for (int i = 0; i < size; i++) {
-            if (i >= keys.size()) break;
-            
+        for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
             if (key == null || key.codes == null || key.codes.length == 0 || key.codes[0] == -100) continue;
 
-            tempRect.set(key.x, key.y, key.x + key.width, key.y + key.height);
-
-            if (isFunctionalKey(key.codes[0])) {
-                tempRect.inset(-sideExpansion, -20);
-            } else {
-                tempRect.inset(-sideExpansion, 0);
-                tempRect.bottom += 20;
-            }
-
-            if (tempRect.contains(x, touchY)) {
-                if (i == lastFoundIndex) {
-                    return i;
-                }
-                
-                if (lastFoundIndex != HOST_ID && lastFoundIndex < keys.size()) {
-                    Keyboard.Key lastKey = keys.get(lastFoundIndex);
-                    if (lastKey != null && isFunctionalKey(key.codes[0]) && !isFunctionalKey(lastKey.codes[0])) {
-                         if (Math.abs(x - lastKey.x) < stickinessThreshold ||
-                             Math.abs(touchY - lastKey.y) < stickinessThreshold) {
-                             continue;
-                         }
-                    }
-                }
-
-                bestKeyIndex = i;
-                
-                if (!isFunctionalKey(key.codes[0])) {
-                    lastFoundIndex = i;
-                    return i;
-                }
+            if (touchX >= key.x && touchX < (key.x + key.width) &&
+                touchY >= key.y && touchY < (key.y + key.height)) {
+                return i;
             }
         }
-
-        if (bestKeyIndex == HOST_ID) {
-            if (y < 0) return HOST_ID;
-
-            int maxDist = 50 * 50;
-            for (int i = 0; i < size; i++) {
-                if (i >= keys.size()) break;
-                
-                Keyboard.Key key = keys.get(i);
-                if (key == null || key.codes == null || key.codes.length == 0) continue;
-
-                int dist = getDistanceSq(key, x, touchY);
-                if (isFunctionalKey(key.codes[0])) {
-                    dist += 2000;
-                }
-
-                if (dist < minDistance && dist < maxDist) {
-                    minDistance = dist;
-                    bestKeyIndex = i;
-                }
-            }
-        }
-        
-        lastFoundIndex = bestKeyIndex;
-        return bestKeyIndex;
-    }
-
-    private boolean isFunctionalKey(int code) {
-        return code == -5 || code == -1 || code == -4 || code == -2 || code == -101;
-    }
-
-    private int getDistanceSq(Keyboard.Key key, int x, int y) {
-        int dx = 0;
-        int dy = 0;
-        if (x < key.x) dx = key.x - x;
-        else if (x > key.x + key.width) dx = x - (key.x + key.width);
-        
-        if (y < key.y) dy = key.y - y;
-        else if (y > key.y + key.height) dy = y - (key.y + key.height);
-        
-        return (dx * dx) + (dy * dy);
+        return HOST_ID;
     }
 
     @Override
@@ -183,6 +100,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             node.setBoundsInParent(new Rect(0, 0, 1, 1));
             return;
         }
+        
         Keyboard.Key key = keys.get(virtualViewId);
         String description = getKeyDescription(key);
         node.setContentDescription(description);
@@ -310,7 +228,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
         if (code == -4 && key.label != null) return key.label.toString();
 
-        if (isPhoneticEnabled) {
+        if (isPhoneticEnabled && phoneticManager != null) {
             String phonetic = phoneticManager.getPronunciation(code);
             if (phonetic != null && !phonetic.equals(String.valueOf((char)code))) {
                 return phonetic;
