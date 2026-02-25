@@ -71,7 +71,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             Keyboard.Key key = keys.get(i);
             if (key == null || key.codes == null || key.codes.length == 0 || key.codes[0] == -100) continue;
 
-            if (ix >= key.x && ix < (key.x + key.width) && iy >= key.y && iy < (key.y + key.height)) {
+            if (key.isInside(ix, iy)) {
                 return i;
             }
         }
