@@ -30,7 +30,6 @@ import android.view.inputmethod.InputConnection;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.core.content.ContextCompat;
-import androidx.core.view.ViewCompat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -41,7 +40,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SaiNawFeedbackManager feedbackManager;
     private SaiNawLayoutManager layoutManager;
     private SaiNawTouchHandler touchHandler;
-    private SaiNawAccessibilityHelper accessibilityHelper;
+    private SaiNawAccessibilityDelegate accessibilityDelegate;
     private SaiNawTextProcessor textProcessor;
     private SaiNawInputLogic inputLogic;
     private SaiNawPhoneticManager phoneticManager;
@@ -120,15 +119,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         keyboardView.setOnKeyboardActionListener(this);
         keyboardView.setOnTouchListener((v, event) -> false);
         
-        accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, this::handleInput, phoneticManager, emojiManager);
+        accessibilityDelegate = new SaiNawAccessibilityDelegate(keyboardView, this::handleInput, phoneticManager, emojiManager);
         boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
-        accessibilityHelper.setPhoneticEnabled(usePhonetic);
-        ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
+        accessibilityDelegate.setPhoneticEnabled(usePhonetic);
         
         keyboardView.setOnHoverListener((v, event) -> {
-            accessibilityHelper.dispatchHoverEvent(event);
-            touchHandler.handleHover(event);
-            return true;
+            boolean isTalkBackActive = accessibilityManager != null && 
+                                       accessibilityManager.isEnabled() && 
+                                       accessibilityManager.isTouchExplorationEnabled();
+            if (isTalkBackActive) {
+                return accessibilityDelegate.onHoverEvent(event);
+            } else {
+                touchHandler.handleHover(event);
+                return true;
+            }
         });
 
         setupSpeechRecognizer();
@@ -155,8 +159,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         useSmartEcho = prefs.getBoolean("smart_echo", false); 
         boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
         
-        if (accessibilityHelper != null) {
-            accessibilityHelper.setPhoneticEnabled(usePhonetic);
+        if (accessibilityDelegate != null) {
+            accessibilityDelegate.setPhoneticEnabled(usePhonetic);
         }
         if (phoneticManager != null) {
             phoneticManager.setLanguageId(layoutManager.currentLanguageId);
@@ -346,8 +350,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     public KeyboardView getKeyboardView() { return keyboardView; }
 
     public void updateHelperState() { 
-        if (accessibilityHelper != null) {
-            accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps, layoutManager.isSymbols); 
+        if (accessibilityDelegate != null) {
+            accessibilityDelegate.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps, layoutManager.isSymbols); 
         }
     }
 
