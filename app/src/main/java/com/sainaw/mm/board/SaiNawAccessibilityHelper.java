@@ -28,6 +28,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private SaiNawPhoneticManager phoneticManager;
     private SaiNawEmojiManager emojiManager;
     private int lastFoundIndex = HOST_ID;
+    private boolean isSymbols = false;
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
@@ -47,6 +48,20 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;
         this.isCaps = isCaps;
+        
+        this.isSymbols = false;
+        if (keyboard != null) {
+            List<Keyboard.Key> keys = keyboard.getKeys();
+            if (keys != null) {
+                for (Keyboard.Key key : keys) {
+                    if (key.codes[0] == -6) {
+                        this.isSymbols = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
         invalidateRoot();
         sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
@@ -316,7 +331,15 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         }
 
         if (code == -5) return "Delete";
-        if (code == -1) return isCaps ? "Shift On" : "Shift";
+        
+        if (code == -1) {
+            if (isSymbols) {
+                return isCaps ? "Symbols" : "More Symbols";
+            } else {
+                return isCaps ? "Shift On" : "Shift";
+            }
+        }
+        
         if (code == 32) return "Space";
         if (code == -2) return "Symbol Keyboard";
         if (code == -6) return "Alphabet Keyboard";
