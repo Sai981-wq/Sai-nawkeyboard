@@ -20,6 +20,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private final Vibrator vibrator;
     private final AccessibilityManager accessibilityManager;
     private final Rect tempRect = new Rect();
+    private final View hostView;
     private Keyboard currentKeyboard;
     private boolean isShanOrMyanmar = false;
     private boolean isCaps = false;
@@ -27,7 +28,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private OnAccessibilityKeyListener listener;
     private SaiNawPhoneticManager phoneticManager;
     private SaiNawEmojiManager emojiManager;
-    private int lastFoundIndex = HOST_ID;
     private boolean isSymbols = false;
 
     public interface OnAccessibilityKeyListener {
@@ -37,6 +37,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, 
                                      SaiNawPhoneticManager manager, SaiNawEmojiManager emojiManager) {
         super(view);
+        this.hostView = view;
         this.listener = listener;
         this.phoneticManager = manager;
         this.emojiManager = emojiManager;
@@ -75,14 +76,16 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null || keys.isEmpty()) return HOST_ID;
-        return getNearestKeyIndex((int) x, (int) y);
+        
+        int touchX = (int) x - hostView.getPaddingLeft();
+        int touchY = (int) y - hostView.getPaddingTop();
+        return getNearestKeyIndex(touchX, touchY);
     }
 
     private int getNearestKeyIndex(int x, int y) {
         if (currentKeyboard == null) return HOST_ID;
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null || keys.isEmpty()) return HOST_ID;
-        
         if (y < 0) return HOST_ID;
 
         int bestKeyIndex = HOST_ID;
@@ -93,9 +96,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             if (key == null || key.codes == null || key.codes.length == 0 || key.codes[0] == -100) continue;
 
             tempRect.set(key.x, key.y, key.x + key.width, key.y + key.height);
-
             if (tempRect.contains(x, y)) {
-                lastFoundIndex = i;
                 return i;
             }
 
@@ -105,13 +106,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 bestKeyIndex = i;
             }
         }
-        
-        lastFoundIndex = bestKeyIndex;
         return bestKeyIndex;
-    }
-
-    private boolean isFunctionalKey(int code) {
-        return code == -5 || code == -1 || code == -4 || code == -2 || code == -101;
     }
 
     private int getDistanceSq(Keyboard.Key key, int x, int y) {
@@ -119,10 +114,8 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         int dy = 0;
         if (x < key.x) dx = key.x - x;
         else if (x > key.x + key.width) dx = x - (key.x + key.width);
-        
         if (y < key.y) dy = key.y - y;
         else if (y > key.y + key.height) dy = y - (key.y + key.height);
-        
         return (dx * dx) + (dy * dy);
     }
 
@@ -155,16 +148,18 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
-        
         node.addAction(AccessibilityNodeInfoCompat.ACTION_LONG_CLICK);
         node.setLongClickable(true);
         
-        int right = key.x + key.width;
-        int bottom = key.y + key.height;
-        if (right <= 0 || bottom <= 0) {
+        int left = key.x + hostView.getPaddingLeft();
+        int top = key.y + hostView.getPaddingTop();
+        int right = left + key.width;
+        int bottom = top + key.height;
+
+        if (right <= left || bottom <= top) {
             tempRect.set(0, 0, 1, 1);
         } else {
-            tempRect.set(key.x, key.y, right, bottom);
+            tempRect.set(left, top, right, bottom);
         }
         node.setBoundsInParent(tempRect);
     }
@@ -225,7 +220,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     private void performLongPressFeedback() {
         if (vibrator == null || !vibrator.hasVibrator()) return;
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE));
         } else {
@@ -234,34 +228,19 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     }
 
     private void forceHapticFeedback(int keyCode) {
-        if (vibrator == null || !vibrator.hasVibrator()) {
-            return;
-        }
-
+        if (vibrator == null || !vibrator.hasVibrator()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                int effectId;
-                if (keyCode == -5 || keyCode == 32 || keyCode == -4 || keyCode == 10) {
-                    effectId = VibrationEffect.EFFECT_HEAVY_CLICK;
-                } else {
-                    effectId = VibrationEffect.EFFECT_CLICK;
-                }
+                int effectId = (keyCode == -5 || keyCode == 32 || keyCode == -4 || keyCode == 10) 
+                                ? VibrationEffect.EFFECT_HEAVY_CLICK : VibrationEffect.EFFECT_CLICK;
                 vibrator.vibrate(VibrationEffect.createPredefined(effectId));
             } catch (Exception e) {
                 vibrator.vibrate(VibrationEffect.createOneShot(40, 200));
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
-                long duration;
-                int amplitude;
-                
-                if (keyCode == -5 || keyCode == 32 || keyCode == -4) {
-                    duration = 50; 
-                    amplitude = 255; 
-                } else {
-                    duration = 35; 
-                    amplitude = 180; 
-                }
+                long duration = (keyCode == -5 || keyCode == 32 || keyCode == -4) ? 50 : 35;
+                int amplitude = (keyCode == -5 || keyCode == 32 || keyCode == -4) ? 255 : 180;
                 vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
             } catch (Exception e) {
                 vibrator.vibrate(40);
@@ -273,26 +252,13 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
-
         if (code == -4 && key.label != null) return key.label.toString();
-
         if (isPhoneticEnabled) {
             String phonetic = phoneticManager.getPronunciation(code);
-            if (phonetic != null && !phonetic.equals(String.valueOf((char)code))) {
-                return phonetic;
-            }
+            if (phonetic != null && !phonetic.equals(String.valueOf((char)code))) return phonetic;
         }
-
         if (code == -5) return "Delete";
-        
-        if (code == -1) {
-            if (isSymbols) {
-                return isCaps ? "Symbols" : "More Symbols";
-            } else {
-                return isCaps ? "Shift On" : "Shift";
-            }
-        }
-        
+        if (code == -1) return isSymbols ? (isCaps ? "Symbols" : "More Symbols") : (isCaps ? "Shift On" : "Shift");
         if (code == 32) return "Space";
         if (code == -2) return "Symbol Keyboard";
         if (code == -6) return "Alphabet Keyboard";
@@ -300,14 +266,10 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (code == -10) return "Voice Typing";
         if (code == -100) return ""; 
 
-        String label = null;
-        if (key.label != null) label = key.label.toString();
-        else if (key.text != null) label = key.text.toString();
-
+        String label = (key.label != null) ? key.label.toString() : ((key.text != null) ? key.text.toString() : null);
         if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
              return "Capital " + label;
         }
-
         return label != null ? label : "Unlabeled Key";
     }
 }

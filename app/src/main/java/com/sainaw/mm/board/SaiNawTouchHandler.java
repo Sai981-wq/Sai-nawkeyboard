@@ -97,10 +97,10 @@ public class SaiNawTouchHandler {
         }
 
         int action = event.getAction();
-
         View hostView = service.getKeyboardView();
         float x = event.getX();
         float y = event.getY();
+        
         if (hostView != null) {
             x -= hostView.getPaddingLeft();
             y -= hostView.getPaddingTop();
@@ -116,7 +116,6 @@ public class SaiNawTouchHandler {
 
                     if (newKeyIndex != -1 && newKeyIndex < keys.size()) {
                         feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS);
-
                         Keyboard.Key key = keys.get(newKeyIndex);
                         int code = key.codes[0];
 
@@ -189,31 +188,37 @@ public class SaiNawTouchHandler {
     private int getNearestKeyIndexFast(int x, int y) {
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         if (keys == null || keys.isEmpty()) return -1;
-
         if (y < 0) return -1;
 
-        if (lastHoverKeyIndex != -1 && lastHoverKeyIndex < keys.size()) {
-            Keyboard.Key lastKey = keys.get(lastHoverKeyIndex);
-            tempRect.set(lastKey.x - 15, lastKey.y - 15, lastKey.x + lastKey.width + 15, lastKey.y + lastKey.height + 15);
-            if (tempRect.contains(x, y)) {
-                return lastHoverKeyIndex;
-            }
-        }
+        int bestKeyIndex = -1;
+        int minDistance = Integer.MAX_VALUE;
 
-        int size = keys.size();
-        for (int i = 0; i < size; i++) {
-            if (i >= keys.size()) break;
-
+        for (int i = 0; i < keys.size(); i++) {
             Keyboard.Key key = keys.get(i);
-            if (key == null || key.codes[0] == -100) continue;
+            if (key == null || key.codes == null || key.codes.length == 0 || key.codes[0] == -100) continue;
 
             tempRect.set(key.x, key.y, key.x + key.width, key.y + key.height);
             if (tempRect.contains(x, y)) {
                 return i;
             }
-        }
 
-        return lastHoverKeyIndex;
+            int dist = getDistanceSq(key, x, y);
+            if (dist < minDistance) {
+                minDistance = dist;
+                bestKeyIndex = i;
+            }
+        }
+        return bestKeyIndex;
+    }
+
+    private int getDistanceSq(Keyboard.Key key, int x, int y) {
+        int dx = 0;
+        int dy = 0;
+        if (x < key.x) dx = key.x - x;
+        else if (x > key.x + key.width) dx = x - (key.x + key.width);
+        if (y < key.y) dy = key.y - y;
+        else if (y > key.y + key.height) dy = y - (key.y + key.height);
+        return (dx * dx) + (dy * dy);
     }
 }
 
