@@ -15,6 +15,7 @@ public class SaiNawLayoutManager {
     public Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     public Keyboard shanKeyboard, shanShiftKeyboard;
     public Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
+    public Keyboard symbolsEnShiftKeyboard, symbolsMmShiftKeyboard;
     public Keyboard numberKeyboard;
     public Keyboard emojiKeyboard;
     
@@ -68,6 +69,11 @@ public class SaiNawLayoutManager {
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(context, symEnId) : qwertyKeyboard;
             symbolsMmKeyboard = (symMmId != 0) ? new Keyboard(context, symMmId) : symbolsEnKeyboard;
 
+            int symEnShiftId = service.getResId("symbols_shift");
+            int symMmShiftId = service.getResId("symbols_mm_shift");
+            symbolsEnShiftKeyboard = (symEnShiftId != 0) ? new Keyboard(context, symEnShiftId) : symbolsEnKeyboard;
+            symbolsMmShiftKeyboard = (symMmShiftId != 0) ? new Keyboard(context, symMmShiftId) : symbolsMmKeyboard;
+
             int numPadId = service.getResId("number_pad");
             numberKeyboard = (numPadId != 0) ? new Keyboard(context, numPadId) : symbolsEnKeyboard;
 
@@ -110,8 +116,15 @@ public class SaiNawLayoutManager {
             if (isEmoji) {
                 nextKeyboard = emojiKeyboard;
             } else if (isSymbols) {
-                if (currentKeyboard == numberKeyboard) nextKeyboard = numberKeyboard;
-                else nextKeyboard = (currentLanguageId == 1) ? symbolsMmKeyboard : symbolsEnKeyboard;
+                if (currentKeyboard == numberKeyboard) {
+                    nextKeyboard = numberKeyboard;
+                } else {
+                    if (currentLanguageId == 1) {
+                        nextKeyboard = isCaps ? symbolsMmShiftKeyboard : symbolsMmKeyboard;
+                    } else {
+                        nextKeyboard = isCaps ? symbolsEnShiftKeyboard : symbolsEnKeyboard;
+                    }
+                }
             } else {
                 if (currentLanguageId == 1) nextKeyboard = isCaps ? myanmarShiftKeyboard : myanmarKeyboard;
                 else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
