@@ -81,7 +81,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
         
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
-            wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "CherrySME::WakeLock");
+            wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE, "CherrySME::WakeLock");
+            if (wakeLock != null) {
+                wakeLock.setReferenceCounted(false);
+            }
         }
         
         initAllEngines();
@@ -146,7 +149,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         if (wakeLock != null) {
             try {
-                if (wakeLock.isHeld()) wakeLock.release();
                 wakeLock.acquire(10000);
             } catch (Exception e) {}
         }
