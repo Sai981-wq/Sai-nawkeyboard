@@ -81,7 +81,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
-            wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP, "CherrySME::WakeLock");
+            wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, "CherrySME::WakeLock");
         }
         
         initAllEngines();
@@ -144,15 +144,16 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
-        if (wakeLock != null) {
+        String text = request.getText();
+        
+        if (wakeLock != null && text != null && (text.contains("%") || text.matches(".*\\d+.*"))) {
             try {
                 if (wakeLock.isHeld()) wakeLock.release();
-                wakeLock.acquire(5000);
+                wakeLock.acquire(2000);
             } catch (Exception e) {}
         }
         
         stopRequested = false;
-        String text = request.getText();
         
         if (text == null || text.trim().isEmpty()) {
             callback.done();
