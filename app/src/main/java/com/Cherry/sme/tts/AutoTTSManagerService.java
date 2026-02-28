@@ -1,10 +1,12 @@
 package com.cherry.sme.tts;
 
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.speech.tts.SynthesisCallback;
@@ -36,6 +38,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private SharedPreferences prefs;
     private volatile boolean stopRequested = false;
+    private PowerManager.WakeLock wakeLock;
     
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
@@ -75,6 +78,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
+        
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (powerManager != null) {
+            wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP, "CherrySME::WakeLock");
+        }
+        
         initAllEngines();
     }
 
@@ -135,6 +144,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
+        if (wakeLock != null) {
+            try {
+                if (wakeLock.isHeld()) wakeLock.release();
+                wakeLock.acquire(5000);
+            } catch (Exception e) {}
+        }
+        
         stopRequested = false;
         String text = request.getText();
         
@@ -282,6 +298,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onDestroy() {
         super.onDestroy();
         shutdownEngines();
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try {
+                wakeLock.release();
+            } catch (Exception e) {}
+        }
     }
 
     @Override protected int onIsLanguageAvailable(String l, String c, String v) { return TextToSpeech.LANG_AVAILABLE; }
