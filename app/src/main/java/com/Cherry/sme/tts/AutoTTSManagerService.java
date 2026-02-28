@@ -39,7 +39,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private SharedPreferences prefs;
     private volatile boolean stopRequested = false;
     private PowerManager.WakeLock wakeLock;
-    private PowerManager powerManager;
     
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
@@ -80,7 +79,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
         
-        powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
             wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "CherrySME::WakeLock");
         }
@@ -145,18 +144,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
-        String text = request.getText();
-        
-        if (powerManager != null && powerManager.isInteractive()) {
-            if (wakeLock != null && text != null && (text.contains("%") || text.matches(".*\\d+.*"))) {
-                try {
-                    if (wakeLock.isHeld()) wakeLock.release();
-                    wakeLock.acquire(30000);
-                } catch (Exception e) {}
-            }
+        if (wakeLock != null) {
+            try {
+                if (wakeLock.isHeld()) wakeLock.release();
+                wakeLock.acquire(10000);
+            } catch (Exception e) {}
         }
         
         stopRequested = false;
+        String text = request.getText();
         
         if (text == null || text.trim().isEmpty()) {
             callback.done();
