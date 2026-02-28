@@ -39,6 +39,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private SharedPreferences prefs;
     private volatile boolean stopRequested = false;
     private PowerManager.WakeLock wakeLock;
+    private PowerManager powerManager;
     
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
@@ -79,9 +80,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
         
-        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
-            wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, "CherrySME::WakeLock");
+            wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "CherrySME::WakeLock");
         }
         
         initAllEngines();
@@ -146,11 +147,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         String text = request.getText();
         
-        if (wakeLock != null && text != null && (text.contains("%") || text.matches(".*\\d+.*"))) {
-            try {
-                if (wakeLock.isHeld()) wakeLock.release();
-                wakeLock.acquire(2000);
-            } catch (Exception e) {}
+        if (powerManager != null && powerManager.isInteractive()) {
+            if (wakeLock != null && text != null && (text.contains("%") || text.matches(".*\\d+.*"))) {
+                try {
+                    if (wakeLock.isHeld()) wakeLock.release();
+                    wakeLock.acquire(30000);
+                } catch (Exception e) {}
+            }
         }
         
         stopRequested = false;
