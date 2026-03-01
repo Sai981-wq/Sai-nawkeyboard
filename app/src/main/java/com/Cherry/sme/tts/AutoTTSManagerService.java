@@ -5,6 +5,9 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -289,6 +292,28 @@ public class AutoTTSManagerService extends TextToSpeechService {
             pitch = request.getPitch() / 100.0f;
         } catch (Exception ignored) {}
 
+        int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        AudioTrack keepAliveTrack = null;
+        byte[] silenceBuffer = new byte[minBufferSize];
+        
+        try {
+            keepAliveTrack = new AudioTrack(
+                    new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build(),
+                    new AudioFormat.Builder()
+                            .setSampleRate(16000)
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build(),
+                    minBufferSize,
+                    AudioTrack.MODE_STREAM,
+                    AudioManager.AUDIO_SESSION_ID_GENERATE
+            );
+            keepAliveTrack.play();
+        } catch (Exception ignored) {}
+
         try {
             for (int i = 0; i < chunks.size(); i++) {
                 if (stopRequested) break;
@@ -345,12 +370,27 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 try {
                     long timeout = 10000 + (chunk.text.length() * 250L);
-                    boolean done = latch.await(timeout, TimeUnit.MILLISECONDS);
-                    if (!done) {
+                    long startTime = System.currentTimeMillis();
+                    boolean done = false;
+
+                    while (System.currentTimeMillis() - startTime < timeout) {
+                        if (stopRequested) break;
+                        
+                        done = latch.await(100, TimeUnit.MILLISECONDS);
+                        if (done) break;
+
+                        if (keepAliveTrack != null) {
+                            try {
+                                keepAliveTrack.write(silenceBuffer, 0, silenceBuffer.length);
+                            } catch (Exception ignored) {}
+                        }
+                    }
+
+                    if (!done && !stopRequested) {
                         utteranceLatches.remove(utteranceId);
                         try { targetEngine.stop(); } catch (Exception ignored) {}
                         recordFailure(chunk.lang);
-                    } else {
+                    } else if (done) {
                         recordSuccess(chunk.lang);
                     }
                 } catch (InterruptedException e) {
@@ -365,6 +405,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
             }
         } catch (Exception ignored) {
         } finally {
+            if (keepAliveTrack != null) {
+                try {
+                    keepAliveTrack.stop();
+                    keepAliveTrack.release();
+                } catch (Exception ignored) {}
+            }
             safeCallbackDone(callback);
             releaseWakeLock();
         }
@@ -479,3 +525,4 @@ public class AutoTTSManagerService extends TextToSpeechService {
         return TextToSpeech.LANG_AVAILABLE;
     }
 }
+
