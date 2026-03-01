@@ -55,6 +55,12 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private HandlerThread watchdogThread;
     private Handler watchdogHandler;
 
+    private volatile boolean isKeepAliveRunning = false;
+    private volatile long lastSpeechFinishedTime = 0;
+    private Thread keepAliveThread;
+    private AudioTrack keepAliveTrack;
+    private static final long KEEP_ALIVE_TIMEOUT_MS = 10000; 
+
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
     private final UtteranceProgressListener globalListener = new UtteranceProgressListener() {
@@ -244,6 +250,59 @@ public class AutoTTSManagerService extends TextToSpeechService {
         } catch (Exception ignored) {}
     }
 
+    private synchronized void triggerKeepAlive() {
+        lastSpeechFinishedTime = System.currentTimeMillis();
+        
+        if (!isKeepAliveRunning) {
+            isKeepAliveRunning = true;
+            keepAliveThread = new Thread(() -> {
+                int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                byte[] silenceBuffer = new byte[minBufferSize];
+
+                try {
+                    keepAliveTrack = new AudioTrack(
+                            new AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                    .build(),
+                            new AudioFormat.Builder()
+                                    .setSampleRate(16000)
+                                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                                    .build(),
+                            minBufferSize,
+                            AudioTrack.MODE_STREAM,
+                            AudioManager.AUDIO_SESSION_ID_GENERATE
+                    );
+                    keepAliveTrack.play();
+                } catch (Exception e) {
+                    isKeepAliveRunning = false;
+                    return;
+                }
+
+                while (isKeepAliveRunning) {
+                    try {
+                        keepAliveTrack.write(silenceBuffer, 0, silenceBuffer.length);
+                    } catch (Exception ignored) {}
+
+                    if (System.currentTimeMillis() - lastSpeechFinishedTime > KEEP_ALIVE_TIMEOUT_MS) {
+                        break;
+                    }
+                }
+
+                isKeepAliveRunning = false;
+                try {
+                    if (keepAliveTrack != null) {
+                        keepAliveTrack.stop();
+                        keepAliveTrack.release();
+                        keepAliveTrack = null;
+                    }
+                } catch (Exception ignored) {}
+            });
+            keepAliveThread.start();
+        }
+    }
+
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         if (wakeLock != null) {
@@ -253,6 +312,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
 
         stopRequested = false;
+        triggerKeepAlive();
+        
         String text = null;
 
         try {
@@ -261,6 +322,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         if (text == null || text.trim().isEmpty()) {
             safeCallbackDone(callback);
+            lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLock();
             return;
         }
@@ -272,6 +334,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         if (chunks == null || chunks.isEmpty()) {
             safeCallbackDone(callback);
+            lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLock();
             return;
         }
@@ -290,28 +353,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         try {
             rate = request.getSpeechRate() / 100.0f;
             pitch = request.getPitch() / 100.0f;
-        } catch (Exception ignored) {}
-
-        int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-        AudioTrack keepAliveTrack = null;
-        byte[] silenceBuffer = new byte[minBufferSize];
-        
-        try {
-            keepAliveTrack = new AudioTrack(
-                    new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build(),
-                    new AudioFormat.Builder()
-                            .setSampleRate(16000)
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .build(),
-                    minBufferSize,
-                    AudioTrack.MODE_STREAM,
-                    AudioManager.AUDIO_SESSION_ID_GENERATE
-            );
-            keepAliveTrack.play();
         } catch (Exception ignored) {}
 
         try {
@@ -370,22 +411,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 try {
                     long timeout = 10000 + (chunk.text.length() * 250L);
-                    long startTime = System.currentTimeMillis();
-                    boolean done = false;
-
-                    while (System.currentTimeMillis() - startTime < timeout) {
-                        if (stopRequested) break;
-                        
-                        done = latch.await(100, TimeUnit.MILLISECONDS);
-                        if (done) break;
-
-                        if (keepAliveTrack != null) {
-                            try {
-                                keepAliveTrack.write(silenceBuffer, 0, silenceBuffer.length);
-                            } catch (Exception ignored) {}
-                        }
-                    }
-
+                    boolean done = latch.await(timeout, TimeUnit.MILLISECONDS);
+                    
                     if (!done && !stopRequested) {
                         utteranceLatches.remove(utteranceId);
                         try { targetEngine.stop(); } catch (Exception ignored) {}
@@ -405,13 +432,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
             }
         } catch (Exception ignored) {
         } finally {
-            if (keepAliveTrack != null) {
-                try {
-                    keepAliveTrack.stop();
-                    keepAliveTrack.release();
-                } catch (Exception ignored) {}
-            }
             safeCallbackDone(callback);
+            lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLock();
         }
     }
@@ -502,6 +524,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onDestroy() {
         stopRequested = true;
+        isKeepAliveRunning = false;
         shutdownEngines();
         releaseWakeLock();
         if (watchdogThread != null) {
