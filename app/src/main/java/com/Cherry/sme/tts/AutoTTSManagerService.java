@@ -6,6 +6,8 @@ import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
@@ -38,7 +40,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private SharedPreferences prefs;
     private volatile boolean stopRequested = false;
+    
     private PowerManager.WakeLock wakeLock;
+    private Handler wakeLockHandler;
+    private Runnable wakeLockRunnable;
+    private static final long WAKELOCK_TIMEOUT_MS = 5000;
     
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
@@ -79,9 +85,18 @@ public class AutoTTSManagerService extends TextToSpeechService {
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
         
+        wakeLockHandler = new Handler(Looper.getMainLooper());
+        wakeLockRunnable = () -> {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                try {
+                    wakeLock.release();
+                } catch (Exception e) {}
+            }
+        };
+
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
-            wakeLock = powerManager.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE, "CherrySME::WakeLock");
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherrySME::WakeLock");
             if (wakeLock != null) {
                 wakeLock.setReferenceCounted(false);
             }
@@ -148,9 +163,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         if (wakeLock != null) {
+            wakeLockHandler.removeCallbacks(wakeLockRunnable);
             try {
-                wakeLock.acquire(10000);
+                if (!wakeLock.isHeld()) {
+                    wakeLock.acquire();
+                }
             } catch (Exception e) {}
+            wakeLockHandler.postDelayed(wakeLockRunnable, WAKELOCK_TIMEOUT_MS);
         }
         
         stopRequested = false;
@@ -300,6 +319,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onDestroy() {
         super.onDestroy();
         shutdownEngines();
+        if (wakeLockHandler != null && wakeLockRunnable != null) {
+            wakeLockHandler.removeCallbacks(wakeLockRunnable);
+        }
         if (wakeLock != null && wakeLock.isHeld()) {
             try {
                 wakeLock.release();
