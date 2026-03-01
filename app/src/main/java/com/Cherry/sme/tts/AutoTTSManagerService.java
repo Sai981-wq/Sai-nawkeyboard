@@ -58,8 +58,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private volatile boolean isKeepAliveRunning = false;
     private volatile long lastSpeechFinishedTime = 0;
     private Thread keepAliveThread;
-    private AudioTrack keepAliveTrack;
-    private static final long KEEP_ALIVE_TIMEOUT_MS = 10000; 
+    private static final long KEEP_ALIVE_TIMEOUT_MS = 15000; 
 
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
@@ -256,14 +255,22 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (!isKeepAliveRunning) {
             isKeepAliveRunning = true;
             keepAliveThread = new Thread(() -> {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
                 int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-                byte[] silenceBuffer = new byte[minBufferSize];
+                if (minBufferSize <= 0) minBufferSize = 32000;
 
+                byte[] silenceBuffer = new byte[minBufferSize];
+                for (int i = 0; i < silenceBuffer.length; i += 2) {
+                    silenceBuffer[i] = 1;
+                    silenceBuffer[i + 1] = 0;
+                }
+
+                AudioTrack keepAliveTrack = null;
                 try {
                     keepAliveTrack = new AudioTrack(
                             new AudioAttributes.Builder()
-                                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                                     .build(),
                             new AudioFormat.Builder()
                                     .setSampleRate(16000)
@@ -274,30 +281,27 @@ public class AutoTTSManagerService extends TextToSpeechService {
                             AudioTrack.MODE_STREAM,
                             AudioManager.AUDIO_SESSION_ID_GENERATE
                     );
+                    
+                    keepAliveTrack.setVolume(AudioTrack.getMaxVolume());
                     keepAliveTrack.play();
-                } catch (Exception e) {
-                    isKeepAliveRunning = false;
-                    return;
-                }
 
-                while (isKeepAliveRunning) {
-                    try {
+                    while (isKeepAliveRunning) {
                         keepAliveTrack.write(silenceBuffer, 0, silenceBuffer.length);
+
+                        if (System.currentTimeMillis() - lastSpeechFinishedTime > KEEP_ALIVE_TIMEOUT_MS) {
+                            break;
+                        }
+                    }
+                } catch (Exception e) {
+                } finally {
+                    isKeepAliveRunning = false;
+                    try {
+                        if (keepAliveTrack != null) {
+                            keepAliveTrack.stop();
+                            keepAliveTrack.release();
+                        }
                     } catch (Exception ignored) {}
-
-                    if (System.currentTimeMillis() - lastSpeechFinishedTime > KEEP_ALIVE_TIMEOUT_MS) {
-                        break;
-                    }
                 }
-
-                isKeepAliveRunning = false;
-                try {
-                    if (keepAliveTrack != null) {
-                        keepAliveTrack.stop();
-                        keepAliveTrack.release();
-                        keepAliveTrack = null;
-                    }
-                } catch (Exception ignored) {}
             });
             keepAliveThread.start();
         }
@@ -358,6 +362,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
         try {
             for (int i = 0; i < chunks.size(); i++) {
                 if (stopRequested) break;
+                
+                lastSpeechFinishedTime = System.currentTimeMillis();
 
                 TTSUtils.Chunk chunk = null;
                 try {
