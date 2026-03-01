@@ -5,6 +5,9 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -42,7 +45,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private SharedPreferences prefs;
     private volatile boolean stopRequested = false;
-    private PowerManager.WakeLock wakeLock;
+    
+    private PowerManager.WakeLock cpuWakeLock;
+    private PowerManager.WakeLock screenWakeLock;
 
     private final AtomicInteger shanFailCount = new AtomicInteger(0);
     private final AtomicInteger burmeseFailCount = new AtomicInteger(0);
@@ -51,6 +56,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private HandlerThread watchdogThread;
     private Handler watchdogHandler;
+
+    private volatile boolean isKeepAliveRunning = false;
+    private volatile long lastSpeechFinishedTime = 0;
+    private Thread keepAliveThread;
+    private static final long KEEP_ALIVE_TIMEOUT_MS = 15000;
 
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
@@ -90,11 +100,17 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
-            wakeLock = powerManager.newWakeLock(
-                    PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
-                    "CherrySME::TTSWakeLock"
+            cpuWakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "CherrySME::CpuWakeLock"
             );
-            wakeLock.setReferenceCounted(false);
+            cpuWakeLock.setReferenceCounted(false);
+
+            screenWakeLock = powerManager.newWakeLock(
+                    PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                    "CherrySME::ScreenWakeLock"
+            );
+            screenWakeLock.setReferenceCounted(false);
         }
 
         watchdogThread = new HandlerThread("TTS-Watchdog");
@@ -241,6 +257,64 @@ public class AutoTTSManagerService extends TextToSpeechService {
         } catch (Exception ignored) {}
     }
 
+    private synchronized void triggerKeepAlive() {
+        lastSpeechFinishedTime = System.currentTimeMillis();
+        
+        if (!isKeepAliveRunning) {
+            isKeepAliveRunning = true;
+            keepAliveThread = new Thread(() -> {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
+                int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                if (minBufferSize <= 0) minBufferSize = 32000;
+
+                byte[] silenceBuffer = new byte[minBufferSize];
+                for (int i = 0; i < silenceBuffer.length; i += 2) {
+                    silenceBuffer[i] = 1;
+                    silenceBuffer[i + 1] = 0;
+                }
+
+                AudioTrack keepAliveTrack = null;
+                try {
+                    keepAliveTrack = new AudioTrack(
+                            new AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .build(),
+                            new AudioFormat.Builder()
+                                    .setSampleRate(16000)
+                                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                                    .build(),
+                            minBufferSize,
+                            AudioTrack.MODE_STREAM,
+                            AudioManager.AUDIO_SESSION_ID_GENERATE
+                    );
+                    
+                    keepAliveTrack.setVolume(AudioTrack.getMaxVolume());
+                    keepAliveTrack.play();
+
+                    while (isKeepAliveRunning) {
+                        keepAliveTrack.write(silenceBuffer, 0, silenceBuffer.length);
+
+                        if (System.currentTimeMillis() - lastSpeechFinishedTime > KEEP_ALIVE_TIMEOUT_MS) {
+                            break;
+                        }
+                    }
+                } catch (Exception e) {
+                } finally {
+                    isKeepAliveRunning = false;
+                    try {
+                        if (keepAliveTrack != null) {
+                            keepAliveTrack.stop();
+                            keepAliveTrack.release();
+                        }
+                    } catch (Exception ignored) {}
+                }
+            });
+            keepAliveThread.start();
+        }
+    }
+
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         stopRequested = false;
@@ -252,17 +326,25 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         if (text == null || text.trim().isEmpty()) {
             safeCallbackDone(callback);
-            releaseWakeLock();
+            releaseWakeLocks();
             return;
         }
 
-        if (wakeLock != null) {
+        if (cpuWakeLock != null) {
+            try {
+                cpuWakeLock.acquire(60000);
+            } catch (Exception ignored) {}
+        }
+
+        if (screenWakeLock != null) {
             try {
                 long timeoutMs = 2000 + (text.length() * 50L);
                 timeoutMs = Math.min(timeoutMs, 30000);
-                wakeLock.acquire(timeoutMs);
+                screenWakeLock.acquire(timeoutMs);
             } catch (Exception ignored) {}
         }
+
+        triggerKeepAlive();
 
         List<TTSUtils.Chunk> chunks = null;
         try {
@@ -271,7 +353,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         if (chunks == null || chunks.isEmpty()) {
             safeCallbackDone(callback);
-            releaseWakeLock();
+            lastSpeechFinishedTime = System.currentTimeMillis();
+            releaseWakeLocks();
             return;
         }
 
@@ -294,6 +377,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
         try {
             for (int i = 0; i < chunks.size(); i++) {
                 if (stopRequested) break;
+
+                lastSpeechFinishedTime = System.currentTimeMillis();
 
                 TTSUtils.Chunk chunk = null;
                 try {
@@ -369,7 +454,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
         } catch (Exception ignored) {
         } finally {
             safeCallbackDone(callback);
-            releaseWakeLock();
+            lastSpeechFinishedTime = System.currentTimeMillis();
+            releaseWakeLocks();
         }
     }
 
@@ -410,7 +496,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         try { if (shanEngine != null) shanEngine.stop(); } catch (Exception ignored) {}
         try { if (burmeseEngine != null) burmeseEngine.stop(); } catch (Exception ignored) {}
         try { if (englishEngine != null) englishEngine.stop(); } catch (Exception ignored) {}
-        releaseWakeLock();
+        releaseWakeLocks();
     }
 
     private RemoteTextToSpeech getEngineByLang(String lang) {
@@ -442,10 +528,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
         return "com.google.android.tts";
     }
 
-    private void releaseWakeLock() {
-        if (wakeLock != null && wakeLock.isHeld()) {
+    private void releaseWakeLocks() {
+        if (cpuWakeLock != null && cpuWakeLock.isHeld()) {
             try {
-                wakeLock.release();
+                cpuWakeLock.release();
+            } catch (Exception ignored) {}
+        }
+        if (screenWakeLock != null && screenWakeLock.isHeld()) {
+            try {
+                screenWakeLock.release();
             } catch (Exception ignored) {}
         }
     }
@@ -459,8 +550,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onDestroy() {
         stopRequested = true;
+        isKeepAliveRunning = false;
         shutdownEngines();
-        releaseWakeLock();
+        releaseWakeLocks();
         if (watchdogThread != null) {
             try { watchdogThread.quitSafely(); } catch (Exception ignored) {}
         }
