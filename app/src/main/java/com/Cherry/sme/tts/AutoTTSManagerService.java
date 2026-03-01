@@ -7,7 +7,7 @@ import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
 import android.os.Bundle;
 import android.os.Handler;
-import android.os.Looper;
+import android.os.HandlerThread;
 import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
@@ -23,29 +23,35 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class AutoTTSManagerService extends TextToSpeechService {
 
-    private RemoteTextToSpeech shanEngine;
-    private RemoteTextToSpeech burmeseEngine;
-    private RemoteTextToSpeech englishEngine;
-    
-    private volatile boolean isShanReady = false;
-    private volatile boolean isBurmeseReady = false;
-    private volatile boolean isEnglishReady = false;
+    private volatile RemoteTextToSpeech shanEngine;
+    private volatile RemoteTextToSpeech burmeseEngine;
+    private volatile RemoteTextToSpeech englishEngine;
 
-    private boolean isShanConfigured = false;
-    private boolean isBurmeseConfigured = false;
-    private boolean isEnglishConfigured = false;
+    private final AtomicBoolean isShanReady = new AtomicBoolean(false);
+    private final AtomicBoolean isBurmeseReady = new AtomicBoolean(false);
+    private final AtomicBoolean isEnglishReady = new AtomicBoolean(false);
+
+    private volatile boolean isShanConfigured = false;
+    private volatile boolean isBurmeseConfigured = false;
+    private volatile boolean isEnglishConfigured = false;
 
     private SharedPreferences prefs;
     private volatile boolean stopRequested = false;
-    
     private PowerManager.WakeLock wakeLock;
-    private Handler wakeLockHandler;
-    private Runnable wakeLockRunnable;
-    private static final long WAKELOCK_TIMEOUT_MS = 5000;
-    
+
+    private final AtomicInteger shanFailCount = new AtomicInteger(0);
+    private final AtomicInteger burmeseFailCount = new AtomicInteger(0);
+    private final AtomicInteger englishFailCount = new AtomicInteger(0);
+    private static final int MAX_FAIL_BEFORE_REINIT = 3;
+
+    private HandlerThread watchdogThread;
+    private Handler watchdogHandler;
+
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
     private final UtteranceProgressListener globalListener = new UtteranceProgressListener() {
@@ -68,13 +74,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
 
         private void releaseLatch(String utteranceId) {
-            if (utteranceId != null) {
-                CountDownLatch latch = utteranceLatches.remove(utteranceId);
-                if (latch != null) {
-                    while (latch.getCount() > 0) {
-                        latch.countDown();
-                    }
-                }
+            if (utteranceId == null) return;
+            CountDownLatch latch = utteranceLatches.remove(utteranceId);
+            if (latch != null) {
+                latch.countDown();
             }
         }
     };
@@ -84,52 +87,126 @@ public class AutoTTSManagerService extends TextToSpeechService {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
-        
-        wakeLockHandler = new Handler(Looper.getMainLooper());
-        wakeLockRunnable = () -> {
-            if (wakeLock != null && wakeLock.isHeld()) {
-                try {
-                    wakeLock.release();
-                } catch (Exception e) {}
-            }
-        };
 
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
             wakeLock = powerManager.newWakeLock(
-                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK | 
-                    PowerManager.ON_AFTER_RELEASE | 
-                    PowerManager.ACQUIRE_CAUSES_WAKEUP, 
-                    "CherrySME::WakeLock");
-            if (wakeLock != null) {
-                wakeLock.setReferenceCounted(false);
-            }
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "CherrySME::TTSWakeLock"
+            );
+            wakeLock.setReferenceCounted(false);
         }
-        
+
+        watchdogThread = new HandlerThread("TTS-Watchdog");
+        watchdogThread.start();
+        watchdogHandler = new Handler(watchdogThread.getLooper());
+
         initAllEngines();
     }
 
     private void initAllEngines() {
         shutdownEngines();
-        
+
         isShanConfigured = false;
         isBurmeseConfigured = false;
         isEnglishConfigured = false;
+        isShanReady.set(false);
+        isBurmeseReady.set(false);
+        isEnglishReady.set(false);
+        shanFailCount.set(0);
+        burmeseFailCount.set(0);
+        englishFailCount.set(0);
 
-        shanEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
-            if(status == TextToSpeech.SUCCESS) isShanReady = true;
-        }, getBestEngine("pref_engine_shan"));
-        shanEngine.setOnUtteranceProgressListener(globalListener);
-        
-        burmeseEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
-            if(status == TextToSpeech.SUCCESS) isBurmeseReady = true;
-        }, getBestEngine("pref_engine_myanmar"));
-        burmeseEngine.setOnUtteranceProgressListener(globalListener);
+        try {
+            shanEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
+                if (status == TextToSpeech.SUCCESS) isShanReady.set(true);
+            }, getBestEngine("pref_engine_shan"));
+            shanEngine.setOnUtteranceProgressListener(globalListener);
+        } catch (Exception e) {
+            shanEngine = null;
+        }
 
-        englishEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
-            if(status == TextToSpeech.SUCCESS) isEnglishReady = true;
-        }, getBestEngine("pref_engine_english"));
-        englishEngine.setOnUtteranceProgressListener(globalListener);
+        try {
+            burmeseEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
+                if (status == TextToSpeech.SUCCESS) isBurmeseReady.set(true);
+            }, getBestEngine("pref_engine_myanmar"));
+            burmeseEngine.setOnUtteranceProgressListener(globalListener);
+        } catch (Exception e) {
+            burmeseEngine = null;
+        }
+
+        try {
+            englishEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
+                if (status == TextToSpeech.SUCCESS) isEnglishReady.set(true);
+            }, getBestEngine("pref_engine_english"));
+            englishEngine.setOnUtteranceProgressListener(globalListener);
+        } catch (Exception e) {
+            englishEngine = null;
+        }
+    }
+
+    private void reinitSingleEngine(String lang) {
+        try {
+            if ("SHAN".equals(lang)) {
+                if (shanEngine != null) {
+                    try { shanEngine.shutdown(); } catch (Exception ignored) {}
+                }
+                isShanReady.set(false);
+                isShanConfigured = false;
+                shanFailCount.set(0);
+                shanEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
+                    if (status == TextToSpeech.SUCCESS) isShanReady.set(true);
+                }, getBestEngine("pref_engine_shan"));
+                shanEngine.setOnUtteranceProgressListener(globalListener);
+
+            } else if ("MYANMAR".equals(lang)) {
+                if (burmeseEngine != null) {
+                    try { burmeseEngine.shutdown(); } catch (Exception ignored) {}
+                }
+                isBurmeseReady.set(false);
+                isBurmeseConfigured = false;
+                burmeseFailCount.set(0);
+                burmeseEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
+                    if (status == TextToSpeech.SUCCESS) isBurmeseReady.set(true);
+                }, getBestEngine("pref_engine_myanmar"));
+                burmeseEngine.setOnUtteranceProgressListener(globalListener);
+
+            } else if ("ENGLISH".equals(lang)) {
+                if (englishEngine != null) {
+                    try { englishEngine.shutdown(); } catch (Exception ignored) {}
+                }
+                isEnglishReady.set(false);
+                isEnglishConfigured = false;
+                englishFailCount.set(0);
+                englishEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
+                    if (status == TextToSpeech.SUCCESS) isEnglishReady.set(true);
+                }, getBestEngine("pref_engine_english"));
+                englishEngine.setOnUtteranceProgressListener(globalListener);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void scheduleReinit(String lang) {
+        if (watchdogHandler != null) {
+            watchdogHandler.post(() -> reinitSingleEngine(lang));
+        }
+    }
+
+    private void recordFailure(String lang) {
+        AtomicInteger counter;
+        if ("SHAN".equals(lang)) counter = shanFailCount;
+        else if ("MYANMAR".equals(lang)) counter = burmeseFailCount;
+        else counter = englishFailCount;
+
+        if (counter.incrementAndGet() >= MAX_FAIL_BEFORE_REINIT) {
+            scheduleReinit(lang);
+        }
+    }
+
+    private void recordSuccess(String lang) {
+        if ("SHAN".equals(lang)) shanFailCount.set(0);
+        else if ("MYANMAR".equals(lang)) burmeseFailCount.set(0);
+        else englishFailCount.set(0);
     }
 
     private void configureEngineIfNeeded(RemoteTextToSpeech engine, String lang) {
@@ -138,7 +215,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 int res = engine.setLanguage(new Locale("mya"));
                 if (res < 0) res = engine.setLanguage(new Locale("mya", "MM"));
                 if (res < 0) engine.setLanguage(new Locale("my"));
-                
+
                 try {
                     Set<Voice> voices = engine.getVoices();
                     if (voices != null) {
@@ -150,43 +227,49 @@ public class AutoTTSManagerService extends TextToSpeechService {
                             }
                         }
                     }
-                } catch (Exception ve) {}
+                } catch (Exception ignored) {}
                 isBurmeseConfigured = true;
 
             } else if ("SHAN".equals(lang) && !isShanConfigured) {
-                engine.setLanguage(new Locale("shn")); 
+                engine.setLanguage(new Locale("shn"));
                 isShanConfigured = true;
 
             } else if ("ENGLISH".equals(lang) && !isEnglishConfigured) {
                 engine.setLanguage(Locale.US);
                 isEnglishConfigured = true;
             }
-        } catch (Exception e) {}
+        } catch (Exception ignored) {}
     }
 
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         if (wakeLock != null) {
-            wakeLockHandler.removeCallbacks(wakeLockRunnable);
             try {
-                if (!wakeLock.isHeld()) {
-                    wakeLock.acquire(10000);
-                }
-            } catch (Exception e) {}
-            wakeLockHandler.postDelayed(wakeLockRunnable, WAKELOCK_TIMEOUT_MS);
+                wakeLock.acquire(60000);
+            } catch (Exception ignored) {}
         }
-        
+
         stopRequested = false;
-        String text = request.getText();
-        
+        String text = null;
+
+        try {
+            text = request.getText();
+        } catch (Exception ignored) {}
+
         if (text == null || text.trim().isEmpty()) {
-            callback.done();
+            safeCallbackDone(callback);
+            releaseWakeLock();
             return;
         }
 
-        List<TTSUtils.Chunk> chunks = TTSUtils.splitHelper(text);
-        if (chunks.isEmpty()) {
-            callback.done();
+        List<TTSUtils.Chunk> chunks = null;
+        try {
+            chunks = TTSUtils.splitHelper(text);
+        } catch (Exception ignored) {}
+
+        if (chunks == null || chunks.isEmpty()) {
+            safeCallbackDone(callback);
+            releaseWakeLock();
             return;
         }
 
@@ -196,82 +279,120 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
-        
+
         params.putParcelable("audioAttributes", audioAttributes);
 
-        float rate = request.getSpeechRate() / 100.0f;
-        float pitch = request.getPitch() / 100.0f;
+        float rate = 1.0f;
+        float pitch = 1.0f;
+        try {
+            rate = request.getSpeechRate() / 100.0f;
+            pitch = request.getPitch() / 100.0f;
+        } catch (Exception ignored) {}
 
         try {
             for (int i = 0; i < chunks.size(); i++) {
-                TTSUtils.Chunk chunk = chunks.get(i);
-                
                 if (stopRequested) break;
-                if (chunk.text.trim().isEmpty()) continue;
 
-                RemoteTextToSpeech targetEngine = getEngineByLang(chunk.lang);
-                if (targetEngine == null) continue;
-
-                if (!waitForEngine(chunk.lang)) {
+                TTSUtils.Chunk chunk = null;
+                try {
+                    chunk = chunks.get(i);
+                } catch (Exception ignored) {
                     continue;
                 }
 
-                configureEngineIfNeeded(targetEngine, chunk.lang);
+                if (chunk == null || chunk.text == null || chunk.text.trim().isEmpty()) continue;
 
-                targetEngine.setSpeechRate(rate);
-                targetEngine.setPitch(pitch);
+                RemoteTextToSpeech targetEngine = getEngineByLang(chunk.lang);
+                if (targetEngine == null) {
+                    scheduleReinit(chunk.lang);
+                    continue;
+                }
 
-                String utteranceId = String.valueOf(System.nanoTime());
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
-                
-                CountDownLatch latch = new CountDownLatch(1);
-                utteranceLatches.put(utteranceId, latch);
-
-                int result = targetEngine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
-
-                if (result == TextToSpeech.ERROR) {
-                    utteranceLatches.remove(utteranceId);
+                if (!waitForEngine(chunk.lang)) {
+                    recordFailure(chunk.lang);
                     continue;
                 }
 
                 try {
-                    long timeout = 5000 + (chunk.text.length() * 150L);
+                    configureEngineIfNeeded(targetEngine, chunk.lang);
+                } catch (Exception ignored) {}
+
+                try {
+                    targetEngine.setSpeechRate(rate);
+                    targetEngine.setPitch(pitch);
+                } catch (Exception ignored) {}
+
+                String utteranceId = "utt_" + System.nanoTime();
+                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
+
+                CountDownLatch latch = new CountDownLatch(1);
+                utteranceLatches.put(utteranceId, latch);
+
+                int result = TextToSpeech.ERROR;
+                try {
+                    result = targetEngine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
+                } catch (Exception e) {
+                    utteranceLatches.remove(utteranceId);
+                    recordFailure(chunk.lang);
+                    continue;
+                }
+
+                if (result == TextToSpeech.ERROR) {
+                    utteranceLatches.remove(utteranceId);
+                    recordFailure(chunk.lang);
+                    continue;
+                }
+
+                try {
+                    long timeout = 10000 + (chunk.text.length() * 250L);
                     boolean done = latch.await(timeout, TimeUnit.MILLISECONDS);
-                    
                     if (!done) {
                         utteranceLatches.remove(utteranceId);
-                    }
-
-                    if (i < chunks.size() - 1) {
-                         Thread.sleep(15); 
+                        try { targetEngine.stop(); } catch (Exception ignored) {}
+                        recordFailure(chunk.lang);
+                    } else {
+                        recordSuccess(chunk.lang);
                     }
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     stopRequested = true;
                 }
 
                 if (stopRequested) {
-                    targetEngine.stop();
+                    try { targetEngine.stop(); } catch (Exception ignored) {}
                     break;
                 }
             }
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (Exception ignored) {
         } finally {
-            synchronized (callback) {
-                callback.done();
-            }
+            safeCallbackDone(callback);
+            releaseWakeLock();
         }
     }
 
+    private void safeCallbackDone(SynthesisCallback callback) {
+        try {
+            if (callback != null) {
+                callback.done();
+            }
+        } catch (Exception ignored) {}
+    }
+
     private boolean waitForEngine(String lang) {
-        long timeout = 2500;
+        long timeout = 4000;
         long start = System.currentTimeMillis();
-        
+
         while (System.currentTimeMillis() - start < timeout) {
-            if ("SHAN".equals(lang) && isShanReady) return true;
-            if ("MYANMAR".equals(lang) && isBurmeseReady) return true;
-            if ("ENGLISH".equals(lang) && isEnglishReady) return true;
-            try { Thread.sleep(50); } catch (InterruptedException e) {}
+            if (stopRequested) return false;
+            if ("SHAN".equals(lang) && isShanReady.get()) return true;
+            if ("MYANMAR".equals(lang) && isBurmeseReady.get()) return true;
+            if ("ENGLISH".equals(lang) && isEnglishReady.get()) return true;
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
         }
         return false;
     }
@@ -280,12 +401,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
     protected void onStop() {
         stopRequested = true;
         for (CountDownLatch latch : utteranceLatches.values()) {
-            while (latch.getCount() > 0) latch.countDown();
+            try { latch.countDown(); } catch (Exception ignored) {}
         }
         utteranceLatches.clear();
-        if (shanEngine != null) shanEngine.stop();
-        if (burmeseEngine != null) burmeseEngine.stop();
-        if (englishEngine != null) englishEngine.stop();
+        try { if (shanEngine != null) shanEngine.stop(); } catch (Exception ignored) {}
+        try { if (burmeseEngine != null) burmeseEngine.stop(); } catch (Exception ignored) {}
+        try { if (englishEngine != null) englishEngine.stop(); } catch (Exception ignored) {}
+        releaseWakeLock();
     }
 
     private RemoteTextToSpeech getEngineByLang(String lang) {
@@ -295,46 +417,65 @@ public class AutoTTSManagerService extends TextToSpeechService {
     }
 
     private String getBestEngine(String prefKey) {
-        String pkg = prefs.getString(prefKey, null);
-        if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) return pkg;
-        
-        String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
-        if (sysDef != null && !sysDef.equals(getPackageName())) return sysDef;
+        try {
+            String pkg = prefs.getString(prefKey, null);
+            if (pkg != null && !pkg.isEmpty() && !pkg.equals(getPackageName())) return pkg;
+        } catch (Exception ignored) {}
+
+        try {
+            String sysDef = Settings.Secure.getString(getContentResolver(), "tts_default_synth");
+            if (sysDef != null && !sysDef.equals(getPackageName())) return sysDef;
+        } catch (Exception ignored) {}
 
         try {
             Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
-            List<ResolveInfo> s = getPackageManager().queryIntentServices(intent, 0);
-            for (ResolveInfo i : s) {
-                String p = i.serviceInfo.packageName;
-                if (!p.equals(getPackageName()) && !p.contains("samsung")) return p; 
+            List<ResolveInfo> services = getPackageManager().queryIntentServices(intent, 0);
+            for (ResolveInfo info : services) {
+                String p = info.serviceInfo.packageName;
+                if (!p.equals(getPackageName()) && !p.contains("samsung")) return p;
             }
-        } catch (Exception e) {}
+        } catch (Exception ignored) {}
 
         return "com.google.android.tts";
     }
 
+    private void releaseWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try {
+                wakeLock.release();
+            } catch (Exception ignored) {}
+        }
+    }
+
     private void shutdownEngines() {
-        try { if (shanEngine != null) shanEngine.shutdown(); } catch (Exception e) {}
-        try { if (burmeseEngine != null) burmeseEngine.shutdown(); } catch (Exception e) {}
-        try { if (englishEngine != null) englishEngine.shutdown(); } catch (Exception e) {}
+        try { if (shanEngine != null) shanEngine.shutdown(); } catch (Exception ignored) {}
+        try { if (burmeseEngine != null) burmeseEngine.shutdown(); } catch (Exception ignored) {}
+        try { if (englishEngine != null) englishEngine.shutdown(); } catch (Exception ignored) {}
     }
 
     @Override
     public void onDestroy() {
-        super.onDestroy();
+        stopRequested = true;
         shutdownEngines();
-        if (wakeLockHandler != null && wakeLockRunnable != null) {
-            wakeLockHandler.removeCallbacks(wakeLockRunnable);
+        releaseWakeLock();
+        if (watchdogThread != null) {
+            try { watchdogThread.quitSafely(); } catch (Exception ignored) {}
         }
-        if (wakeLock != null && wakeLock.isHeld()) {
-            try {
-                wakeLock.release();
-            } catch (Exception e) {}
-        }
+        super.onDestroy();
     }
 
-    @Override protected int onIsLanguageAvailable(String l, String c, String v) { return TextToSpeech.LANG_AVAILABLE; }
-    @Override protected String[] onGetLanguage() { return new String[]{"eng", "USA", ""}; }
-    @Override protected int onLoadLanguage(String l, String c, String v) { return TextToSpeech.LANG_AVAILABLE; }
-}
+    @Override
+    protected int onIsLanguageAvailable(String l, String c, String v) {
+        return TextToSpeech.LANG_AVAILABLE;
+    }
 
+    @Override
+    protected String[] onGetLanguage() {
+        return new String[]{"eng", "USA", ""};
+    }
+
+    @Override
+    protected int onLoadLanguage(String l, String c, String v) {
+        return TextToSpeech.LANG_AVAILABLE;
+    }
+}
