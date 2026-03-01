@@ -243,12 +243,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
-        if (wakeLock != null) {
-            try {
-                wakeLock.acquire(60000);
-            } catch (Exception ignored) {}
-        }
-
         stopRequested = false;
         String text = null;
 
@@ -260,6 +254,14 @@ public class AutoTTSManagerService extends TextToSpeechService {
             safeCallbackDone(callback);
             releaseWakeLock();
             return;
+        }
+
+        if (wakeLock != null) {
+            try {
+                long timeoutMs = 2000 + (text.length() * 50L);
+                timeoutMs = Math.min(timeoutMs, 30000);
+                wakeLock.acquire(timeoutMs);
+            } catch (Exception ignored) {}
         }
 
         List<TTSUtils.Chunk> chunks = null;
