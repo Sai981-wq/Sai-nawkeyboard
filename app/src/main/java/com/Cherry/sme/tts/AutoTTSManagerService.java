@@ -5,9 +5,6 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
-import android.media.AudioFormat;
-import android.media.AudioManager;
-import android.media.AudioTrack;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -55,11 +52,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private HandlerThread watchdogThread;
     private Handler watchdogHandler;
 
-    private volatile boolean isKeepAliveRunning = false;
-    private volatile long lastSpeechFinishedTime = 0;
-    private Thread keepAliveThread;
-    private static final long KEEP_ALIVE_TIMEOUT_MS = 15000; 
-
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
     private final UtteranceProgressListener globalListener = new UtteranceProgressListener() {
@@ -99,7 +91,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
             wakeLock = powerManager.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
+                    PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
                     "CherrySME::TTSWakeLock"
             );
             wakeLock.setReferenceCounted(false);
@@ -249,64 +241,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         } catch (Exception ignored) {}
     }
 
-    private synchronized void triggerKeepAlive() {
-        lastSpeechFinishedTime = System.currentTimeMillis();
-        
-        if (!isKeepAliveRunning) {
-            isKeepAliveRunning = true;
-            keepAliveThread = new Thread(() -> {
-                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
-                int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-                if (minBufferSize <= 0) minBufferSize = 32000;
-
-                byte[] silenceBuffer = new byte[minBufferSize];
-                for (int i = 0; i < silenceBuffer.length; i += 2) {
-                    silenceBuffer[i] = 1;
-                    silenceBuffer[i + 1] = 0;
-                }
-
-                AudioTrack keepAliveTrack = null;
-                try {
-                    keepAliveTrack = new AudioTrack(
-                            new AudioAttributes.Builder()
-                                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                                    .build(),
-                            new AudioFormat.Builder()
-                                    .setSampleRate(16000)
-                                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                                    .build(),
-                            minBufferSize,
-                            AudioTrack.MODE_STREAM,
-                            AudioManager.AUDIO_SESSION_ID_GENERATE
-                    );
-                    
-                    keepAliveTrack.setVolume(AudioTrack.getMaxVolume());
-                    keepAliveTrack.play();
-
-                    while (isKeepAliveRunning) {
-                        keepAliveTrack.write(silenceBuffer, 0, silenceBuffer.length);
-
-                        if (System.currentTimeMillis() - lastSpeechFinishedTime > KEEP_ALIVE_TIMEOUT_MS) {
-                            break;
-                        }
-                    }
-                } catch (Exception e) {
-                } finally {
-                    isKeepAliveRunning = false;
-                    try {
-                        if (keepAliveTrack != null) {
-                            keepAliveTrack.stop();
-                            keepAliveTrack.release();
-                        }
-                    } catch (Exception ignored) {}
-                }
-            });
-            keepAliveThread.start();
-        }
-    }
-
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         if (wakeLock != null) {
@@ -316,8 +250,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
 
         stopRequested = false;
-        triggerKeepAlive();
-        
         String text = null;
 
         try {
@@ -326,7 +258,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         if (text == null || text.trim().isEmpty()) {
             safeCallbackDone(callback);
-            lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLock();
             return;
         }
@@ -338,7 +269,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         if (chunks == null || chunks.isEmpty()) {
             safeCallbackDone(callback);
-            lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLock();
             return;
         }
@@ -362,8 +292,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         try {
             for (int i = 0; i < chunks.size(); i++) {
                 if (stopRequested) break;
-                
-                lastSpeechFinishedTime = System.currentTimeMillis();
 
                 TTSUtils.Chunk chunk = null;
                 try {
@@ -439,7 +367,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         } catch (Exception ignored) {
         } finally {
             safeCallbackDone(callback);
-            lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLock();
         }
     }
@@ -530,7 +457,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onDestroy() {
         stopRequested = true;
-        isKeepAliveRunning = false;
         shutdownEngines();
         releaseWakeLock();
         if (watchdogThread != null) {
