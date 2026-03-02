@@ -7,12 +7,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class TTSUtils {
 
-    private static final Pattern SHAN_PATTERN = Pattern.compile("[\\u1022\\u1035\\u1062\\u1064\\u1067-\\u106D\\u1075-\\u108F\\u1090-\\u109F\\uaa60-\\uaa7f]");
+    private static final Pattern SHAN_PATTERN = Pattern.compile("[\\u1022\\u1035\\u1062\\u1064\\u1067-\\u106D\\u1075-\\u108F\\u1090-\\u109F\\uAA60-\\uAA7F]");
     private static final Pattern MYANMAR_PATTERN = Pattern.compile("[\\u1000-\\u109F]");
+    private static final Pattern TOKEN_PATTERN = Pattern.compile("([\\u1000-\\u109F\\uAA60-\\uAA7F]+)|([^\\u1000-\\u109F\\uAA60-\\uAA7F\\s]+)|(\\s+)");
     
     private static final Map<String, String> wordMapping = new ConcurrentHashMap<>();
 
@@ -55,44 +57,43 @@ public class TTSUtils {
         List<Chunk> chunks = new ArrayList<>();
         if (text == null || text.isEmpty()) return chunks;
 
-        String regex = "(?<=\\s)|(?=\\s)|(?<=[\\u1000-\\u109F\\uAA60-\\uAA7F])(?=[^\\u1000-\\u109F\\uAA60-\\uAA7F\\s])|(?<=[^\\u1000-\\u109F\\uAA60-\\uAA7F\\s])(?=[\\u1000-\\u109F\\uAA60-\\uAA7F])";
-        String[] words = text.split(regex);
-        
+        Matcher matcher = TOKEN_PATTERN.matcher(text);
         StringBuilder currentBuffer = new StringBuilder();
         String currentLang = null;
 
-        for (String word : words) {
-            if (word.isEmpty()) continue;
-            
-            if (word.trim().isEmpty()) {
+        while (matcher.find()) {
+            String token = matcher.group();
+            if (token.isEmpty()) continue;
+
+            if (matcher.group(3) != null) {
                 if (currentBuffer.length() > 0) {
-                    currentBuffer.append(word);
+                    currentBuffer.append(token);
                 }
                 continue;
             }
 
-            String trimmedWord = word.trim();
+            String trimmedToken = token.trim();
             String detectedLang = "ENGLISH";
 
-            if (wordMapping.containsKey(trimmedWord)) {
-                detectedLang = wordMapping.get(trimmedWord);
-            } else {
-                if (SHAN_PATTERN.matcher(word).find()) {
+            if (wordMapping.containsKey(trimmedToken)) {
+                detectedLang = wordMapping.get(trimmedToken);
+            } else if (matcher.group(1) != null) {
+                if (SHAN_PATTERN.matcher(token).find()) {
                     detectedLang = "SHAN";
-                } else if (MYANMAR_PATTERN.matcher(word).find()) {
+                } else {
                     detectedLang = "MYANMAR";
                 }
             }
 
             if (currentLang == null) {
                 currentLang = detectedLang;
-                currentBuffer.append(word);
+                currentBuffer.append(token);
             } else if (currentLang.equals(detectedLang)) {
-                currentBuffer.append(word);
+                currentBuffer.append(token);
             } else {
                 chunks.add(new Chunk(currentBuffer.toString(), currentLang));
                 currentBuffer.setLength(0);
-                currentBuffer.append(word);
+                currentBuffer.append(token);
                 currentLang = detectedLang;
             }
         }
