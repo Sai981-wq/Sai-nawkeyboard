@@ -55,7 +55,8 @@ public class TTSUtils {
         List<Chunk> chunks = new ArrayList<>();
         if (text == null || text.isEmpty()) return chunks;
 
-        String[] words = text.split("(?<=\\s)|(?=\\s)|(?<=[a-zA-Z0-9])(?=[\\u1000-\\u109F\\uAA60-\\uAA7F])|(?<=[\\u1000-\\u109F\\uAA60-\\uAA7F])(?=[a-zA-Z0-9])");
+        String regex = "(?<=\\s)|(?=\\s)|(?<=[\\u1000-\\u109F\\uAA60-\\uAA7F])(?=[^\\u1000-\\u109F\\uAA60-\\uAA7F\\s])|(?<=[^\\u1000-\\u109F\\uAA60-\\uAA7F\\s])(?=[\\u1000-\\u109F\\uAA60-\\uAA7F])";
+        String[] words = text.split(regex);
         
         StringBuilder currentBuffer = new StringBuilder();
         String currentLang = null;
