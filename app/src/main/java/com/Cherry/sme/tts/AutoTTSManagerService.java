@@ -60,7 +60,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private volatile boolean isKeepAliveRunning = false;
     private volatile long lastSpeechFinishedTime = 0;
     private Thread keepAliveThread;
-    private static final long KEEP_ALIVE_TIMEOUT_MS = 15000;
+    private static final long KEEP_ALIVE_TIMEOUT_MS = 4000; 
 
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
 
@@ -263,7 +263,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (!isKeepAliveRunning) {
             isKeepAliveRunning = true;
             keepAliveThread = new Thread(() -> {
-                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
                 int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
                 if (minBufferSize <= 0) minBufferSize = 32000;
 
