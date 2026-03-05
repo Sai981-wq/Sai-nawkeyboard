@@ -27,11 +27,7 @@ class ShanTtsService : TextToSpeechService() {
         private const val OUTPUT_ENCODING = AudioFormat.ENCODING_PCM_16BIT
         private const val BIN_FILENAME = "audio.bin"
         private const val INDEX_FILENAME = "index.txt"
-
-        // Crossfade duration in samples (5ms at 16kHz = 80 samples)
         private const val CROSSFADE_SAMPLES = 80
-
-        // Fade-in/fade-out duration in samples (3ms at 16kHz = 48 samples)
         private const val FADE_SAMPLES = 48
     }
 
@@ -175,7 +171,6 @@ class ShanTtsService : TextToSpeechService() {
         }
 
         val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
-        // Apply speed directly without reduction factor - let the user control speed naturally
         sonicSetSpeed(streamId, rate)
         sonicSetPitch(streamId, pitch)
 
@@ -183,7 +178,6 @@ class ShanTtsService : TextToSpeechService() {
         val shortBuffer = ShortArray(bufferSize)
         val outputBuffer = ShortArray(bufferSize)
 
-        // Keep tail of previous segment for crossfading
         var prevTail: ShortArray? = null
 
         try {
@@ -200,9 +194,7 @@ class ShanTtsService : TextToSpeechService() {
                 }
 
                 if (pauseDuration > 0) {
-                    // Flush any previous tail before silence
                     if (prevTail != null) {
-                        // Fade out the previous tail
                         applyFadeOut(prevTail, prevTail.size)
                         feedToSonic(streamId, prevTail, shortBuffer, bufferSize, outputBuffer, callback)
                         prevTail = null
@@ -219,14 +211,11 @@ class ShanTtsService : TextToSpeechService() {
                     val pcmShorts = decodeOpus(encodedBytes, encodedBytes.size)
 
                     if (pcmShorts != null && pcmShorts.isNotEmpty()) {
-                        // Crossfade with previous segment
                         if (prevTail != null && prevTail.isNotEmpty()) {
                             val crossfadeLen = min(CROSSFADE_SAMPLES, min(prevTail.size, pcmShorts.size))
                             if (crossfadeLen > 0) {
-                                // Create crossfaded region
                                 val crossfaded = ShortArray(crossfadeLen)
                                 for (i in 0 until crossfadeLen) {
-                                    // Raised cosine crossfade for smooth transition
                                     val t = i.toFloat() / crossfadeLen
                                     val fadeOut = (0.5 * (1.0 + cos(PI * t))).toFloat()
                                     val fadeIn = 1.0f - fadeOut
@@ -235,7 +224,6 @@ class ShanTtsService : TextToSpeechService() {
                                     crossfaded[i] = mixed.toInt().coerceIn(-32768, 32767).toShort()
                                 }
 
-                                // Feed: prevTail (without crossfade region) + crossfaded + rest of current
                                 val prevMainLen = prevTail.size - crossfadeLen
                                 if (prevMainLen > 0) {
                                     val prevMain = prevTail.copyOfRange(0, prevMainLen)
@@ -243,7 +231,6 @@ class ShanTtsService : TextToSpeechService() {
                                 }
                                 feedToSonic(streamId, crossfaded, shortBuffer, bufferSize, outputBuffer, callback)
 
-                                // Current segment minus crossfade head, keep tail for next crossfade
                                 val currentRemaining = pcmShorts.copyOfRange(crossfadeLen, pcmShorts.size)
                                 if (currentRemaining.size > CROSSFADE_SAMPLES) {
                                     val mainPart = currentRemaining.copyOfRange(0, currentRemaining.size - CROSSFADE_SAMPLES)
@@ -253,7 +240,6 @@ class ShanTtsService : TextToSpeechService() {
                                     prevTail = currentRemaining
                                 }
                             } else {
-                                // No crossfade possible, just feed previous and keep current tail
                                 feedToSonic(streamId, prevTail, shortBuffer, bufferSize, outputBuffer, callback)
                                 if (pcmShorts.size > CROSSFADE_SAMPLES) {
                                     val mainPart = pcmShorts.copyOfRange(0, pcmShorts.size - CROSSFADE_SAMPLES)
@@ -264,7 +250,6 @@ class ShanTtsService : TextToSpeechService() {
                                 }
                             }
                         } else {
-                            // First segment or after a pause - apply fade-in
                             applyFadeIn(pcmShorts, FADE_SAMPLES)
 
                             if (pcmShorts.size > CROSSFADE_SAMPLES) {
@@ -279,7 +264,6 @@ class ShanTtsService : TextToSpeechService() {
                 }
             }
 
-            // Flush remaining tail with fade-out
             if (prevTail != null && prevTail.isNotEmpty()) {
                 applyFadeOut(prevTail, FADE_SAMPLES)
                 feedToSonic(streamId, prevTail, shortBuffer, bufferSize, outputBuffer, callback)
@@ -292,9 +276,6 @@ class ShanTtsService : TextToSpeechService() {
         }
     }
 
-    /**
-     * Feed audio data to Sonic stream in chunks
-     */
     private fun feedToSonic(
         streamId: Long, data: ShortArray,
         shortBuffer: ShortArray, bufferSize: Int,
@@ -310,22 +291,15 @@ class ShanTtsService : TextToSpeechService() {
         }
     }
 
-    /**
-     * Apply raised-cosine fade-in to the beginning of audio
-     */
     private fun applyFadeIn(audio: ShortArray, fadeSamples: Int) {
         val len = min(fadeSamples, audio.size)
         for (i in 0 until len) {
-            // Raised cosine: smooth S-curve from 0 to 1
             val t = i.toFloat() / len
             val gain = (0.5 * (1.0 - cos(PI * t))).toFloat()
             audio[i] = (audio[i] * gain).toInt().coerceIn(-32768, 32767).toShort()
         }
     }
 
-    /**
-     * Apply raised-cosine fade-out to the end of audio
-     */
     private fun applyFadeOut(audio: ShortArray, fadeSamples: Int) {
         val len = min(fadeSamples, audio.size)
         val startIdx = audio.size - len
@@ -389,7 +363,7 @@ class ShanTtsService : TextToSpeechService() {
         while (sonicSamplesAvailable(streamId) > 0 && !isStopped) {
             val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
             if (readCount > 0) {
-                applyGain(outputBuffer, readCount, 2.2f)
+                applyGain(outputBuffer, readCount, 1.0f)
                 val byteData = shortsToBytes(outputBuffer, readCount)
                 callback.audioAvailable(byteData, 0, byteData.size)
             }
@@ -435,3 +409,4 @@ class ShanTtsService : TextToSpeechService() {
         super.onDestroy()
     }
 }
+
