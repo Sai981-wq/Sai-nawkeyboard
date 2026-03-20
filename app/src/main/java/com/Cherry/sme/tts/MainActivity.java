@@ -105,9 +105,24 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void setupEngineUI(int spinnerId, String pkgKey, String defPkg) {
+    private void setupEngineUI(int spinnerId, final String pkgKey, String defPkg) {
         Spinner spinner = findViewById(spinnerId);
-        setSpinnerSelection(spinner, pkgKey, defPkg);
+        if (spinner == null) return;
+        
+        String saved = prefs.getString(pkgKey, defPkg);
+        int idx = enginePackages.indexOf(saved);
+        if (idx >= 0) spinner.setSelection(idx);
+
+        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (!enginePackages.isEmpty() && position >= 0) {
+                    prefs.edit().putString(pkgKey, enginePackages.get(position)).apply();
+                }
+            }
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
     }
 
     private void setupOpenSystemSettings(int viewId) {
@@ -161,24 +176,6 @@ public class MainActivity extends Activity {
         if (spEng != null) spEng.setAdapter(adapter);
     }
 
-    private void setSpinnerSelection(Spinner spinner, final String key, String def) {
-        if (spinner == null) return;
-        String saved = prefs.getString(key, def);
-        int idx = enginePackages.indexOf(saved);
-        if (idx >= 0) spinner.setSelection(idx);
-
-        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (!enginePackages.isEmpty() && position >= 0) {
-                    prefs.edit().putString(key, enginePackages.get(position)).apply();
-                }
-            }
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
-        });
-    }
-
     private void setupEngineControls(final String lang, int volId, int speedId, int btnId, final String pkgKey, final String volKey, final String speedKey) {
         final SeekBar seekVol = findViewById(volId);
         final SeekBar seekSpeed = findViewById(speedId);
@@ -198,8 +195,16 @@ public class MainActivity extends Activity {
             public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
-                if (seekBar == seekVol) prefs.edit().putInt(volKey, seekVol.getProgress()).apply();
-                if (seekBar == seekSpeed) prefs.edit().putInt(speedKey, seekSpeed.getProgress()).apply();
+                int val = seekBar.getProgress();
+                String key = (seekBar == seekVol) ? volKey : speedKey;
+                prefs.edit().putInt(key, val).apply();
+
+                // Broadcast to update background Service immediately for TalkBack
+                Intent intent = new Intent("com.cherry.sme.tts.PREFS_UPDATED");
+                intent.setPackage(getPackageName()); // Explicit broadcast
+                intent.putExtra("key", key);
+                intent.putExtra("val", val);
+                sendBroadcast(intent);
             }
         };
 

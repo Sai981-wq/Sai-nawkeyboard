@@ -1,7 +1,9 @@
 package com.cherry.sme.tts;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
@@ -68,31 +70,48 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
     private final ReentrantLock engineInitLock = new ReentrantLock();
 
+    // RAM cache for Volume and Speed to fix Multi-Process Delay
+    private volatile int prefVolShan = 100;
+    private volatile int prefSpeedShan = 50;
+    private volatile int prefVolMyanmar = 100;
+    private volatile int prefSpeedMyanmar = 50;
+    private volatile int prefVolEnglish = 100;
+    private volatile int prefSpeedEnglish = 50;
+
+    private final BroadcastReceiver prefsReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null || !("com.cherry.sme.tts.PREFS_UPDATED".equals(intent.getAction()))) return;
+            String key = intent.getStringExtra("key");
+            int val = intent.getIntExtra("val", 50);
+            if (key != null) {
+                if (key.equals("pref_vol_shan")) prefVolShan = val;
+                else if (key.equals("pref_speed_shan")) prefSpeedShan = val;
+                else if (key.equals("pref_vol_myanmar")) prefVolMyanmar = val;
+                else if (key.equals("pref_speed_myanmar")) prefSpeedMyanmar = val;
+                else if (key.equals("pref_vol_english")) prefVolEnglish = val;
+                else if (key.equals("pref_speed_english")) prefSpeedEnglish = val;
+            }
+        }
+    };
+
     private final UtteranceProgressListener globalListener = new UtteranceProgressListener() {
         @Override
         public void onStart(String utteranceId) {}
 
         @Override
-        public void onDone(String utteranceId) {
-            releaseLatch(utteranceId);
-        }
+        public void onDone(String utteranceId) { releaseLatch(utteranceId); }
 
         @Override
-        public void onError(String utteranceId) {
-            releaseLatch(utteranceId);
-        }
+        public void onError(String utteranceId) { releaseLatch(utteranceId); }
 
         @Override
-        public void onError(String utteranceId, int errorCode) {
-            releaseLatch(utteranceId);
-        }
+        public void onError(String utteranceId, int errorCode) { releaseLatch(utteranceId); }
 
         private void releaseLatch(String utteranceId) {
             if (utteranceId == null) return;
             CountDownLatch latch = utteranceLatches.remove(utteranceId);
-            if (latch != null) {
-                latch.countDown();
-            }
+            if (latch != null) latch.countDown();
         }
     };
 
@@ -101,6 +120,21 @@ public class AutoTTSManagerService extends TextToSpeechService {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
+
+        // Load Initial Preferences
+        prefVolShan = prefs.getInt("pref_vol_shan", 100);
+        prefSpeedShan = prefs.getInt("pref_speed_shan", 50);
+        prefVolMyanmar = prefs.getInt("pref_vol_myanmar", 100);
+        prefSpeedMyanmar = prefs.getInt("pref_speed_myanmar", 50);
+        prefVolEnglish = prefs.getInt("pref_vol_english", 100);
+        prefSpeedEnglish = prefs.getInt("pref_speed_english", 50);
+
+        try {
+            IntentFilter filter = new IntentFilter("com.cherry.sme.tts.PREFS_UPDATED");
+            registerReceiver(prefsReceiver, filter);
+        } catch (Exception e) {
+            try { registerReceiver(prefsReceiver, new IntentFilter("com.cherry.sme.tts.PREFS_UPDATED"), 0x4); } catch (Exception ex) {}
+        }
 
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
@@ -329,7 +363,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
 
         Bundle params = new Bundle();
-        AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
+        AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build();
         params.putParcelable("audioAttributes", audioAttributes);
 
         float baseRate = 1.0f;
@@ -361,17 +398,18 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 try { configureEngineIfNeeded(targetEngine, chunk.lang); } catch (Exception e) {}
 
+                // Use RAM Variables dynamically updated via Broadcast
                 float engineRate = baseRate;
                 float engineVolume = 1.0f;
                 if ("SHAN".equals(chunk.lang)) {
-                    engineRate *= (prefs.getInt("pref_speed_shan", 50) / 50.0f);
-                    engineVolume = prefs.getInt("pref_vol_shan", 100) / 100.0f;
+                    engineRate *= (prefSpeedShan / 50.0f);
+                    engineVolume = prefVolShan / 100.0f;
                 } else if ("MYANMAR".equals(chunk.lang)) {
-                    engineRate *= (prefs.getInt("pref_speed_myanmar", 50) / 50.0f);
-                    engineVolume = prefs.getInt("pref_vol_myanmar", 100) / 100.0f;
+                    engineRate *= (prefSpeedMyanmar / 50.0f);
+                    engineVolume = prefVolMyanmar / 100.0f;
                 } else {
-                    engineRate *= (prefs.getInt("pref_speed_english", 50) / 50.0f);
-                    engineVolume = prefs.getInt("pref_vol_english", 100) / 100.0f;
+                    engineRate *= (prefSpeedEnglish / 50.0f);
+                    engineVolume = prefVolEnglish / 100.0f;
                 }
 
                 try {
@@ -504,6 +542,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         isDestroyed.set(true);
         stopRequested.set(true);
         isKeepAliveRunning.set(false);
+        try { unregisterReceiver(prefsReceiver); } catch (Exception e) {}
         if (keepAliveThread != null) {
             keepAliveThread.interrupt();
             try { keepAliveThread.join(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
