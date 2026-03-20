@@ -4,9 +4,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
+import android.media.AudioManager;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
-import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.os.Bundle;
 import android.os.Handler;
@@ -70,17 +70,16 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
     private final ReentrantLock engineInitLock = new ReentrantLock();
 
+    private long lastConfigModified = 0;
     private int volShan = 100;
-    private int speedShan = 50;
     private int volBurmese = 100;
-    private int speedBurmese = 50;
     private int volEnglish = 100;
-    private int speedEnglish = 50;
 
-    private void loadConfigDirectly() {
+    private void loadVolumeConfigOnly() {
         try {
             File file = new File(getFilesDir(), "tts_settings.txt");
-            if (file.exists()) {
+            if (file.exists() && file.lastModified() > lastConfigModified) {
+                lastConfigModified = file.lastModified();
                 FileInputStream fis = new FileInputStream(file);
                 byte[] bytes = new byte[(int) file.length()];
                 fis.read(bytes);
@@ -88,11 +87,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 String[] parts = new String(bytes).split(",");
                 if (parts.length >= 6) {
                     volShan = Integer.parseInt(parts[0].trim());
-                    speedShan = Integer.parseInt(parts[1].trim());
                     volBurmese = Integer.parseInt(parts[2].trim());
-                    speedBurmese = Integer.parseInt(parts[3].trim());
                     volEnglish = Integer.parseInt(parts[4].trim());
-                    speedEnglish = Integer.parseInt(parts[5].trim());
                 }
             }
         } catch (Exception e) {}
@@ -340,7 +336,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
 
         triggerKeepAlive();
-        loadConfigDirectly();
+        loadVolumeConfigOnly();
 
         List<TTSUtils.Chunk> chunks = null;
         try { chunks = TTSUtils.splitHelper(text); } catch (Exception e) {}
@@ -381,27 +377,22 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 try { configureEngineIfNeeded(targetEngine, chunk.lang); } catch (Exception e) {}
 
-                float finalEngineRate = talkBackRate;
-                float finalEngineVolume = 1.0f;
-                
+                float engineVolume = 1.0f;
                 if ("SHAN".equals(chunk.lang)) {
-                    finalEngineRate = talkBackRate * (speedShan / 50.0f);
-                    finalEngineVolume = volShan / 100.0f;
+                    engineVolume = volShan / 100.0f;
                 } else if ("MYANMAR".equals(chunk.lang)) {
-                    finalEngineRate = talkBackRate * (speedBurmese / 50.0f);
-                    finalEngineVolume = volBurmese / 100.0f;
+                    engineVolume = volBurmese / 100.0f;
                 } else {
-                    finalEngineRate = talkBackRate * (speedEnglish / 50.0f);
-                    finalEngineVolume = volEnglish / 100.0f;
+                    engineVolume = volEnglish / 100.0f;
                 }
 
                 try {
-                    targetEngine.setSpeechRate(finalEngineRate);
+                    targetEngine.setSpeechRate(talkBackRate);
                     targetEngine.setPitch(talkBackPitch);
                 } catch (Exception e) {}
                 
                 Bundle params = new Bundle();
-                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, finalEngineVolume);
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, engineVolume);
                 params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
                 
                 AudioAttributes audioAttributes = new AudioAttributes.Builder()
