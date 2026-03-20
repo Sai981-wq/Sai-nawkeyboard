@@ -191,20 +191,23 @@ public class MainActivity extends Activity {
         SeekBar.OnSeekBarChangeListener listener = new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {}
+            
             @Override
             public void onStartTrackingTouch(SeekBar seekBar) {}
+            
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
                 int val = seekBar.getProgress();
                 String key = (seekBar == seekVol) ? volKey : speedKey;
                 prefs.edit().putInt(key, val).apply();
 
-                // Broadcast to update background Service immediately for TalkBack
-                Intent intent = new Intent("com.cherry.sme.tts.PREFS_UPDATED");
-                intent.setPackage(getPackageName()); // Explicit broadcast
-                intent.putExtra("key", key);
-                intent.putExtra("val", val);
-                sendBroadcast(intent);
+                try {
+                    Intent intent = new Intent(MainActivity.this, AutoTTSManagerService.class);
+                    intent.setAction("UPDATE_CONFIG");
+                    intent.putExtra("key", key);
+                    intent.putExtra("val", val);
+                    startService(intent);
+                } catch (Exception e) {}
             }
         };
 
