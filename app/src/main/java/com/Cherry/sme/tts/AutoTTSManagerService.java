@@ -4,10 +4,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
-import android.media.AudioAttributes;
 import android.media.AudioFormat;
-import android.media.AudioManager;
-import android.media.AudioTrack;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -20,6 +17,8 @@ import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
 import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
+import java.io.File;
+import java.io.FileInputStream;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -59,21 +58,36 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private HandlerThread watchdogThread;
     private Handler watchdogHandler;
 
-    private final AtomicBoolean isKeepAliveRunning = new AtomicBoolean(false);
-    private volatile long lastSpeechFinishedTime = 0;
-    private Thread keepAliveThread;
-    private static final long KEEP_ALIVE_TIMEOUT_MS = 4000;
-    private final ReentrantLock keepAliveLock = new ReentrantLock();
-
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
     private final ReentrantLock engineInitLock = new ReentrantLock();
 
-    private volatile int prefVolShan = 100;
-    private volatile int prefSpeedShan = 50;
-    private volatile int prefVolMyanmar = 100;
-    private volatile int prefSpeedMyanmar = 50;
-    private volatile int prefVolEnglish = 100;
-    private volatile int prefSpeedEnglish = 50;
+    private int volShan = 100;
+    private int speedShan = 50;
+    private int volBurmese = 100;
+    private int speedBurmese = 50;
+    private int volEnglish = 100;
+    private int speedEnglish = 50;
+
+    private void loadConfigFromFile() {
+        try {
+            File file = new File(getFilesDir(), "tts_settings.txt");
+            if (file.exists()) {
+                FileInputStream fis = new FileInputStream(file);
+                byte[] bytes = new byte[(int) file.length()];
+                fis.read(bytes);
+                fis.close();
+                String[] parts = new String(bytes).split(",");
+                if (parts.length >= 6) {
+                    volShan = Integer.parseInt(parts[0].trim());
+                    speedShan = Integer.parseInt(parts[1].trim());
+                    volBurmese = Integer.parseInt(parts[2].trim());
+                    speedBurmese = Integer.parseInt(parts[3].trim());
+                    volEnglish = Integer.parseInt(parts[4].trim());
+                    speedEnglish = Integer.parseInt(parts[5].trim());
+                }
+            }
+        } catch (Exception e) {}
+    }
 
     private final UtteranceProgressListener globalListener = new UtteranceProgressListener() {
         @Override
@@ -101,13 +115,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
 
-        prefVolShan = prefs.getInt("pref_vol_shan", 100);
-        prefSpeedShan = prefs.getInt("pref_speed_shan", 50);
-        prefVolMyanmar = prefs.getInt("pref_vol_myanmar", 100);
-        prefSpeedMyanmar = prefs.getInt("pref_speed_myanmar", 50);
-        prefVolEnglish = prefs.getInt("pref_vol_english", 100);
-        prefSpeedEnglish = prefs.getInt("pref_speed_english", 50);
-
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
             cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CherrySME::CpuWakeLock");
@@ -121,21 +128,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         watchdogHandler = new Handler(watchdogThread.getLooper());
 
         initAllEngines();
-    }
-
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && "UPDATE_CONFIG".equals(intent.getAction())) {
-            String key = intent.getStringExtra("key");
-            int val = intent.getIntExtra("val", 50);
-            if ("pref_vol_shan".equals(key)) prefVolShan = val;
-            else if ("pref_speed_shan".equals(key)) prefSpeedShan = val;
-            else if ("pref_vol_myanmar".equals(key)) prefVolMyanmar = val;
-            else if ("pref_speed_myanmar".equals(key)) prefSpeedMyanmar = val;
-            else if ("pref_vol_english".equals(key)) prefVolEnglish = val;
-            else if ("pref_speed_english".equals(key)) prefSpeedEnglish = val;
-        }
-        return super.onStartCommand(intent, flags, startId);
     }
 
     private void initAllEngines() {
@@ -230,12 +222,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (counter.incrementAndGet() >= MAX_FAIL_BEFORE_REINIT) scheduleReinit(lang);
     }
 
-    private void recordSuccess(String lang) {
-        if ("SHAN".equals(lang)) shanFailCount.set(0);
-        else if ("MYANMAR".equals(lang)) burmeseFailCount.set(0);
-        else englishFailCount.set(0);
-    }
-
     private void configureEngineIfNeeded(RemoteTextToSpeech engine, String lang) {
         if (engine == null || isDestroyed.get()) return;
         try {
@@ -266,53 +252,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         } catch (Exception e) {}
     }
 
-    private void triggerKeepAlive() {
-        keepAliveLock.lock();
-        try {
-            lastSpeechFinishedTime = System.currentTimeMillis();
-            if (!isKeepAliveRunning.get() && !isDestroyed.get()) {
-                isKeepAliveRunning.set(true);
-                keepAliveThread = new Thread(() -> {
-                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
-                    int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-                    if (minBufferSize <= 0) minBufferSize = 32000;
-                    byte[] silenceBuffer = new byte[minBufferSize];
-                    for (int i = 0; i < silenceBuffer.length; i += 2) {
-                        silenceBuffer[i] = 1;
-                        silenceBuffer[i + 1] = 0;
-                    }
-                    AudioTrack keepAliveTrack = null;
-                    try {
-                        keepAliveTrack = new AudioTrack(
-                                new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build(),
-                                new AudioFormat.Builder().setSampleRate(16000).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build(),
-                                minBufferSize, AudioTrack.MODE_STREAM, AudioManager.AUDIO_SESSION_ID_GENERATE
-                        );
-                        if (keepAliveTrack.getState() == AudioTrack.STATE_UNINITIALIZED) return;
-                        keepAliveTrack.setVolume(AudioTrack.getMaxVolume());
-                        keepAliveTrack.play();
-                        while (isKeepAliveRunning.get() && !isDestroyed.get()) {
-                            keepAliveTrack.write(silenceBuffer, 0, silenceBuffer.length);
-                            if (System.currentTimeMillis() - lastSpeechFinishedTime > KEEP_ALIVE_TIMEOUT_MS) break;
-                        }
-                    } catch (Exception e) {
-                    } finally {
-                        isKeepAliveRunning.set(false);
-                        try {
-                            if (keepAliveTrack != null && keepAliveTrack.getState() != AudioTrack.STATE_UNINITIALIZED) {
-                                if (keepAliveTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) keepAliveTrack.stop();
-                                keepAliveTrack.release();
-                            }
-                        } catch (Exception e) {}
-                    }
-                });
-                keepAliveThread.start();
-            }
-        } finally {
-            keepAliveLock.unlock();
-        }
-    }
-
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         if (isDestroyed.get()) {
@@ -326,36 +265,23 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         if (text == null || text.trim().isEmpty()) {
             safeCallbackDone(callback);
-            releaseWakeLocks();
             return;
         }
 
         if (cpuWakeLock != null) { try { cpuWakeLock.acquire(60000); } catch (Exception e) {} }
-        if (screenWakeLock != null) {
-            try {
-                long timeoutMs = Math.min(2000 + (text.length() * 50L), 30000);
-                screenWakeLock.acquire(timeoutMs);
-            } catch (Exception e) {}
-        }
+        
+        loadConfigFromFile();
 
-        triggerKeepAlive();
         List<TTSUtils.Chunk> chunks = null;
         try { chunks = TTSUtils.splitHelper(text); } catch (Exception e) {}
 
         if (chunks == null || chunks.isEmpty()) {
             safeCallbackDone(callback);
-            lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLocks();
             return;
         }
 
         Bundle params = new Bundle();
-        AudioAttributes audioAttributes = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build();
-        params.putParcelable("audioAttributes", audioAttributes);
-
         float baseRate = 1.0f;
         float pitch = 1.0f;
         try {
@@ -363,10 +289,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
             pitch = request.getPitch() / 100.0f;
         } catch (Exception e) {}
 
+        boolean isCallbackStarted = false;
+
         try {
             for (int i = 0; i < chunks.size(); i++) {
                 if (stopRequested.get() || isDestroyed.get()) break;
-                lastSpeechFinishedTime = System.currentTimeMillis();
 
                 TTSUtils.Chunk chunk = null;
                 try { chunk = chunks.get(i); } catch (Exception e) { continue; }
@@ -388,67 +315,96 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 float engineRate = baseRate;
                 float engineVolume = 1.0f;
                 if ("SHAN".equals(chunk.lang)) {
-                    engineRate *= (prefSpeedShan / 50.0f);
-                    engineVolume = prefVolShan / 100.0f;
+                    engineRate *= (speedShan / 50.0f);
+                    engineVolume = volShan / 100.0f;
                 } else if ("MYANMAR".equals(chunk.lang)) {
-                    engineRate *= (prefSpeedMyanmar / 50.0f);
-                    engineVolume = prefVolMyanmar / 100.0f;
+                    engineRate *= (speedBurmese / 50.0f);
+                    engineVolume = volBurmese / 100.0f;
                 } else {
-                    engineRate *= (prefSpeedEnglish / 50.0f);
-                    engineVolume = prefVolEnglish / 100.0f;
+                    engineRate *= (speedEnglish / 50.0f);
+                    engineVolume = volEnglish / 100.0f;
                 }
 
                 try {
                     targetEngine.setSpeechRate(engineRate);
                     targetEngine.setPitch(pitch);
                 } catch (Exception e) {}
-                
-                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, engineVolume);
 
+                File tempWav = new File(getCacheDir(), "temp_chunk_" + System.nanoTime() + ".wav");
                 String utteranceId = "utt_" + System.nanoTime();
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
-                CountDownLatch latch = new CountDownLatch(1);
-                utteranceLatches.put(utteranceId, latch);
+                CountDownLatch fileLatch = new CountDownLatch(1);
+                utteranceLatches.put(utteranceId, fileLatch);
 
                 int result = TextToSpeech.ERROR;
                 try {
-                    result = targetEngine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
+                    result = targetEngine.synthesizeToFile(chunk.text, params, tempWav, utteranceId);
                 } catch (Exception e) {
                     utteranceLatches.remove(utteranceId);
                     recordFailure(chunk.lang);
                     continue;
                 }
 
-                if (result == TextToSpeech.ERROR) {
-                    utteranceLatches.remove(utteranceId);
-                    recordFailure(chunk.lang);
-                    continue;
-                }
-
-                try {
-                    long timeout = 10000 + (chunk.text.length() * 250L);
-                    boolean done = latch.await(timeout, TimeUnit.MILLISECONDS);
-                    if (!done && !stopRequested.get() && !isDestroyed.get()) {
-                        utteranceLatches.remove(utteranceId);
-                        try { if (targetEngine != null) targetEngine.stop(); } catch (Exception e) {}
-                        recordFailure(chunk.lang);
-                    } else if (done) {
-                        recordSuccess(chunk.lang);
+                if (result == TextToSpeech.SUCCESS) {
+                    try {
+                        fileLatch.await(10000, TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        stopRequested.set(true);
                     }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    stopRequested.set(true);
-                }
 
+                    if (tempWav.exists() && tempWav.length() > 44 && !stopRequested.get()) {
+                        try {
+                            FileInputStream fis = new FileInputStream(tempWav);
+                            byte[] header = new byte[100];
+                            fis.read(header);
+                            
+                            int sampleRate = (header[24] & 0xFF) | ((header[25] & 0xFF) << 8) | ((header[26] & 0xFF) << 16) | ((header[27] & 0xFF) << 24);
+                            
+                            int dataOffset = 44;
+                            for (int h = 0; h < header.length - 4; h++) {
+                                if (header[h] == 'd' && header[h+1] == 'a' && header[h+2] == 't' && header[h+3] == 'a') {
+                                    dataOffset = h + 8;
+                                    break;
+                                }
+                            }
+
+                            if (!isCallbackStarted) {
+                                callback.start(sampleRate, AudioFormat.ENCODING_PCM_16BIT, 1);
+                                isCallbackStarted = true;
+                            }
+
+                            fis.close();
+                            fis = new FileInputStream(tempWav);
+                            fis.skip(dataOffset);
+
+                            byte[] buffer = new byte[4096];
+                            int bytesRead;
+                            while ((bytesRead = fis.read(buffer)) != -1 && !stopRequested.get()) {
+                                if (engineVolume != 1.0f) {
+                                    for (int j = 0; j < bytesRead - 1; j += 2) {
+                                        short sample = (short) ((buffer[j] & 0xFF) | (buffer[j+1] << 8));
+                                        float newSample = sample * engineVolume;
+                                        if (newSample > 32767) newSample = 32767;
+                                        if (newSample < -32768) newSample = -32768;
+                                        buffer[j] = (byte) ((int)newSample & 0xFF);
+                                        buffer[j+1] = (byte) (((int)newSample >> 8) & 0xFF);
+                                    }
+                                }
+                                callback.audioAvailable(buffer, 0, bytesRead);
+                            }
+                            fis.close();
+                        } catch (Exception e) {}
+                        tempWav.delete();
+                    }
+                }
+                
                 if (stopRequested.get() || isDestroyed.get()) {
-                    try { if (targetEngine != null) targetEngine.stop(); } catch (Exception e) {}
                     break;
                 }
             }
         } catch (Exception e) {
         } finally {
             safeCallbackDone(callback);
-            lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLocks();
         }
     }
@@ -528,11 +484,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     public void onDestroy() {
         isDestroyed.set(true);
         stopRequested.set(true);
-        isKeepAliveRunning.set(false);
-        if (keepAliveThread != null) {
-            keepAliveThread.interrupt();
-            try { keepAliveThread.join(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        }
         shutdownEngines();
         releaseWakeLocks();
         if (watchdogThread != null) {
