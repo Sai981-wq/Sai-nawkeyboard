@@ -340,7 +340,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         }
 
         triggerKeepAlive();
-        
         loadConfigDirectly();
 
         List<TTSUtils.Chunk> chunks = null;
@@ -352,6 +351,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
             releaseWakeLocks();
             return;
         }
+
+        float talkBackRate = 1.0f;
+        float talkBackPitch = 1.0f;
+        try {
+            talkBackRate = request.getSpeechRate() / 100.0f;
+            talkBackPitch = request.getPitch() / 100.0f;
+        } catch (Exception e) {}
 
         try {
             for (int i = 0; i < chunks.size(); i++) {
@@ -375,25 +381,34 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 try { configureEngineIfNeeded(targetEngine, chunk.lang); } catch (Exception e) {}
 
-                float engineRate = 1.0f;
-                float engineVolume = 1.0f;
+                float finalEngineRate = talkBackRate;
+                float finalEngineVolume = 1.0f;
+                
                 if ("SHAN".equals(chunk.lang)) {
-                    engineRate = speedShan / 50.0f;
-                    engineVolume = volShan / 100.0f;
+                    finalEngineRate = talkBackRate * (speedShan / 50.0f);
+                    finalEngineVolume = volShan / 100.0f;
                 } else if ("MYANMAR".equals(chunk.lang)) {
-                    engineRate = speedBurmese / 50.0f;
-                    engineVolume = volBurmese / 100.0f;
+                    finalEngineRate = talkBackRate * (speedBurmese / 50.0f);
+                    finalEngineVolume = volBurmese / 100.0f;
                 } else {
-                    engineRate = speedEnglish / 50.0f;
-                    engineVolume = volEnglish / 100.0f;
+                    finalEngineRate = talkBackRate * (speedEnglish / 50.0f);
+                    finalEngineVolume = volEnglish / 100.0f;
                 }
 
                 try {
-                    targetEngine.setSpeechRate(engineRate);
+                    targetEngine.setSpeechRate(finalEngineRate);
+                    targetEngine.setPitch(talkBackPitch);
                 } catch (Exception e) {}
                 
                 Bundle params = new Bundle();
-                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, engineVolume);
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, finalEngineVolume);
+                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
+                
+                AudioAttributes audioAttributes = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build();
+                params.putParcelable("audioAttributes", audioAttributes);
 
                 String utteranceId = "utt_" + System.nanoTime();
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
