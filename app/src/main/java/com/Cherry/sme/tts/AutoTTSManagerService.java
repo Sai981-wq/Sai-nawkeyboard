@@ -70,7 +70,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private final ConcurrentHashMap<String, CountDownLatch> utteranceLatches = new ConcurrentHashMap<>();
     private final ReentrantLock engineInitLock = new ReentrantLock();
 
-    private long lastConfigModified = 0;
     private int volShan = 100;
     private int speedShan = 50;
     private int volBurmese = 100;
@@ -78,11 +77,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private int volEnglish = 100;
     private int speedEnglish = 50;
 
-    private void loadConfigFromFile() {
+    private void loadConfigDirectly() {
         try {
             File file = new File(getFilesDir(), "tts_settings.txt");
-            if (file.exists() && file.lastModified() > lastConfigModified) {
-                lastConfigModified = file.lastModified();
+            if (file.exists()) {
                 FileInputStream fis = new FileInputStream(file);
                 byte[] bytes = new byte[(int) file.length()];
                 fis.read(bytes);
@@ -125,8 +123,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
         super.onCreate();
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
-
-        loadConfigFromFile();
 
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
@@ -345,7 +341,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         triggerKeepAlive();
         
-        loadConfigFromFile();
+        loadConfigDirectly();
 
         List<TTSUtils.Chunk> chunks = null;
         try { chunks = TTSUtils.splitHelper(text); } catch (Exception e) {}
@@ -356,20 +352,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
             releaseWakeLocks();
             return;
         }
-
-        Bundle params = new Bundle();
-        AudioAttributes audioAttributes = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build();
-        params.putParcelable("audioAttributes", audioAttributes);
-
-        float baseRate = 1.0f;
-        float pitch = 1.0f;
-        try {
-            baseRate = request.getSpeechRate() / 100.0f;
-            pitch = request.getPitch() / 100.0f;
-        } catch (Exception e) {}
 
         try {
             for (int i = 0; i < chunks.size(); i++) {
@@ -393,24 +375,24 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
                 try { configureEngineIfNeeded(targetEngine, chunk.lang); } catch (Exception e) {}
 
-                float engineRate = baseRate;
+                float engineRate = 1.0f;
                 float engineVolume = 1.0f;
                 if ("SHAN".equals(chunk.lang)) {
-                    engineRate *= (speedShan / 50.0f);
+                    engineRate = speedShan / 50.0f;
                     engineVolume = volShan / 100.0f;
                 } else if ("MYANMAR".equals(chunk.lang)) {
-                    engineRate *= (speedBurmese / 50.0f);
+                    engineRate = speedBurmese / 50.0f;
                     engineVolume = volBurmese / 100.0f;
                 } else {
-                    engineRate *= (speedEnglish / 50.0f);
+                    engineRate = speedEnglish / 50.0f;
                     engineVolume = volEnglish / 100.0f;
                 }
 
                 try {
                     targetEngine.setSpeechRate(engineRate);
-                    targetEngine.setPitch(pitch);
                 } catch (Exception e) {}
                 
+                Bundle params = new Bundle();
                 params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, engineVolume);
 
                 String utteranceId = "utt_" + System.nanoTime();
