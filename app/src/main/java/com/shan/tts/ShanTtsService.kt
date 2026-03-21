@@ -186,11 +186,11 @@ class ShanTtsService : TextToSpeechService() {
 
                 var pauseDuration = 0
                 when (unit) {
-                    "[NEWLINE]" -> pauseDuration = 550
-                    "။", "." -> pauseDuration = 500
-                    "?" -> pauseDuration = 550
-                    "၊", ",", ";" -> pauseDuration = 280
-                    "[SPACE]" -> pauseDuration = 160
+                    "[NEWLINE]" -> pauseDuration = 800
+                    "။", "." -> pauseDuration = 600
+                    "?" -> pauseDuration = 600
+                    "၊", ",", ";" -> pauseDuration = 300
+                    "[SPACE]" -> pauseDuration = 200
                 }
 
                 if (pauseDuration > 0) {
@@ -208,9 +208,13 @@ class ShanTtsService : TextToSpeechService() {
                 val encodedBytes = readAudioFromBin(baseName)
 
                 if (encodedBytes != null && encodedBytes.isNotEmpty()) {
-                    val pcmShorts = decodeOpus(encodedBytes, encodedBytes.size)
+                    val originalPcm = decodeOpus(encodedBytes, encodedBytes.size)
 
-                    if (pcmShorts != null && pcmShorts.isNotEmpty()) {
+                    if (originalPcm != null && originalPcm.isNotEmpty()) {
+                        val pauseSamples = (OUTPUT_SAMPLE_RATE * 25) / 1000
+                        val pcmShorts = ShortArray(originalPcm.size + pauseSamples)
+                        System.arraycopy(originalPcm, 0, pcmShorts, 0, originalPcm.size)
+
                         if (prevTail != null && prevTail.isNotEmpty()) {
                             val crossfadeLen = min(CROSSFADE_SAMPLES, min(prevTail.size, pcmShorts.size))
                             if (crossfadeLen > 0) {
