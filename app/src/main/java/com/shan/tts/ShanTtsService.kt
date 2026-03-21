@@ -367,7 +367,7 @@ class ShanTtsService : TextToSpeechService() {
         while (sonicSamplesAvailable(streamId) > 0 && !isStopped) {
             val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
             if (readCount > 0) {
-                applyGain(outputBuffer, readCount, 1.0f)
+                applyGain(outputBuffer, readCount, 1.8f)
                 val byteData = shortsToBytes(outputBuffer, readCount)
                 callback.audioAvailable(byteData, 0, byteData.size)
             }
