@@ -46,6 +46,27 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.accessibilityManager = (AccessibilityManager) view.getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
     }
 
+    @Override
+    public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfoCompat info) {
+        super.onInitializeAccessibilityNodeInfo(host, info);
+        info.addAction(AccessibilityNodeInfoCompat.ACTION_NEXT_AT_MOVEMENT_GRANULARITY);
+        info.addAction(AccessibilityNodeInfoCompat.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY);
+        info.setMovementGranularities(AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER | AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_WORD);
+    }
+
+    @Override
+    public boolean performAccessibilityAction(View host, int action, Bundle args) {
+        if (action == AccessibilityNodeInfoCompat.ACTION_NEXT_AT_MOVEMENT_GRANULARITY || 
+            action == AccessibilityNodeInfoCompat.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY) {
+            if (listener != null) {
+                boolean isForward = (action == AccessibilityNodeInfoCompat.ACTION_NEXT_AT_MOVEMENT_GRANULARITY);
+                listener.onCursorMove(isForward);
+                return true;
+            }
+        }
+        return super.performAccessibilityAction(host, action, args);
+    }
+
     public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
         this.currentKeyboard = keyboard;
         this.isShanOrMyanmar = isShanOrMyanmar;

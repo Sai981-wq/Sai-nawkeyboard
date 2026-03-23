@@ -128,7 +128,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
             @Override
             public void onCursorMove(boolean isForward) {
-                sendDownUpKeyEvents(isForward ? android.view.KeyEvent.KEYCODE_DPAD_RIGHT : android.view.KeyEvent.KEYCODE_DPAD_LEFT);
+                InputConnection ic = getCurrentInputConnection();
+                if (ic != null) {
+                    int code = isForward ? android.view.KeyEvent.KEYCODE_DPAD_RIGHT : android.view.KeyEvent.KEYCODE_DPAD_LEFT;
+                    ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code));
+                    ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code));
+                }
             }
         }, phoneticManager, emojiManager);
         
@@ -508,8 +513,25 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
     @Override public void onPress(int p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); } 
     @Override public void onRelease(int p) { touchHandler.cancelAllLongPress(); }
-    @Override public void swipeLeft() { sendDownUpKeyEvents(android.view.KeyEvent.KEYCODE_DPAD_LEFT); } 
-    @Override public void swipeRight() { sendDownUpKeyEvents(android.view.KeyEvent.KEYCODE_DPAD_RIGHT); } 
+    
+    @Override 
+    public void swipeLeft() { 
+        InputConnection ic = getCurrentInputConnection();
+        if (ic != null) {
+            ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_LEFT));
+            ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_DPAD_LEFT));
+        }
+    } 
+    
+    @Override 
+    public void swipeRight() { 
+        InputConnection ic = getCurrentInputConnection();
+        if (ic != null) {
+            ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_RIGHT));
+            ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_DPAD_RIGHT));
+        }
+    } 
+    
     @Override public void swipeDown() {} 
     @Override public void swipeUp() {}
     
