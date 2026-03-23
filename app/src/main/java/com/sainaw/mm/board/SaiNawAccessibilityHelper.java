@@ -32,7 +32,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
-        void onCursorMove(boolean isForward, int granularity);
+        String onCursorMoveAndGetText(boolean isForward, int granularity);
     }
 
     public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, 
@@ -61,9 +61,23 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             if (listener != null) {
                 boolean isForward = (action == AccessibilityNodeInfoCompat.ACTION_NEXT_AT_MOVEMENT_GRANULARITY);
                 int granularity = args != null ? args.getInt(AccessibilityNodeInfoCompat.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER) : AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER;
-                listener.onCursorMove(isForward, granularity);
-                return true;
+                
+                String traversed = listener.onCursorMoveAndGetText(isForward, granularity);
+                if (traversed != null && !traversed.isEmpty()) {
+                    AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY);
+                    event.setPackageName(host.getContext().getPackageName());
+                    event.setClassName(host.getClass().getName());
+                    event.setSource(host);
+                    event.setMovementGranularity(granularity);
+                    event.setAction(action);
+                    event.getText().add(traversed);
+                    event.setFromIndex(0);
+                    event.setToIndex(traversed.length());
+                    host.getParent().requestSendAccessibilityEvent(host, event);
+                    return true;
+                }
             }
+            return false;
         }
         return super.performAccessibilityAction(host, action, args);
     }
@@ -203,9 +217,23 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 if (arguments != null) {
                     granularity = arguments.getInt(AccessibilityNodeInfoCompat.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER);
                 }
-                listener.onCursorMove(isForward, granularity);
-                return true;
+                
+                String traversed = listener.onCursorMoveAndGetText(isForward, granularity);
+                if (traversed != null && !traversed.isEmpty()) {
+                    AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY);
+                    event.setPackageName(hostView.getContext().getPackageName());
+                    event.setClassName(hostView.getClass().getName());
+                    event.setSource(hostView, virtualViewId);
+                    event.setMovementGranularity(granularity);
+                    event.setAction(action);
+                    event.getText().add(traversed);
+                    event.setFromIndex(0);
+                    event.setToIndex(traversed.length());
+                    hostView.getParent().requestSendAccessibilityEvent(hostView, event);
+                    return true;
+                }
             }
+            return false;
         }
         
         List<Keyboard.Key> keys = currentKeyboard.getKeys();

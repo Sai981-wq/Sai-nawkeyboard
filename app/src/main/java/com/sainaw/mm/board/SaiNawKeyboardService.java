@@ -128,8 +128,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
 
             @Override
-            public void onCursorMove(boolean isForward, int granularity) {
-                moveCursorNatively(isForward, granularity);
+            public String onCursorMoveAndGetText(boolean isForward, int granularity) {
+                return moveCursorNativelyAndGetText(isForward, granularity);
             }
         }, phoneticManager, emojiManager);
         
@@ -510,53 +510,56 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onPress(int p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); } 
     @Override public void onRelease(int p) { touchHandler.cancelAllLongPress(); }
     
-    @Override 
-    public void swipeLeft() { moveCursorNatively(false, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER); } 
+    @Override public void swipeLeft() {} 
+    @Override public void swipeRight() {} 
     
-    @Override 
-    public void swipeRight() { moveCursorNatively(true, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER); } 
-
-    private void moveCursorNatively(boolean isForward, int granularity) {
+    public String moveCursorNativelyAndGetText(boolean isForward, int granularity) {
         InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return;
+        if (ic == null) return null;
 
         android.view.inputmethod.ExtractedTextRequest request = new android.view.inputmethod.ExtractedTextRequest();
         android.view.inputmethod.ExtractedText extractedText = ic.getExtractedText(request, 0);
         
-        if (extractedText == null || extractedText.text == null) {
-            int code = isForward ? android.view.KeyEvent.KEYCODE_DPAD_RIGHT : android.view.KeyEvent.KEYCODE_DPAD_LEFT;
-            ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code));
-            ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code));
-            return;
-        }
+        if (extractedText == null || extractedText.text == null) return null;
 
         int currentPos = extractedText.selectionStart;
         String text = extractedText.text.toString();
         int newPos = currentPos;
+        String traversedText = null;
 
         if (granularity == AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_WORD) {
             if (isForward) {
                 newPos = text.indexOf(' ', currentPos);
                 if (newPos == -1) newPos = text.length();
-                else newPos++; 
+                else newPos++;
+                if (newPos > currentPos) traversedText = text.substring(currentPos, newPos);
             } else {
                 if (currentPos > 0) {
                     newPos = text.lastIndexOf(' ', currentPos - 2);
                     if (newPos == -1) newPos = 0;
                     else newPos++;
+                    if (currentPos > newPos) traversedText = text.substring(newPos, currentPos);
                 }
             }
         } else { 
             if (isForward) {
-                if (currentPos < text.length()) newPos = currentPos + 1;
+                if (currentPos < text.length()) {
+                    newPos = currentPos + 1;
+                    traversedText = text.substring(currentPos, newPos);
+                }
             } else {
-                if (currentPos > 0) newPos = currentPos - 1;
+                if (currentPos > 0) {
+                    newPos = currentPos - 1;
+                    traversedText = text.substring(newPos, currentPos);
+                }
             }
         }
 
         if (newPos != currentPos) {
             ic.setSelection(newPos, newPos);
+            return traversedText;
         }
+        return null;
     }
     
     @Override public void swipeDown() {} 
