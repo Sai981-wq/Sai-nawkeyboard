@@ -31,6 +31,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -127,8 +128,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
 
             @Override
-            public void onCursorMove(boolean isForward) {
-                moveCursorAndSpeak(isForward);
+            public void onCursorMove(boolean isForward, int granularity) {
+                moveCursorNatively(isForward, granularity);
             }
         }, phoneticManager, emojiManager);
         
@@ -510,26 +511,51 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onRelease(int p) { touchHandler.cancelAllLongPress(); }
     
     @Override 
-    public void swipeLeft() { moveCursorAndSpeak(false); } 
+    public void swipeLeft() { moveCursorNatively(false, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER); } 
     
     @Override 
-    public void swipeRight() { moveCursorAndSpeak(true); } 
+    public void swipeRight() { moveCursorNatively(true, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER); } 
 
-    private void moveCursorAndSpeak(boolean isForward) {
+    private void moveCursorNatively(boolean isForward, int granularity) {
         InputConnection ic = getCurrentInputConnection();
-        if (ic != null) {
+        if (ic == null) return;
+
+        android.view.inputmethod.ExtractedTextRequest request = new android.view.inputmethod.ExtractedTextRequest();
+        android.view.inputmethod.ExtractedText extractedText = ic.getExtractedText(request, 0);
+        
+        if (extractedText == null || extractedText.text == null) {
             int code = isForward ? android.view.KeyEvent.KEYCODE_DPAD_RIGHT : android.view.KeyEvent.KEYCODE_DPAD_LEFT;
             ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code));
             ic.sendKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code));
+            return;
+        }
 
-            handler.postDelayed(() -> {
-                CharSequence text = isForward ? ic.getTextBeforeCursor(1, 0) : ic.getTextAfterCursor(1, 0);
-                if (text != null && text.length() > 0) {
-                    announceText(text.toString());
-                } else {
-                    announceText(isForward ? "End" : "Start");
+        int currentPos = extractedText.selectionStart;
+        String text = extractedText.text.toString();
+        int newPos = currentPos;
+
+        if (granularity == AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_WORD) {
+            if (isForward) {
+                newPos = text.indexOf(' ', currentPos);
+                if (newPos == -1) newPos = text.length();
+                else newPos++; 
+            } else {
+                if (currentPos > 0) {
+                    newPos = text.lastIndexOf(' ', currentPos - 2);
+                    if (newPos == -1) newPos = 0;
+                    else newPos++;
                 }
-            }, 50);
+            }
+        } else { 
+            if (isForward) {
+                if (currentPos < text.length()) newPos = currentPos + 1;
+            } else {
+                if (currentPos > 0) newPos = currentPos - 1;
+            }
+        }
+
+        if (newPos != currentPos) {
+            ic.setSelection(newPos, newPos);
         }
     }
     

@@ -32,7 +32,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
-        void onCursorMove(boolean isForward);
+        void onCursorMove(boolean isForward, int granularity);
     }
 
     public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, 
@@ -60,7 +60,8 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             action == AccessibilityNodeInfoCompat.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY) {
             if (listener != null) {
                 boolean isForward = (action == AccessibilityNodeInfoCompat.ACTION_NEXT_AT_MOVEMENT_GRANULARITY);
-                listener.onCursorMove(isForward);
+                int granularity = args != null ? args.getInt(AccessibilityNodeInfoCompat.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER) : AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER;
+                listener.onCursorMove(isForward, granularity);
                 return true;
             }
         }
@@ -198,7 +199,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             action == AccessibilityNodeInfoCompat.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY) {
             if (listener != null) {
                 boolean isForward = (action == AccessibilityNodeInfoCompat.ACTION_NEXT_AT_MOVEMENT_GRANULARITY);
-                listener.onCursorMove(isForward);
+                int granularity = AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER;
+                if (arguments != null) {
+                    granularity = arguments.getInt(AccessibilityNodeInfoCompat.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER);
+                }
+                listener.onCursorMove(isForward, granularity);
                 return true;
             }
         }
