@@ -57,6 +57,12 @@
             android:parentActivityName=".SettingsActivity">
         </activity>
 
+        <activity
+            android:name=".FeedbackSettingsActivity"
+            android:label="Sound &amp; Vibration"
+            android:parentActivityName=".SettingsActivity">
+        </activity>
+
     </application>
 </manifest>
 

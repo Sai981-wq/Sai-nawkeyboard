@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<Keyboard xmlns:android="http://schemas.android.com/apk/res/android" android:keyWidth="33.329998%p" android:keyHeight="60.0dip" android:horizontalGap="0.0px" android:verticalGap="0.0px">
+<Keyboard xmlns:android="http://schemas.android.com/apk/res/android" 
+    android:keyWidth="33.329998%p" 
+    android:keyHeight="60.0dip" 
+    android:horizontalGap="0.0px" 
+    android:verticalGap="0.0px">
+
 	<Row>
 		<Key android:codes="49" android:keyEdgeFlags="left" android:keyLabel="1" />
 		<Key android:codes="50" android:keyLabel="2" />
@@ -21,8 +26,10 @@
 		<Key android:codes="-5" android:keyEdgeFlags="right" android:isRepeatable="true" android:keyLabel="⌫" />
 	</Row>
 	<Row>
-		<Key android:codes="-6" android:keyEdgeFlags="left" android:keyLabel="ABC" />
-		<Key android:codes="35" android:keyLabel="\#" />
-		<Key android:codes="-4" android:keyEdgeFlags="right" android:keyLabel="Enter" />
+		<Key android:codes="-6" android:keyEdgeFlags="left" android:keyWidth="25%p" android:keyLabel="ABC" />
+		<Key android:codes="43" android:keyWidth="25%p" android:keyLabel="+" />
+		<Key android:codes="35" android:keyWidth="25%p" android:keyLabel="\#" />
+		<Key android:codes="-4" android:keyEdgeFlags="right" android:keyWidth="25%p" android:keyLabel="Enter" />
 	</Row>
 </Keyboard>
+
