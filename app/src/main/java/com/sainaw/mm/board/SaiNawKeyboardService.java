@@ -22,10 +22,13 @@ import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.ExtractedText;
+import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -510,15 +513,52 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onPress(int p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); } 
     @Override public void onRelease(int p) { touchHandler.cancelAllLongPress(); }
     
-    @Override public void swipeLeft() {} 
-    @Override public void swipeRight() {} 
+    @Override 
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (isInputViewShown()) {
+            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                String text = moveCursorNativelyAndGetText(false, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER);
+                if (text != null) announceText(text);
+                else announceText("Start");
+                return true;
+            } else if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                String text = moveCursorNativelyAndGetText(true, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER);
+                if (text != null) announceText(text);
+                else announceText("End");
+                return true;
+            }
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override 
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (isInputViewShown() && (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            return true;
+        }
+        return super.onKeyUp(keyCode, event);
+    }
+
+    @Override 
+    public void swipeLeft() { 
+        String text = moveCursorNativelyAndGetText(false, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER); 
+        if (text != null) announceText(text);
+        else announceText("Start");
+    } 
+    
+    @Override 
+    public void swipeRight() { 
+        String text = moveCursorNativelyAndGetText(true, AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER); 
+        if (text != null) announceText(text);
+        else announceText("End");
+    } 
     
     public String moveCursorNativelyAndGetText(boolean isForward, int granularity) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return null;
 
-        android.view.inputmethod.ExtractedTextRequest request = new android.view.inputmethod.ExtractedTextRequest();
-        android.view.inputmethod.ExtractedText extractedText = ic.getExtractedText(request, 0);
+        ExtractedTextRequest request = new ExtractedTextRequest();
+        ExtractedText extractedText = ic.getExtractedText(request, 0);
         
         if (extractedText == null || extractedText.text == null) return null;
 
