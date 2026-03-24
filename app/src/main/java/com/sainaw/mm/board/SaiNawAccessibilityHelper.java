@@ -1,6 +1,7 @@
 package com.sainaw.mm.board;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Build;
@@ -289,33 +290,60 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     private void performLongPressFeedback() {
         if (vibrator == null || !vibrator.hasVibrator()) return;
+        SharedPreferences prefs = hostView.getContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
+        if (!prefs.getBoolean("vibrate_on", true)) return;
+        
+        int strength = prefs.getInt("vibrate_strength", 0);
+        long duration = 80;
+        int amplitude = VibrationEffect.DEFAULT_AMPLITUDE;
+        
+        if (strength == 1) { duration = 40; amplitude = 100; }
+        else if (strength == 2) { duration = 80; amplitude = 180; }
+        else if (strength == 3) { duration = 120; amplitude = 255; }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE));
+            if (strength == 0) vibrator.vibrate(VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE));
+            else vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
         } else {
-            vibrator.vibrate(80);
+            vibrator.vibrate(duration);
         }
     }
 
     private void forceHapticFeedback(int keyCode) {
         if (vibrator == null || !vibrator.hasVibrator()) return;
+        SharedPreferences prefs = hostView.getContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
+        if (!prefs.getBoolean("vibrate_on", true)) return;
+        
+        int strength = prefs.getInt("vibrate_strength", 0);
+        long duration = (keyCode == -5 || keyCode == 32 || keyCode == -4) ? 50 : 35;
+        int amplitude = (keyCode == -5 || keyCode == 32 || keyCode == -4) ? 255 : 180;
+        
+        if (strength == 1) { duration = 20; amplitude = 80; }
+        else if (strength == 2) { duration = 40; amplitude = 150; }
+        else if (strength == 3) { duration = 60; amplitude = 255; }
+        else { strength = 0; } 
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                int effectId = (keyCode == -5 || keyCode == 32 || keyCode == -4 || keyCode == 10) 
-                                ? VibrationEffect.EFFECT_HEAVY_CLICK : VibrationEffect.EFFECT_CLICK;
-                vibrator.vibrate(VibrationEffect.createPredefined(effectId));
+                if (strength == 0) {
+                    int effectId = (keyCode == -5 || keyCode == 32 || keyCode == -4 || keyCode == 10) 
+                                    ? VibrationEffect.EFFECT_HEAVY_CLICK : VibrationEffect.EFFECT_CLICK;
+                    vibrator.vibrate(VibrationEffect.createPredefined(effectId));
+                } else {
+                    vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
+                }
             } catch (Exception e) {
-                vibrator.vibrate(VibrationEffect.createOneShot(40, 200));
+                vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
-                long duration = (keyCode == -5 || keyCode == 32 || keyCode == -4) ? 50 : 35;
-                int amplitude = (keyCode == -5 || keyCode == 32 || keyCode == -4) ? 255 : 180;
-                vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
+                if (strength == 0) vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
+                else vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
             } catch (Exception e) {
-                vibrator.vibrate(40);
+                vibrator.vibrate(duration);
             }
         } else {
-            vibrator.vibrate(40);
+            vibrator.vibrate(duration);
         }
     }
 
@@ -342,4 +370,3 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         return label != null ? label : "Unlabeled Key";
     }
 }
-
