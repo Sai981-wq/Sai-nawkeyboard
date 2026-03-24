@@ -306,6 +306,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     }
                     if (useSmartEcho) announceText("Enter");
                     saveWordAndReset();
+                    
+                    if (layoutManager.isSymbols || layoutManager.isEmoji) {
+                        layoutManager.isSymbols = false;
+                        layoutManager.isEmoji = false;
+                        layoutManager.updateKeyboardLayout();
+                        updateHelperState();
+                    }
                     break;
 
                 case 32: 
@@ -316,6 +323,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         else announceText("Space");
                     }
                     saveWordAndReset();
+                    
+                    if (layoutManager.isSymbols || layoutManager.isEmoji) {
+                        layoutManager.isSymbols = false;
+                        layoutManager.isEmoji = false;
+                        layoutManager.updateKeyboardLayout();
+                        updateHelperState();
+                    }
                     break;
 
                 default: 
