@@ -1,6 +1,7 @@
 package com.sainaw.mm.board;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
@@ -30,6 +31,7 @@ public class SaiNawTouchHandler {
     private final Runnable emojiLongPressTask;
     private final Runnable deleteStartTask;
     private final Runnable deleteLoopTask;
+    private final Runnable enterLongPressTask;
 
     public SaiNawTouchHandler(SaiNawKeyboardService service,
                               SaiNawLayoutManager layoutManager,
@@ -54,6 +56,14 @@ public class SaiNawTouchHandler {
             feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
             layoutManager.updateKeyboardLayout();
             service.announceText("Shift Locked");
+        };
+
+        this.enterLongPressTask = () -> {
+            isLongPressHandled = true;
+            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_LONG_PRESS);
+            Intent intent = new Intent(service, SettingsActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            service.startActivity(intent);
         };
 
         this.emojiLongPressTask = () -> {
@@ -122,6 +132,7 @@ public class SaiNawTouchHandler {
                         if (code == 32) handler.postDelayed(spaceLongPressTask, 1500);
                         else if (code == -5) handler.postDelayed(deleteStartTask, 1200);
                         else if (code == -1) handler.postDelayed(shiftLongPressTask, 1200);
+                        else if (code == -4) handler.postDelayed(enterLongPressTask, 3000);
                         else {
                             int resolvedEmojiCode = resolveEmojiCode(key);
                             if (resolvedEmojiCode != 0) {
@@ -178,6 +189,7 @@ public class SaiNawTouchHandler {
         handler.removeCallbacks(deleteLoopTask);
         handler.removeCallbacks(shiftLongPressTask);
         handler.removeCallbacks(emojiLongPressTask);
+        handler.removeCallbacks(enterLongPressTask);
     }
 
     public void reset() {
@@ -221,3 +233,4 @@ public class SaiNawTouchHandler {
         return (dx * dx) + (dy * dy);
     }
 }
+

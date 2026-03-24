@@ -57,25 +57,22 @@
         <TextView android:id="@+id/tv_sound_volume_val" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Normal" android:textSize="14sp" android:textColor="#888888" android:layout_marginTop="4dp"/>
     </LinearLayout>
 
-    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#EEEEEE" android:layout_marginBottom="20dp"/>
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#EEEEEE"/>
 
-    <Button
-        android:id="@+id/btn_import_sound_zip"
+    <LinearLayout
+        android:id="@+id/layout_sound_pack"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Import Custom Sounds (.zip)"
-        android:padding="12dp"
-        android:layout_marginBottom="10dp"/>
+        android:orientation="vertical"
+        android:padding="15dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:background="?attr/selectableItemBackground">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Keyboard Sound Pack" android:textSize="18sp" android:textColor="#000000"/>
+        <TextView android:id="@+id/tv_sound_pack_val" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="System Default" android:textSize="14sp" android:textColor="#2196F3" android:layout_marginTop="4dp"/>
+    </LinearLayout>
 
-    <Button
-        android:id="@+id/btn_reset_sound"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Use System Default Sound"
-        android:textColor="#F44336"
-        android:backgroundTint="#FFEBEE"
-        style="@style/Widget.AppCompat.Button.Borderless"
-        android:padding="12dp"/>
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#EEEEEE"/>
 
 </LinearLayout>
 

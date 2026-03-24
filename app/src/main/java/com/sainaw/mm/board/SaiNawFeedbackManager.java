@@ -26,7 +26,7 @@ public class SaiNawFeedbackManager {
     private boolean soundOn;
     private int vibrateStrength;
     private int soundVolume;
-    private boolean useCustomSounds;
+    private String selectedSoundPack;
 
     public SaiNawFeedbackManager(Context context) {
         this.context = context;
@@ -52,12 +52,10 @@ public class SaiNawFeedbackManager {
         soundOn = prefs.getBoolean("sound_on", false);
         vibrateStrength = prefs.getInt("vibrate_strength", 0);
         soundVolume = prefs.getInt("sound_volume", 1);
-        boolean newUseCustom = prefs.getBoolean("use_custom_sounds", false);
+        String newPack = prefs.getString("selected_sound_pack", "System Default");
         
-        if (newUseCustom != useCustomSounds) {
-            useCustomSounds = newUseCustom;
-            loadCustomSounds();
-        } else if (useCustomSounds && soundMap.isEmpty()) {
+        if (selectedSoundPack == null || !selectedSoundPack.equals(newPack)) {
+            selectedSoundPack = newPack;
             loadCustomSounds();
         }
     }
@@ -67,9 +65,9 @@ public class SaiNawFeedbackManager {
             for (int id : soundMap.values()) soundPool.unload(id);
         }
         soundMap.clear();
-        if (!useCustomSounds) return;
+        if (selectedSoundPack == null || selectedSoundPack.equals("System Default")) return;
 
-        File dir = new File(context.getFilesDir(), "custom_sounds");
+        File dir = new File(new File(context.getFilesDir(), "custom_sound_packs"), selectedSoundPack);
         if (dir.exists() && dir.isDirectory()) {
             File[] files = dir.listFiles();
             if (files != null) {
@@ -115,7 +113,7 @@ public class SaiNawFeedbackManager {
 
         float vol = (soundVolume == 0) ? 0.3f : ((soundVolume == 2) ? 1.0f : 0.6f);
 
-        if (useCustomSounds && !soundMap.isEmpty() && soundPool != null) {
+        if (!"System Default".equals(selectedSoundPack) && !soundMap.isEmpty() && soundPool != null) {
             String keyStr = String.valueOf((char) primaryCode);
             if (primaryCode == 32) keyStr = "space";
             else if (primaryCode == -5) keyStr = "delete";
