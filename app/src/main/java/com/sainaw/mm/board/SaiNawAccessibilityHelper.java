@@ -198,8 +198,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         String description = getKeyDescription(key);
         
         if (currentLanguageId == 2 && isShanPhoneticEnabled && !isEnglishText(description)) {
-            node.setContentDescription("\u200B");
-            node.setText("\u200B");
+            node.setContentDescription(" ");
         } else {
             node.setContentDescription(description);
         }
@@ -229,22 +228,14 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     @Override
     protected void onPopulateEventForVirtualView(int virtualViewId, @NonNull AccessibilityEvent event) {
         super.onPopulateEventForVirtualView(virtualViewId, event);
-        
-        if (currentLanguageId == 2 && isShanPhoneticEnabled) {
-            Keyboard.Key key = null;
-            if (currentKeyboard != null && currentKeyboard.getKeys() != null && virtualViewId >= 0 && virtualViewId < currentKeyboard.getKeys().size()) {
-                key = currentKeyboard.getKeys().get(virtualViewId);
-            }
-            if (key != null) {
-                String textToSpeak = getKeyDescription(key);
-                if (!isEnglishText(textToSpeak)) {
-                    event.getText().clear();
-                    event.setContentDescription("\u200B");
+        if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
+            if (currentLanguageId == 2 && isShanPhoneticEnabled) {
+                if (currentKeyboard != null && currentKeyboard.getKeys() != null && virtualViewId >= 0 && virtualViewId < currentKeyboard.getKeys().size()) {
+                    Keyboard.Key key = currentKeyboard.getKeys().get(virtualViewId);
+                    String textToSpeak = getKeyDescription(key);
                     
-                    if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
-                        if (listener != null) {
-                            listener.onCustomAnnounce(textToSpeak);
-                        }
+                    if (!isEnglishText(textToSpeak) && listener != null) {
+                        listener.onCustomAnnounce(textToSpeak);
                     }
                 }
             }
