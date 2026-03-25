@@ -242,14 +242,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (shanTts != null) {
             shanTts.stop();
         }
-        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-            accessibilityManager.interrupt();
-        }
     }
 
     public void handleInput(int primaryCode, Keyboard.Key key) {
-        
-        // 💡 လက်ကြွ (စာရိုက်) လိုက်တာနဲ့ Hover တုန်းက ထွက်နေတဲ့ ရှမ်းအသံကို ချက်ချင်း ပါးစပ်ပိတ်ပစ်မယ့် ကုဒ်
+        // 💡 လက်ကြွလိုက်သည်နှင့် Hover လုပ်နေသော Shan TTS အသံကို ချက်ချင်း ပါးစပ်ပိတ်ပစ်ပါမည်
         if (shanTts != null) {
             shanTts.stop();
         }
@@ -273,24 +269,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     CharSequence selectedText = ic.getSelectedText(0);
                     if (selectedText != null && selectedText.length() > 0) {
                         ic.commitText("", 1);
-                        if (useSmartEcho) announceText("Deleted selected text");
                     } else if (!textProcessor.handleCustomBackspace(ic)) {
                         CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
                         if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
                             ic.deleteSurroundingText(1, 0);
                         }
-                        CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
                         ic.deleteSurroundingText(1, 0);
-                        if (useSmartEcho) {
-                            if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
-                            else announceText("Delete");
-                        }
-                    } else {
-                        if (useSmartEcho) {
-                            announceText("Deleted");
-                        }
                     }
-                    
                     if (currentWord.length() > 0) {
                         currentWord.deleteCharAt(currentWord.length() - 1);
                         triggerCandidateUpdate(50);
@@ -363,7 +348,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     } else {
                         ic.commitText("\n", 1);
                     }
-                    if (useSmartEcho) announceText("Enter");
                     saveWordAndReset();
                     
                     if (layoutManager.isSymbols || layoutManager.isEmoji) {
@@ -376,11 +360,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 case 32: 
                     ic.commitText(" ", 1);
-                    if (useSmartEcho) {
-                        String lastWord = getLastWordForEcho();
-                        if (lastWord != null && !lastWord.isEmpty()) announceText(lastWord);
-                        else announceText("Space");
-                    }
                     saveWordAndReset();
                     
                     if (layoutManager.isSymbols || layoutManager.isEmoji) {
@@ -399,10 +378,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() : String.valueOf((char) primaryCode);
                     currentWord.append(charStr);
 
-                    if (useSmartEcho) {
-                        String accumulatingWord = getCurrentWordForEcho();
-                        if (accumulatingWord != null && !accumulatingWord.isEmpty()) announceText(accumulatingWord);
-                    }
+                    // 💡 အမှားပြင်ဆင်ချက် - ဤနေရာတွင်ရှိခဲ့သော announceText(...) ကုဒ်အားလုံးကို 
+                    // အပြီးတိုင် ဖယ်ရှားပစ်လိုက်ပါသည်။ 
+                    // သို့မှသာ လက်ကြွ၍ စာရိုက်လိုက်ချိန်တွင် Shan TTS လုံးဝ (လုံးဝ) ထွက်မလာတော့ဘဲ 
+                    // ဖုန်း၏ TalkBack တစ်ခုတည်းကသာ စာဝင်သွားကြောင်း ဖတ်ပေးပါမည်။
 
                     if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
                         layoutManager.isCaps = false;
@@ -413,33 +392,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     break;
             }
         } catch (Exception e) { e.printStackTrace(); }
-    }
-
-    private String getCurrentWordForEcho() {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return null;
-        CharSequence text = ic.getTextBeforeCursor(100, 0);
-        if (text == null || text.length() == 0) return null;
-        String s = text.toString();
-        int lastNewLine = s.lastIndexOf('\n');
-        String currentLine = (lastNewLine != -1) ? s.substring(lastNewLine + 1) : s;
-        if (currentLine.isEmpty()) return null;
-        int lastSpaceIndex = currentLine.lastIndexOf(' ');
-        return (lastSpaceIndex != -1) ? currentLine.substring(lastSpaceIndex + 1) : currentLine;
-    }
-    
-    private String getLastWordForEcho() {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return null;
-        CharSequence text = ic.getTextBeforeCursor(100, 0); 
-        if (text == null || text.length() == 0) return null;
-        String s = text.toString();
-        int lastNewLine = s.lastIndexOf('\n');
-        String currentLine = (lastNewLine != -1) ? s.substring(lastNewLine + 1) : s;
-        String trimmed = currentLine.trim(); 
-        if (trimmed.isEmpty()) return null;
-        int lastSpaceIndex = trimmed.lastIndexOf(' ');
-        return (lastSpaceIndex != -1) ? trimmed.substring(lastSpaceIndex + 1) : trimmed;
     }
 
     public KeyboardView getKeyboardView() { return keyboardView; }
