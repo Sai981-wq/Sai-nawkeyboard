@@ -31,7 +31,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:padding="15dp"
-        android:text="Shan Character Names (e.g., Ka-Paeng)"
+        android:text="Shan Character Names (e.g., Ka)"
         android:textSize="18sp"/>
 
     <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#EEEEEE"/>
