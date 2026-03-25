@@ -248,6 +248,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     public void handleInput(int primaryCode, Keyboard.Key key) {
+        
+        // 💡 လက်ကြွ (စာရိုက်) လိုက်တာနဲ့ Hover တုန်းက ထွက်နေတဲ့ ရှမ်းအသံကို ချက်ချင်း ပါးစပ်ပိတ်ပစ်မယ့် ကုဒ်
+        if (shanTts != null) {
+            shanTts.stop();
+        }
+
         feedbackManager.playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
