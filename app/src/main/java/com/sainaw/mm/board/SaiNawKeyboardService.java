@@ -21,6 +21,7 @@ import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
+import android.speech.tts.TextToSpeech;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -66,6 +67,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private SpeechRecognizer speechRecognizer;
     private Intent speechIntent;
     private boolean isListening = false;
+    private TextToSpeech shanTts;
 
     private static final int KEYCODE_EMOJI = -7;
     private static final char ZWSP = '\u200B';
@@ -99,6 +101,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         inputLogic = new SaiNawInputLogic(textProcessor, layoutManager);
         phoneticManager = new SaiNawPhoneticManager(this);
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
+
+        shanTts = new TextToSpeech(this, status -> {
+        }, "com.shan.tts");
 
         Context safeContext = getSafeContext();
         SharedPreferences prefs = safeContext.getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
@@ -134,10 +139,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             public String onCursorMoveAndGetText(boolean isForward, int granularity) {
                 return moveCursorNativelyAndGetText(isForward, granularity);
             }
+            
+            @Override
+            public void onCustomAnnounce(String text) {
+                announceText(text);
+            }
         }, phoneticManager, emojiManager);
         
-        boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
-        accessibilityHelper.setPhoneticEnabled(usePhonetic);
+        boolean useMmPhonetic = prefs.getBoolean("use_phonetic_sounds", true);
+        boolean useShanPhonetic = prefs.getBoolean("use_shan_phonetic_sounds", true);
+        accessibilityHelper.setPhoneticEnabled(useMmPhonetic, useShanPhonetic);
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
         
         keyboardView.setOnHoverListener((v, event) -> {
@@ -172,10 +183,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         touchHandler.loadSettings(prefs);
         layoutManager.initKeyboards(prefs); 
         useSmartEcho = prefs.getBoolean("smart_echo", false); 
-        boolean usePhonetic = prefs.getBoolean("use_phonetic_sounds", true);
+        
+        boolean useMmPhonetic = prefs.getBoolean("use_phonetic_sounds", true);
+        boolean useShanPhonetic = prefs.getBoolean("use_shan_phonetic_sounds", true);
         
         if (accessibilityHelper != null) {
-            accessibilityHelper.setPhoneticEnabled(usePhonetic);
+            accessibilityHelper.setPhoneticEnabled(useMmPhonetic, useShanPhonetic);
         }
         if (phoneticManager != null) {
             phoneticManager.setLanguageId(layoutManager.currentLanguageId);
@@ -384,13 +397,23 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     public void updateHelperState() { 
         if (accessibilityHelper != null) {
-            accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.isShanOrMyanmar(), layoutManager.isCaps); 
+            accessibilityHelper.setKeyboard(layoutManager.getCurrentKeyboard(), layoutManager.currentLanguageId, layoutManager.isCaps); 
         }
     }
 
     public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
 
     public void announceText(String text) {
+        boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
+                .getBoolean("use_shan_phonetic_sounds", true);
+
+        if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic) {
+            if (shanTts != null) {
+                shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null);
+            }
+            return;
+        }
+
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             handler.postDelayed(() -> {
                 AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
@@ -621,6 +644,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     
     @Override public void onDestroy() { 
         super.onDestroy(); 
+        if (shanTts != null) {
+            shanTts.stop();
+            shanTts.shutdown();
+        }
         if(speechRecognizer!=null) speechRecognizer.destroy(); 
         if(dbExecutor != null && !dbExecutor.isShutdown()) dbExecutor.shutdown();
         if(suggestionDB!=null) suggestionDB.close();

@@ -23,9 +23,10 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private final Rect tempRect = new Rect();
     private final View hostView;
     private Keyboard currentKeyboard;
-    private boolean isShanOrMyanmar = false;
+    private int currentLanguageId = 0;
     private boolean isCaps = false;
-    private boolean isPhoneticEnabled = true;
+    private boolean isMmPhoneticEnabled = true;
+    private boolean isShanPhoneticEnabled = true;
     private OnAccessibilityKeyListener listener;
     private SaiNawPhoneticManager phoneticManager;
     private SaiNawEmojiManager emojiManager;
@@ -34,6 +35,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
         String onCursorMoveAndGetText(boolean isForward, int granularity);
+        void onCustomAnnounce(String text);
     }
 
     public SaiNawAccessibilityHelper(@NonNull View view, OnAccessibilityKeyListener listener, 
@@ -83,9 +85,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         return super.performAccessibilityAction(host, action, args);
     }
 
-    public void setKeyboard(Keyboard keyboard, boolean isShanOrMyanmar, boolean isCaps) {
+    public void setKeyboard(Keyboard keyboard, int languageId, boolean isCaps) {
         this.currentKeyboard = keyboard;
-        this.isShanOrMyanmar = isShanOrMyanmar;
+        this.currentLanguageId = languageId;
         this.isCaps = isCaps;
         
         this.isSymbols = false;
@@ -105,8 +107,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         sendEventForVirtualView(HOST_ID, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
     }
 
-    public void setPhoneticEnabled(boolean enabled) {
-        this.isPhoneticEnabled = enabled;
+    public void setPhoneticEnabled(boolean mmEnabled, boolean shanEnabled) {
+        this.isMmPhoneticEnabled = mmEnabled;
+        this.isShanPhoneticEnabled = shanEnabled;
     }
 
     @Override
@@ -182,7 +185,12 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         }
         Keyboard.Key key = keys.get(virtualViewId);
         String description = getKeyDescription(key);
-        node.setContentDescription(description);
+        
+        if (currentLanguageId == 2 && isShanPhoneticEnabled) {
+            node.setContentDescription(" ");
+        } else {
+            node.setContentDescription(description);
+        }
         
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
@@ -204,6 +212,22 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             tempRect.set(left, top, right, bottom);
         }
         node.setBoundsInParent(tempRect);
+    }
+
+    @Override
+    protected void onPopulateEventForVirtualView(int virtualViewId, @NonNull AccessibilityEvent event) {
+        super.onPopulateEventForVirtualView(virtualViewId, event);
+        if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
+            if (currentLanguageId == 2 && isShanPhoneticEnabled) {
+                if (currentKeyboard != null && currentKeyboard.getKeys() != null && virtualViewId >= 0 && virtualViewId < currentKeyboard.getKeys().size()) {
+                    Keyboard.Key key = currentKeyboard.getKeys().get(virtualViewId);
+                    String textToSpeak = getKeyDescription(key);
+                    if (listener != null) {
+                        listener.onCustomAnnounce(textToSpeak);
+                    }
+                }
+            }
+        }
     }
 
     @Override
@@ -267,7 +291,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     }
 
     private void announceTextImmediate(String text) {
-        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+        if (listener != null) {
+            listener.onCustomAnnounce(text);
+        } else if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
             event.getText().add(text);
             accessibilityManager.sendAccessibilityEvent(event);
@@ -350,10 +376,13 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
         if (code == -4 && key.label != null) return key.label.toString();
-        if (isPhoneticEnabled) {
+        
+        boolean checkPhonetic = (currentLanguageId == 1 && isMmPhoneticEnabled) || (currentLanguageId == 2 && isShanPhoneticEnabled);
+        if (checkPhonetic) {
             String phonetic = phoneticManager.getPronunciation(code);
             if (phonetic != null && !phonetic.equals(String.valueOf((char)code))) return phonetic;
         }
+        
         if (code == -5) return "Delete";
         if (code == -1) return isSymbols ? (isCaps ? "Symbols" : "More Symbols") : (isCaps ? "Shift On" : "Shift");
         if (code == 32) return "Space";
@@ -364,9 +393,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (code == -100) return ""; 
 
         String label = (key.label != null) ? key.label.toString() : ((key.text != null) ? key.text.toString() : null);
+        boolean isShanOrMyanmar = (currentLanguageId == 1 || currentLanguageId == 2);
         if (!isShanOrMyanmar && isCaps && label != null && label.length() == 1 && Character.isLetter(label.charAt(0))) {
              return "Capital " + label;
         }
         return label != null ? label : "Unlabeled Key";
     }
 }
+
