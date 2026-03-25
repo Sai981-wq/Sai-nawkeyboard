@@ -371,7 +371,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             phonetic = phoneticManager.getPronunciation(primaryCode);
                         }
                         String speakChar = (phonetic != null && !phonetic.equals(String.valueOf((char)primaryCode))) ? phonetic : charStr;
-                        announceText(speakChar);
+                        
+                        boolean isEnglish = false;
+                        if (speakChar != null) {
+                            for (int i = 0; i < speakChar.length(); i++) {
+                                char c = speakChar.charAt(i);
+                                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                                    isEnglish = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!isEnglish) {
+                            announceText(speakChar);
+                        }
                     } else if (useSmartEcho) {
                         String accumulatingWord = getCurrentWordForEcho();
                         if (accumulatingWord != null && !accumulatingWord.isEmpty()) announceText(accumulatingWord);
@@ -441,19 +454,21 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
 
         if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isEnglish) {
-            // Mute TalkBack immediately to prevent duplicate or unwanted speech
-            if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-                accessibilityManager.interrupt(); 
-            }
-            if (shanTts != null) {
-                Bundle params = new Bundle();
-                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
-                shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
-            }
+            // TalkBack အသံကို 100ms လေးစောင့်ပြီးမှ ဖြတ်ချမယ် (ဒါမှ TalkBack အသံစထွက်တာနဲ့ အသံတိုက်မိတာတွေ မဖြစ်ဘဲ သေသပ်သွားမှာပါ)
+            handler.postDelayed(() -> {
+                if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+                    accessibilityManager.interrupt(); 
+                }
+                if (shanTts != null) {
+                    Bundle params = new Bundle();
+                    params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
+                    shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
+                }
+            }, 100); 
             return;
         }
 
-        // English text or other languages will use native TalkBack normally
+        // English text တွေအတွက် ပုံမှန် TalkBack အတိုင်း အလုပ်လုပ်မည်
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             handler.postDelayed(() -> {
                 AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
