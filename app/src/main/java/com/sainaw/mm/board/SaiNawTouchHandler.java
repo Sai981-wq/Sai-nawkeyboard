@@ -148,6 +148,7 @@ public class SaiNawTouchHandler {
                 if (y < 0) {
                     cancelAllLongPress();
                     lastHoverKeyIndex = -1;
+                    service.stopSpeech(); 
                     return;
                 }
 
@@ -156,6 +157,7 @@ public class SaiNawTouchHandler {
                         Keyboard.Key key = keys.get(lastHoverKeyIndex);
                         if (key.codes[0] != -100) {
                             feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                            service.stopSpeech(); 
                             service.handleInput(key.codes[0], key);
                         }
                     }
