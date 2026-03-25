@@ -197,11 +197,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         Keyboard.Key key = keys.get(virtualViewId);
         String description = getKeyDescription(key);
         
-        if (currentLanguageId == 2 && isShanPhoneticEnabled && !isEnglishText(description)) {
-            node.setContentDescription(" ");
-        } else {
-            node.setContentDescription(description);
-        }
+        node.setContentDescription(description);
         
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
@@ -228,12 +224,15 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     @Override
     protected void onPopulateEventForVirtualView(int virtualViewId, @NonNull AccessibilityEvent event) {
         super.onPopulateEventForVirtualView(virtualViewId, event);
+        
         if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
             if (currentLanguageId == 2 && isShanPhoneticEnabled) {
+                Keyboard.Key key = null;
                 if (currentKeyboard != null && currentKeyboard.getKeys() != null && virtualViewId >= 0 && virtualViewId < currentKeyboard.getKeys().size()) {
-                    Keyboard.Key key = currentKeyboard.getKeys().get(virtualViewId);
+                    key = currentKeyboard.getKeys().get(virtualViewId);
+                }
+                if (key != null) {
                     String textToSpeak = getKeyDescription(key);
-                    
                     if (!isEnglishText(textToSpeak) && listener != null) {
                         listener.onCustomAnnounce(textToSpeak);
                     }

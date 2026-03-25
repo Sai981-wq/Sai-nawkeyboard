@@ -151,29 +151,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             
             @Override
             public void onCustomAnnounce(String text) {
-                boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
-                        .getBoolean("use_shan_phonetic_sounds", true);
-
-                boolean isEnglish = false;
-                if (text != null) {
-                    for (int i = 0; i < text.length(); i++) {
-                        char c = text.charAt(i);
-                        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
-                            isEnglish = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isEnglish) {
-                    if (shanTts != null) {
-                        Bundle params = new Bundle();
-                        params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
-                        shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
-                    }
-                } else {
-                    announceText(text);
-                }
+                announceText(text);
             }
         }, phoneticManager, emojiManager);
         
@@ -383,16 +361,29 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     String charStr = (key != null && key.label != null && key.label.length() > 1) 
                             ? key.label.toString() : String.valueOf((char) primaryCode);
                     currentWord.append(charStr);
-                    if (useSmartEcho) {
+
+                    boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
+                            .getBoolean("use_shan_phonetic_sounds", true);
+
+                    if (layoutManager.currentLanguageId == 2 && useShanPhonetic) {
+                        String phonetic = null;
+                        if (phoneticManager != null) {
+                            phonetic = phoneticManager.getPronunciation(primaryCode);
+                        }
+                        String speakChar = (phonetic != null && !phonetic.equals(String.valueOf((char)primaryCode))) ? phonetic : charStr;
+                        announceText(speakChar);
+                    } else if (useSmartEcho) {
                         String accumulatingWord = getCurrentWordForEcho();
                         if (accumulatingWord != null && !accumulatingWord.isEmpty()) announceText(accumulatingWord);
                     }
+
                     if (layoutManager.isCaps && !layoutManager.isCapsLocked) {
                         layoutManager.isCaps = false;
                         layoutManager.updateKeyboardLayout();
                         updateHelperState();
                     }
                     triggerCandidateUpdate(200);
+                    break;
             }
         } catch (Exception e) { e.printStackTrace(); }
     }
@@ -435,12 +426,40 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
 
     public void announceText(String text) {
+        boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
+                .getBoolean("use_shan_phonetic_sounds", true);
+
+        boolean isEnglish = false;
+        if (text != null) {
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                    isEnglish = true;
+                    break;
+                }
+            }
+        }
+
+        if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isEnglish) {
+            // Mute TalkBack immediately to prevent duplicate or unwanted speech
+            if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+                accessibilityManager.interrupt(); 
+            }
+            if (shanTts != null) {
+                Bundle params = new Bundle();
+                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
+                shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
+            }
+            return;
+        }
+
+        // English text or other languages will use native TalkBack normally
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             handler.postDelayed(() -> {
                 AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
                 event.getText().add(text);
                 accessibilityManager.sendAccessibilityEvent(event);
-            }, 150); 
+            }, 50); 
         }
     }
 
