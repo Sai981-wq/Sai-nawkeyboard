@@ -407,7 +407,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
                 .getBoolean("use_shan_phonetic_sounds", true);
 
-        if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic) {
+        boolean isEnglish = false;
+        if (text != null) {
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                    isEnglish = true;
+                    break;
+                }
+            }
+        }
+
+        if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isEnglish) {
             if (shanTts != null) {
                 shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null);
             }

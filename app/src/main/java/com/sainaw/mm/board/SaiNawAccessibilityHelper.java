@@ -112,6 +112,17 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.isShanPhoneticEnabled = shanEnabled;
     }
 
+    private boolean isEnglishText(String text) {
+        if (text == null || text.trim().isEmpty()) return false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     protected int getVirtualViewAt(float x, float y) {
         if (currentKeyboard == null) return HOST_ID;
@@ -186,7 +197,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         Keyboard.Key key = keys.get(virtualViewId);
         String description = getKeyDescription(key);
         
-        if (currentLanguageId == 2 && isShanPhoneticEnabled) {
+        if (currentLanguageId == 2 && isShanPhoneticEnabled && !isEnglishText(description)) {
             node.setContentDescription(" ");
         } else {
             node.setContentDescription(description);
@@ -222,7 +233,8 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                 if (currentKeyboard != null && currentKeyboard.getKeys() != null && virtualViewId >= 0 && virtualViewId < currentKeyboard.getKeys().size()) {
                     Keyboard.Key key = currentKeyboard.getKeys().get(virtualViewId);
                     String textToSpeak = getKeyDescription(key);
-                    if (listener != null) {
+                    
+                    if (!isEnglishText(textToSpeak) && listener != null) {
                         listener.onCustomAnnounce(textToSpeak);
                     }
                 }
