@@ -1,4 +1,3 @@
-
 package com.sainaw.mm.board;
 
 import android.Manifest;
@@ -442,25 +441,25 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
 
         if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isEnglish) {
-            handler.postDelayed(() -> {
-                if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-                    accessibilityManager.interrupt(); 
-                }
-                if (shanTts != null) {
-                    Bundle params = new Bundle();
-                    params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
-                    shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
-                }
-            }, 100); 
+            // Mute TalkBack immediately (0ms delay) so it doesn't echo native typing
+            if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+                accessibilityManager.interrupt(); 
+            }
+            if (shanTts != null) {
+                Bundle params = new Bundle();
+                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
+                shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
+            }
             return;
         }
 
+        // English text or other languages will use native TalkBack normally
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             handler.postDelayed(() -> {
                 AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
                 event.getText().add(text);
                 accessibilityManager.sendAccessibilityEvent(event);
-            }, 150); 
+            }, 100); 
         }
     }
 
@@ -697,3 +696,4 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         handler.removeCallbacks(pendingCandidateUpdate);
     }
 }
+
