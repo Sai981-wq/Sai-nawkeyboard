@@ -245,7 +245,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     public void handleInput(int primaryCode, Keyboard.Key key) {
-        // 💡 လက်ကြွ (စာရိုက်) လိုက်သည်နှင့် Hover တွင် ဖတ်နေသော Shan TTS အသံကို ချက်ချင်း ရပ်ပစ်ပါမည်
         if (shanTts != null) {
             shanTts.stop();
         }
@@ -263,13 +262,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             return;
         }
 
+        // 💡 Shan UI ရောက်နေလျှင် အသံမထပ်စေရန် Smart Echo ကို အလိုအလျောက် ခဏပိတ်ထားပေးမည့်စနစ်
+        boolean isShanUI = (layoutManager != null && layoutManager.currentLanguageId == 2);
+        boolean effectiveSmartEcho = useSmartEcho && !isShanUI;
+
         try {
             switch (primaryCode) {
                 case -5: 
                     CharSequence selectedText = ic.getSelectedText(0);
                     if (selectedText != null && selectedText.length() > 0) {
                         ic.commitText("", 1);
-                        if (useSmartEcho) announceText("Deleted selected text"); // Smart Echo ပြန်ထည့်ထားပါသည်
+                        if (effectiveSmartEcho) announceText("Deleted selected text");
                     } else if (!textProcessor.handleCustomBackspace(ic)) {
                         CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
                         if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
@@ -277,12 +280,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         }
                         CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
                         ic.deleteSurroundingText(1, 0);
-                        if (useSmartEcho) {
+                        if (effectiveSmartEcho) {
                             if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
                             else announceText("Delete");
                         }
                     } else {
-                        if (useSmartEcho) {
+                        if (effectiveSmartEcho) {
                             announceText("Deleted");
                         }
                     }
@@ -298,15 +301,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 case -1: 
                     if (layoutManager.isSymbols) {
                         layoutManager.isCaps = !layoutManager.isCaps;
-                        announceText(layoutManager.isCaps ? "More Symbols" : "Symbols");
+                        if (effectiveSmartEcho) announceText(layoutManager.isCaps ? "More Symbols" : "Symbols");
                     } else {
                         if (layoutManager.isCapsLocked) {
                             layoutManager.isCapsLocked = false;
                             layoutManager.isCaps = false;
-                            announceText("Shift Off");
+                            if (effectiveSmartEcho) announceText("Shift Off");
                         } else {
                             layoutManager.isCaps = !layoutManager.isCaps;
-                            announceText(layoutManager.isCaps ? "Shift On" : "Shift Off");
+                            if (effectiveSmartEcho) announceText(layoutManager.isCaps ? "Shift On" : "Shift Off");
                         }
                     }
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
@@ -319,7 +322,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     layoutManager.isEmoji = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    announceText("Symbols");
+                    if (effectiveSmartEcho) announceText("Symbols");
                     updateHelperState();
                     break;
 
@@ -328,7 +331,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     layoutManager.isEmoji = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
+                    if (effectiveSmartEcho) announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
                     updateHelperState();
                     break;
                     
@@ -337,7 +340,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     layoutManager.isSymbols = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    announceText("Emoji");
+                    if (effectiveSmartEcho) announceText("Emoji");
                     updateHelperState();
                     break;
 
@@ -346,7 +349,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     layoutManager.changeLanguage();
                     touchHandler.reset(); 
                     if (phoneticManager != null) phoneticManager.setLanguageId(layoutManager.currentLanguageId);
-                    announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
+                    if (effectiveSmartEcho) announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
                     updateHelperState();
                     break;
 
@@ -359,7 +362,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     } else {
                         ic.commitText("\n", 1);
                     }
-                    if (useSmartEcho) announceText("Enter"); // Smart Echo ပြန်ထည့်ထားပါသည်
+                    if (effectiveSmartEcho) announceText("Enter");
                     saveWordAndReset();
                     
                     if (layoutManager.isSymbols || layoutManager.isEmoji) {
@@ -372,7 +375,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 case 32: 
                     ic.commitText(" ", 1);
-                    if (useSmartEcho) { // Smart Echo ပြန်ထည့်ထားပါသည်
+                    if (effectiveSmartEcho) {
                         String lastWord = getLastWordForEcho();
                         if (lastWord != null && !lastWord.isEmpty()) announceText(lastWord);
                         else announceText("Space");
@@ -395,8 +398,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() : String.valueOf((char) primaryCode);
                     currentWord.append(charStr);
 
-                    // Smart Echo မူရင်းအတိုင်း ပြန်လည် ထည့်သွင်းထားပါသည်
-                    if (useSmartEcho) {
+                    if (effectiveSmartEcho) {
                         String accumulatingWord = getCurrentWordForEcho();
                         if (accumulatingWord != null && !accumulatingWord.isEmpty()) announceText(accumulatingWord);
                     }
