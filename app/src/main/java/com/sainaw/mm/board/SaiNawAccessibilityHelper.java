@@ -200,8 +200,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         String description = getKeyDescription(key);
         
         if (currentLanguageId == 2 && isShanPhoneticEnabled && !isNativeTalkBackText(description)) {
-            // \u00A0 သည် Non-breaking space ဖြစ်ပြီး TalkBack မှ လုံးဝ အသံမထွက်ဘဲ ကျော်သွားပါမည်။ 
-            // ဤသို့ဖြင့် Hover လုပ်ချိန်တွင် TalkBack အသံကို အပြည့်အဝ ပိတ်နိုင်ပါသည်။
+            // လက်ဖြင့်ရှာချိန် (Hover) တွင် TalkBack ကို တိတ်ဆိတ်စေရန် 
             node.setContentDescription("\u00A0");
         } else {
             node.setContentDescription(description);
@@ -233,20 +232,20 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     protected void onPopulateEventForVirtualView(int virtualViewId, @NonNull AccessibilityEvent event) {
         super.onPopulateEventForVirtualView(virtualViewId, event);
         
-        if (currentLanguageId == 2 && isShanPhoneticEnabled) {
-            Keyboard.Key key = null;
-            if (currentKeyboard != null && currentKeyboard.getKeys() != null && virtualViewId >= 0 && virtualViewId < currentKeyboard.getKeys().size()) {
-                key = currentKeyboard.getKeys().get(virtualViewId);
-            }
-            if (key != null) {
-                String textToSpeak = getKeyDescription(key);
-                if (!isNativeTalkBackText(textToSpeak)) {
-                    // TalkBack သို့ Event Text လုံးဝ မရောက်စေရန် ရှင်းထုတ်ပစ်ပါမည်
-                    event.getText().clear();
-                    event.setContentDescription("\u00A0");
-                    
-                    if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
+        if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
+            if (currentLanguageId == 2 && isShanPhoneticEnabled) {
+                Keyboard.Key key = null;
+                if (currentKeyboard != null && currentKeyboard.getKeys() != null && virtualViewId >= 0 && virtualViewId < currentKeyboard.getKeys().size()) {
+                    key = currentKeyboard.getKeys().get(virtualViewId);
+                }
+                if (key != null) {
+                    String textToSpeak = getKeyDescription(key);
+                    if (!isNativeTalkBackText(textToSpeak)) {
+                        event.getText().clear();
+                        event.setContentDescription("\u00A0");
+                        
                         if (listener != null) {
+                            // ဤနေရာသည် Hover လုပ်ချိန်ဖြစ်၍ Shan TTS ကိုသာ အလုပ်လုပ်စေမည်
                             listener.onCustomAnnounce(textToSpeak);
                         }
                     }

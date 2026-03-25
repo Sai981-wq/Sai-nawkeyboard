@@ -229,13 +229,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return true;
     }
 
-    // TalkBack အသံကို ဖြတ်ချမည့် လုပ်ဆောင်ချက်
-    private void silenceTalkBack() {
-        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-            accessibilityManager.interrupt();
-        }
-    }
-
     public void handleInput(int primaryCode, Keyboard.Key key) {
         feedbackManager.playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -382,28 +375,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() : String.valueOf((char) primaryCode);
                     currentWord.append(charStr);
 
-                    boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
-                            .getBoolean("use_shan_phonetic_sounds", true);
+                    // အစ်ကိုညွှန်ကြားချက်အတိုင်း လက်ကြွပြီး စာရိုက်လိုက်သည့်အချိန်တွင်
+                    // Shan TTS ကို အတင်းဖတ်ခိုင်းနေသော ကုဒ်အား အပြီးတိုင် ဖယ်ရှားလိုက်ပါသည်။
+                    // ဤသို့ဖြင့် ဖုန်း၏ မူလ TalkBack တစ်ခုတည်းကသာ စာရိုက်ဝင်သွားကြောင်း သဘာဝကျကျ ဖတ်ပေးမည်ဖြစ်၍
+                    // အသံ ၂ ခု လုံးဝ (လုံးဝ) ထပ်တော့မည် မဟုတ်ပါ။
 
-                    if (layoutManager.currentLanguageId == 2 && useShanPhonetic) {
-                        String phonetic = null;
-                        if (phoneticManager != null) {
-                            phonetic = phoneticManager.getPronunciation(primaryCode);
-                        }
-                        String speakChar = (phonetic != null && !phonetic.equals(String.valueOf((char)primaryCode))) ? phonetic : charStr;
-                        
-                        if (!isNativeTalkBackText(speakChar)) {
-                            // Typing တွင် ဖုန်းစနစ်မှ ဝင်လာမည့် TalkBack အသံကို အပြတ်ရှင်းရန် ကြိမ်ဖန်များစွာ ဖြတ်ချခြင်း
-                            silenceTalkBack();
-                            handler.postDelayed(this::silenceTalkBack, 20);
-                            handler.postDelayed(this::silenceTalkBack, 50);
-                            handler.postDelayed(this::silenceTalkBack, 80);
-                            handler.postDelayed(this::silenceTalkBack, 120);
-                            handler.postDelayed(this::silenceTalkBack, 150);
-                            
-                            announceText(speakChar);
-                        }
-                    } else if (useSmartEcho) {
+                    if (useSmartEcho) {
                         String accumulatingWord = getCurrentWordForEcho();
                         if (accumulatingWord != null && !accumulatingWord.isEmpty()) announceText(accumulatingWord);
                     }
@@ -461,11 +438,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 .getBoolean("use_shan_phonetic_sounds", true);
 
         if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isNativeTalkBackText(text)) {
-            // Hover ချိန်တွင် TalkBack အသံ မထွက်လာစေရန် ချက်ချင်း ဖြတ်ချခြင်း
-            silenceTalkBack();
-            handler.postDelayed(this::silenceTalkBack, 20);
-            handler.postDelayed(this::silenceTalkBack, 50);
-
+            // Hover လုပ်ချိန်တွင်သာ ဤနေရာသို့ ရောက်လာမည်ဖြစ်ပြီး Shan TTS က ရှင်းရှင်းလင်းလင်း ဖတ်ပေးပါမည်
             if (shanTts != null) {
                 Bundle params = new Bundle();
                 params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
