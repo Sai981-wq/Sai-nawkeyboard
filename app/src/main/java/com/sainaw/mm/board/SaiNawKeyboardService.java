@@ -229,6 +229,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return true;
     }
 
+    // TalkBack အသံကို ဖြတ်ချမည့် လုပ်ဆောင်ချက်
     private void silenceTalkBack() {
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             accessibilityManager.interrupt();
@@ -392,6 +393,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         String speakChar = (phonetic != null && !phonetic.equals(String.valueOf((char)primaryCode))) ? phonetic : charStr;
                         
                         if (!isNativeTalkBackText(speakChar)) {
+                            // Typing တွင် ဖုန်းစနစ်မှ ဝင်လာမည့် TalkBack အသံကို အပြတ်ရှင်းရန် ကြိမ်ဖန်များစွာ ဖြတ်ချခြင်း
+                            silenceTalkBack();
+                            handler.postDelayed(this::silenceTalkBack, 20);
+                            handler.postDelayed(this::silenceTalkBack, 50);
+                            handler.postDelayed(this::silenceTalkBack, 80);
+                            handler.postDelayed(this::silenceTalkBack, 120);
+                            handler.postDelayed(this::silenceTalkBack, 150);
+                            
                             announceText(speakChar);
                         }
                     } else if (useSmartEcho) {
@@ -452,11 +461,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 .getBoolean("use_shan_phonetic_sounds", true);
 
         if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isNativeTalkBackText(text)) {
-            
+            // Hover ချိန်တွင် TalkBack အသံ မထွက်လာစေရန် ချက်ချင်း ဖြတ်ချခြင်း
             silenceTalkBack();
             handler.postDelayed(this::silenceTalkBack, 20);
             handler.postDelayed(this::silenceTalkBack, 50);
-            handler.postDelayed(this::silenceTalkBack, 100);
 
             if (shanTts != null) {
                 Bundle params = new Bundle();

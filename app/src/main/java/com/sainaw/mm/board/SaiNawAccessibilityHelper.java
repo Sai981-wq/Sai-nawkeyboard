@@ -199,7 +199,13 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         Keyboard.Key key = keys.get(virtualViewId);
         String description = getKeyDescription(key);
         
-        node.setContentDescription(description);
+        if (currentLanguageId == 2 && isShanPhoneticEnabled && !isNativeTalkBackText(description)) {
+            // \u00A0 သည် Non-breaking space ဖြစ်ပြီး TalkBack မှ လုံးဝ အသံမထွက်ဘဲ ကျော်သွားပါမည်။ 
+            // ဤသို့ဖြင့် Hover လုပ်ချိန်တွင် TalkBack အသံကို အပြည့်အဝ ပိတ်နိုင်ပါသည်။
+            node.setContentDescription("\u00A0");
+        } else {
+            node.setContentDescription(description);
+        }
         
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
@@ -227,16 +233,22 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     protected void onPopulateEventForVirtualView(int virtualViewId, @NonNull AccessibilityEvent event) {
         super.onPopulateEventForVirtualView(virtualViewId, event);
         
-        if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
-            if (currentLanguageId == 2 && isShanPhoneticEnabled) {
-                Keyboard.Key key = null;
-                if (currentKeyboard != null && currentKeyboard.getKeys() != null && virtualViewId >= 0 && virtualViewId < currentKeyboard.getKeys().size()) {
-                    key = currentKeyboard.getKeys().get(virtualViewId);
-                }
-                if (key != null) {
-                    String textToSpeak = getKeyDescription(key);
-                    if (!isNativeTalkBackText(textToSpeak) && listener != null) {
-                        listener.onCustomAnnounce(textToSpeak);
+        if (currentLanguageId == 2 && isShanPhoneticEnabled) {
+            Keyboard.Key key = null;
+            if (currentKeyboard != null && currentKeyboard.getKeys() != null && virtualViewId >= 0 && virtualViewId < currentKeyboard.getKeys().size()) {
+                key = currentKeyboard.getKeys().get(virtualViewId);
+            }
+            if (key != null) {
+                String textToSpeak = getKeyDescription(key);
+                if (!isNativeTalkBackText(textToSpeak)) {
+                    // TalkBack သို့ Event Text လုံးဝ မရောက်စေရန် ရှင်းထုတ်ပစ်ပါမည်
+                    event.getText().clear();
+                    event.setContentDescription("\u00A0");
+                    
+                    if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
+                        if (listener != null) {
+                            listener.onCustomAnnounce(textToSpeak);
+                        }
                     }
                 }
             }
