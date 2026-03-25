@@ -112,12 +112,10 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         this.isShanPhoneticEnabled = shanEnabled;
     }
 
-    // သင်္ကေတများ၊ ဂဏန်းများနှင့် အင်္ဂလိပ်စာများအားလုံးကို စစ်ဆေးခြင်း
     private boolean isNativeTalkBackText(String text) {
         if (text == null || text.trim().isEmpty()) return true;
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
-            // မြန်မာ/ရှမ်း ယူနီကုဒ် Range ထဲတွင် ပါဝင်ပါက Native TalkBack ကို မသုံးပါ
             if ((c >= '\u1000' && c <= '\u109F') || 
                 (c >= '\uAA60' && c <= '\uAA7F') || 
                 (c >= '\uA9E0' && c <= '\uA9FF')) {

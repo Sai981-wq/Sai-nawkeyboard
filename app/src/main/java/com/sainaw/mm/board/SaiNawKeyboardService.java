@@ -216,7 +216,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    // သင်္ကေတများ၊ ဂဏန်းများနှင့် အင်္ဂလိပ်စာများအားလုံးကို စစ်ဆေးခြင်း
     private boolean isNativeTalkBackText(String text) {
         if (text == null || text.trim().isEmpty()) return true;
         for (int i = 0; i < text.length(); i++) {
@@ -228,6 +227,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         }
         return true;
+    }
+
+    private void silenceTalkBack() {
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            accessibilityManager.interrupt();
+        }
     }
 
     public void handleInput(int primaryCode, Keyboard.Key key) {
@@ -386,7 +391,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         }
                         String speakChar = (phonetic != null && !phonetic.equals(String.valueOf((char)primaryCode))) ? phonetic : charStr;
                         
-                        // သင်္ကေတ သို့မဟုတ် ဂဏန်းများ ဖြစ်ပါက TalkBack မှ တိုက်ရိုက်ဖတ်ရန် ချန်လှပ်ထားမည်
                         if (!isNativeTalkBackText(speakChar)) {
                             announceText(speakChar);
                         }
@@ -448,13 +452,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 .getBoolean("use_shan_phonetic_sounds", true);
 
         if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isNativeTalkBackText(text)) {
-            // ရှမ်းစာလုံးဖြစ်မှသာ TalkBack ကို ပိတ်ပြီး Shan TTS ဖြင့် ဖတ်ခိုင်းမည်
-            if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-                accessibilityManager.interrupt(); 
-                handler.postDelayed(() -> { if (accessibilityManager != null) accessibilityManager.interrupt(); }, 20);
-                handler.postDelayed(() -> { if (accessibilityManager != null) accessibilityManager.interrupt(); }, 50);
-                handler.postDelayed(() -> { if (accessibilityManager != null) accessibilityManager.interrupt(); }, 100);
-            }
+            
+            silenceTalkBack();
+            handler.postDelayed(this::silenceTalkBack, 20);
+            handler.postDelayed(this::silenceTalkBack, 50);
+            handler.postDelayed(this::silenceTalkBack, 100);
+
             if (shanTts != null) {
                 Bundle params = new Bundle();
                 params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
@@ -463,7 +466,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             return;
         }
 
-        // အင်္ဂလိပ်စာ၊ ဂဏန်းများနှင့် သင်္ကေတများအတွက် ပုံမှန် TalkBack အတိုင်း အလုပ်လုပ်မည်
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
             handler.postDelayed(() -> {
                 AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
