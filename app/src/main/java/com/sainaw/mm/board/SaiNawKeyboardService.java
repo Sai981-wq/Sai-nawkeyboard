@@ -11,6 +11,8 @@ import android.graphics.Color;
 import android.inputmethodservice.InputMethodService;
 import android.inputmethodservice.Keyboard;
 import android.inputmethodservice.KeyboardView;
+import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -103,6 +105,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
 
         shanTts = new TextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                AudioAttributes attrs = new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build();
+                shanTts.setAudioAttributes(attrs);
+            }
         }, "com.shan.tts");
 
         Context safeContext = getSafeContext();
@@ -420,7 +429,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isEnglish) {
             if (shanTts != null) {
-                shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, null, null);
+                Bundle params = new Bundle();
+                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
+                shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
             }
             return;
         }
