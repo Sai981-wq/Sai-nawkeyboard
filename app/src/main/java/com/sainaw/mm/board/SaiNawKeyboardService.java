@@ -71,6 +71,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isListening = false;
     private TextToSpeech shanTts;
 
+    private String lastShanText = "";
+    private long lastShanTime = 0;
+
     private static final int KEYCODE_EMOJI = -7;
     private static final char ZWSP = '\u200B';
 
@@ -229,6 +232,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return true;
     }
 
+    private void silenceTalkBack() {
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            accessibilityManager.interrupt();
+        }
+    }
+
     public void handleInput(int primaryCode, Keyboard.Key key) {
         feedbackManager.playSound(primaryCode);
         InputConnection ic = getCurrentInputConnection();
@@ -375,9 +384,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                             ? key.label.toString() : String.valueOf((char) primaryCode);
                     currentWord.append(charStr);
 
-                    // အစ်ကိုညွှန်ကြားချက်အတိုင်း လက်ကြွပြီး စာရိုက်လိုက်သည့်အချိန်တွင်
+                    // 💡 အစ်ကိုညွှန်ကြားချက်အတိုင်း လက်ကြွ၍ စာရိုက်လိုက်သည့်အချိန်တွင်
                     // Shan TTS ကို အတင်းဖတ်ခိုင်းနေသော ကုဒ်အား အပြီးတိုင် ဖယ်ရှားလိုက်ပါသည်။
-                    // ဤသို့ဖြင့် ဖုန်း၏ မူလ TalkBack တစ်ခုတည်းကသာ စာရိုက်ဝင်သွားကြောင်း သဘာဝကျကျ ဖတ်ပေးမည်ဖြစ်၍
+                    // ဤသို့ဖြင့် ဖုန်း၏ မူလ TalkBack တစ်ခုတည်းကသာ စာရိုက်ဝင်သွားကြောင်း သဘာဝကျကျ အလိုအလျောက် ဖတ်ပေးမည်ဖြစ်၍
                     // အသံ ၂ ခု လုံးဝ (လုံးဝ) ထပ်တော့မည် မဟုတ်ပါ။
 
                     if (useSmartEcho) {
@@ -439,10 +448,19 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isNativeTalkBackText(text)) {
             // Hover လုပ်ချိန်တွင်သာ ဤနေရာသို့ ရောက်လာမည်ဖြစ်ပြီး Shan TTS က ရှင်းရှင်းလင်းလင်း ဖတ်ပေးပါမည်
-            if (shanTts != null) {
-                Bundle params = new Bundle();
-                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
-                shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
+            silenceTalkBack();
+            handler.postDelayed(this::silenceTalkBack, 15);
+            handler.postDelayed(this::silenceTalkBack, 40);
+
+            long now = System.currentTimeMillis();
+            if (!(text.equals(lastShanText) && (now - lastShanTime < 80))) {
+                if (shanTts != null) {
+                    Bundle params = new Bundle();
+                    params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
+                    shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
+                }
+                lastShanText = text;
+                lastShanTime = now;
             }
             return;
         }
