@@ -262,13 +262,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             return;
         }
 
-        // 💡 Shan UI ရောက်နေပြီး၊ Shan Phonetic ကိုလည်း ဖွင့်ထားမှသာ 
-        // အသံမထပ်စေရန် Smart Echo ကို အလိုအလျောက် ခဏပိတ်ထားပေးမည့်စနစ်
         boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
                 .getBoolean("use_shan_phonetic_sounds", true);
         boolean isShanUI = (layoutManager != null && layoutManager.currentLanguageId == 2);
         
-        // Shan TTS က အလုပ်လုပ်တော့မယ့် အခြေအနေဆိုရင် Smart Echo ကို ပိတ်မည်
         boolean effectiveSmartEcho = useSmartEcho && !(isShanUI && useShanPhonetic);
 
         try {
@@ -602,7 +599,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
     
-    @Override public void onKey(int p, int[] k) { handleInput(p, null); }
+    @Override public void onKey(int p, int[] k) { 
+        if (touchHandler != null && touchHandler.isLongPressHandled()) {
+            return;
+        }
+        handleInput(p, null); 
+    }
     @Override public void onText(CharSequence t) { 
         getCurrentInputConnection().commitText(t, 1); 
         feedbackManager.playSound(0);
@@ -611,8 +613,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             updateHelperState();
         }
     }
-    @Override public void onPress(int p) { feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); } 
-    @Override public void onRelease(int p) { touchHandler.cancelAllLongPress(); }
+    @Override public void onPress(int p) { 
+        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS); 
+        if (touchHandler != null) {
+            touchHandler.handleStandardPress(p);
+        }
+    } 
+    @Override public void onRelease(int p) { 
+        if (touchHandler != null) {
+            touchHandler.cancelAllLongPress(); 
+        }
+    }
     
     @Override 
     public boolean onKeyDown(int keyCode, KeyEvent event) {
@@ -716,7 +727,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if(dbExecutor != null && !dbExecutor.isShutdown()) dbExecutor.shutdown();
         if(suggestionDB!=null) suggestionDB.close();
         if(isReceiverRegistered) unregisterReceiver(userUnlockReceiver);
-        touchHandler.cancelAllLongPress();
+        if (touchHandler != null) {
+            touchHandler.cancelAllLongPress();
+        }
         handler.removeCallbacks(pendingCandidateUpdate);
     }
 }

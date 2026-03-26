@@ -99,6 +99,41 @@ public class SaiNawTouchHandler {
         isLiftToType = prefs.getBoolean("lift_to_type", true);
     }
 
+    // 💡 Lift-to-type ပိတ်ထားချိန် သို့မဟုတ် ရိုးရိုးလက်ဖြင့်ဖိချိန်တွင် Long Press အလုပ်လုပ်စေရန် Method အသစ်
+    public void handleStandardPress(int primaryCode) {
+        cancelAllLongPress();
+        if (primaryCode == 32) handler.postDelayed(spaceLongPressTask, 1500);
+        else if (primaryCode == -5) handler.postDelayed(deleteStartTask, 600);
+        else if (primaryCode == -1) handler.postDelayed(shiftLongPressTask, 1200);
+        else if (primaryCode == -4) handler.postDelayed(enterLongPressTask, 3000);
+        else {
+            Keyboard.Key key = findKeyByCode(primaryCode);
+            if (key != null) {
+                int resolvedEmojiCode = resolveEmojiCode(key);
+                if (resolvedEmojiCode != 0) {
+                    currentEmojiCode = resolvedEmojiCode;
+                    handler.postDelayed(emojiLongPressTask, 1000);
+                }
+            }
+        }
+    }
+
+    // 💡 ဤ Getter Method လေးက Keyboard Service မှ Long Press ဝင်/မဝင် စစ်ဆေးရန်ဖြစ်သည်
+    public boolean isLongPressHandled() {
+        return isLongPressHandled;
+    }
+
+    private Keyboard.Key findKeyByCode(int primaryCode) {
+        List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
+        if (keys == null) return null;
+        for (Keyboard.Key k : keys) {
+            if (k.codes != null && k.codes.length > 0 && k.codes[0] == primaryCode) {
+                return k;
+            }
+        }
+        return null;
+    }
+
     public void handleHover(MotionEvent event) {
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         if (!isLiftToType || keys == null || keys.isEmpty()) {
