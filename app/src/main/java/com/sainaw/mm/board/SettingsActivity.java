@@ -35,15 +35,15 @@ public class SettingsActivity extends AppCompatActivity {
             else Toast.makeText(this, R.string.error_toast, Toast.LENGTH_SHORT).show(); 
         });
 
-        // Sub-menus သို့ သွားမည့် ခလုတ်များ
         setupButton(R.id.btn_languages, v -> startActivity(new Intent(this, LanguageSettingsActivity.class)));
-        setupButton(R.id.btn_feedback, v -> startActivity(new Intent(this, FeedbackSettingsActivity.class))); // အသစ်ချိတ်ဆက်ထားခြင်း
+        setupButton(R.id.btn_feedback, v -> startActivity(new Intent(this, FeedbackSettingsActivity.class)));
         setupButton(R.id.btn_accessibility, v -> startActivity(new Intent(this, AccessibilitySettingsActivity.class)));
         
         setupButton(R.id.btn_about, v -> showAboutDialog());
 
         setupSwitch(R.id.switch_theme, "dark_theme", false);
         setupSwitch(R.id.switch_number_row, "number_row", false);
+        setupSwitch(R.id.switch_auto_caps, "auto_caps", true);
     }
 
     private void setupButton(int id, android.view.View.OnClickListener listener) {

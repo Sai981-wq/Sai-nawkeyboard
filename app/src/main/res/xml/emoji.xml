@@ -25,7 +25,7 @@
 		<Key android:codes="128079" android:keyLabel="👏" />
 		<Key android:codes="127881" android:keyLabel="🎉" />
 		<Key android:codes="128293" android:keyLabel="🔥" />
-		<Key android:codes="129782" android:keyLabel="🫶" /> 
+		<Key android:codes="128542" android:keyLabel="😞" /> 
 	</Row>
 	<Row>
 		<Key android:codes="129300" android:keyLabel="🤔" />

@@ -119,6 +119,9 @@ public class SaiNawFeedbackManager {
             else if (primaryCode == -5) keyStr = "delete";
             else if (primaryCode == -4) keyStr = "enter";
             else if (primaryCode == -1) keyStr = "shift";
+            else if (primaryCode == -101) keyStr = "language";
+            else if (primaryCode == -2 || primaryCode == -6) keyStr = "symbols";
+            else if (primaryCode == -7 || primaryCode == -102 || primaryCode == -103) keyStr = "emoji";
 
             Integer soundId = soundMap.get(keyStr);
             if (soundId == null) soundId = soundMap.get("default");
