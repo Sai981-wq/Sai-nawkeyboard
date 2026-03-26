@@ -17,7 +17,7 @@ public class SaiNawLayoutManager {
     public Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
     public Keyboard symbolsEnShiftKeyboard, symbolsMmShiftKeyboard;
     public Keyboard numberKeyboard;
-    public Keyboard emojiKeyboard;
+    public Keyboard emojiKeyboard1, emojiKeyboard2;
     
     private Keyboard currentKeyboard;
     private EditorInfo currentEditorInfo;
@@ -27,6 +27,7 @@ public class SaiNawLayoutManager {
     public boolean isSymbols = false;
     public boolean isEmoji = false;
     public int currentLanguageId = 0; 
+    public int currentEmojiPage = 1;
     
     private List<Integer> enabledLanguages = new ArrayList<>();
 
@@ -78,7 +79,10 @@ public class SaiNawLayoutManager {
             numberKeyboard = (numPadId != 0) ? new Keyboard(context, numPadId) : symbolsEnKeyboard;
 
             int emojiId = service.getResId("emoji");
-            emojiKeyboard = (emojiId != 0) ? new Keyboard(context, emojiId) : symbolsEnKeyboard;
+            emojiKeyboard1 = (emojiId != 0) ? new Keyboard(context, emojiId) : symbolsEnKeyboard;
+            
+            int emoji2Id = service.getResId("kbd_emoji_2");
+            emojiKeyboard2 = (emoji2Id != 0) ? new Keyboard(context, emoji2Id) : emojiKeyboard1;
             
         } catch (Exception e) {
             e.printStackTrace();
@@ -93,6 +97,7 @@ public class SaiNawLayoutManager {
 
     public void determineKeyboardForInputType() {
         isEmoji = false;
+        currentEmojiPage = 1;
 
         if (currentEditorInfo == null) return;
         
@@ -114,7 +119,7 @@ public class SaiNawLayoutManager {
         try {
             Keyboard nextKeyboard;
             if (isEmoji) {
-                nextKeyboard = emojiKeyboard;
+                nextKeyboard = (currentEmojiPage == 2) ? emojiKeyboard2 : emojiKeyboard1;
             } else if (isSymbols) {
                 if (currentKeyboard == numberKeyboard) {
                     nextKeyboard = numberKeyboard;
@@ -189,6 +194,7 @@ public class SaiNawLayoutManager {
         isSymbols = false; 
         isCapsLocked = false;
         isEmoji = false;
+        currentEmojiPage = 1;
         
         updateKeyboardLayout();
     }

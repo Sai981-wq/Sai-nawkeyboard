@@ -340,6 +340,23 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 case KEYCODE_EMOJI: 
                     layoutManager.isEmoji = true;
                     layoutManager.isSymbols = false;
+                    layoutManager.currentEmojiPage = 1;
+                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                    layoutManager.updateKeyboardLayout();
+                    if (effectiveSmartEcho) announceText("Emoji");
+                    updateHelperState();
+                    break;
+                    
+                case -102:
+                    layoutManager.currentEmojiPage = 2;
+                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                    layoutManager.updateKeyboardLayout();
+                    if (effectiveSmartEcho) announceText("More Emoji");
+                    updateHelperState();
+                    break;
+
+                case -103:
+                    layoutManager.currentEmojiPage = 1;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     if (effectiveSmartEcho) announceText("Emoji");

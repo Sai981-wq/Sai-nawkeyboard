@@ -25,14 +25,24 @@
 		<Key android:codes="128079" android:keyLabel="👏" />
 		<Key android:codes="127881" android:keyLabel="🎉" />
 		<Key android:codes="128293" android:keyLabel="🔥" />
+		<Key android:codes="129462" android:keyLabel="🫶" />
+	</Row>
+	<Row>
+		<Key android:codes="129300" android:keyLabel="🤔" />
+		<Key android:codes="129402" android:keyLabel="🥺" />
+		<Key android:codes="128517" android:keyLabel="😅" />
+		<Key android:codes="128580" android:keyLabel="🙄" />
+		<Key android:codes="10024" android:keyLabel="✨" />
+		<Key android:codes="128128" android:keyLabel="💀" />
 		<Key android:codes="-5" android:isRepeatable="true" android:keyLabel="DEL" />
 	</Row>
 	<Row android:rowEdgeFlags="bottom">
 		<Key android:keyWidth="14.999998%p" android:codes="-6" android:keyEdgeFlags="left" android:keyLabel="ABC" />
 		<Key android:keyWidth="10.000002%p" android:codes="44" android:keyLabel="," />
-		<Key android:keyWidth="10.000002%p" android:codes="-101" android:keyLabel="🌐" />
+		<Key android:keyWidth="10.000002%p" android:codes="-102" android:keyLabel="➡️" />
 		<Key android:keyWidth="39.999996%p" android:codes="32" android:keyLabel="SPACE" />
 		<Key android:keyWidth="10.000002%p" android:codes="46" android:keyLabel="." />
 		<Key android:keyWidth="14.999998%p" android:codes="-4" android:keyEdgeFlags="right" android:keyLabel="⏎" />
 	</Row>
 </Keyboard>
+
