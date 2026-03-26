@@ -262,9 +262,14 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             return;
         }
 
-        // 💡 Shan UI ရောက်နေလျှင် အသံမထပ်စေရန် Smart Echo ကို အလိုအလျောက် ခဏပိတ်ထားပေးမည့်စနစ်
+        // 💡 Shan UI ရောက်နေပြီး၊ Shan Phonetic ကိုလည်း ဖွင့်ထားမှသာ 
+        // အသံမထပ်စေရန် Smart Echo ကို အလိုအလျောက် ခဏပိတ်ထားပေးမည့်စနစ်
+        boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
+                .getBoolean("use_shan_phonetic_sounds", true);
         boolean isShanUI = (layoutManager != null && layoutManager.currentLanguageId == 2);
-        boolean effectiveSmartEcho = useSmartEcho && !isShanUI;
+        
+        // Shan TTS က အလုပ်လုပ်တော့မယ့် အခြေအနေဆိုရင် Smart Echo ကို ပိတ်မည်
+        boolean effectiveSmartEcho = useSmartEcho && !(isShanUI && useShanPhonetic);
 
         try {
             switch (primaryCode) {
