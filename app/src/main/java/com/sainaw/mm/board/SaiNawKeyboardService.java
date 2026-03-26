@@ -362,7 +362,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     layoutManager.currentEmojiPage = 1;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    if (effectiveSmartEcho) announceText("အီမိုဂျီ စာမျက်နှာ ၁၊ နောက်ထပ်စာမျက်နှာ သွားနိုင်သည်");
                     updateHelperState();
                     break;
                     
@@ -370,7 +369,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     layoutManager.currentEmojiPage = 2;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    if (effectiveSmartEcho) announceText("အီမိုဂျီ စာမျက်နှာ ၂");
                     updateHelperState();
                     break;
 
@@ -378,7 +376,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     layoutManager.currentEmojiPage = 1;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    if (effectiveSmartEcho) announceText("အီမိုဂျီ စာမျက်နှာ ၁");
                     updateHelperState();
                     break;
 
