@@ -26,15 +26,15 @@
 		<Key android:codes="4111" android:keyEdgeFlags="right" android:keyLabel="ဏ" />
 	</Row>
 	<Row>
-		<Key android:keyWidth="10.2%p" android:codes="4119" android:keyEdgeFlags="left" android:keyLabel="ဗ" />
-		<Key android:keyWidth="10.2%p" android:codes="4158" android:keyLabel="ှ" />
-		<Key android:keyWidth="10.2%p" android:codes="4142" android:keyLabel="ီ" />
-		<Key android:keyWidth="10.2%p" android:codes="4153" android:keyLabel="္" />
-		<Key android:keyWidth="10.2%p" android:codes="4157" android:keyLabel="ွ" />
-		<Key android:keyWidth="10.2%p" android:codes="4150" android:keyLabel="ံ" />
-		<Key android:keyWidth="10.2%p" android:codes="4146" android:keyLabel="ဲ" />
-		<Key android:keyWidth="10.2%p" android:codes="4114" android:keyLabel="ဒ" />
-		<Key android:keyWidth="10.399998%p" android:codes="4115" android:keyEdgeFlags="right" android:keyLabel="ဓ" />
+		<Key android:keyWidth="10.1%p" android:codes="4119" android:keyEdgeFlags="left" android:keyLabel="ဗ" />
+		<Key android:keyWidth="10.1%p" android:codes="4158" android:keyLabel="ှ" />
+		<Key android:keyWidth="10.1%p" android:codes="4142" android:keyLabel="ီ" />
+		<Key android:keyWidth="10.1%p" android:codes="4153" android:keyLabel="္" />
+		<Key android:keyWidth="10.1%p" android:codes="4157" android:keyLabel="ွ" />
+		<Key android:keyWidth="10.1%p" android:codes="4150" android:keyLabel="ံ" />
+		<Key android:keyWidth="10.1%p" android:codes="4146" android:keyLabel="ဲ" />
+		<Key android:keyWidth="10.1%p" android:codes="4114" android:keyLabel="ဒ" />
+		<Key android:keyWidth="10.1%p" android:codes="4115" android:keyEdgeFlags="right" android:keyLabel="ဓ" />
 	</Row>
 	<Row>
 		<Key android:keyWidth="13.100004%p" android:codes="-1" android:keyEdgeFlags="left" android:isModifier="true" android:isSticky="true" android:keyIcon="@drawable/ic_keyboard_shift" />
@@ -49,12 +49,13 @@
 		<Key android:keyWidth="13.100004%p" android:codes="-5" android:keyEdgeFlags="right" android:isRepeatable="true" android:keyIcon="@drawable/ic_keyboard_backspace" />
 	</Row>
 	<Row android:rowEdgeFlags="bottom">
-		<Key android:keyWidth="10.000002%p" android:codes="-2" android:keyEdgeFlags="left" android:keyLabel="\?123" />
-		<Key android:keyWidth="10.000002%p" android:codes="-7" android:keyLabel="emoji" />
-		<Key android:keyWidth="10.000002%p" android:codes="-101" android:keyIcon="@drawable/ic_keyboard_language" />
-		<Key android:keyWidth="10.000002%p" android:codes="4170" android:keyLabel="၊" />
-		<Key android:keyWidth="29.999996%p" android:codes="32" android:isRepeatable="true" android:keyLabel="SPACE" />
-		<Key android:keyWidth="10.000002%p" android:codes="4171" android:keyLabel="။" />
-		<Key android:keyWidth="14.999998%p" android:codes="-4" android:keyEdgeFlags="right" android:keyIcon="@drawable/ic_keyboard_return" />
+		<Key android:keyWidth="14.0%p" android:codes="-2" android:keyEdgeFlags="left" android:keyLabel="\?123" />
+		<Key android:keyWidth="10.0%p" android:codes="-7" android:keyLabel="emoji" />
+		<Key android:keyWidth="10.0%p" android:codes="44" android:keyLabel="," />
+		<Key android:keyWidth="10.0%p" android:codes="-101" android:keyIcon="@drawable/ic_keyboard_language" />
+		<Key android:keyWidth="26.0%p" android:codes="32" android:isRepeatable="true" android:keyLabel="SPACE" />
+		<Key android:keyWidth="10.0%p" android:codes="4171" android:keyLabel="။" />
+		<Key android:keyWidth="14.0%p" android:codes="-4" android:keyEdgeFlags="right" android:keyIcon="@drawable/ic_keyboard_return" />
 	</Row>
 </Keyboard>
+

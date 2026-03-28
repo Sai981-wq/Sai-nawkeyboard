@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<Keyboard xmlns:android="http://schemas.android.com/apk/res/android" android:keyWidth="10.000002%p" android:keyHeight="60.0dip" android:horizontalGap="0.0px" android:verticalGap="0.0px">
+<Keyboard xmlns:android="http://schemas.android.com/apk/res/android" android:keyWidth="9.099997%p" android:keyHeight="60.0dip" android:horizontalGap="0.99999905%p" android:verticalGap="1.4999986%p">
 	<Row>
 		<Key android:codes="4104" android:keyEdgeFlags="left" android:keyLabel="ဈ" />
 		<Key android:codes="4125" android:keyLabel="ဝ" />
@@ -37,24 +37,25 @@
 		<Key android:codes="4152" android:keyEdgeFlags="right" android:keyLabel="း" />
 	</Row>
 	<Row>
-		<Key android:keyWidth="14.999998%p" android:codes="-1" android:keyEdgeFlags="left" android:isModifier="true" android:isSticky="true" android:keyIcon="@drawable/ic_keyboard_shift" />
-		<Key android:keyWidth="8.749998%p" android:codes="4118" android:keyLabel="ဖ" />
-		<Key android:keyWidth="8.749998%p" android:codes="4113" android:keyLabel="ထ" />
-		<Key android:keyWidth="8.749998%p" android:codes="4097" android:keyLabel="ခ" />
-		<Key android:keyWidth="8.749998%p" android:codes="4124" android:keyLabel="လ" />
-		<Key android:keyWidth="8.749998%p" android:codes="4120" android:keyLabel="ဘ" />
-		<Key android:keyWidth="8.749998%p" android:codes="4106" android:keyLabel="ည" />
-		<Key android:keyWidth="8.749998%p" android:codes="4140" android:keyLabel="ာ" />
-		<Key android:keyWidth="8.749998%p" android:codes="4122" android:keyLabel="ယ" />
-		<Key android:keyWidth="14.999998%p" android:codes="-5" android:keyEdgeFlags="right" android:isRepeatable="true" android:keyIcon="@drawable/ic_keyboard_backspace" />
+		<Key android:keyWidth="14.100003%p" android:codes="-1" android:keyEdgeFlags="left" android:isModifier="true" android:isSticky="true" android:keyIcon="@drawable/ic_keyboard_shift" />
+		<Key android:codes="4118" android:keyLabel="ဖ" />
+		<Key android:codes="4113" android:keyLabel="ထ" />
+		<Key android:codes="4097" android:keyLabel="ခ" />
+		<Key android:codes="4124" android:keyLabel="လ" />
+		<Key android:codes="4120" android:keyLabel="ဘ" />
+		<Key android:codes="4106" android:keyLabel="ည" />
+		<Key android:codes="4140" android:keyLabel="ာ" />
+		<Key android:codes="4122" android:keyLabel="ယ" />
+		<Key android:keyWidth="14.100003%p" android:codes="-5" android:keyEdgeFlags="right" android:isRepeatable="true" android:keyIcon="@drawable/ic_keyboard_backspace" />
 	</Row>
 	<Row android:rowEdgeFlags="bottom">
-		<Key android:keyWidth="14.999998%p" android:codes="-2" android:keyEdgeFlags="left" android:keyLabel="\?123" />
-		<Key android:keyWidth="10.000002%p" android:codes="-7" android:keyLabel="emoji" />
-		<Key android:keyWidth="10.000002%p" android:codes="-101" android:keyIcon="@drawable/ic_keyboard_language" />
-		<Key android:keyWidth="10.000002%p" android:codes="4170" android:keyLabel="၊" />
-		<Key android:keyWidth="25.0%p" android:codes="32" android:isRepeatable="true" android:keyLabel="SPACE" />
-		<Key android:keyWidth="10.000002%p" android:codes="4171" android:keyLabel="။" />
-		<Key android:keyWidth="20.000004%p" android:codes="-4" android:keyEdgeFlags="right" android:keyIcon="@drawable/ic_keyboard_return" />
+		<Key android:keyWidth="14.0%p" android:codes="-2" android:keyEdgeFlags="left" android:keyLabel="\?123" />
+		<Key android:keyWidth="10.0%p" android:codes="-7" android:keyLabel="emoji" />
+		<Key android:keyWidth="10.0%p" android:codes="44" android:keyLabel="," />
+		<Key android:keyWidth="10.0%p" android:codes="-101" android:keyIcon="@drawable/ic_keyboard_language" />
+		<Key android:keyWidth="26.0%p" android:codes="32" android:isRepeatable="true" android:keyLabel="SPACE" />
+		<Key android:keyWidth="10.0%p" android:codes="4171" android:keyLabel="။" />
+		<Key android:keyWidth="14.0%p" android:codes="-4" android:keyEdgeFlags="right" android:keyIcon="@drawable/ic_keyboard_return" />
 	</Row>
 </Keyboard>
+

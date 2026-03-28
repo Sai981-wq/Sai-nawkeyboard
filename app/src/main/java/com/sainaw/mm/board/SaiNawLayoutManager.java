@@ -57,7 +57,7 @@ public class SaiNawLayoutManager {
             String suffix = showNumRow ? "_num" : "";
             
             qwertyKeyboard = new Keyboard(context, service.getResId("qwerty" + suffix));
-            qwertyShiftKeyboard = new Keyboard(context, service.getResId("qwerty_shift"));
+            qwertyShiftKeyboard = new Keyboard(context, service.getResId("qwerty" + suffix + "_shift"));
             
             myanmarKeyboard = new Keyboard(context, service.getResId("myanmar" + suffix));
             myanmarShiftKeyboard = new Keyboard(context, service.getResId("myanmar_shift"));
