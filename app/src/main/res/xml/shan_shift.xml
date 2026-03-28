@@ -38,10 +38,11 @@
 	<Row android:rowEdgeFlags="bottom">
 		<Key android:keyWidth="10.000002%p" android:codes="-2" android:keyEdgeFlags="left" android:keyLabel="123" />
 		<Key android:keyWidth="10.000002%p" android:codes="-7" android:keyLabel="emoji" />
-		<Key android:keyWidth="10.000002%p" android:codes="-101" android:keyIcon="@drawable/ic_keyboard_language" />
 		<Key android:keyWidth="10.000002%p" android:codes="4170" android:keyLabel="၊" />
+		<Key android:keyWidth="10.000002%p" android:codes="-101" android:keyIcon="@drawable/ic_keyboard_language" />
 		<Key android:keyWidth="24.0%p" android:codes="32" android:isRepeatable="true" android:keyLabel="SPACE" />
 		<Key android:keyWidth="10.000002%p" android:codes="4171" android:keyLabel="။" />
 		<Key android:keyWidth="20.000004%p" android:codes="-4" android:keyEdgeFlags="right" android:keyIcon="@drawable/ic_keyboard_return" />
 	</Row>
 </Keyboard>
+

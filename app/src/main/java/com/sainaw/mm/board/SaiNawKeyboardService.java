@@ -29,6 +29,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
+import android.view.inputmethod.CursorAnchorInfo;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
@@ -199,6 +200,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
 
         super.onStartInputView(info, restarting);
+
+        InputConnection ic = getCurrentInputConnection();
+        if (ic != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            ic.requestCursorUpdates(InputConnection.CURSOR_UPDATE_IMMEDIATE | InputConnection.CURSOR_UPDATE_MONITOR);
+        }
         
         feedbackManager.loadSettings(prefs);
         touchHandler.loadSettings(prefs);
@@ -791,6 +797,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             touchHandler.cancelAllLongPress();
         }
         handler.removeCallbacks(pendingCandidateUpdate);
+    }
+
+    @Override
+    public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd, int candidatesStart, int candidatesEnd) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd);
+    }
+
+    @Override
+    public void onUpdateCursorAnchorInfo(CursorAnchorInfo cursorAnchorInfo) {
+        super.onUpdateCursorAnchorInfo(cursorAnchorInfo);
     }
 }
 
