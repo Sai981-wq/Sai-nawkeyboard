@@ -37,16 +37,16 @@
 		<Key android:codes="4152" android:keyEdgeFlags="right" android:keyLabel="း" />
 	</Row>
 	<Row>
-		<Key android:keyWidth="14.100003%p" android:codes="-1" android:keyEdgeFlags="left" android:isModifier="true" android:isSticky="true" android:keyIcon="@drawable/ic_keyboard_shift" />
-		<Key android:codes="4118" android:keyLabel="ဖ" />
-		<Key android:codes="4113" android:keyLabel="ထ" />
-		<Key android:codes="4097" android:keyLabel="ခ" />
-		<Key android:codes="4124" android:keyLabel="လ" />
-		<Key android:codes="4120" android:keyLabel="ဘ" />
-		<Key android:codes="4106" android:keyLabel="ည" />
-		<Key android:codes="4140" android:keyLabel="ာ" />
-		<Key android:codes="4122" android:keyLabel="ယ" />
-		<Key android:keyWidth="14.100003%p" android:codes="-5" android:keyEdgeFlags="right" android:isRepeatable="true" android:keyIcon="@drawable/ic_keyboard_backspace" />
+		<Key android:keyWidth="13.100004%p" android:codes="-1" android:keyEdgeFlags="left" android:isModifier="true" android:isSticky="true" android:keyIcon="@drawable/ic_keyboard_shift" />
+		<Key android:keyWidth="8.099997%p" android:codes="4118" android:keyLabel="ဖ" />
+		<Key android:keyWidth="8.099997%p" android:codes="4113" android:keyLabel="ထ" />
+		<Key android:keyWidth="8.099997%p" android:codes="4097" android:keyLabel="ခ" />
+		<Key android:keyWidth="8.099997%p" android:codes="4124" android:keyLabel="လ" />
+		<Key android:keyWidth="8.099997%p" android:codes="4120" android:keyLabel="ဘ" />
+		<Key android:keyWidth="8.099997%p" android:codes="4106" android:keyLabel="ည" />
+		<Key android:keyWidth="8.099997%p" android:codes="4140" android:keyLabel="ာ" />
+		<Key android:keyWidth="8.099997%p" android:codes="4122" android:keyLabel="ယ" />
+		<Key android:keyWidth="13.100004%p" android:codes="-5" android:keyEdgeFlags="right" android:isRepeatable="true" android:keyIcon="@drawable/ic_keyboard_backspace" />
 	</Row>
 	<Row android:rowEdgeFlags="bottom">
 		<Key android:keyWidth="14.0%p" android:codes="-2" android:keyEdgeFlags="left" android:keyLabel="\?123" />

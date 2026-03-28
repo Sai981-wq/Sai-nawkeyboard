@@ -26,15 +26,15 @@
 		<Key android:codes="4111" android:keyEdgeFlags="right" android:keyLabel="ဏ" />
 	</Row>
 	<Row>
-		<Key android:keyWidth="10.1%p" android:codes="4119" android:keyEdgeFlags="left" android:keyLabel="ဗ" />
-		<Key android:keyWidth="10.1%p" android:codes="4158" android:keyLabel="ှ" />
-		<Key android:keyWidth="10.1%p" android:codes="4142" android:keyLabel="ီ" />
-		<Key android:keyWidth="10.1%p" android:codes="4153" android:keyLabel="္" />
-		<Key android:keyWidth="10.1%p" android:codes="4157" android:keyLabel="ွ" />
-		<Key android:keyWidth="10.1%p" android:codes="4150" android:keyLabel="ံ" />
-		<Key android:keyWidth="10.1%p" android:codes="4146" android:keyLabel="ဲ" />
-		<Key android:keyWidth="10.1%p" android:codes="4114" android:keyLabel="ဒ" />
-		<Key android:keyWidth="10.1%p" android:codes="4115" android:keyEdgeFlags="right" android:keyLabel="ဓ" />
+		<Key android:keyWidth="10.111111%p" android:codes="4119" android:keyEdgeFlags="left" android:keyLabel="ဗ" />
+		<Key android:keyWidth="10.111111%p" android:codes="4158" android:keyLabel="ှ" />
+		<Key android:keyWidth="10.111111%p" android:codes="4142" android:keyLabel="ီ" />
+		<Key android:keyWidth="10.111111%p" android:codes="4153" android:keyLabel="္" />
+		<Key android:keyWidth="10.111111%p" android:codes="4157" android:keyLabel="ွ" />
+		<Key android:keyWidth="10.111111%p" android:codes="4150" android:keyLabel="ံ" />
+		<Key android:keyWidth="10.111111%p" android:codes="4146" android:keyLabel="ဲ" />
+		<Key android:keyWidth="10.111111%p" android:codes="4114" android:keyLabel="ဒ" />
+		<Key android:keyWidth="10.111111%p" android:codes="4115" android:keyEdgeFlags="right" android:keyLabel="ဓ" />
 	</Row>
 	<Row>
 		<Key android:keyWidth="13.100004%p" android:codes="-1" android:keyEdgeFlags="left" android:isModifier="true" android:isSticky="true" android:keyIcon="@drawable/ic_keyboard_shift" />
