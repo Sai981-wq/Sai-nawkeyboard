@@ -85,10 +85,10 @@ class PanglongTtsService : TextToSpeechService() {
                     return@forEach
                 }
                 
-                val parts = rawLine.split(" ", "\t")
-                if (parts.size == 2) {
+                val parts = rawLine.trim().split(Regex("\\s+"))
+                if (parts.size >= 2) {
                     val token = parts[0]
-                    val id = parts[1].toLongOrNull()
+                    val id = parts.last().toLongOrNull()
                     if (token.length == 1 && id != null) {
                         map[token[0]] = id
                     }
