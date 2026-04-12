@@ -6,8 +6,9 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
+import com.burmese.tts.R
 
-class BurmeseTtsSettingsActivity : AppCompatActivity() {
+class ShanTtsSettingsActivity : AppCompatActivity() {
 
     companion object {
         const val PREFS_NAME = "burmese_tts_prefs"
