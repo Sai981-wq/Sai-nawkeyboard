@@ -18,7 +18,7 @@
             android:resource="@xml/tts_engine" />
 
         <activity
-            android:name=".BurmeseTtsSettingsActivity"
+            android:name="com.shan.tts.ShanTtsSettingsActivity"
             android:label="@string/app_name"
             android:exported="true">
             <intent-filter>
@@ -32,11 +32,11 @@
         </activity>
 
         <activity
-            android:name=".DebugActivity"
+            android:name="com.shan.tts.DebugActivity"
             android:exported="true" />
 
         <service
-            android:name=".ShanTtsService"
+            android:name="com.shan.tts.ShanTtsService"
             android:label="AM Burmese TTS"
             android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE"
             android:exported="true">
@@ -47,7 +47,7 @@
         </service>
 
         <activity
-            android:name=".CheckVoiceData"
+            android:name="com.shan.tts.CheckVoiceData"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
@@ -57,7 +57,7 @@
         </activity>
 
         <activity
-            android:name=".GetSampleText"
+            android:name="com.shan.tts.GetSampleText"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
