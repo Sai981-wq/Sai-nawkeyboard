@@ -125,14 +125,14 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
-        return if (lang.equals("burmese", ignoreCase = true)) TextToSpeech.LANG_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
+        return if (lang.equals("my", ignoreCase = true) || lang.equals("mya", ignoreCase = true)) TextToSpeech.LANG_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
     }
 
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
         return onIsLanguageAvailable(lang, country, variant)
     }
 
-    override fun onGetLanguage(): Array<String> = arrayOf("burmese", "MMR", "")
+    override fun onGetLanguage(): Array<String> = arrayOf("my", "MM", "")
 
     override fun onStop() {
         isStopped = true
@@ -189,9 +189,6 @@ class ShanTtsService : TextToSpeechService() {
                 var pauseDuration = 0
                 when (unit) {
                     "[NEWLINE]" -> pauseDuration = 800
-                    "။", "." -> pauseDuration = 600
-                    "?" -> pauseDuration = 600
-                    "၊", ",", ";" -> pauseDuration = 300
                     "[SPACE]" -> pauseDuration = 200
                 }
 
@@ -403,9 +400,9 @@ class ShanTtsService : TextToSpeechService() {
 
     private fun safeCallbackDone(callback: SynthesisCallback) { try { callback.done() } catch (_: Exception) {} }
     
-    override fun onGetVoices(): MutableList<Voice> = mutableListOf(Voice("burmese", Locale.Builder().setLanguage("burmese").build(), Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL, false, hashSetOf(TextToSpeech.Engine.KEY_FEATURE_EMBEDDED_SYNTHESIS)))
-    override fun onGetDefaultVoiceNameFor(lang: String, country: String, variant: String): String = "burmese"
-    override fun onIsValidVoiceName(voiceName: String): Int = if (voiceName == "burmese") TextToSpeech.SUCCESS else TextToSpeech.ERROR
+    override fun onGetVoices(): MutableList<Voice> = mutableListOf(Voice("my-MM", Locale.Builder().setLanguage("my").setRegion("MM").build(), Voice.QUALITY_NORMAL, Voice.LATENCY_NORMAL, false, hashSetOf(TextToSpeech.Engine.KEY_FEATURE_EMBEDDED_SYNTHESIS)))
+    override fun onGetDefaultVoiceNameFor(lang: String, country: String, variant: String): String = "my-MM"
+    override fun onIsValidVoiceName(voiceName: String): Int = if (voiceName == "my-MM") TextToSpeech.SUCCESS else TextToSpeech.ERROR
     override fun onGetFeaturesForLanguage(lang: String?, country: String?, variant: String?): MutableSet<String> = hashSetOf(TextToSpeech.Engine.KEY_FEATURE_EMBEDDED_SYNTHESIS)
 
     override fun onDestroy() {
