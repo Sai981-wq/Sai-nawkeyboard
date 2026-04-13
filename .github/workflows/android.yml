@@ -28,7 +28,7 @@ jobs:
       run: ./gradlew assembleRelease
 
     - name: Rename APK
-      run: mv app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/SaiNaw-Keyboard.apk
+      run: mv app/build/outputs/apk/release/*.apk app/build/outputs/apk/release/SaiNaw-Keyboard.apk
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
