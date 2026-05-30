@@ -360,14 +360,14 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         if (cpuWakeLock != null) {
             try {
-                cpuWakeLock.acquire(60000);
+                long cpuTimeout = Math.max(120000L, text.length() * 300L);
+                cpuWakeLock.acquire(cpuTimeout);
             } catch (Exception e) {}
         }
 
         if (screenWakeLock != null) {
             try {
-                long timeoutMs = 2000 + (text.length() * 50L);
-                timeoutMs = Math.min(timeoutMs, 30000);
+                long timeoutMs = Math.max(60000L, text.length() * 300L);
                 screenWakeLock.acquire(timeoutMs);
             } catch (Exception e) {}
         }
@@ -437,46 +437,68 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     targetEngine.setPitch(pitch);
                 } catch (Exception e) {}
 
-                String utteranceId = "utt_" + System.nanoTime();
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
+                int maxLen = 3500;
+                int textLen = chunk.text.length();
+                int startIndex = 0;
 
-                CountDownLatch latch = new CountDownLatch(1);
-                utteranceLatches.put(utteranceId, latch);
+                while (startIndex < textLen) {
+                    if (stopRequested.get() || isDestroyed.get()) break;
 
-                int result = TextToSpeech.ERROR;
-                try {
-                    result = targetEngine.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId);
-                } catch (Exception e) {
-                    utteranceLatches.remove(utteranceId);
-                    recordFailure(chunk.lang);
-                    continue;
-                }
-
-                if (result == TextToSpeech.ERROR) {
-                    utteranceLatches.remove(utteranceId);
-                    recordFailure(chunk.lang);
-                    continue;
-                }
-
-                try {
-                    long timeout = 3000 + (chunk.text.length() * 50L);
-                    boolean done = latch.await(timeout, TimeUnit.MILLISECONDS);
+                    int endIndex = Math.min(startIndex + maxLen, textLen);
                     
-                    if (!done && !stopRequested.get() && !isDestroyed.get()) {
-                        utteranceLatches.remove(utteranceId);
-                        try { if (targetEngine != null) targetEngine.stop(); } catch (Exception e) {}
-                        recordFailure(chunk.lang);
-                    } else if (done) {
-                        recordSuccess(chunk.lang);
+                    if (endIndex < textLen) {
+                        int breakPoint = -1;
+                        for (int j = endIndex - 1; j >= startIndex && j > startIndex + (maxLen - 500); j--) {
+                            char c = chunk.text.charAt(j);
+                            if (c == ' ' || c == '\n' || c == '။' || c == '၊' || c == '.' || c == ',') {
+                                breakPoint = j + 1;
+                                break;
+                            }
+                        }
+                        if (breakPoint != -1) {
+                            endIndex = breakPoint;
+                        }
                     }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    stopRequested.set(true);
-                }
 
-                if (stopRequested.get() || isDestroyed.get()) {
-                    try { if (targetEngine != null) targetEngine.stop(); } catch (Exception e) {}
-                    break;
+                    String subText = chunk.text.substring(startIndex, endIndex);
+                    startIndex = endIndex;
+
+                    String utteranceId = "utt_" + System.nanoTime();
+                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
+
+                    CountDownLatch latch = new CountDownLatch(1);
+                    utteranceLatches.put(utteranceId, latch);
+
+                    int result = TextToSpeech.ERROR;
+                    try {
+                        result = targetEngine.speak(subText, TextToSpeech.QUEUE_ADD, params, utteranceId);
+                    } catch (Exception e) {
+                        utteranceLatches.remove(utteranceId);
+                        recordFailure(chunk.lang);
+                        break;
+                    }
+
+                    if (result == TextToSpeech.ERROR) {
+                        utteranceLatches.remove(utteranceId);
+                        recordFailure(chunk.lang);
+                        break;
+                    }
+
+                    try {
+                        long timeout = Math.max(30000L, subText.length() * 300L);
+                        boolean done = latch.await(timeout, TimeUnit.MILLISECONDS);
+                        
+                        if (!done && !stopRequested.get() && !isDestroyed.get()) {
+                            utteranceLatches.remove(utteranceId);
+                            try { if (targetEngine != null) targetEngine.stop(); } catch (Exception e) {}
+                            recordFailure(chunk.lang);
+                        } else if (done) {
+                            recordSuccess(chunk.lang);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        stopRequested.set(true);
+                    }
                 }
             }
         } catch (Exception e) {

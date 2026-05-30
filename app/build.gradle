@@ -10,8 +10,8 @@ android {
         applicationId "com.cherry.sme.tts"
         minSdk 24
         targetSdk 36
-        versionCode 9
-        versionName "2.5.3"
+        versionCode 10
+        versionName "2.5.4"
     }
 
     signingConfigs {
