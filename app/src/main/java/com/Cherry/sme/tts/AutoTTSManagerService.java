@@ -293,8 +293,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     try {
                         keepAliveTrack = new AudioTrack(
                                 new AudioAttributes.Builder()
-                                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                                         .build(),
                                 new AudioFormat.Builder()
                                         .setSampleRate(16000)
