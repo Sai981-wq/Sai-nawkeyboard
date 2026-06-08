@@ -20,7 +20,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.util.Locale;
 
 public class CameraActivity extends AppCompatActivity implements SurfaceHolder.Callback, Camera.PreviewCallback, TextToSpeech.OnInitListener {
@@ -73,16 +72,28 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     public void surfaceCreated(SurfaceHolder holder) {
         try {
             camera = Camera.open();
+            if (camera == null) {
+                Toast.makeText(this, "ကင်မရာ ရှာမတွေ့ပါ", Toast.LENGTH_SHORT).show();
+                finish();
+                return;
+            }
+
             Camera.Parameters params = camera.getParameters();
-            params.setPreviewSize(640, 480);
-            params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+
+            if (params.getSupportedFocusModes() != null && 
+                params.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
+                params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+            }
+
             camera.setParameters(params);
             camera.setDisplayOrientation(90);
             camera.setPreviewDisplay(holder);
             camera.setPreviewCallback(this);
             camera.startPreview();
-        } catch (IOException e) {
-            Toast.makeText(this, "ကင်မရာ ဖွင့်၍မရပါ", Toast.LENGTH_SHORT).show();
+            
+        } catch (Exception e) { 
+            e.printStackTrace();
+            Toast.makeText(this, "ကင်မရာ ဖွင့်၍မရပါ သို့မဟုတ် ခွင့်ပြုချက်မရှိပါ", Toast.LENGTH_SHORT).show();
             finish();
         }
     }
@@ -193,3 +204,4 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
         super.onDestroy();
     }
 }
+
