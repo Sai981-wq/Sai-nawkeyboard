@@ -3,6 +3,7 @@ package com.moneyreader.myanmar;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.graphics.ImageFormat;
 import android.graphics.Matrix;
 import android.graphics.Rect;
@@ -41,31 +42,45 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_camera);
+        try {
+            setContentView(R.layout.activity_camera);
 
-        surfaceView = findViewById(R.id.surfaceView);
-        resultText = findViewById(R.id.resultText);
-        instructionText = findViewById(R.id.instructionText);
-        confirmButton = findViewById(R.id.confirmButton);
-        backButton = findViewById(R.id.backButton);
-        handler = new Handler(Looper.getMainLooper());
+            surfaceView = findViewById(R.id.surfaceView);
+            resultText = findViewById(R.id.resultText);
+            instructionText = findViewById(R.id.instructionText);
+            confirmButton = findViewById(R.id.confirmButton);
+            backButton = findViewById(R.id.backButton);
+            handler = new Handler(Looper.getMainLooper());
 
-        tts = new TextToSpeech(this, this);
-        classifier = new BanknoteClassifier(this);
+            tts = new TextToSpeech(this, this);
+            classifier = new BanknoteClassifier(this);
 
-        surfaceView.getHolder().addCallback(this);
+            surfaceView.getHolder().addCallback(this);
 
-        confirmButton.setOnClickListener(v -> {
-            if (!lastStableDetection.isEmpty()) {
-                Intent resultIntent = new Intent();
-                resultIntent.putExtra("detected_value", lastStableDetection);
-                setResult(RESULT_OK, resultIntent);
-                finish();
-            }
-        });
+            confirmButton.setOnClickListener(v -> {
+                if (!lastStableDetection.isEmpty()) {
+                    Intent resultIntent = new Intent();
+                    resultIntent.putExtra("detected_value", lastStableDetection);
+                    setResult(RESULT_OK, resultIntent);
+                    finish();
+                }
+            });
 
-        backButton.setOnClickListener(v -> finish());
-        confirmButton.setVisibility(View.GONE);
+            backButton.setOnClickListener(v -> finish());
+            confirmButton.setVisibility(View.GONE);
+        } catch (Throwable t) {
+            showErrorScreen(t.toString());
+        }
+    }
+
+    private void showErrorScreen(String errorMsg) {
+        if (instructionText != null) {
+            instructionText.setText(errorMsg);
+            instructionText.setTextColor(Color.RED);
+            instructionText.setTextSize(14f);
+        } else {
+            Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
@@ -73,13 +88,11 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
         try {
             camera = Camera.open();
             if (camera == null) {
-                Toast.makeText(this, "ကင်မရာ ရှာမတွေ့ပါ", Toast.LENGTH_SHORT).show();
-                finish();
+                showErrorScreen("Camera not found");
                 return;
             }
 
             Camera.Parameters params = camera.getParameters();
-
             if (params.getSupportedFocusModes() != null && 
                 params.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
                 params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
@@ -90,11 +103,8 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             camera.setPreviewDisplay(holder);
             camera.setPreviewCallback(this);
             camera.startPreview();
-            
-        } catch (Exception e) { 
-            e.printStackTrace();
-            Toast.makeText(this, "ကင်မရာ ဖွင့်၍မရပါ သို့မဟုတ် ခွင့်ပြုချက်မရှိပါ", Toast.LENGTH_SHORT).show();
-            finish();
+        } catch (Throwable t) {
+            showErrorScreen(t.toString());
         }
     }
 
@@ -129,8 +139,8 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
 
                 bitmap.recycle();
                 rotated.recycle();
-            } catch (Exception e) {
-                e.printStackTrace();
+            } catch (Throwable t) {
+                showErrorScreen(t.toString());
             }
             isProcessing = false;
         });
@@ -188,12 +198,14 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     }
 
     private void releaseCamera() {
-        if (camera != null) {
-            camera.setPreviewCallback(null);
-            camera.stopPreview();
-            camera.release();
-            camera = null;
-        }
+        try {
+            if (camera != null) {
+                camera.setPreviewCallback(null);
+                camera.stopPreview();
+                camera.release();
+                camera = null;
+            }
+        } catch (Exception e) {}
     }
 
     @Override
