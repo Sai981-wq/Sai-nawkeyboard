@@ -31,12 +31,12 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     private TextView instructionText;
     private Button confirmButton;
     private Button backButton;
+    private Button flashlightButton;
     private BanknoteClassifier classifier;
     private TextToSpeech tts;
     private Handler handler;
     private boolean isProcessing = false;
-    private String currentDetection = "";
-    private int detectionCount = 0;
+    private boolean isFlashlightOn = false;
     private String lastStableDetection = "";
 
     @Override
@@ -50,6 +50,7 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             instructionText = findViewById(R.id.instructionText);
             confirmButton = findViewById(R.id.confirmButton);
             backButton = findViewById(R.id.backButton);
+            flashlightButton = findViewById(R.id.flashlightButton);
             handler = new Handler(Looper.getMainLooper());
 
             tts = new TextToSpeech(this, this);
@@ -67,9 +68,29 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             });
 
             backButton.setOnClickListener(v -> finish());
+            
+            if (flashlightButton != null) {
+                flashlightButton.setOnClickListener(v -> toggleFlashlight());
+            }
+
             confirmButton.setVisibility(View.GONE);
         } catch (Throwable t) {
             showErrorScreen(t.toString());
+        }
+    }
+
+    private void toggleFlashlight() {
+        if (camera != null) {
+            Camera.Parameters params = camera.getParameters();
+            if (params.getSupportedFlashModes() != null) {
+                if (isFlashlightOn) {
+                    params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
+                } else {
+                    params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
+                }
+                camera.setParameters(params);
+                isFlashlightOn = !isFlashlightOn;
+            }
         }
     }
 
@@ -121,7 +142,7 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
         if (isProcessing) return;
         isProcessing = true;
 
-        handler.post(() -> {
+        new Thread(() -> {
             try {
                 Camera.Size size = camera.getParameters().getPreviewSize();
                 YuvImage yuvImage = new YuvImage(data, ImageFormat.NV21, size.width, size.height, null);
@@ -134,38 +155,35 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
                 matrix.postRotate(90);
                 Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
 
-                String result = classifier.classify(rotated);
-                processDetection(result);
-
-                bitmap.recycle();
-                rotated.recycle();
+                classifier.classify(rotated, result -> {
+                    handler.post(() -> {
+                        processDetection(result);
+                        isProcessing = false;
+                        bitmap.recycle();
+                        rotated.recycle();
+                    });
+                });
             } catch (Throwable t) {
-                showErrorScreen(t.toString());
+                handler.post(() -> {
+                    showErrorScreen(t.toString());
+                    isProcessing = false;
+                });
             }
-            isProcessing = false;
-        });
+        }).start();
     }
 
     private void processDetection(String result) {
-        if (result != null && !result.equals("unknown")) {
-            if (result.equals(currentDetection)) {
-                detectionCount++;
-            } else {
-                currentDetection = result;
-                detectionCount = 1;
-            }
+        if (result == null) return;
 
-            if (detectionCount >= 3 && !result.equals(lastStableDetection)) {
-                lastStableDetection = result;
-                String displayText = result + " ကျပ်";
-                resultText.setText(displayText);
-                confirmButton.setVisibility(View.VISIBLE);
-                instructionText.setText("အတည်ပြုရန် ခလုတ်ကို နှိပ်ပါ");
-                speakDetection(result);
-            }
+        if (!result.equals("unknown")) {
+            String displayText = result + " ကျပ်";
+            resultText.setText(displayText);
+            confirmButton.setVisibility(View.VISIBLE);
+            instructionText.setText("အတည်ပြုရန် ခလုတ်ကို နှိပ်ပါ");
+            speakDetection(result);
+            lastStableDetection = result;
         } else {
             resultText.setText("ငွေစက္ကူကို ကင်မရာရှေ့တွင် ထားပါ");
-            detectionCount = 0;
         }
     }
 
@@ -193,7 +211,13 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     @Override
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
-            tts.setLanguage(new Locale("my", "MM"));
+            Locale myanmarLocale = new Locale("my", "MM");
+            int result = tts.isLanguageAvailable(myanmarLocale);
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.setLanguage(Locale.US);
+            } else {
+                tts.setLanguage(myanmarLocale);
+            }
         }
     }
 

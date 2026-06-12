@@ -96,7 +96,13 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
     @Override
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
-            tts.setLanguage(new Locale("my", "MM"));
+            Locale myanmarLocale = new Locale("my", "MM");
+            int result = tts.isLanguageAvailable(myanmarLocale);
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.setLanguage(Locale.US);
+            } else {
+                tts.setLanguage(myanmarLocale);
+            }
         }
     }
 
@@ -106,3 +112,4 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
         super.onDestroy();
     }
 }
+

@@ -25,18 +25,11 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-
-    // TFLite ဖိုင်ကို Compress မလုပ်ရန် တားမြစ်ခြင်း
-    aaptOptions {
-        noCompress "tflite"
-    }
 }
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
-    
-    // ပုံမှန် TFLite Library အပေါ့စားကိုသာ အသုံးပြုတော့မည်
-    implementation 'org.tensorflow:tensorflow-lite:2.14.0'
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
 }
 
