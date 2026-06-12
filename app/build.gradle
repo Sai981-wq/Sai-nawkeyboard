@@ -36,9 +36,7 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     
-    // TensorFlow Lite Libraries (FULLY_CONNECTED Error ဖြေရှင်းရန် အပြည့်အစုံ)
-    implementation 'org.tensorflow:tensorflow-lite:2.16.1'
-    implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
-    implementation 'org.tensorflow:tensorflow-lite-select-tf-ops:2.16.1'
+    // ပုံမှန် TFLite Library အပေါ့စားကိုသာ အသုံးပြုတော့မည်
+    implementation 'org.tensorflow:tensorflow-lite:2.14.0'
 }
 
