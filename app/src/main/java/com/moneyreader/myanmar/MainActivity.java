@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.view.View;
 import android.widget.Button;
@@ -31,7 +32,9 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        tts = new TextToSpeech(this, this);
+        String defaultEngine = Settings.Secure.getString(getContentResolver(), Settings.Secure.TTS_DEFAULT_SYNTH);
+        tts = new TextToSpeech(this, this, defaultEngine);
+        
         statusText = findViewById(R.id.statusText);
         lastResultText = findViewById(R.id.lastResultText);
         scanButton = findViewById(R.id.scanButton);

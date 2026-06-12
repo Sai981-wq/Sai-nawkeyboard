@@ -12,6 +12,7 @@ import android.hardware.Camera;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -53,7 +54,8 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             flashlightButton = findViewById(R.id.flashlightButton);
             handler = new Handler(Looper.getMainLooper());
 
-            tts = new TextToSpeech(this, this);
+            String defaultEngine = Settings.Secure.getString(getContentResolver(), Settings.Secure.TTS_DEFAULT_SYNTH);
+            tts = new TextToSpeech(this, this, defaultEngine);
             classifier = new BanknoteClassifier(this);
 
             surfaceView.getHolder().addCallback(this);
@@ -85,11 +87,24 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             if (params.getSupportedFlashModes() != null) {
                 if (isFlashlightOn) {
                     params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
+                    isFlashlightOn = false;
+                    if (flashlightButton != null) {
+                        flashlightButton.setText("💡 မီးဖွင့်ရန်");
+                    }
+                    if (tts != null) {
+                        tts.speak("မီးပိတ်လိုက်ပါပြီ", TextToSpeech.QUEUE_FLUSH, null, "flash_off");
+                    }
                 } else {
                     params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
+                    isFlashlightOn = true;
+                    if (flashlightButton != null) {
+                        flashlightButton.setText("💡 မီးပိတ်ရန်");
+                    }
+                    if (tts != null) {
+                        tts.speak("မီးဖွင့်လိုက်ပါပြီ", TextToSpeech.QUEUE_FLUSH, null, "flash_on");
+                    }
                 }
                 camera.setParameters(params);
-                isFlashlightOn = !isFlashlightOn;
             }
         }
     }
@@ -117,6 +132,10 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             if (params.getSupportedFocusModes() != null && 
                 params.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
                 params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+            }
+            
+            if (isFlashlightOn && params.getSupportedFlashModes() != null) {
+                params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
             }
 
             camera.setParameters(params);

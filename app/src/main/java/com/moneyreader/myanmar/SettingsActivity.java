@@ -2,6 +2,7 @@ package com.moneyreader.myanmar;
 
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.widget.Button;
 import android.widget.SeekBar;
@@ -30,7 +31,9 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
         setContentView(R.layout.activity_settings);
 
         prefs = getSharedPreferences("money_reader", MODE_PRIVATE);
-        tts = new TextToSpeech(this, this);
+        
+        String defaultEngine = Settings.Secure.getString(getContentResolver(), Settings.Secure.TTS_DEFAULT_SYNTH);
+        tts = new TextToSpeech(this, this, defaultEngine);
 
         speedSeekbar = findViewById(R.id.speedSeekbar);
         volumeSeekbar = findViewById(R.id.volumeSeekbar);
