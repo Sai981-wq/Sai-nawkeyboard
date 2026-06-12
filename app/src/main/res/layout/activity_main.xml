@@ -31,16 +31,6 @@
         android:text="စတင်ရန် အသင့်ဖြစ်ပါပြီ"
         android:textSize="14sp"
         android:textColor="#4CAF50"
-        android:layout_marginBottom="24dp" />
-
-    <TextView
-        android:id="@+id/lastResultText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:textSize="18sp"
-        android:textColor="#ffffff"
-        android:textStyle="bold"
-        android:visibility="gone"
         android:layout_marginBottom="32dp" />
 
     <Button
@@ -52,16 +42,6 @@
         android:textColor="#ffffff"
         android:background="@drawable/btn_primary"
         android:layout_marginBottom="16dp" />
-
-    <Button
-        android:id="@+id/historyButton"
-        android:layout_width="250dp"
-        android:layout_height="50dp"
-        android:text="📋 မှတ်တမ်း"
-        android:textSize="16sp"
-        android:textColor="#ffffff"
-        android:background="@drawable/btn_secondary"
-        android:layout_marginBottom="12dp" />
 
     <Button
         android:id="@+id/settingsButton"

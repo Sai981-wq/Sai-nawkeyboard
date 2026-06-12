@@ -12,7 +12,6 @@ import android.hardware.Camera;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -54,8 +53,7 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             flashlightButton = findViewById(R.id.flashlightButton);
             handler = new Handler(Looper.getMainLooper());
 
-            String defaultEngine = Settings.Secure.getString(getContentResolver(), Settings.Secure.TTS_DEFAULT_SYNTH);
-            tts = new TextToSpeech(this, this, defaultEngine);
+            tts = new TextToSpeech(this, this);
             classifier = new BanknoteClassifier(this);
 
             surfaceView.getHolder().addCallback(this);
@@ -231,10 +229,7 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
             Locale myanmarLocale = new Locale("my", "MM");
-            int result = tts.isLanguageAvailable(myanmarLocale);
-            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                tts.setLanguage(Locale.US);
-            } else {
+            if (tts.isLanguageAvailable(myanmarLocale) >= TextToSpeech.LANG_AVAILABLE) {
                 tts.setLanguage(myanmarLocale);
             }
         }

@@ -2,7 +2,6 @@ package com.moneyreader.myanmar;
 
 import android.content.SharedPreferences;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.widget.Button;
 import android.widget.SeekBar;
@@ -31,9 +30,7 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
         setContentView(R.layout.activity_settings);
 
         prefs = getSharedPreferences("money_reader", MODE_PRIVATE);
-        
-        String defaultEngine = Settings.Secure.getString(getContentResolver(), Settings.Secure.TTS_DEFAULT_SYNTH);
-        tts = new TextToSpeech(this, this, defaultEngine);
+        tts = new TextToSpeech(this, this);
 
         speedSeekbar = findViewById(R.id.speedSeekbar);
         volumeSeekbar = findViewById(R.id.volumeSeekbar);
@@ -100,10 +97,7 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
             Locale myanmarLocale = new Locale("my", "MM");
-            int result = tts.isLanguageAvailable(myanmarLocale);
-            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                tts.setLanguage(Locale.US);
-            } else {
+            if (tts.isLanguageAvailable(myanmarLocale) >= TextToSpeech.LANG_AVAILABLE) {
                 tts.setLanguage(myanmarLocale);
             }
         }
