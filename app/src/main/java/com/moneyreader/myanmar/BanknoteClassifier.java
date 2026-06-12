@@ -16,7 +16,7 @@ public class BanknoteClassifier {
 
     private Interpreter interpreter;
     private static final int INPUT_SIZE = 224;
-    private static final String[] LABELS = {"50", "100", "200", "500", "1000", "5000", "10000", "20000"};
+    private static final String[] LABELS = {"0.50", "1", "10", "100", "1000", "10000", "20", "200", "5", "50", "500", "5000"};
     private ByteBuffer inputBuffer;
     private float[][] outputBuffer;
     private boolean isModelLoaded = false;
@@ -132,3 +132,4 @@ public class BanknoteClassifier {
         }
     }
 }
+
