@@ -1,6 +1,7 @@
 package com.moneyreader.myanmar;
 
-import android.content.Intent;
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -9,13 +10,15 @@ import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.graphics.YuvImage;
 import android.hardware.Camera;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.speech.tts.TextToSpeech;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
-import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -28,16 +31,16 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     private Camera camera;
     private SurfaceView surfaceView;
     private TextView resultText;
-    private TextView instructionText;
-    private Button confirmButton;
     private Button backButton;
     private Button flashlightButton;
     private BanknoteClassifier classifier;
     private TextToSpeech tts;
     private Handler handler;
+    private Vibrator vibrator;
     private boolean isProcessing = false;
     private boolean isFlashlightOn = false;
     private String lastStableDetection = "";
+    private int detectionCount = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -47,25 +50,16 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
 
             surfaceView = findViewById(R.id.surfaceView);
             resultText = findViewById(R.id.resultText);
-            instructionText = findViewById(R.id.instructionText);
-            confirmButton = findViewById(R.id.confirmButton);
             backButton = findViewById(R.id.backButton);
             flashlightButton = findViewById(R.id.flashlightButton);
+            
             handler = new Handler(Looper.getMainLooper());
+            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
 
             tts = new TextToSpeech(this, this);
             classifier = new BanknoteClassifier(this);
 
             surfaceView.getHolder().addCallback(this);
-
-            confirmButton.setOnClickListener(v -> {
-                if (!lastStableDetection.isEmpty()) {
-                    Intent resultIntent = new Intent();
-                    resultIntent.putExtra("detected_value", lastStableDetection);
-                    setResult(RESULT_OK, resultIntent);
-                    finish();
-                }
-            });
 
             backButton.setOnClickListener(v -> finish());
             
@@ -73,7 +67,6 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
                 flashlightButton.setOnClickListener(v -> toggleFlashlight());
             }
 
-            confirmButton.setVisibility(View.GONE);
         } catch (Throwable t) {
             showErrorScreen(t.toString());
         }
@@ -108,10 +101,10 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     }
 
     private void showErrorScreen(String errorMsg) {
-        if (instructionText != null) {
-            instructionText.setText(errorMsg);
-            instructionText.setTextColor(Color.RED);
-            instructionText.setTextSize(14f);
+        if (resultText != null) {
+            resultText.setText("Error: " + errorMsg);
+            resultText.setTextColor(Color.RED);
+            resultText.setTextSize(14f);
         } else {
             Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show();
         }
@@ -190,17 +183,39 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     }
 
     private void processDetection(String result) {
-        if (result == null) return;
+        if (result != null && !result.equals("unknown")) {
+            
+            if (result.equals(lastStableDetection)) {
+                detectionCount++;
+            } else {
+                lastStableDetection = result;
+                detectionCount = 1;
+            }
 
-        if (!result.equals("unknown")) {
-            String displayText = result + " ကျပ်";
-            resultText.setText(displayText);
-            confirmButton.setVisibility(View.VISIBLE);
-            instructionText.setText("အတည်ပြုရန် ခလုတ်ကို နှိပ်ပါ");
-            speakDetection(result);
-            lastStableDetection = result;
+            if (detectionCount == 2) {
+                String displayText = result + " ကျပ်";
+                if (resultText != null) resultText.setText(displayText);
+                speakDetection(result);
+                triggerVibration();
+            }
+            
         } else {
-            resultText.setText("ငွေစက္ကူကို ကင်မရာရှေ့တွင် ထားပါ");
+            if (resultText != null) resultText.setText("");
+            detectionCount = 0;
+            lastStableDetection = "";
+        }
+    }
+
+    private void triggerVibration() {
+        SharedPreferences prefs = getSharedPreferences("money_reader", MODE_PRIVATE);
+        boolean vibrationEnabled = prefs.getBoolean("vibration", true);
+        
+        if (vibrationEnabled && vibrator != null && vibrator.hasVibrator()) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(150, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vibrator.vibrate(150);
+            }
         }
     }
 
@@ -229,7 +244,10 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
             Locale myanmarLocale = new Locale("my", "MM");
-            if (tts.isLanguageAvailable(myanmarLocale) >= TextToSpeech.LANG_AVAILABLE) {
+            int result = tts.isLanguageAvailable(myanmarLocale);
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.setLanguage(Locale.US);
+            } else {
                 tts.setLanguage(myanmarLocale);
             }
         }

@@ -57,39 +57,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
     private void openCamera() {
         Intent intent = new Intent(this, CameraActivity.class);
-        startActivityForResult(intent, 200);
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == 200 && resultCode == RESULT_OK && data != null) {
-            String result = data.getStringExtra("detected_value");
-            if (result != null && !result.isEmpty()) {
-                speakResult(result);
-            }
-        }
-    }
-
-    private void speakResult(String value) {
-        String myanmarText = convertToMyanmar(value);
-        if (tts != null) {
-            tts.speak(myanmarText, TextToSpeech.QUEUE_FLUSH, null, "money_result");
-        }
-    }
-
-    private String convertToMyanmar(String value) {
-        switch (value) {
-            case "50": return "ငါးဆယ်ကျပ်";
-            case "100": return "တစ်ရာကျပ်";
-            case "200": return "နှစ်ရာကျပ်";
-            case "500": return "ငါးရာကျပ်";
-            case "1000": return "တစ်ထောင်ကျပ်";
-            case "5000": return "ငါးထောင်ကျပ်";
-            case "10000": return "တစ်သောင်းကျပ်";
-            case "20000": return "နှစ်သောင်းကျပ်";
-            default: return value + " ကျပ်";
-        }
+        startActivity(intent);
     }
 
     @Override
