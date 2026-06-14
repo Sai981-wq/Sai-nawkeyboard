@@ -27,7 +27,7 @@ public class BanknoteClassifier {
         }
 
         long currentTime = System.currentTimeMillis();
-        if (currentTime - lastProcessingTimeMs < 500) {
+        if (currentTime - lastProcessingTimeMs < 300) {
             callback.onResult(null); 
             return;
         }
@@ -38,6 +38,11 @@ public class BanknoteClassifier {
                 .addOnSuccessListener(text -> {
                     String cleanText = text.getText().replaceAll("[,\\s\\.\\n]", "");
                     
+                    if (cleanText.isEmpty()) {
+                        callback.onResult("unknown");
+                        return;
+                    }
+
                     if (cleanText.contains("10000")) callback.onResult("10000");
                     else if (cleanText.contains("5000")) callback.onResult("5000");
                     else if (cleanText.contains("1000")) callback.onResult("1000");
@@ -45,7 +50,7 @@ public class BanknoteClassifier {
                     else if (cleanText.contains("200")) callback.onResult("200");
                     else if (cleanText.contains("100")) callback.onResult("100");
                     else if (cleanText.contains("50")) callback.onResult("50");
-                    else callback.onResult("unknown");
+                    else callback.onResult("partial");
                 })
                 .addOnFailureListener(e -> callback.onResult("unknown"));
     }

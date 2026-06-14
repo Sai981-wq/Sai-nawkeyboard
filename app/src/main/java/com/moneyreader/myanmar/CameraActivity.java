@@ -42,32 +42,26 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     private String lastStableDetection = "";
     private int detectionCount = 0;
     private long lastSpeakTime = 0;
+    private long lastRadarTime = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         try {
             setContentView(R.layout.activity_camera);
-
             surfaceView = findViewById(R.id.surfaceView);
             resultText = findViewById(R.id.resultText);
             backButton = findViewById(R.id.backButton);
             flashlightButton = findViewById(R.id.flashlightButton);
-            
             handler = new Handler(Looper.getMainLooper());
             vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-
             tts = new TextToSpeech(this, this);
             classifier = new BanknoteClassifier(this);
-
             surfaceView.getHolder().addCallback(this);
-
             backButton.setOnClickListener(v -> finish());
-            
             if (flashlightButton != null) {
                 flashlightButton.setOnClickListener(v -> toggleFlashlight());
             }
-
         } catch (Throwable t) {
             showErrorScreen(t.toString());
         }
@@ -80,21 +74,13 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
                 if (isFlashlightOn) {
                     params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
                     isFlashlightOn = false;
-                    if (flashlightButton != null) {
-                        flashlightButton.setText("💡 မီးဖွင့်ရန်");
-                    }
-                    if (tts != null) {
-                        tts.speak("မီးပိတ်လိုက်ပါပြီ", TextToSpeech.QUEUE_FLUSH, null, "flash_off");
-                    }
+                    if (flashlightButton != null) flashlightButton.setText("💡 မီးဖွင့်ရန်");
+                    if (tts != null) tts.speak("မီးပိတ်လိုက်ပါပြီ", TextToSpeech.QUEUE_FLUSH, null, "flash_off");
                 } else {
                     params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
                     isFlashlightOn = true;
-                    if (flashlightButton != null) {
-                        flashlightButton.setText("💡 မီးပိတ်ရန်");
-                    }
-                    if (tts != null) {
-                        tts.speak("မီးဖွင့်လိုက်ပါပြီ", TextToSpeech.QUEUE_FLUSH, null, "flash_on");
-                    }
+                    if (flashlightButton != null) flashlightButton.setText("💡 မီးပိတ်ရန်");
+                    if (tts != null) tts.speak("မီးဖွင့်လိုက်ပါပြီ", TextToSpeech.QUEUE_FLUSH, null, "flash_on");
                 }
                 camera.setParameters(params);
             }
@@ -111,25 +97,44 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
         }
     }
 
+    private int getWidestBackCameraId() {
+        int cameraId = 0;
+        float maxFov = 0;
+        Camera.CameraInfo info = new Camera.CameraInfo();
+        for (int i = 0; i < Camera.getNumberOfCameras(); i++) {
+            Camera.getCameraInfo(i, info);
+            if (info.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
+                try {
+                    Camera c = Camera.open(i);
+                    Camera.Parameters params = c.getParameters();
+                    float fov = params.getHorizontalViewAngle();
+                    if (fov > maxFov) {
+                        maxFov = fov;
+                        cameraId = i;
+                    }
+                    c.release();
+                } catch (Exception e) {}
+            }
+        }
+        return cameraId;
+    }
+
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         try {
-            camera = Camera.open();
+            camera = Camera.open(getWidestBackCameraId());
             if (camera == null) {
                 showErrorScreen("Camera not found");
                 return;
             }
-
             Camera.Parameters params = camera.getParameters();
             if (params.getSupportedFocusModes() != null && 
                 params.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
                 params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
             }
-            
             if (isFlashlightOn && params.getSupportedFlashModes() != null) {
                 params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
             }
-
             camera.setParameters(params);
             camera.setDisplayOrientation(90);
             camera.setPreviewDisplay(holder);
@@ -152,7 +157,6 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     public void onPreviewFrame(byte[] data, Camera camera) {
         if (isProcessing) return;
         isProcessing = true;
-
         new Thread(() -> {
             try {
                 Camera.Size size = camera.getParameters().getPreviewSize();
@@ -161,11 +165,9 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
                 yuvImage.compressToJpeg(new Rect(0, 0, size.width, size.height), 80, out);
                 byte[] jpegBytes = out.toByteArray();
                 Bitmap bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.length);
-
                 Matrix matrix = new Matrix();
                 matrix.postRotate(90);
                 Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
-
                 classifier.classify(rotated, result -> {
                     handler.post(() -> {
                         processDetection(result);
@@ -184,8 +186,19 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     }
 
     private void processDetection(String result) {
-        if (result != null && !result.equals("unknown")) {
-            
+        if (result == null) return;
+
+        if (result.equals("partial")) {
+            long currentTime = System.currentTimeMillis();
+            if (currentTime - lastRadarTime > 400) {
+                triggerRadarVibration();
+                lastRadarTime = currentTime;
+            }
+            if (resultText != null) resultText.setText("ရှာဖွေနေသည်...");
+            return;
+        }
+
+        if (!result.equals("unknown")) {
             if (!result.equals(lastStableDetection)) {
                 lastStableDetection = result;
                 detectionCount = 1;
@@ -193,7 +206,6 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             } else {
                 detectionCount++;
             }
-
             if (detectionCount >= 2) {
                 long currentTime = System.currentTimeMillis();
                 if (currentTime - lastSpeakTime > 2500) {
@@ -204,7 +216,6 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
                     lastSpeakTime = currentTime;
                 }
             }
-            
         } else {
             if (resultText != null) resultText.setText("");
             detectionCount = 0;
@@ -212,11 +223,20 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
         }
     }
 
+    private void triggerRadarVibration() {
+        SharedPreferences prefs = getSharedPreferences("money_reader", MODE_PRIVATE);
+        if (prefs.getBoolean("vibration", true) && vibrator != null && vibrator.hasVibrator()) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(50, 50));
+            } else {
+                vibrator.vibrate(50);
+            }
+        }
+    }
+
     private void triggerVibration() {
         SharedPreferences prefs = getSharedPreferences("money_reader", MODE_PRIVATE);
-        boolean vibrationEnabled = prefs.getBoolean("vibration", true);
-        
-        if (vibrationEnabled && vibrator != null && vibrator.hasVibrator()) {
+        if (prefs.getBoolean("vibration", true) && vibrator != null && vibrator.hasVibrator()) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 vibrator.vibrate(VibrationEffect.createOneShot(150, VibrationEffect.DEFAULT_AMPLITUDE));
             } else {
