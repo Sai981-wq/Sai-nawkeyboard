@@ -43,6 +43,7 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     private int detectionCount = 0;
     private long lastSpeakTime = 0;
     private long lastRadarTime = 0;
+    private long lastHoldStillTime = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -193,6 +194,12 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             if (currentTime - lastRadarTime > 400) {
                 triggerRadarVibration();
                 lastRadarTime = currentTime;
+            }
+            if (currentTime - lastHoldStillTime > 4000) {
+                if (tts != null) {
+                    tts.speak("ဖုန်းကို မလှုပ်ဘဲ ငြိမ်ငြိမ်လေးထားပါ", TextToSpeech.QUEUE_FLUSH, null, "hold_still");
+                }
+                lastHoldStillTime = currentTime;
             }
             if (resultText != null) resultText.setText("ရှာဖွေနေသည်...");
             return;
