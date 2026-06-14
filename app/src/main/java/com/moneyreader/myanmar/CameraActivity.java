@@ -41,6 +41,7 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     private boolean isFlashlightOn = false;
     private String lastStableDetection = "";
     private int detectionCount = 0;
+    private long lastSpeakTime = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -185,18 +186,23 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     private void processDetection(String result) {
         if (result != null && !result.equals("unknown")) {
             
-            if (result.equals(lastStableDetection)) {
-                detectionCount++;
-            } else {
+            if (!result.equals(lastStableDetection)) {
                 lastStableDetection = result;
                 detectionCount = 1;
+                lastSpeakTime = 0; 
+            } else {
+                detectionCount++;
             }
 
-            if (detectionCount == 2) {
-                String displayText = result + " ကျပ်";
-                if (resultText != null) resultText.setText(displayText);
-                speakDetection(result);
-                triggerVibration();
+            if (detectionCount >= 2) {
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastSpeakTime > 2500) {
+                    String displayText = result + " ကျပ်";
+                    if (resultText != null) resultText.setText(displayText);
+                    speakDetection(result);
+                    triggerVibration();
+                    lastSpeakTime = currentTime;
+                }
             }
             
         } else {
