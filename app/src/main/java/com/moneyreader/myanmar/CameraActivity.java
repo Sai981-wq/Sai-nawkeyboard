@@ -213,7 +213,11 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             } else {
                 detectionCount++;
             }
-            if (detectionCount >= 2) {
+            
+            // တန်ဖိုးငယ်လျှင် ကွယ်နေ၍ မှားဖတ်နိုင်ခြေများသဖြင့် ၃ ကြိမ်တိတိ တူညီမှသာ အတည်ပြုပါမည်
+            int requiredCount = (result.equals("10000") || result.equals("5000")) ? 2 : 3;
+
+            if (detectionCount >= requiredCount) {
                 long currentTime = System.currentTimeMillis();
                 if (currentTime - lastSpeakTime > 2500) {
                     String displayText = result + " ကျပ်";
