@@ -13,7 +13,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="⚙️ ဆက်တင်များ"
+            android:text="⚙️ Settings"
             android:textSize="24sp"
             android:textColor="#ffffff"
             android:textStyle="bold"
@@ -22,7 +22,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="အသံအမြန်နှုန်း"
+            android:text="Speech Rate"
             android:textSize="16sp"
             android:textColor="#cccccc"
             android:layout_marginBottom="4dp" />
@@ -53,7 +53,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="အသံအတိုးအကျယ်"
+            android:text="Volume"
             android:textSize="16sp"
             android:textColor="#cccccc"
             android:layout_marginTop="16dp"
@@ -86,7 +86,7 @@
             android:id="@+id/testVoiceButton"
             android:layout_width="match_parent"
             android:layout_height="50dp"
-            android:text="🔊 အသံစမ်းသပ်ရန်"
+            android:text="🔊 Test Voice"
             android:textColor="#ffffff"
             android:background="@drawable/btn_primary"
             android:layout_marginTop="16dp" />
@@ -102,7 +102,7 @@
             android:id="@+id/autoSpeakSwitch"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="အလိုအလျောက် အသံထွက်ပြောခြင်း"
+            android:text="Auto Speak"
             android:textColor="#ffffff"
             android:textSize="16sp"
             android:layout_marginBottom="16dp" />
@@ -111,7 +111,7 @@
             android:id="@+id/vibrationSwitch"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="တုန်ခါမှု (Vibration)"
+            android:text="Vibration"
             android:textColor="#ffffff"
             android:textSize="16sp"
             android:layout_marginBottom="24dp" />
@@ -120,7 +120,7 @@
             android:id="@+id/backButton"
             android:layout_width="match_parent"
             android:layout_height="50dp"
-            android:text="↩️ နောက်သို့"
+            android:text="↩️ Back"
             android:textColor="#ffffff"
             android:background="@drawable/btn_secondary"
             android:layout_marginTop="16dp" />
@@ -128,7 +128,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Money Reader v1.0\nမြန်မာငွေစက္ကူ ဖတ်ရှုစနစ်"
+            android:text="MMK Scanner Talk v1.0\nMyanmar Banknote Reader"
             android:textSize="12sp"
             android:textColor="#666666"
             android:layout_gravity="center"

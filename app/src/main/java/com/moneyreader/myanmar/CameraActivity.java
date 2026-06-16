@@ -19,6 +19,7 @@ import android.os.Vibrator;
 import android.speech.tts.TextToSpeech;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -49,6 +50,7 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         try {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             setContentView(R.layout.activity_camera);
             surfaceView = findViewById(R.id.surfaceView);
             resultText = findViewById(R.id.resultText);
@@ -75,13 +77,13 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
                 if (isFlashlightOn) {
                     params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
                     isFlashlightOn = false;
-                    if (flashlightButton != null) flashlightButton.setText("💡 မီးဖွင့်ရန်");
-                    if (tts != null) tts.speak("မီးပိတ်လိုက်ပါပြီ", TextToSpeech.QUEUE_FLUSH, null, "flash_off");
+                    if (flashlightButton != null) flashlightButton.setText("💡 Flash On");
+                    if (tts != null) tts.speak("Flashlight off", TextToSpeech.QUEUE_FLUSH, null, "flash_off");
                 } else {
                     params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
                     isFlashlightOn = true;
-                    if (flashlightButton != null) flashlightButton.setText("💡 မီးပိတ်ရန်");
-                    if (tts != null) tts.speak("မီးဖွင့်လိုက်ပါပြီ", TextToSpeech.QUEUE_FLUSH, null, "flash_on");
+                    if (flashlightButton != null) flashlightButton.setText("💡 Flash Off");
+                    if (tts != null) tts.speak("Flashlight on", TextToSpeech.QUEUE_FLUSH, null, "flash_on");
                 }
                 camera.setParameters(params);
             }
@@ -197,11 +199,11 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
             }
             if (currentTime - lastHoldStillTime > 4000) {
                 if (tts != null) {
-                    tts.speak("ဖုန်းကို မလှုပ်ဘဲ ငြိမ်ငြိမ်လေးထားပါ", TextToSpeech.QUEUE_FLUSH, null, "hold_still");
+                    tts.speak("Hold still", TextToSpeech.QUEUE_FLUSH, null, "hold_still");
                 }
                 lastHoldStillTime = currentTime;
             }
-            if (resultText != null) resultText.setText("ရှာဖွေနေသည်...");
+            if (resultText != null) resultText.setText("Searching...");
             return;
         }
 
@@ -214,13 +216,12 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
                 detectionCount++;
             }
             
-            // တန်ဖိုးငယ်လျှင် ကွယ်နေ၍ မှားဖတ်နိုင်ခြေများသဖြင့် ၃ ကြိမ်တိတိ တူညီမှသာ အတည်ပြုပါမည်
             int requiredCount = (result.equals("10000") || result.equals("5000")) ? 2 : 3;
 
             if (detectionCount >= requiredCount) {
                 long currentTime = System.currentTimeMillis();
                 if (currentTime - lastSpeakTime > 2500) {
-                    String displayText = result + " ကျပ်";
+                    String displayText = result + " Kyats";
                     if (resultText != null) resultText.setText(displayText);
                     speakDetection(result);
                     triggerVibration();
@@ -258,35 +259,29 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
 
     private void speakDetection(String value) {
         if (tts != null) {
-            String text = convertToMyanmar(value);
+            String text = getSpokenText(value);
             tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "detection");
         }
     }
 
-    private String convertToMyanmar(String value) {
+    private String getSpokenText(String value) {
         switch (value) {
-            case "50": return "ငါးဆယ်ကျပ်";
-            case "100": return "တစ်ရာကျပ်";
-            case "200": return "နှစ်ရာကျပ်";
-            case "500": return "ငါးရာကျပ်";
-            case "1000": return "တစ်ထောင်ကျပ်";
-            case "5000": return "ငါးထောင်ကျပ်";
-            case "10000": return "တစ်သောင်းကျပ်";
-            case "20000": return "နှစ်သောင်းကျပ်";
-            default: return value + " ကျပ်";
+            case "50": return "Fifty Kyats";
+            case "100": return "One Hundred Kyats";
+            case "200": return "Two Hundred Kyats";
+            case "500": return "Five Hundred Kyats";
+            case "1000": return "One Thousand Kyats";
+            case "5000": return "Five Thousand Kyats";
+            case "10000": return "Ten Thousand Kyats";
+            case "20000": return "Twenty Thousand Kyats";
+            default: return value + " Kyats";
         }
     }
 
     @Override
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
-            Locale myanmarLocale = new Locale("my", "MM");
-            int result = tts.isLanguageAvailable(myanmarLocale);
-            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                tts.setLanguage(Locale.US);
-            } else {
-                tts.setLanguage(myanmarLocale);
-            }
+            tts.setLanguage(Locale.US);
         }
     }
 

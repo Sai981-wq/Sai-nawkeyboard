@@ -10,7 +10,7 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="💰 Money Reader"
+        android:text="MMK Scanner Talk"
         android:textSize="32sp"
         android:textColor="#e94560"
         android:textStyle="bold"
@@ -19,7 +19,7 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="မြန်မာငွေစက္ကူ ဖတ်ရှုစနစ်"
+        android:text="Myanmar Banknote Reader"
         android:textSize="16sp"
         android:textColor="#cccccc"
         android:layout_marginBottom="16dp" />
@@ -28,7 +28,7 @@
         android:id="@+id/statusText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="စတင်ရန် အသင့်ဖြစ်ပါပြီ"
+        android:text="Ready to use"
         android:textSize="14sp"
         android:textColor="#4CAF50"
         android:layout_marginBottom="32dp" />
@@ -37,7 +37,7 @@
         android:id="@+id/scanButton"
         android:layout_width="250dp"
         android:layout_height="60dp"
-        android:text="📷 ငွေစက္ကူ ဖတ်ရန်"
+        android:text="📷 Scan Banknote"
         android:textSize="18sp"
         android:textColor="#ffffff"
         android:background="@drawable/btn_primary"
@@ -47,7 +47,17 @@
         android:id="@+id/settingsButton"
         android:layout_width="250dp"
         android:layout_height="50dp"
-        android:text="⚙️ ဆက်တင်"
+        android:text=" Settings"
+        android:textSize="16sp"
+        android:textColor="#ffffff"
+        android:background="@drawable/btn_secondary"
+        android:layout_marginBottom="16dp" />
+
+    <Button
+        android:id="@+id/supportButton"
+        android:layout_width="250dp"
+        android:layout_height="50dp"
+        android:text="💖 Support Developer"
         android:textSize="16sp"
         android:textColor="#ffffff"
         android:background="@drawable/btn_secondary" />
