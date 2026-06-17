@@ -1,66 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:gravity="center"
-    android:padding="24dp"
-    android:background="#1a1a2e">
+    android:background="#000000">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="MMK Scanner Talk"
-        android:textSize="32sp"
-        android:textColor="#e94560"
-        android:textStyle="bold"
-        android:layout_marginBottom="8dp" />
+    <SurfaceView
+        android:id="@+id/surfaceView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Myanmar Banknote Reader"
-        android:textSize="16sp"
-        android:textColor="#cccccc"
-        android:layout_marginBottom="16dp" />
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
-    <TextView
-        android:id="@+id/statusText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Ready to use"
-        android:textSize="14sp"
-        android:textColor="#4CAF50"
-        android:layout_marginBottom="32dp" />
+        <androidx.appcompat.widget.Toolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            android:background="#80000000"
+            app:title="MMK Scanner Talk"
+            app:titleTextColor="#ffffff" />
 
-    <Button
-        android:id="@+id/scanButton"
-        android:layout_width="250dp"
-        android:layout_height="60dp"
-        android:text="Scan Banknote"
-        android:textSize="18sp"
-        android:textColor="#ffffff"
-        android:background="@drawable/btn_primary"
-        android:layout_marginBottom="16dp" />
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
 
-    <Button
-        android:id="@+id/settingsButton"
-        android:layout_width="250dp"
-        android:layout_height="50dp"
-        android:text="Settings"
-        android:textSize="16sp"
-        android:textColor="#ffffff"
-        android:background="@drawable/btn_secondary"
-        android:layout_marginBottom="16dp" />
+            <TextView
+                android:id="@+id/resultText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:textColor="#4CAF50"
+                android:textSize="28sp"
+                android:textStyle="bold" />
 
-    <Button
-        android:id="@+id/supportButton"
-        android:layout_width="250dp"
-        android:layout_height="50dp"
-        android:text="Support Developer"
-        android:textSize="16sp"
-        android:textColor="#ffffff"
-        android:background="@drawable/btn_secondary" />
-
-</LinearLayout>
+            <Button
+                android:id="@+id/flashlightButton"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:layout_gravity="bottom|center_horizontal"
+                android:layout_marginBottom="32dp"
+                android:background="#80000000"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:text="Flash On"
+                android:textColor="#ffffff" />
+        </FrameLayout>
+    </LinearLayout>
+</FrameLayout>
 
