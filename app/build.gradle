@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.moneyreader.myanmar'
+    namespace 'com.mmkscanner.talk'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.moneyreader.myanmar"
+        applicationId "com.mmkscanner.talk"
         minSdk 24
         targetSdk 34
         versionCode 1
@@ -16,7 +16,6 @@ android {
 
     buildTypes {
         release {
-            // ၁။ အသုံးမပြုသော Code များနှင့် Resource များကို အလိုအလျောက် ဖြတ်ထုတ်ရန် (App Size သိသိသာသာ သေးသွားပါမည်)
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -32,8 +31,6 @@ android {
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
-    
-    // ၂။ Model အကြီးကြီးကို App ထဲ အသေထည့်မည့်အစား၊ ဖုန်းထဲရှိ Google Play Services မှတဆင့် ခေါ်သုံးမည့် အပေါ့စား ML Kit
     implementation 'com.google.android.gms:play-services-mlkit-text-recognition:19.0.0'
 }
 

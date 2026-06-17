@@ -1,4 +1,4 @@
-package com.moneyreader.myanmar;
+package com.mmkscanner.talk;
 
 import android.content.Context;
 import android.graphics.Bitmap;
@@ -43,7 +43,6 @@ public class BanknoteClassifier {
                         return;
                     }
 
-                    // ၁။ အင်္ဂလိပ်စာသားများဖြင့် အရင်စစ်ဆေးခြင်း (လက်ကွယ်၍ မရနိုင်သောကြောင့် အတိကျဆုံးဖြစ်သည်)
                     if (rawText.contains("TEN THOUSAND")) { callback.onResult("10000"); return; }
                     if (rawText.contains("FIVE THOUSAND")) { callback.onResult("5000"); return; }
                     if (rawText.contains("ONE THOUSAND")) { callback.onResult("1000"); return; }
@@ -51,14 +50,11 @@ public class BanknoteClassifier {
                     if (rawText.contains("TWO HUNDRED")) { callback.onResult("200"); return; }
                     if (rawText.contains("ONE HUNDRED")) { callback.onResult("100"); return; }
 
-                    // ၂။ ဂဏန်းများကို တိတိကျကျ စစ်ဆေးခြင်း (Substring မှားမဖတ်စေရန် Regex Word Boundary \\b ကိုသုံးခြင်း)
                     String noCommaText = rawText.replaceAll("[,\\.]", "");
                     
-                    // တန်ဖိုးအကြီးဆုံးများသည် အခြားဂဏန်းများ၏ အစိတ်အပိုင်း (Substring) မဖြစ်နိုင်ပါ
                     if (noCommaText.matches(".*\\b10000\\b.*") || noCommaText.contains("10000")) { callback.onResult("10000"); return; }
                     if (noCommaText.matches(".*\\b5000\\b.*") || noCommaText.contains("5000")) { callback.onResult("5000"); return; }
                     
-                    // အငယ်များကိုမူ သီးသန့်ဂဏန်း (Standalone Word) ဖြစ်မှသာ လက်ခံပါမည်
                     if (noCommaText.matches(".*\\b1000\\b.*")) { callback.onResult("1000"); return; }
                     if (noCommaText.matches(".*\\b500\\b.*")) { callback.onResult("500"); return; }
                     if (noCommaText.matches(".*\\b200\\b.*")) { callback.onResult("200"); return; }

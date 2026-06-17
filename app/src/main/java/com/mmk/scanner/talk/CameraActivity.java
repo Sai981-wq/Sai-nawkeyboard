@@ -1,4 +1,4 @@
-package com.moneyreader.myanmar;
+package com.mmkscanner.talk;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -77,12 +77,12 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
                 if (isFlashlightOn) {
                     params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
                     isFlashlightOn = false;
-                    if (flashlightButton != null) flashlightButton.setText("💡 Flash On");
+                    if (flashlightButton != null) flashlightButton.setText("Flash On");
                     if (tts != null) tts.speak("Flashlight off", TextToSpeech.QUEUE_FLUSH, null, "flash_off");
                 } else {
                     params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
                     isFlashlightOn = true;
-                    if (flashlightButton != null) flashlightButton.setText("💡 Flash Off");
+                    if (flashlightButton != null) flashlightButton.setText("Flash Off");
                     if (tts != null) tts.speak("Flashlight on", TextToSpeech.QUEUE_FLUSH, null, "flash_on");
                 }
                 camera.setParameters(params);
@@ -281,7 +281,13 @@ public class CameraActivity extends AppCompatActivity implements SurfaceHolder.C
     @Override
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
-            tts.setLanguage(Locale.US);
+            Locale defaultLocale = Locale.getDefault();
+            int result = tts.isLanguageAvailable(defaultLocale);
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.setLanguage(Locale.US);
+            } else {
+                tts.setLanguage(defaultLocale);
+            }
         }
     }
 

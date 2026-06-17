@@ -1,6 +1,9 @@
-package com.moneyreader.myanmar;
+package com.mmkscanner.talk;
 
 import android.Manifest;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
@@ -45,7 +48,7 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
 
     private void showDonationDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("💖 Support Our Project");
+        builder.setTitle("Support Our Project");
         
         String message = "MMK Scanner Talk အား အသုံးပြုပေးသည့်အတွက် ကျေးဇူးအထူးတင်ရှိပါတယ်။\n\n" +
                          "ဒီအက်ပ်လေးကို အမြင်အာရုံမသန်စွမ်းသူများ နေ့စဉ်ဘဝမှာ အဆင်ပြေစေရန်အတွက် အခမဲ့ ဖန်တီးပေးထားတာ ဖြစ်ပါတယ်။\n\n" +
@@ -54,7 +57,15 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
                          "Sai naw - 09750091817";
                          
         builder.setMessage(message);
+        
         builder.setPositiveButton("ပိတ်မည်", (dialog, which) -> dialog.dismiss());
+        
+        builder.setNeutralButton("ကူးယူမည်", (dialog, which) -> {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            ClipData clip = ClipData.newPlainText("Donation Number", "09750091817");
+            clipboard.setPrimaryClip(clip);
+            Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
+        });
         
         AlertDialog dialog = builder.create();
         dialog.show();
@@ -82,15 +93,16 @@ public class MainActivity extends AppCompatActivity implements TextToSpeech.OnIn
         }
     }
 
-    private void openCamera() {
-        Intent intent = new Intent(this, CameraActivity.class);
-        startActivity(intent);
-    }
-
     @Override
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
-            tts.setLanguage(Locale.US);
+            Locale defaultLocale = Locale.getDefault();
+            int result = tts.isLanguageAvailable(defaultLocale);
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.setLanguage(Locale.US);
+            } else {
+                tts.setLanguage(defaultLocale);
+            }
             if (statusText != null) {
                 statusText.setText("Ready");
             }
