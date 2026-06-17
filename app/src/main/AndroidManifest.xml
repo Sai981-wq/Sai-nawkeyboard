@@ -17,9 +17,7 @@
         android:label="MMK Scanner Talk"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.DayNight.DarkActionBar">
-
-        <meta-data
+        android:theme="@style/Theme.AppCompat.NoActionBar"> <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
             android:value="ocr" />
 
