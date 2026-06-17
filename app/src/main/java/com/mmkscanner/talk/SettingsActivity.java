@@ -1,4 +1,4 @@
-package com.moneyreader.myanmar;
+package com.mmkscanner.talk;
 
 import android.content.SharedPreferences;
 import android.os.Bundle;
@@ -7,7 +7,6 @@ import android.widget.Button;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
-import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import java.util.Locale;
 
@@ -41,23 +40,22 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
         speedValue = findViewById(R.id.speedValue);
         volumeValue = findViewById(R.id.volumeValue);
 
-        int savedSpeed = prefs.getInt("tts_speed", 50);
-        int savedVolume = prefs.getInt("tts_volume", 80);
-        boolean autoSpeak = prefs.getBoolean("auto_speak", true);
-        boolean vibration = prefs.getBoolean("vibration", true);
+        loadSettings();
 
-        speedSeekbar.setProgress(savedSpeed);
-        volumeSeekbar.setProgress(savedVolume);
-        autoSpeakSwitch.setChecked(autoSpeak);
-        vibrationSwitch.setChecked(vibration);
-        speedValue.setText(savedSpeed + "%");
-        volumeValue.setText(savedVolume + "%");
+        backButton.setOnClickListener(v -> finish());
+
+        testVoiceButton.setOnClickListener(v -> {
+            if (tts != null) {
+                tts.speak("Testing voice", TextToSpeech.QUEUE_FLUSH, null, "test");
+            }
+        });
 
         speedSeekbar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 speedValue.setText(progress + "%");
-                prefs.edit().putInt("tts_speed", progress).apply();
+                prefs.edit().putInt("speed", progress).apply();
+                if (tts != null) tts.setSpeechRate(progress / 50f);
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
@@ -67,45 +65,53 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 volumeValue.setText(progress + "%");
-                prefs.edit().putInt("tts_volume", progress).apply();
+                prefs.edit().putInt("volume", progress).apply();
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
 
-        autoSpeakSwitch.setOnCheckedChangeListener((buttonView, isChecked) ->
+        autoSpeakSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> 
             prefs.edit().putBoolean("auto_speak", isChecked).apply());
 
-        vibrationSwitch.setOnCheckedChangeListener((buttonView, isChecked) ->
+        vibrationSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> 
             prefs.edit().putBoolean("vibration", isChecked).apply());
-
-        testVoiceButton.setOnClickListener(v -> testVoice());
-        backButton.setOnClickListener(v -> finish());
     }
 
-    private void testVoice() {
-        if (tts != null) {
-            float speed = speedSeekbar.getProgress() / 50.0f;
-            if (speed < 0.1f) speed = 0.1f;
-            tts.setSpeechRate(speed);
-            tts.speak("တစ်သောင်းကျပ်", TextToSpeech.QUEUE_FLUSH, null, "test");
-            Toast.makeText(this, "အသံစမ်းသပ်နေပါသည်", Toast.LENGTH_SHORT).show();
-        }
+    private void loadSettings() {
+        int speed = prefs.getInt("speed", 50);
+        int volume = prefs.getInt("volume", 80);
+        boolean autoSpeak = prefs.getBoolean("auto_speak", true);
+        boolean vibration = prefs.getBoolean("vibration", true);
+
+        speedSeekbar.setProgress(speed);
+        volumeSeekbar.setProgress(volume);
+        speedValue.setText(speed + "%");
+        volumeValue.setText(volume + "%");
+        autoSpeakSwitch.setChecked(autoSpeak);
+        vibrationSwitch.setChecked(vibration);
     }
 
     @Override
     public void onInit(int status) {
         if (status == TextToSpeech.SUCCESS) {
-            Locale myanmarLocale = new Locale("my", "MM");
-            if (tts.isLanguageAvailable(myanmarLocale) >= TextToSpeech.LANG_AVAILABLE) {
-                tts.setLanguage(myanmarLocale);
+            Locale defaultLocale = Locale.getDefault();
+            int result = tts.isLanguageAvailable(defaultLocale);
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.setLanguage(Locale.US);
+            } else {
+                tts.setLanguage(defaultLocale);
             }
+            tts.setSpeechRate(prefs.getInt("speed", 50) / 50f);
         }
     }
 
     @Override
     protected void onDestroy() {
-        if (tts != null) { tts.stop(); tts.shutdown(); }
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+        }
         super.onDestroy();
     }
 }
