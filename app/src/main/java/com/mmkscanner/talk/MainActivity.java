@@ -7,13 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Color;
-import android.graphics.ImageFormat;
-import android.graphics.Matrix;
-import android.graphics.Rect;
-import android.graphics.YuvImage;
 import android.hardware.Camera;
 import android.os.Build;
 import android.os.Bundle;
@@ -36,8 +30,10 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import java.io.ByteArrayOutputStream;
+import com.google.mlkit.vision.common.InputImage;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity implements SurfaceHolder.Callback, Camera.PreviewCallback, TextToSpeech.OnInitListener {
 
@@ -50,6 +46,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private TextToSpeech tts;
     private Handler handler;
     private Vibrator vibrator;
+    private ExecutorService cameraExecutor;
     
     private boolean isProcessing = false;
     private boolean isFlashlightOn = false;
@@ -72,6 +69,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         flashlightButton = findViewById(R.id.flashlightButton);
 
         handler = new Handler(Looper.getMainLooper());
+        cameraExecutor = Executors.newSingleThreadExecutor();
         vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
         tts = new TextToSpeech(this, this);
         classifier = new BanknoteClassifier(this);
@@ -127,26 +125,31 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         dialog.show();
         
         if (tts != null) {
-            tts.speak("Thank you for using MM K Scanner Talk. This app is free. If you find it helpful, you can support the developer. Phone number is shown on the screen.", TextToSpeech.QUEUE_FLUSH, null, "support");
+            Bundle params = getTtsParams();
+            tts.speak("Thank you for using MM K Scanner Talk. This app is free. If you find it helpful, you can support the developer. Phone number is shown on the screen.", TextToSpeech.QUEUE_FLUSH, params, "support");
         }
     }
 
     private void toggleFlashlight() {
         if (camera != null) {
-            Camera.Parameters params = camera.getParameters();
-            if (params.getSupportedFlashModes() != null) {
-                if (isFlashlightOn) {
-                    params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
-                    isFlashlightOn = false;
-                    flashlightButton.setText("Flash On");
-                    if (tts != null) tts.speak("Flashlight off", TextToSpeech.QUEUE_FLUSH, null, "flash_off");
-                } else {
-                    params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
-                    isFlashlightOn = true;
-                    flashlightButton.setText("Flash Off");
-                    if (tts != null) tts.speak("Flashlight on", TextToSpeech.QUEUE_FLUSH, null, "flash_on");
+            try {
+                Camera.Parameters params = camera.getParameters();
+                if (params.getSupportedFlashModes() != null) {
+                    if (isFlashlightOn) {
+                        params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
+                        isFlashlightOn = false;
+                        flashlightButton.setText("Flash On");
+                        if (tts != null) tts.speak("Flashlight off", TextToSpeech.QUEUE_FLUSH, getTtsParams(), "flash_off");
+                    } else {
+                        params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
+                        isFlashlightOn = true;
+                        flashlightButton.setText("Flash Off");
+                        if (tts != null) tts.speak("Flashlight on", TextToSpeech.QUEUE_FLUSH, getTtsParams(), "flash_on");
+                    }
+                    camera.setParameters(params);
                 }
-                camera.setParameters(params);
+            } catch (Exception e) {
+                e.printStackTrace();
             }
         }
     }
@@ -191,8 +194,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             if (params.getSupportedFocusModes() != null && params.getSupportedFocusModes().contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
                 params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
             }
-            if (isFlashlightOn && params.getSupportedFlashModes() != null) {
-                params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
+            if (params.getSupportedFlashModes() != null) {
+                isFlashlightOn = false;
+                params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
+                handler.post(() -> flashlightButton.setText("Flash On"));
             }
             camera.setParameters(params);
             camera.setDisplayOrientation(90);
@@ -216,32 +221,27 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     public void onPreviewFrame(byte[] data, Camera camera) {
         if (isProcessing) return;
         isProcessing = true;
-        new Thread(() -> {
+        cameraExecutor.execute(() -> {
             try {
                 Camera.Size size = camera.getParameters().getPreviewSize();
-                YuvImage yuvImage = new YuvImage(data, ImageFormat.NV21, size.width, size.height, null);
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                yuvImage.compressToJpeg(new Rect(0, 0, size.width, size.height), 80, out);
-                byte[] jpegBytes = out.toByteArray();
-                Bitmap bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.length);
-                Matrix matrix = new Matrix();
-                matrix.postRotate(90);
-                Bitmap rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                InputImage image = InputImage.fromByteArray(
+                        data,
+                        size.width,
+                        size.height,
+                        90,
+                        InputImage.IMAGE_FORMAT_NV21
+                );
                 
-                classifier.classify(rotated, (result, direction) -> {
+                classifier.classify(image, (result, direction) -> {
                     handler.post(() -> {
                         processDetection(result, direction);
                         isProcessing = false;
-                        bitmap.recycle();
-                        rotated.recycle();
                     });
                 });
             } catch (Throwable t) {
-                handler.post(() -> {
-                    isProcessing = false;
-                });
+                handler.post(() -> isProcessing = false);
             }
-        }).start();
+        });
     }
 
     private void processDetection(String result, String direction) {
@@ -250,7 +250,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         if (!direction.isEmpty() && (result.equals("partial") || result.equals("unknown"))) {
             long currentTime = System.currentTimeMillis();
             if (currentTime - lastDirSpeakTime > 2500) {
-                if (tts != null) tts.speak(direction, TextToSpeech.QUEUE_FLUSH, null, "dir");
+                if (tts != null) tts.speak(direction, TextToSpeech.QUEUE_FLUSH, getTtsParams(), "dir");
                 lastDirSpeakTime = currentTime;
             }
             resultText.setText("Aligning...");
@@ -300,10 +300,18 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         }
     }
 
+    private Bundle getTtsParams() {
+        Bundle params = new Bundle();
+        SharedPreferences prefs = getSharedPreferences("money_reader", MODE_PRIVATE);
+        float volume = prefs.getInt("volume", 80) / 100f;
+        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume);
+        return params;
+    }
+
     private void speakDetection(String value) {
         if (tts != null) {
             String text = getSpokenText(value);
-            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "detection");
+            tts.speak(text, TextToSpeech.QUEUE_FLUSH, getTtsParams(), "detection");
         }
     }
 
@@ -372,6 +380,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         releaseCamera();
         if (classifier != null) classifier.close();
         if (tts != null) { tts.stop(); tts.shutdown(); }
+        if (cameraExecutor != null) { cameraExecutor.shutdown(); }
         super.onDestroy();
     }
 }

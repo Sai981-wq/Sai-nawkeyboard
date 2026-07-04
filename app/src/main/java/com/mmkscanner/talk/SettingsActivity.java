@@ -46,7 +46,10 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
 
         testVoiceButton.setOnClickListener(v -> {
             if (tts != null) {
-                tts.speak("Testing voice", TextToSpeech.QUEUE_FLUSH, null, "test");
+                Bundle params = new Bundle();
+                float volume = prefs.getInt("volume", 80) / 100f;
+                params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, volume);
+                tts.speak("Testing voice", TextToSpeech.QUEUE_FLUSH, params, "test");
             }
         });
 

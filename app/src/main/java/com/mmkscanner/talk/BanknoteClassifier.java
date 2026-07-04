@@ -1,7 +1,6 @@
 package com.mmkscanner.talk;
 
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.Rect;
 import com.google.mlkit.vision.common.InputImage;
 import com.google.mlkit.vision.text.Text;
@@ -22,8 +21,8 @@ public class BanknoteClassifier {
         textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
     }
 
-    public void classify(Bitmap bitmap, ClassificationCallback callback) {
-        if (bitmap == null) {
+    public void classify(InputImage image, ClassificationCallback callback) {
+        if (image == null) {
             callback.onResult("unknown", "");
             return;
         }
@@ -35,7 +34,6 @@ public class BanknoteClassifier {
         }
         lastProcessingTimeMs = currentTime;
 
-        InputImage image = InputImage.fromBitmap(bitmap, 0);
         textRecognizer.process(image)
                 .addOnSuccessListener(text -> {
                     String rawText = text.getText().toUpperCase();
@@ -62,6 +60,10 @@ public class BanknoteClassifier {
                         else if (noCommaText.matches(".*\\b200\\b.*")) { resultVal = "200"; }
                         else if (noCommaText.matches(".*\\b100\\b.*")) { resultVal = "100"; }
                         else if (noCommaText.matches(".*\\b50\\b.*")) { resultVal = "50"; }
+                        else if (rawText.contains("၁၀၀၀၀")) { resultVal = "10000"; }
+                        else if (rawText.contains("၅၀၀၀")) { resultVal = "5000"; }
+                        else if (rawText.contains("၁၀၀၀")) { resultVal = "1000"; }
+                        else if (rawText.contains("၅၀၀")) { resultVal = "500"; }
                         else { resultVal = "partial"; }
                     }
 
@@ -81,8 +83,8 @@ public class BanknoteClassifier {
 
                         if (largestBlock != null && largestBlock.getBoundingBox() != null) {
                             Rect box = largestBlock.getBoundingBox();
-                            int imgW = bitmap.getWidth();
-                            int imgH = bitmap.getHeight();
+                            int imgW = image.getWidth();
+                            int imgH = image.getHeight();
                             int centerX = box.centerX();
                             int centerY = box.centerY();
 
