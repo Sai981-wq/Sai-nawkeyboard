@@ -45,7 +45,7 @@
                 android:background="#80000000"
                 android:paddingStart="16dp"
                 android:paddingEnd="16dp"
-                android:text="Flash On"
+                android:text="Flash Off"
                 android:textColor="#ffffff" />
         </FrameLayout>
     </LinearLayout>
