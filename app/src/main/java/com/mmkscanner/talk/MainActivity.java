@@ -138,12 +138,12 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     if (isFlashlightOn) {
                         params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
                         isFlashlightOn = false;
-                        flashlightButton.setText("Flash On");
+                        flashlightButton.setText("Flash Off");
                         if (tts != null) tts.speak("Flashlight off", TextToSpeech.QUEUE_FLUSH, getTtsParams(), "flash_off");
                     } else {
                         params.setFlashMode(Camera.Parameters.FLASH_MODE_TORCH);
                         isFlashlightOn = true;
-                        flashlightButton.setText("Flash Off");
+                        flashlightButton.setText("Flash On");
                         if (tts != null) tts.speak("Flashlight on", TextToSpeech.QUEUE_FLUSH, getTtsParams(), "flash_on");
                     }
                     camera.setParameters(params);
@@ -197,7 +197,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             if (params.getSupportedFlashModes() != null) {
                 isFlashlightOn = false;
                 params.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
-                handler.post(() -> flashlightButton.setText("Flash On"));
+                handler.post(() -> flashlightButton.setText("Flash Off"));
             }
             camera.setParameters(params);
             camera.setDisplayOrientation(90);
