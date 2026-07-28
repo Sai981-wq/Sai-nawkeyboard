@@ -4,9 +4,12 @@ import androidx.appcompat.app.AppCompatActivity
 import android.content.Context
 import android.os.Bundle
 import android.widget.Button
+import android.widget.EditText
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import com.burmese.tts.R
+import java.util.Locale
 
 class ShanTtsSettingsActivity : AppCompatActivity() {
 
@@ -20,6 +23,11 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     private lateinit var pitchLabel: TextView
     private lateinit var speedBar: SeekBar
     private lateinit var pitchBar: SeekBar
+    private lateinit var etTextToAudio: EditText
+    private lateinit var btnListen: Button
+
+    private val directPlayer = ShanTtsService()
+    private var playThread: Thread? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,6 +39,8 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         pitchLabel = findViewById(R.id.tv_pitch_label)
         speedBar = findViewById(R.id.sb_speed)
         pitchBar = findViewById(R.id.sb_pitch)
+        etTextToAudio = findViewById(R.id.et_text_to_audio)
+        btnListen = findViewById(R.id.btn_listen)
 
         val btnResetSpeed = findViewById<Button>(R.id.btn_reset_speed)
         val btnResetPitch = findViewById<Button>(R.id.btn_reset_pitch)
@@ -61,7 +71,6 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
             val value = 0.8f
             updateSpeedLabel(value)
             prefs.edit().putFloat(PREF_SPEED, value).apply()
-            btnResetSpeed.announceForAccessibility("Speed reset to zero point eight")
         }
 
         pitchBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -79,20 +88,42 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
             val value = 1.0f
             updatePitchLabel(value)
             prefs.edit().putFloat(PREF_PITCH, value).apply()
-            btnResetPitch.announceForAccessibility("Pitch reset to normal")
+        }
+
+        btnListen.setOnClickListener {
+            val text = etTextToAudio.text.toString().trim()
+            if (text.isEmpty()) {
+                Toast.makeText(this, "ကျေးဇူးပြု၍ စာသားရိုက်ထည့်ပါ", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            val currentSpeedVal = prefs.getFloat(PREF_SPEED, 0.8f)
+            val currentPitchVal = prefs.getFloat(PREF_PITCH, 1.0f)
+
+            directPlayer.stopDirectAudio()
+
+            playThread = Thread {
+                directPlayer.playDirectAudio(this@ShanTtsSettingsActivity, text, currentSpeedVal, currentPitchVal)
+            }
+            playThread?.start()
         }
     }
 
     private fun updateSpeedLabel(value: Float) {
-        val text = "Rate: ${String.format("%.1f", value)}x"
+        val text = "Rate: ${String.format(Locale.US, "%.1f", value)}x"
         speedLabel.text = text
         speedBar.contentDescription = text
     }
 
     private fun updatePitchLabel(value: Float) {
-        val text = "Pitch: ${String.format("%.1f", value)}x"
+        val text = "Pitch: ${String.format(Locale.US, "%.1f", value)}x"
         pitchLabel.text = text
         pitchBar.contentDescription = text
+    }
+
+    override fun onDestroy() {
+        directPlayer.stopDirectAudio()
+        super.onDestroy()
     }
 }
 
