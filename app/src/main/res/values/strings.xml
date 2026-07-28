@@ -1,6 +1,8 @@
 <resources>
     <string name="app_name">AM Burmese TTS</string>
     <string name="settings_title">AM Burmese TTS Settings</string>
+    <string name="write_something_hint">Write something to convert into audio</string>
+    <string name="btn_listen">listen</string>
     <string name="speed_label">Rate: 1.0x</string>
     <string name="pitch_label">Pitch: 1.0x</string>
     <string name="reset">Reset</string>

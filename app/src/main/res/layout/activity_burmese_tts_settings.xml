@@ -21,6 +21,25 @@
             android:textStyle="bold"
             android:accessibilityHeading="true" />
 
+        <EditText
+            android:id="@+id/et_text_to_audio"
+            android:layout_width="match_parent"
+            android:layout_height="120dp"
+            android:layout_marginBottom="12dp"
+            android:background="@android:drawable/editbox_background"
+            android:gravity="top|start"
+            android:hint="@string/write_something_hint"
+            android:padding="12dp"
+            android:textColor="@android:color/black"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/btn_listen"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="24dp"
+            android:text="@string/btn_listen" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -50,8 +69,8 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:layout_marginBottom="24dp"
-            android:max="200"
-            android:progress="50"
+            android:max="180"
+            android:progress="60"
             android:minHeight="48dp"/>
 
         <LinearLayout
