@@ -4,8 +4,6 @@
 
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <queries>
         <intent>
@@ -59,7 +57,6 @@
             android:name=".AutoTTSManagerService"
             android:exported="true"
             android:label="Cherry SME TTS"
-            android:foregroundServiceType="mediaPlayback"
             android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE">
             <intent-filter>
                 <action android:name="android.intent.action.TTS_SERVICE" />

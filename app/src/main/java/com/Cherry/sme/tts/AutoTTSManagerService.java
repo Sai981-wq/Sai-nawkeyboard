@@ -1,8 +1,5 @@
 package com.cherry.sme.tts;
 
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -11,7 +8,6 @@ import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -24,7 +20,6 @@ import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeechService;
 import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
-
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -52,9 +47,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private SharedPreferences prefs;
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private final AtomicBoolean isDestroyed = new AtomicBoolean(false);
-
+    
     private PowerManager.WakeLock cpuWakeLock;
-    private final AtomicInteger activeSynthesisCount = new AtomicInteger(0);
+    private PowerManager.WakeLock screenWakeLock;
 
     private final AtomicInteger shanFailCount = new AtomicInteger(0);
     private final AtomicInteger burmeseFailCount = new AtomicInteger(0);
@@ -104,27 +99,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onCreate() {
         super.onCreate();
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            try {
-                String channelId = "tts_background_channel";
-                NotificationChannel channel = new NotificationChannel(
-                        channelId, 
-                        "TTS Background Service", 
-                        NotificationManager.IMPORTANCE_NONE
-                );
-                NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-                if (manager != null) {
-                    manager.createNotificationChannel(channel);
-                }
-                Notification notification = new Notification.Builder(this, channelId)
-                        .setContentTitle("Cherry SME TTS")
-                        .setContentText("Keeping TTS running in background")
-                        .build();
-                startForeground(101, notification);
-            } catch (Exception e) {}
-        }
-
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
 
@@ -135,6 +109,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     "CherrySME::CpuWakeLock"
             );
             cpuWakeLock.setReferenceCounted(false);
+            screenWakeLock = powerManager.newWakeLock(
+                    PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+                    "CherrySME::ScreenWakeLock"
+            );
+            screenWakeLock.setReferenceCounted(false);
         }
 
         watchdogThread = new HandlerThread("TTS-Watchdog");
@@ -300,7 +279,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
             if (!isKeepAliveRunning.get() && !isDestroyed.get()) {
                 isKeepAliveRunning.set(true);
                 keepAliveThread = new Thread(() -> {
-                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO);
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
                     int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
                     if (minBufferSize <= 0) minBufferSize = 32000;
 
@@ -366,14 +345,6 @@ public class AutoTTSManagerService extends TextToSpeechService {
             safeCallbackDone(callback);
             return;
         }
-
-        activeSynthesisCount.incrementAndGet();
-        if (cpuWakeLock != null) {
-            try {
-                cpuWakeLock.acquire(300000L); 
-            } catch (Exception e) {}
-        }
-
         stopRequested.set(false);
         String text = null;
 
@@ -383,8 +354,22 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
         if (text == null || text.trim().isEmpty()) {
             safeCallbackDone(callback);
-            checkAndReleaseWakeLocks();
+            releaseWakeLocks();
             return;
+        }
+
+        if (cpuWakeLock != null) {
+            try {
+                long cpuTimeout = Math.max(120000L, text.length() * 300L);
+                cpuWakeLock.acquire(cpuTimeout);
+            } catch (Exception e) {}
+        }
+
+        if (screenWakeLock != null) {
+            try {
+                long timeoutMs = Math.max(60000L, text.length() * 300L);
+                screenWakeLock.acquire(timeoutMs);
+            } catch (Exception e) {}
         }
 
         triggerKeepAlive();
@@ -397,7 +382,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if (chunks == null || chunks.isEmpty()) {
             safeCallbackDone(callback);
             lastSpeechFinishedTime = System.currentTimeMillis();
-            checkAndReleaseWakeLocks();
+            releaseWakeLocks();
             return;
         }
 
@@ -520,7 +505,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         } finally {
             safeCallbackDone(callback);
             lastSpeechFinishedTime = System.currentTimeMillis();
-            checkAndReleaseWakeLocks();
+            releaseWakeLocks();
         }
     }
 
@@ -560,6 +545,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         try { if (shanEngine != null) shanEngine.stop(); } catch (Exception e) {}
         try { if (burmeseEngine != null) burmeseEngine.stop(); } catch (Exception e) {}
         try { if (englishEngine != null) englishEngine.stop(); } catch (Exception e) {}
+        releaseWakeLocks();
     }
 
     private RemoteTextToSpeech getEngineByLang(String lang) {
@@ -591,22 +577,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
         return "com.google.android.tts";
     }
 
-    private void checkAndReleaseWakeLocks() {
-        if (activeSynthesisCount.decrementAndGet() <= 0) {
-            activeSynthesisCount.set(0);
-            if (cpuWakeLock != null && cpuWakeLock.isHeld()) {
-                try {
-                    cpuWakeLock.release();
-                } catch (Exception e) {}
-            }
-        }
-    }
-
-    private void forceReleaseWakeLocks() {
-        activeSynthesisCount.set(0);
+    private void releaseWakeLocks() {
         if (cpuWakeLock != null && cpuWakeLock.isHeld()) {
             try {
                 cpuWakeLock.release();
+            } catch (Exception e) {}
+        }
+        if (screenWakeLock != null && screenWakeLock.isHeld()) {
+            try {
+                screenWakeLock.release();
             } catch (Exception e) {}
         }
     }
@@ -632,15 +611,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
             try { keepAliveThread.join(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }
         shutdownEngines();
-        forceReleaseWakeLocks();
+        releaseWakeLocks();
         if (watchdogThread != null) {
             try { watchdogThread.quitSafely(); } catch (Exception e) {}
             try { watchdogThread.join(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            try {
-                stopForeground(true);
-            } catch (Exception e) {}
         }
         super.onDestroy();
     }
