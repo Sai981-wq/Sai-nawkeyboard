@@ -575,6 +575,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
     private void safeCallbackDone(SynthesisCallback callback) {
         try {
             if (callback != null) {
+                try {
+                    callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
+                } catch (Exception e) {
+                }
                 callback.done();
             }
         } catch (Exception e) {
@@ -698,3 +702,4 @@ public class AutoTTSManagerService extends TextToSpeechService {
         return TextToSpeech.LANG_AVAILABLE;
     }
 }
+
