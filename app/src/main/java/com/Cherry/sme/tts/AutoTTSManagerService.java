@@ -127,7 +127,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
         watchdogThread.start();
         watchdogHandler = new Handler(watchdogThread.getLooper());
         LogCollector.addLog("SERVICE", "Watchdog thread started");
-        initAllEngines();
+        
+        watchdogHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                initAllEngines();
+            }
+        });
     }
 
     private void initAllEngines() {
@@ -577,6 +583,8 @@ public class AutoTTSManagerService extends TextToSpeechService {
             if (callback != null) {
                 try {
                     callback.start(16000, AudioFormat.ENCODING_PCM_16BIT, 1);
+                    byte[] dummy = new byte[2];
+                    callback.audioAvailable(dummy, 0, dummy.length);
                 } catch (Exception e) {
                 }
                 callback.done();
