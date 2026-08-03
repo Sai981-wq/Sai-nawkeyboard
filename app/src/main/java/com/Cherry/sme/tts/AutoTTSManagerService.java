@@ -65,20 +65,25 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private final UtteranceProgressListener globalListener = new UtteranceProgressListener() {
         @Override
-        public void onStart(String utteranceId) {}
+        public void onStart(String utteranceId) {
+            LogCollector.addLog("UTTERANCE", "Started: " + utteranceId);
+        }
 
         @Override
         public void onDone(String utteranceId) {
+            LogCollector.addLog("UTTERANCE", "Completed: " + utteranceId);
             releaseLatch(utteranceId);
         }
 
         @Override
         public void onError(String utteranceId) {
+            LogCollector.addError("UTTERANCE", "Error on: " + utteranceId);
             releaseLatch(utteranceId);
         }
 
         @Override
         public void onError(String utteranceId, int errorCode) {
+            LogCollector.addError("UTTERANCE", "Error on: " + utteranceId + " code=" + errorCode);
             releaseLatch(utteranceId);
         }
 
@@ -94,8 +99,11 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     public void onCreate() {
         super.onCreate();
+        LogCollector.recordServiceStart();
+        LogCollector.addLog("SERVICE", "onCreate() - API " + Build.VERSION.SDK_INT);
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
         TTSUtils.loadMapping(this);
+        LogCollector.addLog("SERVICE", "Word mapping loaded");
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (powerManager != null) {
             cpuWakeLock = powerManager.newWakeLock(
@@ -103,23 +111,29 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     "CherrySME::CpuWakeLock"
             );
             cpuWakeLock.setReferenceCounted(false);
+            LogCollector.addLog("WAKELOCK", "CPU WakeLock created");
             if (Build.VERSION.SDK_INT < 33) {
                 screenWakeLock = powerManager.newWakeLock(
                         PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
                         "CherrySME::ScreenWakeLock"
                 );
                 screenWakeLock.setReferenceCounted(false);
+                LogCollector.addLog("WAKELOCK", "Screen WakeLock created (API<33)");
+            } else {
+                LogCollector.addLog("WAKELOCK", "Screen WakeLock skipped (API>=33)");
             }
         }
         watchdogThread = new HandlerThread("TTS-Watchdog");
         watchdogThread.start();
         watchdogHandler = new Handler(watchdogThread.getLooper());
+        LogCollector.addLog("SERVICE", "Watchdog thread started");
         initAllEngines();
     }
 
     private void initAllEngines() {
         engineInitLock.lock();
         try {
+            LogCollector.addLog("ENGINE", "initAllEngines() started");
             shutdownEngines();
             isShanConfigured = false;
             isBurmeseConfigured = false;
@@ -130,30 +144,55 @@ public class AutoTTSManagerService extends TextToSpeechService {
             shanFailCount.set(0);
             burmeseFailCount.set(0);
             englishFailCount.set(0);
+            String shanPkg = getBestEngine("pref_engine_shan");
+            LogCollector.addLog("ENGINE", "Shan engine: " + shanPkg);
             try {
                 shanEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
-                    if (status == TextToSpeech.SUCCESS) isShanReady.set(true);
-                }, getBestEngine("pref_engine_shan"));
+                    if (status == TextToSpeech.SUCCESS) {
+                        isShanReady.set(true);
+                        LogCollector.addLog("ENGINE", "Shan engine READY");
+                    } else {
+                        LogCollector.addError("ENGINE", "Shan engine init FAILED status=" + status);
+                    }
+                }, shanPkg);
                 shanEngine.setOnUtteranceProgressListener(globalListener);
             } catch (Exception e) {
                 shanEngine = null;
+                LogCollector.addError("ENGINE", "Shan engine creation failed", e);
             }
+            String burPkg = getBestEngine("pref_engine_myanmar");
+            LogCollector.addLog("ENGINE", "Burmese engine: " + burPkg);
             try {
                 burmeseEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
-                    if (status == TextToSpeech.SUCCESS) isBurmeseReady.set(true);
-                }, getBestEngine("pref_engine_myanmar"));
+                    if (status == TextToSpeech.SUCCESS) {
+                        isBurmeseReady.set(true);
+                        LogCollector.addLog("ENGINE", "Burmese engine READY");
+                    } else {
+                        LogCollector.addError("ENGINE", "Burmese engine init FAILED status=" + status);
+                    }
+                }, burPkg);
                 burmeseEngine.setOnUtteranceProgressListener(globalListener);
             } catch (Exception e) {
                 burmeseEngine = null;
+                LogCollector.addError("ENGINE", "Burmese engine creation failed", e);
             }
+            String engPkg = getBestEngine("pref_engine_english");
+            LogCollector.addLog("ENGINE", "English engine: " + engPkg);
             try {
                 englishEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
-                    if (status == TextToSpeech.SUCCESS) isEnglishReady.set(true);
-                }, getBestEngine("pref_engine_english"));
+                    if (status == TextToSpeech.SUCCESS) {
+                        isEnglishReady.set(true);
+                        LogCollector.addLog("ENGINE", "English engine READY");
+                    } else {
+                        LogCollector.addError("ENGINE", "English engine init FAILED status=" + status);
+                    }
+                }, engPkg);
                 englishEngine.setOnUtteranceProgressListener(globalListener);
             } catch (Exception e) {
                 englishEngine = null;
+                LogCollector.addError("ENGINE", "English engine creation failed", e);
             }
+            LogCollector.addLog("ENGINE", "initAllEngines() completed");
         } finally {
             engineInitLock.unlock();
         }
@@ -163,6 +202,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
         engineInitLock.lock();
         try {
             if (isDestroyed.get()) return;
+            LogCollector.addWarn("ENGINE", "Reinitializing " + lang + " engine");
             if ("SHAN".equals(lang)) {
                 if (shanEngine != null) {
                     try { shanEngine.shutdown(); } catch (Exception e) {}
@@ -170,9 +210,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 isShanReady.set(false);
                 isShanConfigured = false;
                 shanFailCount.set(0);
+                String pkg = getBestEngine("pref_engine_shan");
                 shanEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
-                    if (status == TextToSpeech.SUCCESS) isShanReady.set(true);
-                }, getBestEngine("pref_engine_shan"));
+                    if (status == TextToSpeech.SUCCESS) {
+                        isShanReady.set(true);
+                        LogCollector.addLog("ENGINE", "Shan engine reinit READY");
+                    } else {
+                        LogCollector.addError("ENGINE", "Shan engine reinit FAILED");
+                    }
+                }, pkg);
                 shanEngine.setOnUtteranceProgressListener(globalListener);
             } else if ("MYANMAR".equals(lang)) {
                 if (burmeseEngine != null) {
@@ -181,9 +227,15 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 isBurmeseReady.set(false);
                 isBurmeseConfigured = false;
                 burmeseFailCount.set(0);
+                String pkg = getBestEngine("pref_engine_myanmar");
                 burmeseEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
-                    if (status == TextToSpeech.SUCCESS) isBurmeseReady.set(true);
-                }, getBestEngine("pref_engine_myanmar"));
+                    if (status == TextToSpeech.SUCCESS) {
+                        isBurmeseReady.set(true);
+                        LogCollector.addLog("ENGINE", "Burmese engine reinit READY");
+                    } else {
+                        LogCollector.addError("ENGINE", "Burmese engine reinit FAILED");
+                    }
+                }, pkg);
                 burmeseEngine.setOnUtteranceProgressListener(globalListener);
             } else if ("ENGLISH".equals(lang)) {
                 if (englishEngine != null) {
@@ -192,12 +244,19 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 isEnglishReady.set(false);
                 isEnglishConfigured = false;
                 englishFailCount.set(0);
+                String pkg = getBestEngine("pref_engine_english");
                 englishEngine = new RemoteTextToSpeech(getApplicationContext(), status -> {
-                    if (status == TextToSpeech.SUCCESS) isEnglishReady.set(true);
-                }, getBestEngine("pref_engine_english"));
+                    if (status == TextToSpeech.SUCCESS) {
+                        isEnglishReady.set(true);
+                        LogCollector.addLog("ENGINE", "English engine reinit READY");
+                    } else {
+                        LogCollector.addError("ENGINE", "English engine reinit FAILED");
+                    }
+                }, pkg);
                 englishEngine.setOnUtteranceProgressListener(globalListener);
             }
         } catch (Exception e) {
+            LogCollector.addError("ENGINE", "reinitSingleEngine(" + lang + ") failed", e);
         } finally {
             engineInitLock.unlock();
         }
@@ -205,6 +264,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     private void scheduleReinit(String lang) {
         if (watchdogHandler != null && !isDestroyed.get()) {
+            LogCollector.addWarn("WATCHDOG", "Scheduling reinit for " + lang);
             watchdogHandler.post(() -> reinitSingleEngine(lang));
         }
     }
@@ -214,7 +274,10 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if ("SHAN".equals(lang)) counter = shanFailCount;
         else if ("MYANMAR".equals(lang)) counter = burmeseFailCount;
         else counter = englishFailCount;
-        if (counter.incrementAndGet() >= MAX_FAIL_BEFORE_REINIT) {
+        int count = counter.incrementAndGet();
+        LogCollector.addError("SPEAK", lang + " failure #" + count);
+        LogCollector.recordSpeakFailure();
+        if (count >= MAX_FAIL_BEFORE_REINIT) {
             scheduleReinit(lang);
         }
     }
@@ -223,36 +286,46 @@ public class AutoTTSManagerService extends TextToSpeechService {
         if ("SHAN".equals(lang)) shanFailCount.set(0);
         else if ("MYANMAR".equals(lang)) burmeseFailCount.set(0);
         else englishFailCount.set(0);
+        LogCollector.recordSpeakSuccess();
     }
 
     private void configureEngineIfNeeded(RemoteTextToSpeech engine, String lang) {
         if (engine == null || isDestroyed.get()) return;
         try {
             if ("MYANMAR".equals(lang) && !isBurmeseConfigured) {
+                LogCollector.addLog("CONFIG", "Configuring Burmese engine");
                 int res = engine.setLanguage(new Locale("mya"));
                 if (res < 0) res = engine.setLanguage(new Locale("mya", "MM"));
                 if (res < 0) engine.setLanguage(new Locale("my"));
                 try {
                     Set<Voice> voices = engine.getVoices();
                     if (voices != null) {
+                        LogCollector.addLog("CONFIG", "Burmese voices available: " + voices.size());
                         for (Voice v : voices) {
                             String vName = v.getName().toLowerCase();
                             if (vName.contains("my") || vName.contains("burmese") || vName.contains("mya")) {
                                 engine.setVoice(v);
+                                LogCollector.addLog("CONFIG", "Selected voice: " + v.getName());
                                 break;
                             }
                         }
                     }
-                } catch (Exception e) {}
+                } catch (Exception e) {
+                    LogCollector.addWarn("CONFIG", "Voice selection failed for Burmese");
+                }
                 isBurmeseConfigured = true;
             } else if ("SHAN".equals(lang) && !isShanConfigured) {
+                LogCollector.addLog("CONFIG", "Configuring Shan engine (locale: shn)");
                 engine.setLanguage(new Locale("shn"));
                 isShanConfigured = true;
             } else if ("ENGLISH".equals(lang) && !isEnglishConfigured) {
+                LogCollector.addLog("CONFIG", "Configuring English engine (locale: en_US)");
                 engine.setLanguage(Locale.US);
                 isEnglishConfigured = true;
             }
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            LogCollector.addError("CONFIG", "configureEngine(" + lang + ") failed", e);
+        }
     }
 
     private void triggerKeepAlive() {
@@ -261,6 +334,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
             lastSpeechFinishedTime = System.currentTimeMillis();
             if (!isKeepAliveRunning.get() && !isDestroyed.get()) {
                 isKeepAliveRunning.set(true);
+                LogCollector.addLog("KEEPALIVE", "Starting keep-alive audio stream");
                 keepAliveThread = new Thread(() -> {
                     android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
                     int minBufferSize = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -287,6 +361,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                                 AudioManager.AUDIO_SESSION_ID_GENERATE
                         );
                         if (keepAliveTrack.getState() == AudioTrack.STATE_UNINITIALIZED) {
+                            LogCollector.addError("KEEPALIVE", "AudioTrack failed to initialize");
                             return;
                         }
                         keepAliveTrack.setVolume(AudioTrack.getMaxVolume());
@@ -298,6 +373,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                             }
                         }
                     } catch (Exception e) {
+                        LogCollector.addError("KEEPALIVE", "Keep-alive error", e);
                     } finally {
                         isKeepAliveRunning.set(false);
                         try {
@@ -308,6 +384,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
                                 keepAliveTrack.release();
                             }
                         } catch (Exception e) {}
+                        LogCollector.addLog("KEEPALIVE", "Keep-alive stopped");
                     }
                 });
                 keepAliveThread.start();
@@ -320,41 +397,64 @@ public class AutoTTSManagerService extends TextToSpeechService {
     @Override
     protected void onSynthesizeText(SynthesisRequest request, SynthesisCallback callback) {
         if (isDestroyed.get()) {
+            LogCollector.addWarn("SYNTH", "Service destroyed, ignoring request");
             safeCallbackDone(callback);
             return;
         }
         stopRequested.set(false);
+        LogCollector.recordSpeakRequest();
         String text = null;
         try {
             text = request.getText();
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            LogCollector.addError("SYNTH", "Failed to get text from request", e);
+        }
         if (text == null || text.trim().isEmpty()) {
+            LogCollector.addWarn("SYNTH", "Empty text received");
             safeCallbackDone(callback);
             releaseWakeLocks();
             return;
         }
+        int textLen = text.length();
+        String preview = text.length() > 50 ? text.substring(0, 50) + "..." : text;
+        LogCollector.addLog("SYNTH", "Request: len=" + textLen + " text=\"" + preview + "\"");
         if (cpuWakeLock != null) {
             try {
                 long cpuTimeout = Math.max(120000L, text.length() * 300L);
                 cpuWakeLock.acquire(cpuTimeout);
-            } catch (Exception e) {}
+                LogCollector.addLog("WAKELOCK", "CPU acquired (" + cpuTimeout + "ms)");
+            } catch (Exception e) {
+                LogCollector.addError("WAKELOCK", "CPU acquire failed", e);
+            }
         }
         if (screenWakeLock != null) {
             try {
                 long timeoutMs = Math.max(60000L, text.length() * 300L);
                 screenWakeLock.acquire(timeoutMs);
-            } catch (Exception e) {}
+                LogCollector.addLog("WAKELOCK", "Screen acquired (" + timeoutMs + "ms)");
+            } catch (Exception e) {
+                LogCollector.addError("WAKELOCK", "Screen acquire failed", e);
+            }
         }
         triggerKeepAlive();
         List<TTSUtils.Chunk> chunks = null;
         try {
             chunks = TTSUtils.splitHelper(text);
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            LogCollector.addError("SYNTH", "Text splitting failed", e);
+        }
         if (chunks == null || chunks.isEmpty()) {
+            LogCollector.addWarn("SYNTH", "No chunks after splitting");
             safeCallbackDone(callback);
             lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLocks();
             return;
+        }
+        LogCollector.addLog("SYNTH", "Split into " + chunks.size() + " chunks");
+        for (int ci = 0; ci < chunks.size(); ci++) {
+            TTSUtils.Chunk c = chunks.get(ci);
+            String cPreview = c.text.length() > 30 ? c.text.substring(0, 30) + "..." : c.text;
+            LogCollector.addLog("SYNTH", "  Chunk[" + ci + "] lang=" + c.lang + " len=" + c.text.length() + " \"" + cPreview + "\"");
         }
         Bundle params = new Bundle();
         AudioAttributes audioAttributes = new AudioAttributes.Builder()
@@ -368,9 +468,13 @@ public class AutoTTSManagerService extends TextToSpeechService {
             rate = request.getSpeechRate() / 100.0f;
             pitch = request.getPitch() / 100.0f;
         } catch (Exception e) {}
+        LogCollector.addLog("SYNTH", "Rate=" + rate + " Pitch=" + pitch);
         try {
             for (int i = 0; i < chunks.size(); i++) {
-                if (stopRequested.get() || isDestroyed.get()) break;
+                if (stopRequested.get() || isDestroyed.get()) {
+                    LogCollector.addWarn("SYNTH", "Stop requested at chunk " + i);
+                    break;
+                }
                 lastSpeechFinishedTime = System.currentTimeMillis();
                 TTSUtils.Chunk chunk = null;
                 try {
@@ -381,27 +485,31 @@ public class AutoTTSManagerService extends TextToSpeechService {
                 if (chunk == null || chunk.text == null || chunk.text.trim().isEmpty()) continue;
                 RemoteTextToSpeech targetEngine = getEngineByLang(chunk.lang);
                 if (targetEngine == null) {
+                    LogCollector.addError("SYNTH", "No engine for " + chunk.lang + " (null)");
                     scheduleReinit(chunk.lang);
                     continue;
                 }
                 if (!waitForEngine(chunk.lang)) {
+                    LogCollector.addError("SYNTH", chunk.lang + " engine not ready (timeout)");
                     recordFailure(chunk.lang);
                     continue;
                 }
                 try {
                     configureEngineIfNeeded(targetEngine, chunk.lang);
-                } catch (Exception e) {}
+                } catch (Exception e) {
+                    LogCollector.addError("SYNTH", "Configure failed for " + chunk.lang, e);
+                }
                 try {
                     targetEngine.setSpeechRate(rate);
                     targetEngine.setPitch(pitch);
                 } catch (Exception e) {}
                 int maxLen = 3500;
-                int textLen = chunk.text.length();
+                int chunkTextLen = chunk.text.length();
                 int startIndex = 0;
-                while (startIndex < textLen) {
+                while (startIndex < chunkTextLen) {
                     if (stopRequested.get() || isDestroyed.get()) break;
-                    int endIndex = Math.min(startIndex + maxLen, textLen);
-                    if (endIndex < textLen) {
+                    int endIndex = Math.min(startIndex + maxLen, chunkTextLen);
+                    if (endIndex < chunkTextLen) {
                         int breakPoint = -1;
                         for (int j = endIndex - 1; j >= startIndex && j > startIndex + (maxLen - 500); j--) {
                             char c = chunk.text.charAt(j);
@@ -425,19 +533,23 @@ public class AutoTTSManagerService extends TextToSpeechService {
                         result = targetEngine.speak(subText, TextToSpeech.QUEUE_ADD, params, utteranceId);
                     } catch (Exception e) {
                         utteranceLatches.remove(utteranceId);
+                        LogCollector.addError("SYNTH", "speak() threw exception for " + chunk.lang, e);
                         recordFailure(chunk.lang);
                         break;
                     }
                     if (result == TextToSpeech.ERROR) {
                         utteranceLatches.remove(utteranceId);
+                        LogCollector.addError("SYNTH", "speak() returned ERROR for " + chunk.lang + " subLen=" + subText.length());
                         recordFailure(chunk.lang);
                         break;
                     }
+                    LogCollector.addLog("SYNTH", "speak() OK " + chunk.lang + " id=" + utteranceId + " len=" + subText.length());
                     try {
                         long timeout = Math.max(30000L, subText.length() * 300L);
                         boolean done = latch.await(timeout, TimeUnit.MILLISECONDS);
                         if (!done && !stopRequested.get() && !isDestroyed.get()) {
                             utteranceLatches.remove(utteranceId);
+                            LogCollector.addError("SYNTH", "Timeout waiting for " + chunk.lang + " (" + timeout + "ms)");
                             try { targetEngine.stop(); } catch (Exception e) {}
                             recordFailure(chunk.lang);
                         } else if (done) {
@@ -446,14 +558,17 @@ public class AutoTTSManagerService extends TextToSpeechService {
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         stopRequested.set(true);
+                        LogCollector.addWarn("SYNTH", "Interrupted");
                     }
                 }
             }
         } catch (Exception e) {
+            LogCollector.addError("SYNTH", "Unexpected error in synthesis loop", e);
         } finally {
             safeCallbackDone(callback);
             lastSpeechFinishedTime = System.currentTimeMillis();
             releaseWakeLocks();
+            LogCollector.addLog("SYNTH", "Request completed");
         }
     }
 
@@ -462,7 +577,9 @@ public class AutoTTSManagerService extends TextToSpeechService {
             if (callback != null) {
                 callback.done();
             }
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            LogCollector.addError("CALLBACK", "callback.done() failed", e);
+        }
     }
 
     private boolean waitForEngine(String lang) {
@@ -484,6 +601,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     protected void onStop() {
+        LogCollector.addLog("SYNTH", "onStop() called");
         stopRequested.set(true);
         for (CountDownLatch latch : utteranceLatches.values()) {
             try { latch.countDown(); } catch (Exception e) {}
@@ -547,6 +665,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
 
     @Override
     public void onDestroy() {
+        LogCollector.addLog("SERVICE", "onDestroy() called");
         isDestroyed.set(true);
         stopRequested.set(true);
         isKeepAliveRunning.set(false);
@@ -560,6 +679,7 @@ public class AutoTTSManagerService extends TextToSpeechService {
             try { watchdogThread.quitSafely(); } catch (Exception e) {}
             try { watchdogThread.join(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         }
+        LogCollector.addLog("SERVICE", "Service destroyed");
         super.onDestroy();
     }
 
