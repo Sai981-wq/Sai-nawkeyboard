@@ -3,7 +3,7 @@ plugins {
 }
 android {
     namespace 'com.cherry.sme.tts'
-    compileSdk 30
+    compileSdk 31
     defaultConfig {
         applicationId "com.cherry.sme.tts"
         minSdk 24
