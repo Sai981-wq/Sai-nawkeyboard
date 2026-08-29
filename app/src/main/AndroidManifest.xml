@@ -17,6 +17,7 @@
             android:name="android.speech.tts"
             android:resource="@xml/tts_engine" />
 
+        <!-- Activity များကို . ဖြင့်စ၍ရေးပါက build.gradle ရှိ namespace နှင့် အလိုအလျောက် ချိတ်ဆက်ပေးပါသည် -->
         <activity
             android:name=".ShanTtsSettingsActivity"
             android:label="@string/app_name"
@@ -37,7 +38,7 @@
 
         <service
             android:name=".ShanTtsService"
-            android:label="Shan TTS"
+            android:label="@string/app_name" 
             android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE"
             android:exported="true">
             <intent-filter>

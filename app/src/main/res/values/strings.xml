@@ -1,10 +1,12 @@
 <resources>
-    <string name="app_name">Shan TTS</string>
-    <string name="settings_title">Shan TTS Settings</string>
+    <string name="app_name">Metta Voice TTS</string>
+    <string name="settings_title">Metta Voice TTS Settings</string>
+    <string name="write_something_hint">ဤနေရာတွင် မိမိသိလိုသောစာသားကိုရိုက်ထည့်၍ \"အသံထွက်ရန်\"ကိုနှိပ်ပါ</string>
+    <string name="btn_listen">အသံထွက်ရန်</string>
     <string name="speed_label">Rate: 1.0x</string>
     <string name="pitch_label">Pitch: 1.0x</string>
     <string name="reset">Reset</string>
-    <string name="about_header">About Shan TTS</string>
-    <string name="about_text">Created by: Sai Naw\n\nThis engine is dedicated to the Shan blind community, to make technology accessible in the Shan language.\n\nYour feedback is essential for improvement. If you find any bugs or have suggestions for new words, please contact:\nsainaw1331@gmail.com\n\nThis engine will be continuously updated.\nThank you for your support.</string>
+    <string name="about_header">About Metta Voice TTS (Version 1.0)</string>
+    <string name="about_text">Metta Voice TTS is a 100% free Myanmar Text-to-Speech application dedicated to the visually impaired. Built by a team of volunteers, it aims to provide equal access to information without any costs.\n\nIf you have any suggestions or feedback to improve this app, please feel free to contact us.\n\nContact Us:\nPhone: 09750091817\nEmail: sainaw1331@gmail.com</string>
 </resources>
 

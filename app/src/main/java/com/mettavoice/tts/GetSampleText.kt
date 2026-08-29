@@ -1,4 +1,4 @@
-package com.shan.tts
+package com.mettavoice.tts
 
 import android.app.Activity
 import android.content.Intent
@@ -9,8 +9,9 @@ class GetSampleText : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val intent = Intent()
-        intent.putExtra(TextToSpeech.Engine.EXTRA_SAMPLE_TEXT, "မုင်ႇ")
+        intent.putExtra(TextToSpeech.Engine.EXTRA_SAMPLE_TEXT, "မင်္ဂလာပါ။ Metta Voice TTS မှ ကြိုဆိုပါသည်။")
         setResult(Activity.RESULT_OK, intent)
         finish()
     }
 }
+

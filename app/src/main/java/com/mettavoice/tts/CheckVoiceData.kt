@@ -1,4 +1,4 @@
-package com.shan.tts
+package com.mettavoice.tts
 
 import android.app.Activity
 import android.content.Intent
@@ -13,7 +13,7 @@ class CheckVoiceData : Activity() {
         val resultIntent = Intent()
 
         val availableVoices = ArrayList<String>()
-        availableVoices.add("shn")
+        availableVoices.add("my") 
 
         resultIntent.putStringArrayListExtra(
             TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES,

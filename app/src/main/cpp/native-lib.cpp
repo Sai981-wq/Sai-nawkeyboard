@@ -49,37 +49,30 @@ static const OpusFileCallbacks mem_callbacks = {
     read_mem, seek_mem, tell_mem, NULL
 };
 
-// ============================================================
-// Audio was pre-processed: normalized + resampled to 16kHz + Opus encoded
-// Opus always decodes to 48kHz, so we still need 48kHz -> 16kHz downsample
-// But since the source audio is already band-limited to 8kHz (16kHz Nyquist),
-// a simple averaging decimation is sufficient (no aliasing possible)
-// ============================================================
-
 #define DOWNSAMPLE_RATIO 3
 
 JNIEXPORT jlong JNICALL
-Java_com_shan_tts_ShanTtsService_sonicCreateStream(JNIEnv *env, jobject thiz, jint sampleRate, jint numChannels) {
+Java_com_mettavoice_tts_ShanTtsService_sonicCreateStream(JNIEnv *env, jobject thiz, jint sampleRate, jint numChannels) {
     return (jlong) sonicCreateStream(sampleRate, numChannels);
 }
 
 JNIEXPORT void JNICALL
-Java_com_shan_tts_ShanTtsService_sonicDestroyStream(JNIEnv *env, jobject thiz, jlong streamId) {
+Java_com_mettavoice_tts_ShanTtsService_sonicDestroyStream(JNIEnv *env, jobject thiz, jlong streamId) {
     sonicDestroyStream((sonicStream) streamId);
 }
 
 JNIEXPORT void JNICALL
-Java_com_shan_tts_ShanTtsService_sonicSetSpeed(JNIEnv *env, jobject thiz, jlong streamId, jfloat speed) {
+Java_com_mettavoice_tts_ShanTtsService_sonicSetSpeed(JNIEnv *env, jobject thiz, jlong streamId, jfloat speed) {
     sonicSetSpeed((sonicStream) streamId, speed);
 }
 
 JNIEXPORT void JNICALL
-Java_com_shan_tts_ShanTtsService_sonicSetPitch(JNIEnv *env, jobject thiz, jlong streamId, jfloat pitch) {
+Java_com_mettavoice_tts_ShanTtsService_sonicSetPitch(JNIEnv *env, jobject thiz, jlong streamId, jfloat pitch) {
     sonicSetPitch((sonicStream) streamId, pitch);
 }
 
 JNIEXPORT jint JNICALL
-Java_com_shan_tts_ShanTtsService_sonicWriteShortToStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
+Java_com_mettavoice_tts_ShanTtsService_sonicWriteShortToStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
     jshort *data = env->GetShortArrayElements(audioData, NULL);
     int ret = sonicWriteShortToStream((sonicStream) streamId, data, len);
     env->ReleaseShortArrayElements(audioData, data, 0);
@@ -87,7 +80,7 @@ Java_com_shan_tts_ShanTtsService_sonicWriteShortToStream(JNIEnv *env, jobject th
 }
 
 JNIEXPORT jint JNICALL
-Java_com_shan_tts_ShanTtsService_sonicReadShortFromStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
+Java_com_mettavoice_tts_ShanTtsService_sonicReadShortFromStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
     jshort *data = env->GetShortArrayElements(audioData, NULL);
     int ret = sonicReadShortFromStream((sonicStream) streamId, data, len);
     env->ReleaseShortArrayElements(audioData, data, 0);
@@ -95,26 +88,25 @@ Java_com_shan_tts_ShanTtsService_sonicReadShortFromStream(JNIEnv *env, jobject t
 }
 
 JNIEXPORT void JNICALL
-Java_com_shan_tts_ShanTtsService_sonicFlushStream(JNIEnv *env, jobject thiz, jlong streamId) {
+Java_com_mettavoice_tts_ShanTtsService_sonicFlushStream(JNIEnv *env, jobject thiz, jlong streamId) {
     sonicFlushStream((sonicStream) streamId);
 }
 
 JNIEXPORT jint JNICALL
-Java_com_shan_tts_ShanTtsService_sonicSamplesAvailable(JNIEnv *env, jobject thiz, jlong streamId) {
+Java_com_mettavoice_tts_ShanTtsService_sonicSamplesAvailable(JNIEnv *env, jobject thiz, jlong streamId) {
     return sonicSamplesAvailable((sonicStream) streamId);
 }
 
 JNIEXPORT void JNICALL
-Java_com_shan_tts_ShanTtsService_initOpusDecoder(JNIEnv *env, jobject thiz, jint sampleRate) {
-    // No initialization needed - audio is pre-processed
+Java_com_mettavoice_tts_ShanTtsService_initOpusDecoder(JNIEnv *env, jobject thiz, jint sampleRate) {
 }
 
 JNIEXPORT void JNICALL
-Java_com_shan_tts_ShanTtsService_destroyOpusDecoder(JNIEnv *env, jobject thiz) {
+Java_com_mettavoice_tts_ShanTtsService_destroyOpusDecoder(JNIEnv *env, jobject thiz) {
 }
 
 JNIEXPORT jshortArray JNICALL
-Java_com_shan_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jbyteArray encodedData, jint len) {
+Java_com_mettavoice_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jbyteArray encodedData, jint len) {
     if (encodedData == nullptr || len <= 0) return nullptr;
 
     jbyte *oggData = env->GetByteArrayElements(encodedData, nullptr);
@@ -132,11 +124,10 @@ Java_com_shan_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jbyteArra
         return nullptr;
     }
 
-    // Collect all decoded PCM (Opus always decodes to 48kHz)
     std::vector<opus_int16> allPcm48k;
     int channels = 1;
 
-    opus_int16 buffer[5760 * 2]; // 120ms @ 48kHz, stereo safety
+    opus_int16 buffer[5760 * 2]; 
 
     while (true) {
         int samplesRead = op_read(of, buffer, 5760, NULL);
@@ -154,8 +145,6 @@ Java_com_shan_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jbyteArra
 
     if (allPcm48k.empty()) return nullptr;
 
-    // Simple averaging downsample 48kHz -> 16kHz
-    // Safe because source audio was already band-limited to 8kHz before Opus encoding
     int totalSamples = (int)allPcm48k.size();
     std::vector<opus_int16> pcmOutput;
     pcmOutput.reserve(totalSamples / DOWNSAMPLE_RATIO + 1);
@@ -180,3 +169,4 @@ Java_com_shan_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jbyteArra
 }
 
 }
+
