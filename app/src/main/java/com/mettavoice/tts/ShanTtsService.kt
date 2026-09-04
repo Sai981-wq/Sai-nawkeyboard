@@ -290,7 +290,7 @@ class ShanTtsService : TextToSpeechService() {
         val trimmedText = text.trim()
         
         val units = if (trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)) {
-            listOf(currentSingleMap[trimmedText]!!)
+            listOf(trimmedText)
         } else {
             splitTextIntoPlayableUnits(text, currentMap)
         }
@@ -434,7 +434,7 @@ class ShanTtsService : TextToSpeechService() {
         val trimmedText = text.trim()
         
         val units = if (trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)) {
-            listOf(currentSingleMap[trimmedText]!!)
+            listOf(trimmedText)
         } else {
             splitTextIntoPlayableUnits(text, currentMap)
         }
