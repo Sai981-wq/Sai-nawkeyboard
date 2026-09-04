@@ -54,6 +54,7 @@ class ShanTtsService : TextToSpeechService() {
     private external fun destroyOpusDecoder()
 
     private var charMap: Map<String, String>? = null
+    private var singleCharMap: Map<String, String>? = null
     private val indexMap = HashMap<String, Pair<Long, Int>>()
     private var randomAccessFile: RandomAccessFile? = null
     private var isStopped = false
@@ -70,7 +71,11 @@ class ShanTtsService : TextToSpeechService() {
     fun initResources(context: Context) {
         copyAssetToFile(context, BIN_FILENAME)
         copyAssetToFile(context, INDEX_FILENAME)
-        if (charMap == null) loadCharMap(context)
+        
+        if (charMap == null) {
+            charMap = loadMapFromFile(context, "mapping.txt")
+            singleCharMap = loadMapFromFile(context, "mapping_single.txt")
+        }
         if (indexMap.isEmpty()) loadIndexMap(context)
 
         if (randomAccessFile == null) {
@@ -92,6 +97,47 @@ class ShanTtsService : TextToSpeechService() {
                 e.printStackTrace()
             }
         }
+    }
+
+    private fun isExpired(): Boolean {
+        val calendar = Calendar.getInstance()
+        val currentYear = calendar.get(Calendar.YEAR)
+        val currentMonth = calendar.get(Calendar.MONTH) + 1 
+        val currentDay = calendar.get(Calendar.DAY_OF_MONTH)
+
+        val expiryYear = 2026
+        val expiryMonth = 9
+        val expiryDay = 9
+
+        if (currentYear > expiryYear) return true
+        if (currentYear == expiryYear && currentMonth > expiryMonth) return true
+        if (currentYear == expiryYear && currentMonth == expiryMonth && currentDay > expiryDay) return true
+        return false
+    }
+
+    private fun loadMapFromFile(context: Context, filename: String): Map<String, String> {
+        val tempMap = mutableMapOf<String, String>()
+        try {
+            context.assets.open(filename).bufferedReader(Charsets.UTF_8).useLines { lines ->
+                lines.forEach { line ->
+                    val trimmed = line.trim()
+                    if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                        val parts = trimmed.split("=", limit = 2)
+                        if (parts.size == 2) {
+                            val key = parts[0].trim()
+                            val value = parts[1].trim()
+                            if (!key.equals("rate", ignoreCase = true) &&
+                                !key.equals("pitch", ignoreCase = true) &&
+                                !key.equals("speed", ignoreCase = true)) {
+                                tempMap[key] = value
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+        }
+        return tempMap
     }
 
     private fun copyAssetToFile(context: Context, filename: String) {
@@ -128,32 +174,6 @@ class ShanTtsService : TextToSpeechService() {
         }
     }
 
-    private fun loadCharMap(context: Context) {
-        try {
-            val tempMap = mutableMapOf<String, String>()
-            context.assets.open("mapping.txt").bufferedReader(Charsets.UTF_8).useLines { lines ->
-                lines.forEach { line ->
-                    val trimmed = line.trim()
-                    if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                        val parts = trimmed.split("=", limit = 2)
-                        if (parts.size == 2) {
-                            val key = parts[0].trim()
-                            val value = parts[1].trim()
-                            if (!key.equals("rate", ignoreCase = true) &&
-                                !key.equals("pitch", ignoreCase = true) &&
-                                !key.equals("speed", ignoreCase = true)) {
-                                tempMap[key] = value
-                            }
-                        }
-                    }
-                }
-            }
-            charMap = tempMap
-        } catch (e: Exception) {
-            charMap = emptyMap()
-        }
-    }
-
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
         return if (lang.equals("my", ignoreCase = true) || lang.equals("mya", ignoreCase = true)) TextToSpeech.LANG_AVAILABLE else TextToSpeech.LANG_NOT_SUPPORTED
     }
@@ -169,9 +189,12 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
-        val rawText = request.charSequenceText?.toString() ?: ""
-        val text = rawText.replace(Regex("([\\u1000-\\u102A])\u1039"), "$1\u103A")
+        var rawText = request.charSequenceText?.toString() ?: ""
+        if (isExpired()) {
+            rawText = "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ"
+        }
 
+        val text = rawText.replace(Regex("([\\u1000-\\u102A])\u1039"), "$1\u103A")
         isStopped = false
 
         if (callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT) != TextToSpeech.SUCCESS) return
@@ -184,7 +207,7 @@ class ShanTtsService : TextToSpeechService() {
 
         val systemRate = request.speechRate / 100.0f
         val systemPitch = request.pitch / 100.0f
-        val prefs = getSharedPreferences("mettavoice_tts_prefs", MODE_PRIVATE)
+        val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
         val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
         val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
 
@@ -202,11 +225,15 @@ class ShanTtsService : TextToSpeechService() {
         directAudioTrack = null
     }
 
-    fun playDirectAudio(context: Context, rawText: String, rate: Float, pitch: Float) {
+    fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float) {
         stopDirectAudio()
         isDirectStopped = false
-
         initResources(context)
+
+        var rawText = requestText
+        if (isExpired()) {
+            rawText = "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ"
+        }
 
         val text = rawText.replace(Regex("([\\u1000-\\u102A])\u1039"), "$1\u103A")
         if (text.isBlank()) return
@@ -248,7 +275,6 @@ class ShanTtsService : TextToSpeechService() {
         }
 
         directAudioTrack?.play()
-
         synthesizeBurmeseDirect(text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f))
 
         try {
@@ -260,7 +286,15 @@ class ShanTtsService : TextToSpeechService() {
 
     private fun synthesizeBurmeseDirect(text: String, rate: Float, pitch: Float) {
         val currentMap = charMap ?: return
-        val units = splitTextIntoPlayableUnits(text, currentMap)
+        val currentSingleMap = singleCharMap ?: emptyMap()
+        val trimmedText = text.trim()
+        
+        val units = if (trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)) {
+            listOf(currentSingleMap[trimmedText]!!)
+        } else {
+            splitTextIntoPlayableUnits(text, currentMap)
+        }
+        
         if (units.isEmpty()) return
 
         val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
@@ -293,7 +327,7 @@ class ShanTtsService : TextToSpeechService() {
                     continue
                 }
 
-                val baseName = currentMap[unit] ?: continue
+                val baseName = currentMap[unit] ?: currentSingleMap[unit] ?: continue
                 val encodedBytes = readAudioFromBin(baseName)
 
                 if (encodedBytes != null && encodedBytes.isNotEmpty()) {
@@ -396,7 +430,14 @@ class ShanTtsService : TextToSpeechService() {
 
     private fun synthesizeBurmeseText(text: String, callback: SynthesisCallback, rate: Float, pitch: Float) {
         val currentMap = charMap ?: return
-        val units = splitTextIntoPlayableUnits(text, currentMap)
+        val currentSingleMap = singleCharMap ?: emptyMap()
+        val trimmedText = text.trim()
+        
+        val units = if (trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)) {
+            listOf(currentSingleMap[trimmedText]!!)
+        } else {
+            splitTextIntoPlayableUnits(text, currentMap)
+        }
 
         if (units.isEmpty()) {
             generateSilentAudio(callback)
@@ -434,7 +475,7 @@ class ShanTtsService : TextToSpeechService() {
                     continue
                 }
 
-                val baseName = currentMap[unit] ?: continue
+                val baseName = currentMap[unit] ?: currentSingleMap[unit] ?: continue
                 val encodedBytes = readAudioFromBin(baseName)
 
                 if (encodedBytes != null && encodedBytes.isNotEmpty()) {
