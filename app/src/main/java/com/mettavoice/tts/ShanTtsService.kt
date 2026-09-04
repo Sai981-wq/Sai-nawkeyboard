@@ -289,7 +289,9 @@ class ShanTtsService : TextToSpeechService() {
         val currentSingleMap = singleCharMap ?: emptyMap()
         val trimmedText = text.trim()
         
-        val units = if (trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)) {
+        val isSingleChar = trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)
+        
+        val units = if (isSingleChar) {
             listOf(trimmedText)
         } else {
             splitTextIntoPlayableUnits(text, currentMap)
@@ -327,10 +329,10 @@ class ShanTtsService : TextToSpeechService() {
                     continue
                 }
 
-                val baseName = if (trimmedText.length == 1 && currentSingleMap.containsKey(unit)) {
+                val baseName = if (isSingleChar) {
                     currentSingleMap[unit]
                 } else {
-                    currentMap[unit] ?: currentSingleMap[unit]
+                    currentMap[unit]
                 } ?: continue
                 
                 val encodedBytes = readAudioFromBin(baseName)
@@ -438,7 +440,9 @@ class ShanTtsService : TextToSpeechService() {
         val currentSingleMap = singleCharMap ?: emptyMap()
         val trimmedText = text.trim()
         
-        val units = if (trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)) {
+        val isSingleChar = trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)
+        
+        val units = if (isSingleChar) {
             listOf(trimmedText)
         } else {
             splitTextIntoPlayableUnits(text, currentMap)
@@ -480,10 +484,10 @@ class ShanTtsService : TextToSpeechService() {
                     continue
                 }
 
-                val baseName = if (trimmedText.length == 1 && currentSingleMap.containsKey(unit)) {
+                val baseName = if (isSingleChar) {
                     currentSingleMap[unit]
                 } else {
-                    currentMap[unit] ?: currentSingleMap[unit]
+                    currentMap[unit]
                 } ?: continue
 
                 val encodedBytes = readAudioFromBin(baseName)
