@@ -327,7 +327,12 @@ class ShanTtsService : TextToSpeechService() {
                     continue
                 }
 
-                val baseName = currentMap[unit] ?: currentSingleMap[unit] ?: continue
+                val baseName = if (trimmedText.length == 1 && currentSingleMap.containsKey(unit)) {
+                    currentSingleMap[unit]
+                } else {
+                    currentMap[unit] ?: currentSingleMap[unit]
+                } ?: continue
+                
                 val encodedBytes = readAudioFromBin(baseName)
 
                 if (encodedBytes != null && encodedBytes.isNotEmpty()) {
@@ -475,7 +480,12 @@ class ShanTtsService : TextToSpeechService() {
                     continue
                 }
 
-                val baseName = currentMap[unit] ?: currentSingleMap[unit] ?: continue
+                val baseName = if (trimmedText.length == 1 && currentSingleMap.containsKey(unit)) {
+                    currentSingleMap[unit]
+                } else {
+                    currentMap[unit] ?: currentSingleMap[unit]
+                } ?: continue
+
                 val encodedBytes = readAudioFromBin(baseName)
 
                 if (encodedBytes != null && encodedBytes.isNotEmpty()) {
