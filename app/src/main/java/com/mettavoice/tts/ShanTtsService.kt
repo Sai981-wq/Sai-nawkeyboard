@@ -287,12 +287,11 @@ class ShanTtsService : TextToSpeechService() {
     private fun synthesizeBurmeseDirect(text: String, rate: Float, pitch: Float) {
         val currentMap = charMap ?: return
         val currentSingleMap = singleCharMap ?: emptyMap()
-        val trimmedText = text.trim()
         
-        val isSingleChar = trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)
+        val isSingleChar = text.length == 1 && currentSingleMap.containsKey(text)
         
         val units = if (isSingleChar) {
-            listOf(trimmedText)
+            listOf(text)
         } else {
             splitTextIntoPlayableUnits(text, currentMap)
         }
@@ -438,12 +437,11 @@ class ShanTtsService : TextToSpeechService() {
     private fun synthesizeBurmeseText(text: String, callback: SynthesisCallback, rate: Float, pitch: Float) {
         val currentMap = charMap ?: return
         val currentSingleMap = singleCharMap ?: emptyMap()
-        val trimmedText = text.trim()
         
-        val isSingleChar = trimmedText.length == 1 && currentSingleMap.containsKey(trimmedText)
+        val isSingleChar = text.length == 1 && currentSingleMap.containsKey(text)
         
         val units = if (isSingleChar) {
-            listOf(trimmedText)
+            listOf(text)
         } else {
             splitTextIntoPlayableUnits(text, currentMap)
         }
