@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstring>
 #include <cmath>
+#include <stdint.h>
 #include "sonic.h"
 #include <opus.h>
 #include <opusfile.h>
@@ -53,28 +54,29 @@ static const OpusFileCallbacks mem_callbacks = {
 
 JNIEXPORT jlong JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicCreateStream(JNIEnv *env, jobject thiz, jint sampleRate, jint numChannels) {
-    return (jlong) sonicCreateStream(sampleRate, numChannels);
+    // (intptr_t) ကို ကြားခံအဖြစ်သုံး၍ Pointer Error ကို ဖြေရှင်းထားပါသည်
+    return (jlong) (intptr_t) sonicCreateStream(sampleRate, numChannels);
 }
 
 JNIEXPORT void JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicDestroyStream(JNIEnv *env, jobject thiz, jlong streamId) {
-    sonicDestroyStream((sonicStream) streamId);
+    sonicDestroyStream((sonicStream) (intptr_t) streamId);
 }
 
 JNIEXPORT void JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicSetSpeed(JNIEnv *env, jobject thiz, jlong streamId, jfloat speed) {
-    sonicSetSpeed((sonicStream) streamId, speed);
+    sonicSetSpeed((sonicStream) (intptr_t) streamId, speed);
 }
 
 JNIEXPORT void JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicSetPitch(JNIEnv *env, jobject thiz, jlong streamId, jfloat pitch) {
-    sonicSetPitch((sonicStream) streamId, pitch);
+    sonicSetPitch((sonicStream) (intptr_t) streamId, pitch);
 }
 
 JNIEXPORT jint JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicWriteShortToStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
     jshort *data = env->GetShortArrayElements(audioData, NULL);
-    int ret = sonicWriteShortToStream((sonicStream) streamId, data, len);
+    int ret = sonicWriteShortToStream((sonicStream) (intptr_t) streamId, data, len);
     env->ReleaseShortArrayElements(audioData, data, 0);
     return ret;
 }
@@ -82,19 +84,19 @@ Java_com_mettavoice_tts_ShanTtsService_sonicWriteShortToStream(JNIEnv *env, jobj
 JNIEXPORT jint JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicReadShortFromStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
     jshort *data = env->GetShortArrayElements(audioData, NULL);
-    int ret = sonicReadShortFromStream((sonicStream) streamId, data, len);
+    int ret = sonicReadShortFromStream((sonicStream) (intptr_t) streamId, data, len);
     env->ReleaseShortArrayElements(audioData, data, 0);
     return ret;
 }
 
 JNIEXPORT void JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicFlushStream(JNIEnv *env, jobject thiz, jlong streamId) {
-    sonicFlushStream((sonicStream) streamId);
+    sonicFlushStream((sonicStream) (intptr_t) streamId);
 }
 
 JNIEXPORT jint JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicSamplesAvailable(JNIEnv *env, jobject thiz, jlong streamId) {
-    return sonicSamplesAvailable((sonicStream) streamId);
+    return sonicSamplesAvailable((sonicStream) (intptr_t) streamId);
 }
 
 JNIEXPORT void JNICALL
