@@ -13,7 +13,7 @@ class CheckVoiceData : Activity() {
         val resultIntent = Intent()
 
         val availableVoices = ArrayList<String>()
-        availableVoices.add("my") 
+        availableVoices.add("mya-MMR-WsBurmeseTts") 
 
         resultIntent.putStringArrayListExtra(
             TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES,
