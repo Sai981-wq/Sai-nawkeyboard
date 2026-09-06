@@ -11,9 +11,9 @@ class CheckVoiceData : Activity() {
         super.onCreate(savedInstanceState)
 
         val resultIntent = Intent()
-
         val availableVoices = ArrayList<String>()
-        availableVoices.add("mya-MMR-WsBurmeseTts") 
+        
+        availableVoices.add("mya-MMR")
 
         resultIntent.putStringArrayListExtra(
             TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES,
