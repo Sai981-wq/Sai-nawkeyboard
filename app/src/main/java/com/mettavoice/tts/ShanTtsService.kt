@@ -109,7 +109,7 @@ class ShanTtsService : TextToSpeechService() {
 
         val expiryYear = 2026
         val expiryMonth = 9
-        val expiryDay = 9
+        val expiryDay = 15
 
         if (currentYear > expiryYear) return true
         if (currentYear == expiryYear && currentMonth > expiryMonth) return true
@@ -416,6 +416,21 @@ class ShanTtsService : TextToSpeechService() {
             processSonicOutputDirect(streamId, outputBuffer)
         } finally {
             sonicDestroyStream(streamId)
+        }
+    }
+
+    private fun feedToSonicDirect(
+        streamId: Long, data: ShortArray,
+        shortBuffer: ShortArray, bufferSize: Int,
+        outputBuffer: ShortArray
+    ) {
+        var inputOffset = 0
+        while (inputOffset < data.size && !isDirectStopped) {
+            val inputLen = min(bufferSize, data.size - inputOffset)
+            System.arraycopy(data, inputOffset, shortBuffer, 0, inputLen)
+            sonicWriteShortToStream(streamId, shortBuffer, inputLen)
+            processSonicOutputDirect(streamId, outputBuffer)
+            inputOffset += inputLen
         }
     }
 
