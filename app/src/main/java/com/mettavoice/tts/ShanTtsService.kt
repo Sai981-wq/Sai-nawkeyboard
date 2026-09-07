@@ -74,7 +74,7 @@ class ShanTtsService : TextToSpeechService() {
         copyAssetToFile(context, INDEX_FILENAME)
         
         if (charMap == null) {
-            charMap = loadMapFromFile(context, "mapping.txt")
+            charMap = loadMapFromFile(context, "mapping_2.txt")
             singleCharMap = loadMapFromFile(context, "mapping_single.txt")
             phraseMap = loadMapFromFile(context, "mapping_phrase.txt")
         }
@@ -203,7 +203,7 @@ class ShanTtsService : TextToSpeechService() {
             rawText = "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ"
         }
 
-        val text = rawText.replace(Regex("([\\u1000-\\u102A])\u1039"), "$1\u103A")
+        val text = rawText.replace("့်", "့်").replace("့ံ", "ံ့").replace("ံိ", "ိံ").replace("ံု", "ုံ")
         isStopped = false
 
         if (callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT) != TextToSpeech.SUCCESS) return
@@ -244,7 +244,7 @@ class ShanTtsService : TextToSpeechService() {
             rawText = "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ"
         }
 
-        val text = rawText.replace(Regex("([\\u1000-\\u102A])\u1039"), "$1\u103A")
+        val text = rawText.replace("့်", "့်").replace("့ံ", "ံ့").replace("ံိ", "ိံ").replace("ံု", "ုံ")
         if (text.isBlank()) return
 
         val minBufferSize = AudioTrack.getMinBufferSize(
@@ -416,21 +416,6 @@ class ShanTtsService : TextToSpeechService() {
             processSonicOutputDirect(streamId, outputBuffer)
         } finally {
             sonicDestroyStream(streamId)
-        }
-    }
-
-    private fun feedToSonicDirect(
-        streamId: Long, data: ShortArray,
-        shortBuffer: ShortArray, bufferSize: Int,
-        outputBuffer: ShortArray
-    ) {
-        var inputOffset = 0
-        while (inputOffset < data.size && !isDirectStopped) {
-            val inputLen = min(bufferSize, data.size - inputOffset)
-            System.arraycopy(data, inputOffset, shortBuffer, 0, inputLen)
-            sonicWriteShortToStream(streamId, shortBuffer, inputLen)
-            processSonicOutputDirect(streamId, outputBuffer)
-            inputOffset += inputLen
         }
     }
 
@@ -650,7 +635,7 @@ class ShanTtsService : TextToSpeechService() {
                 } else if (c == " ") {
                     res.add("[SPACE]")
                     while (i + 1 < text.length && text.substring(i + 1, i + 2) == " ") i++
-                } else if (c == "၊" || c == "," || c == "။" || c == "." || c == "?" || c == ";") {
+                } else if (c == "၊" || c == "။" || c == "." || c == "?" || c == ";") {
                     res.add(c)
                 } else if (!c.matches("\\s+".toRegex())) {
                     res.add(c)
