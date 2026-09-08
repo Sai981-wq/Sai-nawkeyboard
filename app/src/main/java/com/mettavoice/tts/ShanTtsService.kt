@@ -127,6 +127,11 @@ class ShanTtsService : TextToSpeechService() {
                         val parts = trimmed.split("=", limit = 2)
                         if (parts.size == 2) {
                             val key = parts[0].trim()
+                                .replace("\u200B", "")
+                                .replace("\u1037\u103A", "\u103A\u1037")
+                                .replace("\u1037\u1036", "\u1036\u1037")
+                                .replace("\u1036\u102D", "\u102D\u1036")
+                                .replace("\u1036\u102F", "\u102F\u1036")
                             val value = parts[1].trim()
                             if (!key.equals("rate", ignoreCase = true) &&
                                 !key.equals("pitch", ignoreCase = true) &&
@@ -204,6 +209,7 @@ class ShanTtsService : TextToSpeechService() {
         }
 
         val text = rawText
+            .replace("\u200B", "")
             .replace("\u1037\u103A", "\u103A\u1037")
             .replace("\u1037\u1036", "\u1036\u1037")
             .replace("\u1036\u102D", "\u102D\u1036")
@@ -250,6 +256,7 @@ class ShanTtsService : TextToSpeechService() {
         }
 
         val text = rawText
+            .replace("\u200B", "")
             .replace("\u1037\u103A", "\u103A\u1037")
             .replace("\u1037\u1036", "\u1036\u1037")
             .replace("\u1036\u102D", "\u102D\u1036")
