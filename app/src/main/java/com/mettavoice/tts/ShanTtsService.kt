@@ -203,7 +203,12 @@ class ShanTtsService : TextToSpeechService() {
             rawText = "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ"
         }
 
-        val text = rawText.replace("့်", "့်").replace("့ံ", "ံ့").replace("ံိ", "ိံ").replace("ံု", "ုံ")
+        val text = rawText
+            .replace("\u1037\u103A", "\u103A\u1037")
+            .replace("\u1037\u1036", "\u1036\u1037")
+            .replace("\u1036\u102D", "\u102D\u1036")
+            .replace("\u1036\u102F", "\u102F\u1036")
+            
         isStopped = false
 
         if (callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT) != TextToSpeech.SUCCESS) return
@@ -244,7 +249,12 @@ class ShanTtsService : TextToSpeechService() {
             rawText = "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ"
         }
 
-        val text = rawText.replace("့်", "့်").replace("့ံ", "ံ့").replace("ံိ", "ိံ").replace("ံု", "ုံ")
+        val text = rawText
+            .replace("\u1037\u103A", "\u103A\u1037")
+            .replace("\u1037\u1036", "\u1036\u1037")
+            .replace("\u1036\u102D", "\u102D\u1036")
+            .replace("\u1036\u102F", "\u102F\u1036")
+            
         if (text.isBlank()) return
 
         val minBufferSize = AudioTrack.getMinBufferSize(
