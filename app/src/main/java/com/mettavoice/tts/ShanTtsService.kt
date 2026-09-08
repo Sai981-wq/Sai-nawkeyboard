@@ -74,7 +74,7 @@ class ShanTtsService : TextToSpeechService() {
         copyAssetToFile(context, INDEX_FILENAME)
         
         if (charMap == null) {
-            charMap = loadMapFromFile(context, "mapping_2.txt")
+            charMap = loadMapFromFile(context, "mapping.txt")
             singleCharMap = loadMapFromFile(context, "mapping_single.txt")
             phraseMap = loadMapFromFile(context, "mapping_phrase.txt")
         }
