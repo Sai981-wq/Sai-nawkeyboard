@@ -33,7 +33,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="24dp"
-                    android:text="@string/settings_title"
+                    android:text="Metta Voice TTS Settings"
                     android:textColor="@android:color/black"
                     android:textSize="24sp"
                     android:textStyle="bold" />
@@ -45,7 +45,7 @@
                     android:layout_marginBottom="12dp"
                     android:background="@android:drawable/editbox_background"
                     android:gravity="top|start"
-                    android:hint="@string/write_something_hint"
+                    android:hint="Type something here to listen..."
                     android:padding="12dp"
                     android:textColor="@android:color/black"
                     android:textSize="16sp" />
@@ -55,7 +55,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="24dp"
-                    android:text="@string/btn_listen" />
+                    android:text="Listen" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -67,7 +67,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="@string/speed_label"
+                        android:text="Rate: 1.0x"
                         android:textColor="@android:color/black"
                         android:textSize="18sp" />
                     <Button
@@ -75,7 +75,7 @@
                         style="@style/Widget.AppCompat.Button.Small"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="@string/reset" />
+                        android:text="Reset" />
                 </LinearLayout>
                 
                 <SeekBar
@@ -98,7 +98,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="@string/pitch_label"
+                        android:text="Pitch: 1.0x"
                         android:textColor="@android:color/black"
                         android:textSize="18sp" />
                     <Button
@@ -106,7 +106,7 @@
                         style="@style/Widget.AppCompat.Button.Small"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="@string/reset" />
+                        android:text="Reset" />
                 </LinearLayout>
                 
                 <SeekBar
@@ -129,7 +129,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="16dp"
-                    android:text="@string/about_header"
+                    android:text="About Metta Voice TTS"
                     android:textColor="@android:color/darker_gray"
                     android:textSize="20sp"
                     android:textStyle="bold" />
@@ -140,7 +140,7 @@
                     android:layout_marginBottom="32dp"
                     android:gravity="center"
                     android:lineSpacingMultiplier="1.3"
-                    android:text="@string/about_text"
+                    android:text="This application is a free Myanmar Text-to-Speech system designed by the Metta Voice Team for visually impaired users.\n\nTest Version - This release is purely for testing purposes to ensure the voice functionality works in real-world scenarios.\n\nContact:\nPhone: 09750091817\nEmail: sainaw1331@gmail.com"
                     android:textColor="@android:color/black"
                     android:textSize="16sp" />
             </LinearLayout>
@@ -162,7 +162,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="16dp"
-                    android:text="အင်္ဂလိပ်စာဖတ်ရန် အင်ဂျင်ရွေးချယ်ပါ"
+                    android:text="Select Secondary TTS Engine"
                     android:textColor="@android:color/black"
                     android:textSize="18sp"
                     android:textStyle="bold" />
@@ -178,7 +178,7 @@
                     android:id="@+id/btn_test_english"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="အင်္ဂလိပ်အသံ စမ်းသပ်ရန်" />
+                    android:text="Test English Voice" />
 
             </LinearLayout>
         </ScrollView>

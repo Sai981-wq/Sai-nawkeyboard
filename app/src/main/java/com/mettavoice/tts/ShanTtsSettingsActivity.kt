@@ -24,29 +24,24 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     private lateinit var pitchBar: SeekBar
     private lateinit var etTextToAudio: EditText
     private lateinit var btnListen: Button
-
     private lateinit var tabLayout: TabLayout
     private lateinit var primaryContainer: ScrollView
     private lateinit var secondaryContainer: ScrollView
-
     private lateinit var spinnerEngines: Spinner
     private lateinit var btnTestEnglish: Button
     private var externalTts: TextToSpeech? = null
     private var engineList = listOf<TextToSpeech.EngineInfo>()
-
     private val directPlayer = ShanTtsService()
     private var playThread: Thread? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_burmese_tts_settings)
-
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
         tabLayout = findViewById(R.id.tabLayout)
         primaryContainer = findViewById(R.id.primary_container)
         secondaryContainer = findViewById(R.id.secondary_container)
-        
         speedLabel = findViewById(R.id.tv_speed_label)
         pitchLabel = findViewById(R.id.tv_pitch_label)
         speedBar = findViewById(R.id.sb_speed)
@@ -62,8 +57,8 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     }
 
     private fun setupTabs() {
-        tabLayout.addTab(tabLayout.newTab().setText("မြန်မာ TTS"))
-        tabLayout.addTab(tabLayout.newTab().setText("အရန် TTS (English)"))
+        tabLayout.addTab(tabLayout.newTab().setText("Primary TTS (Myanmar)"))
+        tabLayout.addTab(tabLayout.newTab().setText("Secondary TTS (English)"))
 
         tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab?) {
@@ -86,9 +81,8 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     private fun setupSecondaryTtsControls(prefs: android.content.SharedPreferences) {
         externalTts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                engineList = externalTts?.engines ?: emptyList()
+                engineList = externalTts?.engines?.filter { it.name != packageName } ?: emptyList()
                 val engineNames = engineList.map { it.label }
-                
                 val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, engineNames)
                 spinnerEngines.adapter = adapter
 
@@ -100,14 +94,12 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                         val selectedEnginePackage = engineList[position].name
                         prefs.edit().putString(PREF_SECONDARY_ENGINE, selectedEnginePackage).apply()
-                        
                         externalTts = TextToSpeech(this@ShanTtsSettingsActivity, null, selectedEnginePackage)
                     }
                     override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }
             }
         }
-
         btnTestEnglish.setOnClickListener {
             externalTts?.language = Locale.US
             externalTts?.speak("Hello, this is a test for English Text to Speech.", TextToSpeech.QUEUE_FLUSH, null, null)
@@ -120,11 +112,9 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
 
         val currentSpeed = prefs.getFloat(PREF_SPEED, 0.8f)
         val currentPitch = prefs.getFloat(PREF_PITCH, 1.0f)
-
         speedBar.max = 180
         speedBar.progress = ((currentSpeed * 100) - 20).toInt()
         updateSpeedLabel(currentSpeed)
-
         pitchBar.max = 150
         pitchBar.progress = ((currentPitch * 100) - 50).toInt()
         updatePitchLabel(currentPitch)
@@ -166,15 +156,12 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         btnListen.setOnClickListener {
             val text = etTextToAudio.text.toString().trim()
             if (text.isEmpty()) {
-                Toast.makeText(this, "ကျေးဇူးပြု၍ စာသားရိုက်ထည့်ပါ", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Please enter some text", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-
             val currentSpeedVal = prefs.getFloat(PREF_SPEED, 0.8f)
             val currentPitchVal = prefs.getFloat(PREF_PITCH, 1.0f)
-
             directPlayer.stopDirectAudio()
-
             playThread = Thread {
                 directPlayer.playDirectAudio(this@ShanTtsSettingsActivity, text, currentSpeedVal, currentPitchVal)
             }
