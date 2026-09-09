@@ -1,14 +1,12 @@
 package com.mettavoice.tts
 
-import androidx.appcompat.app.AppCompatActivity
 import android.content.Context
 import android.os.Bundle
-import android.widget.Button
-import android.widget.EditText
-import android.widget.SeekBar
-import android.widget.TextView
-import android.widget.Toast
-import com.mettavoice.tts.R
+import android.speech.tts.TextToSpeech
+import android.view.View
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.tabs.TabLayout
 import java.util.Locale
 
 class ShanTtsSettingsActivity : AppCompatActivity() {
@@ -17,6 +15,7 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         const val PREFS_NAME = "mettavoice_tts_prefs"
         const val PREF_SPEED = "pref_speed"
         const val PREF_PITCH = "pref_pitch"
+        const val PREF_SECONDARY_ENGINE = "pref_secondary_engine"
     }
 
     private lateinit var speedLabel: TextView
@@ -25,6 +24,15 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     private lateinit var pitchBar: SeekBar
     private lateinit var etTextToAudio: EditText
     private lateinit var btnListen: Button
+
+    private lateinit var tabLayout: TabLayout
+    private lateinit var primaryContainer: ScrollView
+    private lateinit var secondaryContainer: ScrollView
+
+    private lateinit var spinnerEngines: Spinner
+    private lateinit var btnTestEnglish: Button
+    private var externalTts: TextToSpeech? = null
+    private var engineList = listOf<TextToSpeech.EngineInfo>()
 
     private val directPlayer = ShanTtsService()
     private var playThread: Thread? = null
@@ -35,13 +43,78 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+        tabLayout = findViewById(R.id.tabLayout)
+        primaryContainer = findViewById(R.id.primary_container)
+        secondaryContainer = findViewById(R.id.secondary_container)
+        
         speedLabel = findViewById(R.id.tv_speed_label)
         pitchLabel = findViewById(R.id.tv_pitch_label)
         speedBar = findViewById(R.id.sb_speed)
         pitchBar = findViewById(R.id.sb_pitch)
         etTextToAudio = findViewById(R.id.et_text_to_audio)
         btnListen = findViewById(R.id.btn_listen)
+        spinnerEngines = findViewById(R.id.spinner_tts_engines)
+        btnTestEnglish = findViewById(R.id.btn_test_english)
 
+        setupTabs()
+        setupPrimaryTtsControls(prefs)
+        setupSecondaryTtsControls(prefs)
+    }
+
+    private fun setupTabs() {
+        tabLayout.addTab(tabLayout.newTab().setText("မြန်မာ TTS"))
+        tabLayout.addTab(tabLayout.newTab().setText("အရန် TTS (English)"))
+
+        tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: TabLayout.Tab?) {
+                when (tab?.position) {
+                    0 -> {
+                        primaryContainer.visibility = View.VISIBLE
+                        secondaryContainer.visibility = View.GONE
+                    }
+                    1 -> {
+                        primaryContainer.visibility = View.GONE
+                        secondaryContainer.visibility = View.VISIBLE
+                    }
+                }
+            }
+            override fun onTabUnselected(tab: TabLayout.Tab?) {}
+            override fun onTabReselected(tab: TabLayout.Tab?) {}
+        })
+    }
+
+    private fun setupSecondaryTtsControls(prefs: android.content.SharedPreferences) {
+        externalTts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                engineList = externalTts?.engines ?: emptyList()
+                val engineNames = engineList.map { it.label }
+                
+                val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, engineNames)
+                spinnerEngines.adapter = adapter
+
+                val savedEngine = prefs.getString(PREF_SECONDARY_ENGINE, "")
+                val savedIndex = engineList.indexOfFirst { it.name == savedEngine }
+                if (savedIndex >= 0) spinnerEngines.setSelection(savedIndex)
+
+                spinnerEngines.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                        val selectedEnginePackage = engineList[position].name
+                        prefs.edit().putString(PREF_SECONDARY_ENGINE, selectedEnginePackage).apply()
+                        
+                        externalTts = TextToSpeech(this@ShanTtsSettingsActivity, null, selectedEnginePackage)
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) {}
+                }
+            }
+        }
+
+        btnTestEnglish.setOnClickListener {
+            externalTts?.language = Locale.US
+            externalTts?.speak("Hello, this is a test for English Text to Speech.", TextToSpeech.QUEUE_FLUSH, null, null)
+        }
+    }
+
+    private fun setupPrimaryTtsControls(prefs: android.content.SharedPreferences) {
         val btnResetSpeed = findViewById<Button>(R.id.btn_reset_speed)
         val btnResetPitch = findViewById<Button>(R.id.btn_reset_pitch)
 
@@ -123,6 +196,8 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         directPlayer.stopDirectAudio()
+        externalTts?.stop()
+        externalTts?.shutdown()
         super.onDestroy()
     }
 }
