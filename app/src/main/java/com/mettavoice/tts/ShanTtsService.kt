@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -62,16 +63,24 @@ class ShanTtsService : TextToSpeechService() {
     private var phraseMap: Map<String, String>? = null
     private val indexMap = HashMap<String, Pair<Long, Int>>()
     private var randomAccessFile: RandomAccessFile? = null
-    private var isStopped = false
+    @Volatile private var isStopped = false
     private var directAudioTrack: AudioTrack? = null
     @Volatile private var isDirectStopped = false
     private var isOpusInit = false
+    
     private var englishEngine: TextToSpeech? = null
     private var isEnglishReady = false
     private val utteranceLatches = ConcurrentHashMap<String, CountDownLatch>()
+    
+    private var cpuWakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
+        
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MettaVoice::CpuWakeLock")
+        cpuWakeLock?.setReferenceCounted(false)
+        
         initResources(this)
         initEnglishEngine()
     }
@@ -83,6 +92,14 @@ class ShanTtsService : TextToSpeechService() {
         englishEngine = TextToSpeech(this, { status ->
             if (status == TextToSpeech.SUCCESS) {
                 englishEngine?.language = Locale.US
+                
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    val attrs = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                    englishEngine?.setAudioAttributes(attrs)
+                }
                 isEnglishReady = true
             }
         }, enginePkg)
@@ -132,18 +149,7 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun isExpired(): Boolean {
-        val calendar = Calendar.getInstance()
-        val currentYear = calendar.get(Calendar.YEAR)
-        val currentMonth = calendar.get(Calendar.MONTH) + 1 
-        val currentDay = calendar.get(Calendar.DAY_OF_MONTH)
-        val expiryYear = 2026
-        val expiryMonth = 9
-        val expiryDay = 15
-
-        if (currentYear > expiryYear) return true
-        if (currentYear == expiryYear && currentMonth > expiryMonth) return true
-        if (currentYear == expiryYear && currentMonth == expiryMonth && currentDay > expiryDay) return true
-        return false
+        return false 
     }
 
     private fun loadMapFromFile(context: Context, filename: String): Map<String, String> {
@@ -227,20 +233,35 @@ class ShanTtsService : TextToSpeechService() {
 
     override fun onStop() {
         isStopped = true
+        isDirectStopped = true
+        englishEngine?.stop()
+        try {
+            directAudioTrack?.pause()
+            directAudioTrack?.flush()
+        } catch (_: Exception) {}
+        utteranceLatches.values.forEach { it.countDown() }
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         val rawText = request.charSequenceText?.toString() ?: ""
         val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else rawText
         isStopped = false
-        val chunks = TTSUtils.splitText(text)
-        if (chunks.isEmpty() || text.isBlank()) {
+        isDirectStopped = false
+
+        if (text.isBlank()) {
             callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
             generateSilentAudio(callback)
             safeCallbackDone(callback)
             return
         }
 
+        try {
+            val cpuTimeout = Math.max(120000L, (text.length * 300).toLong())
+            cpuWakeLock?.acquire(cpuTimeout)
+        } catch (e: Exception) {}
+
+        val chunks = TTSUtils.splitText(text)
+        
         val systemRate = request.speechRate / 100.0f
         val systemPitch = request.pitch / 100.0f
         val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
@@ -252,7 +273,9 @@ class ShanTtsService : TextToSpeechService() {
         for (chunk in chunks) {
             if (isStopped) break
             if (chunk.lang == "MYANMAR") {
-                directAudioTrack?.play()
+                try {
+                    directAudioTrack?.play()
+                } catch (_: Exception) {}
                 synthesizeBurmeseDirect(chunk.text, finalRate, finalPitch)
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                 val utteranceId = "utt_${System.nanoTime()}"
@@ -264,19 +287,28 @@ class ShanTtsService : TextToSpeechService() {
                 
                 val params = Bundle()
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
                 
                 val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
                 if (result == TextToSpeech.SUCCESS) {
                     try {
-                        latch.await(30, TimeUnit.SECONDS)
+                        val timeoutMs = Math.max(30000L, (chunk.text.length * 300).toLong())
+                        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
                     } catch (e: InterruptedException) {
                         isStopped = true
                     }
                 }
             }
         }
+        
         callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
         safeCallbackDone(callback)
+        
+        try {
+            if (cpuWakeLock?.isHeld == true) {
+                cpuWakeLock?.release()
+            }
+        } catch (e: Exception) {}
     }
 
     private fun prepareDirectAudioTrackForAutoTTS() {
@@ -298,6 +330,8 @@ class ShanTtsService : TextToSpeechService() {
     fun stopDirectAudio() {
         isDirectStopped = true
         try {
+            directAudioTrack?.pause()
+            directAudioTrack?.flush()
             directAudioTrack?.stop()
             directAudioTrack?.release()
         } catch (_: Exception) {}
@@ -315,7 +349,9 @@ class ShanTtsService : TextToSpeechService() {
         val text = rawText
         if (text.isBlank()) return
         prepareDirectAudioTrackForAutoTTS()
-        directAudioTrack?.play()
+        try {
+            directAudioTrack?.play()
+        } catch (_: Exception) {}
         synthesizeBurmeseDirect(text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f))
         try {
             directAudioTrack?.stop()
@@ -420,7 +456,7 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             }
-            if (prevTail != null && prevTail.isNotEmpty()) {
+            if (prevTail != null && prevTail.isNotEmpty() && !isStopped && !isDirectStopped) {
                 applyFadeOut(prevTail, FADE_SAMPLES)
                 feedToSonicDirect(streamId, prevTail, shortBuffer, bufferSize, outputBuffer)
             }
@@ -447,7 +483,9 @@ class ShanTtsService : TextToSpeechService() {
             val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
             if (readCount > 0) {
                 applyGain(outputBuffer, readCount, 1.8f)
-                directAudioTrack?.write(outputBuffer, 0, readCount)
+                try {
+                    directAudioTrack?.write(outputBuffer, 0, readCount)
+                } catch (_: Exception) {}
             }
         }
     }
@@ -556,6 +594,13 @@ class ShanTtsService : TextToSpeechService() {
         englishEngine?.shutdown()
         utteranceLatches.values.forEach { it.countDown() }
         utteranceLatches.clear()
+        
+        try {
+            if (cpuWakeLock?.isHeld == true) {
+                cpuWakeLock?.release()
+            }
+        } catch (e: Exception) {}
+
         if (isOpusInit) {
             destroyOpusDecoder()
             isOpusInit = false
