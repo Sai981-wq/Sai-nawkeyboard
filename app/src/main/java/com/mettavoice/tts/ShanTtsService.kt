@@ -5,7 +5,6 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
-import android.media.audiofx.DynamicsProcessing
 import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
 import android.os.Bundle
@@ -76,8 +75,6 @@ class ShanTtsService : TextToSpeechService() {
     private val utteranceLatches = ConcurrentHashMap<String, CountDownLatch>()
     
     private var cpuWakeLock: PowerManager.WakeLock? = null
-
-    private var dynamicsProcessing: DynamicsProcessing? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
 
     override fun onCreate() {
@@ -459,11 +456,9 @@ class ShanTtsService : TextToSpeechService() {
             directAudioTrack?.flush()
             directAudioTrack?.stop()
             directAudioTrack?.release()
-            dynamicsProcessing?.release()
             loudnessEnhancer?.release()
         } catch (_: Exception) {}
         directAudioTrack = null
-        dynamicsProcessing = null
         loudnessEnhancer = null
     }
 
@@ -471,7 +466,8 @@ class ShanTtsService : TextToSpeechService() {
         stopDirectAudio()
         isDirectStopped = false
         initResources(context)
-        if (requestText.isBlank()) return
+        val text = requestText
+        if (text.isBlank()) return
         
         prepareDirectAudioTrackForAutoTTS()
         
@@ -493,7 +489,6 @@ class ShanTtsService : TextToSpeechService() {
             } else {
                 try {
                     directAudioTrack?.release()
-                    dynamicsProcessing?.release()
                     loudnessEnhancer?.release()
                 } catch (_: Exception) {}
                 directAudioTrack = null
@@ -514,25 +509,10 @@ class ShanTtsService : TextToSpeechService() {
         }
         
         val audioSessionId = directAudioTrack?.audioSessionId ?: 0
-        if (audioSessionId != 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        if (audioSessionId != 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
             try {
-                val builder = DynamicsProcessing.Config.Builder(
-                    DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
-                    1, false, 0, true, 1, false, 0, true
-                )
-                
-                val mbc = DynamicsProcessing.Mbc(true, true, 1)
-                val mbcBand = DynamicsProcessing.MbcBand(true, 20000.0f, 10.0f, 50.0f, 4.0f, -30.0f, 2.0f, -90.0f, 1.0f, 0.0f, 5.0f)
-                mbc.setBand(0, mbcBand)
-                builder.setMbc(mbc)
-                
-                val config = builder.build()
-                
-                dynamicsProcessing = DynamicsProcessing(0, audioSessionId, config)
-                dynamicsProcessing?.enabled = true
-
                 loudnessEnhancer = LoudnessEnhancer(audioSessionId)
-                loudnessEnhancer?.setTargetGain(500) 
+                loudnessEnhancer?.setTargetGain(800) 
                 loudnessEnhancer?.enabled = true
             } catch (e: Exception) {}
         }
@@ -783,7 +763,6 @@ class ShanTtsService : TextToSpeechService() {
         } catch (e: Exception) {}
 
         try {
-            dynamicsProcessing?.release()
             loudnessEnhancer?.release()
         } catch (_: Exception) {}
 
