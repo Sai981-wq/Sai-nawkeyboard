@@ -251,10 +251,12 @@ class ShanTtsService : TextToSpeechService() {
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         val rawText = request.charSequenceText?.toString() ?: ""
         isStopped = false
+        isDirectStopped = false
 
         if (rawText.isBlank()) {
             callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
-            generateSilentAudio(callback)
+            val silence = ByteArray(256)
+            callback.audioAvailable(silence, 0, silence.size)
             safeCallbackDone(callback)
             return
         }
@@ -272,13 +274,23 @@ class ShanTtsService : TextToSpeechService() {
         val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
         val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
 
-        callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
+        // Cherry TTS ကဲ့သို့ လမ်းကြောင်းလွှဲရန်အတွက် ဤနေရာတွင် AudioTrack ကို ကြိုတင်ပြင်ဆင်ပါမည်
+        prepareDirectAudioTrackForAutoTTS()
 
         for (chunk in chunks) {
             if (isStopped) break
             
             if (chunk.lang == "MYANMAR") {
-                synthesizeBurmeseText(chunk.text, callback, finalRate, finalPitch)
+                try {
+                    if (directAudioTrack?.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                        directAudioTrack?.play()
+                    }
+                } catch (_: Exception) {}
+                
+                // AudioTrack ၏ write လုပ်ဆောင်ချက်သည် အသံဖတ်ချိန် (Duration) အတိအကျအတိုင်း 
+                // Thread ကို Block လုပ်ထားမည်ဖြစ်သဖြင့် အင်္ဂလိပ်အင်ဂျင် ဝင်လုခြင်းကို တားဆီးပေးမည်
+                synthesizeBurmeseDirect(chunk.text, finalRate, finalPitch)
+                
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                 val utteranceId = "utt_${System.nanoTime()}"
                 val latch = CountDownLatch(1)
@@ -305,6 +317,10 @@ class ShanTtsService : TextToSpeechService() {
             }
         }
         
+        // TalkBack သို့ ဖတ်ပြီးစီးကြောင်း အချက်ပြရန်
+        callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
+        val dummySilence = ByteArray(256)
+        callback.audioAvailable(dummySilence, 0, dummySilence.size)
         safeCallbackDone(callback)
         
         try {
@@ -312,141 +328,6 @@ class ShanTtsService : TextToSpeechService() {
                 cpuWakeLock?.release()
             }
         } catch (e: Exception) {}
-    }
-
-    private fun synthesizeBurmeseText(text: String, callback: SynthesisCallback, rate: Float, pitch: Float) {
-        val currentMap = charMap ?: return
-        val currentSingleMap = singleCharMap ?: emptyMap()
-        val currentPhraseMap = phraseMap ?: emptyMap()
-        val isSingleChar = text.length == 1 && currentSingleMap.containsKey(text)
-        val units = if (isSingleChar) listOf(text) else splitTextIntoPlayableUnits(text, currentPhraseMap, currentMap)
-        if (units.isEmpty()) return
-
-        val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
-        sonicSetSpeed(streamId, rate)
-        sonicSetPitch(streamId, pitch)
-
-        val bufferSize = 4096
-        val shortBuffer = ShortArray(bufferSize)
-        val outputBuffer = ShortArray(bufferSize)
-        var prevTail: ShortArray? = null
-
-        try {
-            for (unit in units) {
-                if (isStopped) break
-                var pauseDuration = 0
-                when (unit) {
-                    "[NEWLINE]" -> pauseDuration = 800
-                    "[SPACE]" -> pauseDuration = 200
-                }
-                if (pauseDuration > 0) {
-                    if (prevTail != null) {
-                        applyFadeOut(prevTail, prevTail.size)
-                        feedToSonic(streamId, prevTail, shortBuffer, bufferSize, outputBuffer, callback)
-                        prevTail = null
-                    }
-                    writeSilenceToSonic(streamId, pauseDuration)
-                    processSonicOutput(streamId, outputBuffer, callback)
-                    continue
-                }
-
-                val baseName = if (isSingleChar) currentSingleMap[unit] else (currentPhraseMap[unit] ?: currentMap[unit])
-                if (baseName == null) continue
-                val encodedBytes = readAudioFromBin(baseName)
-
-                if (encodedBytes != null && encodedBytes.isNotEmpty()) {
-                    val originalPcm = decodeOpus(encodedBytes, encodedBytes.size)
-                    if (originalPcm != null && originalPcm.isNotEmpty()) {
-                        val pauseSamples = (OUTPUT_SAMPLE_RATE * 25) / 1000
-                        val pcmShorts = ShortArray(originalPcm.size + pauseSamples)
-                        System.arraycopy(originalPcm, 0, pcmShorts, 0, originalPcm.size)
-
-                        if (prevTail != null && prevTail.isNotEmpty()) {
-                            val crossfadeLen = min(CROSSFADE_SAMPLES, min(prevTail.size, pcmShorts.size))
-                            if (crossfadeLen > 0) {
-                                val crossfaded = ShortArray(crossfadeLen)
-                                for (i in 0 until crossfadeLen) {
-                                    val t = i.toFloat() / crossfadeLen
-                                    val fadeOut = (0.5 * (1.0 + cos(PI * t))).toFloat()
-                                    val fadeIn = 1.0f - fadeOut
-                                    val mixed = (prevTail[prevTail.size - crossfadeLen + i] * fadeOut + pcmShorts[i] * fadeIn)
-                                    crossfaded[i] = mixed.toInt().coerceIn(-32768, 32767).toShort()
-                                }
-                                val prevMainLen = prevTail.size - crossfadeLen
-                                if (prevMainLen > 0) {
-                                    val prevMain = prevTail.copyOfRange(0, prevMainLen)
-                                    feedToSonic(streamId, prevMain, shortBuffer, bufferSize, outputBuffer, callback)
-                                }
-                                feedToSonic(streamId, crossfaded, shortBuffer, bufferSize, outputBuffer, callback)
-
-                                val currentRemaining = pcmShorts.copyOfRange(crossfadeLen, pcmShorts.size)
-                                if (currentRemaining.size > CROSSFADE_SAMPLES) {
-                                    val mainPart = currentRemaining.copyOfRange(0, currentRemaining.size - CROSSFADE_SAMPLES)
-                                    feedToSonic(streamId, mainPart, shortBuffer, bufferSize, outputBuffer, callback)
-                                    prevTail = currentRemaining.copyOfRange(currentRemaining.size - CROSSFADE_SAMPLES, currentRemaining.size)
-                                } else {
-                                    prevTail = currentRemaining
-                                }
-                            } else {
-                                feedToSonic(streamId, prevTail, shortBuffer, bufferSize, outputBuffer, callback)
-                                if (pcmShorts.size > CROSSFADE_SAMPLES) {
-                                    val mainPart = pcmShorts.copyOfRange(0, pcmShorts.size - CROSSFADE_SAMPLES)
-                                    feedToSonic(streamId, mainPart, shortBuffer, bufferSize, outputBuffer, callback)
-                                    prevTail = pcmShorts.copyOfRange(pcmShorts.size - CROSSFADE_SAMPLES, pcmShorts.size)
-                                } else {
-                                    prevTail = pcmShorts
-                                }
-                            }
-                        } else {
-                            applyFadeIn(pcmShorts, FADE_SAMPLES)
-                            if (pcmShorts.size > CROSSFADE_SAMPLES) {
-                                val mainPart = pcmShorts.copyOfRange(0, pcmShorts.size - CROSSFADE_SAMPLES)
-                                feedToSonic(streamId, mainPart, shortBuffer, bufferSize, outputBuffer, callback)
-                                prevTail = pcmShorts.copyOfRange(pcmShorts.size - CROSSFADE_SAMPLES, pcmShorts.size)
-                            } else {
-                                prevTail = pcmShorts
-                            }
-                        }
-                    }
-                }
-            }
-            if (prevTail != null && prevTail.isNotEmpty() && !isStopped) {
-                applyFadeOut(prevTail, FADE_SAMPLES)
-                feedToSonic(streamId, prevTail, shortBuffer, bufferSize, outputBuffer, callback)
-            }
-            sonicFlushStream(streamId)
-            processSonicOutput(streamId, outputBuffer, callback)
-        } finally {
-            sonicDestroyStream(streamId)
-        }
-    }
-
-    private fun feedToSonic(streamId: Long, data: ShortArray, shortBuffer: ShortArray, bufferSize: Int, outputBuffer: ShortArray, callback: SynthesisCallback) {
-        var inputOffset = 0
-        while (inputOffset < data.size && !isStopped) {
-            val inputLen = min(bufferSize, data.size - inputOffset)
-            System.arraycopy(data, inputOffset, shortBuffer, 0, inputLen)
-            sonicWriteShortToStream(streamId, shortBuffer, inputLen)
-            processSonicOutput(streamId, outputBuffer, callback)
-            inputOffset += inputLen
-        }
-    }
-
-    private fun processSonicOutput(streamId: Long, outputBuffer: ShortArray, callback: SynthesisCallback) {
-        while (sonicSamplesAvailable(streamId) > 0 && !isStopped) {
-            val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
-            if (readCount > 0) {
-                applyGain(outputBuffer, readCount, 1.8f)
-                val byteData = shortsToBytes(outputBuffer, readCount)
-                callback.audioAvailable(byteData, 0, byteData.size)
-            }
-        }
-    }
-
-    private fun shortsToBytes(shorts: ShortArray, readCount: Int): ByteArray {
-        val bytes = ByteArray(readCount * 2)
-        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(shorts, 0, readCount)
-        return bytes
     }
 
     fun stopDirectAudio() {
@@ -537,7 +418,7 @@ class ShanTtsService : TextToSpeechService() {
 
         try {
             for (unit in units) {
-                if (isDirectStopped) break
+                if (isDirectStopped || isStopped) break
                 var pauseDuration = 0
                 when (unit) {
                     "[NEWLINE]" -> pauseDuration = 800
@@ -614,7 +495,7 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             }
-            if (prevTail != null && prevTail.isNotEmpty() && !isDirectStopped) {
+            if (prevTail != null && prevTail.isNotEmpty() && !isDirectStopped && !isStopped) {
                 applyFadeOut(prevTail, FADE_SAMPLES)
                 feedToSonicDirect(streamId, prevTail, shortBuffer, bufferSize, outputBuffer)
             }
@@ -627,7 +508,7 @@ class ShanTtsService : TextToSpeechService() {
 
     private fun feedToSonicDirect(streamId: Long, data: ShortArray, shortBuffer: ShortArray, bufferSize: Int, outputBuffer: ShortArray) {
         var inputOffset = 0
-        while (inputOffset < data.size && !isDirectStopped) {
+        while (inputOffset < data.size && !isDirectStopped && !isStopped) {
             val inputLen = min(bufferSize, data.size - inputOffset)
             System.arraycopy(data, inputOffset, shortBuffer, 0, inputLen)
             sonicWriteShortToStream(streamId, shortBuffer, inputLen)
@@ -637,7 +518,7 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun processSonicOutputDirect(streamId: Long, outputBuffer: ShortArray) {
-        while (sonicSamplesAvailable(streamId) > 0 && !isDirectStopped) {
+        while (sonicSamplesAvailable(streamId) > 0 && !isDirectStopped && !isStopped) {
             val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
             if (readCount > 0) {
                 applyGain(outputBuffer, readCount, 1.8f)
