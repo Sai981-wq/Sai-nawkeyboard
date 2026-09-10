@@ -5,6 +5,8 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.audiofx.DynamicsProcessing
+import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -64,6 +66,7 @@ class ShanTtsService : TextToSpeechService() {
     private val indexMap = HashMap<String, Pair<Long, Int>>()
     private var randomAccessFile: RandomAccessFile? = null
     @Volatile private var isStopped = false
+    
     private var directAudioTrack: AudioTrack? = null
     @Volatile private var isDirectStopped = false
     private var isOpusInit = false
@@ -73,6 +76,9 @@ class ShanTtsService : TextToSpeechService() {
     private val utteranceLatches = ConcurrentHashMap<String, CountDownLatch>()
     
     private var cpuWakeLock: PowerManager.WakeLock? = null
+
+    private var dynamicsProcessing: DynamicsProcessing? = null
+    private var loudnessEnhancer: LoudnessEnhancer? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -106,11 +112,21 @@ class ShanTtsService : TextToSpeechService() {
 
         englishEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
+            
             override fun onDone(utteranceId: String?) {
                 utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
             }
+            
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
+                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+            }
+            
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+            }
+
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
                 utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
             }
         })
@@ -132,9 +148,7 @@ class ShanTtsService : TextToSpeechService() {
             if (binFile.exists()) {
                 try {
                     randomAccessFile = RandomAccessFile(binFile, "r")
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+                } catch (e: Exception) {}
             }
         }
 
@@ -142,14 +156,8 @@ class ShanTtsService : TextToSpeechService() {
             try {
                 initOpusDecoder(OUTPUT_SAMPLE_RATE)
                 isOpusInit = true
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            } catch (e: Exception) {}
         }
-    }
-
-    private fun isExpired(): Boolean {
-        return false 
     }
 
     private fun loadMapFromFile(context: Context, filename: String): Map<String, String> {
@@ -185,9 +193,7 @@ class ShanTtsService : TextToSpeechService() {
                         input.copyTo(output)
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            } catch (e: Exception) {}
         }
     }
 
@@ -204,9 +210,7 @@ class ShanTtsService : TextToSpeechService() {
                     indexMap[name] = Pair(offset, length)
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) {}
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
@@ -234,21 +238,24 @@ class ShanTtsService : TextToSpeechService() {
     override fun onStop() {
         isStopped = true
         isDirectStopped = true
-        englishEngine?.stop()
+        try {
+            englishEngine?.stop()
+        } catch (_: Exception) {}
+        
         try {
             directAudioTrack?.pause()
             directAudioTrack?.flush()
         } catch (_: Exception) {}
+        
         utteranceLatches.values.forEach { it.countDown() }
+        utteranceLatches.clear()
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         val rawText = request.charSequenceText?.toString() ?: ""
-        val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else rawText
         isStopped = false
-        isDirectStopped = false
 
-        if (text.isBlank()) {
+        if (rawText.isBlank()) {
             callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
             generateSilentAudio(callback)
             safeCallbackDone(callback)
@@ -256,11 +263,11 @@ class ShanTtsService : TextToSpeechService() {
         }
 
         try {
-            val cpuTimeout = Math.max(120000L, (text.length * 300).toLong())
+            val cpuTimeout = Math.max(120000L, (rawText.length * 300).toLong())
             cpuWakeLock?.acquire(cpuTimeout)
         } catch (e: Exception) {}
 
-        val chunks = TTSUtils.splitText(text)
+        val chunks = TTSUtils.splitText(rawText)
         
         val systemRate = request.speechRate / 100.0f
         val systemPitch = request.pitch / 100.0f
@@ -268,15 +275,13 @@ class ShanTtsService : TextToSpeechService() {
         val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
         val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
 
-        prepareDirectAudioTrackForAutoTTS()
+        callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
 
         for (chunk in chunks) {
             if (isStopped) break
+            
             if (chunk.lang == "MYANMAR") {
-                try {
-                    directAudioTrack?.play()
-                } catch (_: Exception) {}
-                synthesizeBurmeseDirect(chunk.text, finalRate, finalPitch)
+                synthesizeBurmeseText(chunk.text, callback, finalRate, finalPitch)
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                 val utteranceId = "utt_${System.nanoTime()}"
                 val latch = CountDownLatch(1)
@@ -297,11 +302,12 @@ class ShanTtsService : TextToSpeechService() {
                     } catch (e: InterruptedException) {
                         isStopped = true
                     }
+                } else {
+                    utteranceLatches.remove(utteranceId)?.countDown()
                 }
             }
         }
         
-        callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
         safeCallbackDone(callback)
         
         try {
@@ -311,8 +317,190 @@ class ShanTtsService : TextToSpeechService() {
         } catch (e: Exception) {}
     }
 
+    private fun synthesizeBurmeseText(text: String, callback: SynthesisCallback, rate: Float, pitch: Float) {
+        val currentMap = charMap ?: return
+        val currentSingleMap = singleCharMap ?: emptyMap()
+        val currentPhraseMap = phraseMap ?: emptyMap()
+        val isSingleChar = text.length == 1 && currentSingleMap.containsKey(text)
+        val units = if (isSingleChar) listOf(text) else splitTextIntoPlayableUnits(text, currentPhraseMap, currentMap)
+        if (units.isEmpty()) return
+
+        val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
+        sonicSetSpeed(streamId, rate)
+        sonicSetPitch(streamId, pitch)
+
+        val bufferSize = 4096
+        val shortBuffer = ShortArray(bufferSize)
+        val outputBuffer = ShortArray(bufferSize)
+        var prevTail: ShortArray? = null
+
+        try {
+            for (unit in units) {
+                if (isStopped) break
+                var pauseDuration = 0
+                when (unit) {
+                    "[NEWLINE]" -> pauseDuration = 800
+                    "[SPACE]" -> pauseDuration = 200
+                }
+                if (pauseDuration > 0) {
+                    if (prevTail != null) {
+                        applyFadeOut(prevTail, prevTail.size)
+                        feedToSonic(streamId, prevTail, shortBuffer, bufferSize, outputBuffer, callback)
+                        prevTail = null
+                    }
+                    writeSilenceToSonic(streamId, pauseDuration)
+                    processSonicOutput(streamId, outputBuffer, callback)
+                    continue
+                }
+
+                val baseName = if (isSingleChar) currentSingleMap[unit] else (currentPhraseMap[unit] ?: currentMap[unit])
+                if (baseName == null) continue
+                val encodedBytes = readAudioFromBin(baseName)
+
+                if (encodedBytes != null && encodedBytes.isNotEmpty()) {
+                    val originalPcm = decodeOpus(encodedBytes, encodedBytes.size)
+                    if (originalPcm != null && originalPcm.isNotEmpty()) {
+                        val pauseSamples = (OUTPUT_SAMPLE_RATE * 25) / 1000
+                        val pcmShorts = ShortArray(originalPcm.size + pauseSamples)
+                        System.arraycopy(originalPcm, 0, pcmShorts, 0, originalPcm.size)
+
+                        if (prevTail != null && prevTail.isNotEmpty()) {
+                            val crossfadeLen = min(CROSSFADE_SAMPLES, min(prevTail.size, pcmShorts.size))
+                            if (crossfadeLen > 0) {
+                                val crossfaded = ShortArray(crossfadeLen)
+                                for (i in 0 until crossfadeLen) {
+                                    val t = i.toFloat() / crossfadeLen
+                                    val fadeOut = (0.5 * (1.0 + cos(PI * t))).toFloat()
+                                    val fadeIn = 1.0f - fadeOut
+                                    val mixed = (prevTail[prevTail.size - crossfadeLen + i] * fadeOut + pcmShorts[i] * fadeIn)
+                                    crossfaded[i] = mixed.toInt().coerceIn(-32768, 32767).toShort()
+                                }
+                                val prevMainLen = prevTail.size - crossfadeLen
+                                if (prevMainLen > 0) {
+                                    val prevMain = prevTail.copyOfRange(0, prevMainLen)
+                                    feedToSonic(streamId, prevMain, shortBuffer, bufferSize, outputBuffer, callback)
+                                }
+                                feedToSonic(streamId, crossfaded, shortBuffer, bufferSize, outputBuffer, callback)
+
+                                val currentRemaining = pcmShorts.copyOfRange(crossfadeLen, pcmShorts.size)
+                                if (currentRemaining.size > CROSSFADE_SAMPLES) {
+                                    val mainPart = currentRemaining.copyOfRange(0, currentRemaining.size - CROSSFADE_SAMPLES)
+                                    feedToSonic(streamId, mainPart, shortBuffer, bufferSize, outputBuffer, callback)
+                                    prevTail = currentRemaining.copyOfRange(currentRemaining.size - CROSSFADE_SAMPLES, currentRemaining.size)
+                                } else {
+                                    prevTail = currentRemaining
+                                }
+                            } else {
+                                feedToSonic(streamId, prevTail, shortBuffer, bufferSize, outputBuffer, callback)
+                                if (pcmShorts.size > CROSSFADE_SAMPLES) {
+                                    val mainPart = pcmShorts.copyOfRange(0, pcmShorts.size - CROSSFADE_SAMPLES)
+                                    feedToSonic(streamId, mainPart, shortBuffer, bufferSize, outputBuffer, callback)
+                                    prevTail = pcmShorts.copyOfRange(pcmShorts.size - CROSSFADE_SAMPLES, pcmShorts.size)
+                                } else {
+                                    prevTail = pcmShorts
+                                }
+                            }
+                        } else {
+                            applyFadeIn(pcmShorts, FADE_SAMPLES)
+                            if (pcmShorts.size > CROSSFADE_SAMPLES) {
+                                val mainPart = pcmShorts.copyOfRange(0, pcmShorts.size - CROSSFADE_SAMPLES)
+                                feedToSonic(streamId, mainPart, shortBuffer, bufferSize, outputBuffer, callback)
+                                prevTail = pcmShorts.copyOfRange(pcmShorts.size - CROSSFADE_SAMPLES, pcmShorts.size)
+                            } else {
+                                prevTail = pcmShorts
+                            }
+                        }
+                    }
+                }
+            }
+            if (prevTail != null && prevTail.isNotEmpty() && !isStopped) {
+                applyFadeOut(prevTail, FADE_SAMPLES)
+                feedToSonic(streamId, prevTail, shortBuffer, bufferSize, outputBuffer, callback)
+            }
+            sonicFlushStream(streamId)
+            processSonicOutput(streamId, outputBuffer, callback)
+        } finally {
+            sonicDestroyStream(streamId)
+        }
+    }
+
+    private fun feedToSonic(streamId: Long, data: ShortArray, shortBuffer: ShortArray, bufferSize: Int, outputBuffer: ShortArray, callback: SynthesisCallback) {
+        var inputOffset = 0
+        while (inputOffset < data.size && !isStopped) {
+            val inputLen = min(bufferSize, data.size - inputOffset)
+            System.arraycopy(data, inputOffset, shortBuffer, 0, inputLen)
+            sonicWriteShortToStream(streamId, shortBuffer, inputLen)
+            processSonicOutput(streamId, outputBuffer, callback)
+            inputOffset += inputLen
+        }
+    }
+
+    private fun processSonicOutput(streamId: Long, outputBuffer: ShortArray, callback: SynthesisCallback) {
+        while (sonicSamplesAvailable(streamId) > 0 && !isStopped) {
+            val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
+            if (readCount > 0) {
+                applyGain(outputBuffer, readCount, 1.8f)
+                val byteData = shortsToBytes(outputBuffer, readCount)
+                callback.audioAvailable(byteData, 0, byteData.size)
+            }
+        }
+    }
+
+    private fun shortsToBytes(shorts: ShortArray, readCount: Int): ByteArray {
+        val bytes = ByteArray(readCount * 2)
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(shorts, 0, readCount)
+        return bytes
+    }
+
+    fun stopDirectAudio() {
+        isDirectStopped = true
+        try {
+            directAudioTrack?.pause()
+            directAudioTrack?.flush()
+            directAudioTrack?.stop()
+            directAudioTrack?.release()
+            dynamicsProcessing?.release()
+            loudnessEnhancer?.release()
+        } catch (_: Exception) {}
+        directAudioTrack = null
+        dynamicsProcessing = null
+        loudnessEnhancer = null
+    }
+
+    fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float) {
+        stopDirectAudio()
+        isDirectStopped = false
+        initResources(context)
+        val text = requestText
+        if (text.isBlank()) return
+        
+        prepareDirectAudioTrackForAutoTTS()
+        
+        try {
+            directAudioTrack?.play()
+        } catch (_: Exception) {}
+        synthesizeBurmeseDirect(text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f))
+        try {
+            directAudioTrack?.stop()
+            directAudioTrack?.release()
+        } catch (_: Exception) {}
+        directAudioTrack = null
+    }
+
     private fun prepareDirectAudioTrackForAutoTTS() {
-        if (directAudioTrack != null && directAudioTrack?.state != AudioTrack.STATE_UNINITIALIZED) return
+        if (directAudioTrack != null) {
+            if (directAudioTrack?.state == AudioTrack.STATE_INITIALIZED) {
+                return
+            } else {
+                try {
+                    directAudioTrack?.release()
+                    dynamicsProcessing?.release()
+                    loudnessEnhancer?.release()
+                } catch (_: Exception) {}
+                directAudioTrack = null
+            }
+        }
+        
         val minBufferSize = AudioTrack.getMinBufferSize(OUTPUT_SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         directAudioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder()
@@ -325,39 +513,25 @@ class ShanTtsService : TextToSpeechService() {
             @Suppress("DEPRECATION")
             AudioTrack(AudioManager.STREAM_ACCESSIBILITY, OUTPUT_SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufferSize * 2, AudioTrack.MODE_STREAM)
         }
-    }
+        
+        val audioSessionId = directAudioTrack?.audioSessionId ?: 0
+        if (audioSessionId != 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                val builder = DynamicsProcessing.Config.Builder(
+                    DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
+                    1, true, 1, true, 1, true, 1, true
+                )
+                builder.setMbcBand(0, 0, true, 40.0f, -30.0f, 4.0f, -10.0f, 2.0f)
+                val config = builder.build()
+                
+                dynamicsProcessing = DynamicsProcessing(0, audioSessionId, config)
+                dynamicsProcessing?.enabled = true
 
-    fun stopDirectAudio() {
-        isDirectStopped = true
-        try {
-            directAudioTrack?.pause()
-            directAudioTrack?.flush()
-            directAudioTrack?.stop()
-            directAudioTrack?.release()
-        } catch (_: Exception) {}
-        directAudioTrack = null
-    }
-
-    fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float) {
-        stopDirectAudio()
-        isDirectStopped = false
-        initResources(context)
-        var rawText = requestText
-        if (isExpired()) {
-            rawText = "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ"
+                loudnessEnhancer = LoudnessEnhancer(audioSessionId)
+                loudnessEnhancer?.setTargetGain(500) 
+                loudnessEnhancer?.enabled = true
+            } catch (e: Exception) {}
         }
-        val text = rawText
-        if (text.isBlank()) return
-        prepareDirectAudioTrackForAutoTTS()
-        try {
-            directAudioTrack?.play()
-        } catch (_: Exception) {}
-        synthesizeBurmeseDirect(text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f))
-        try {
-            directAudioTrack?.stop()
-            directAudioTrack?.release()
-        } catch (_: Exception) {}
-        directAudioTrack = null
     }
 
     private fun synthesizeBurmeseDirect(text: String, rate: Float, pitch: Float) {
@@ -379,7 +553,7 @@ class ShanTtsService : TextToSpeechService() {
 
         try {
             for (unit in units) {
-                if (isDirectStopped || isStopped) break
+                if (isDirectStopped) break
                 var pauseDuration = 0
                 when (unit) {
                     "[NEWLINE]" -> pauseDuration = 800
@@ -456,7 +630,7 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             }
-            if (prevTail != null && prevTail.isNotEmpty() && !isStopped && !isDirectStopped) {
+            if (prevTail != null && prevTail.isNotEmpty() && !isDirectStopped) {
                 applyFadeOut(prevTail, FADE_SAMPLES)
                 feedToSonicDirect(streamId, prevTail, shortBuffer, bufferSize, outputBuffer)
             }
@@ -469,7 +643,7 @@ class ShanTtsService : TextToSpeechService() {
 
     private fun feedToSonicDirect(streamId: Long, data: ShortArray, shortBuffer: ShortArray, bufferSize: Int, outputBuffer: ShortArray) {
         var inputOffset = 0
-        while (inputOffset < data.size && !isDirectStopped && !isStopped) {
+        while (inputOffset < data.size && !isDirectStopped) {
             val inputLen = min(bufferSize, data.size - inputOffset)
             System.arraycopy(data, inputOffset, shortBuffer, 0, inputLen)
             sonicWriteShortToStream(streamId, shortBuffer, inputLen)
@@ -479,7 +653,7 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun processSonicOutputDirect(streamId: Long, outputBuffer: ShortArray) {
-        while (sonicSamplesAvailable(streamId) > 0 && !isDirectStopped && !isStopped) {
+        while (sonicSamplesAvailable(streamId) > 0 && !isDirectStopped) {
             val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
             if (readCount > 0) {
                 applyGain(outputBuffer, readCount, 1.8f)
@@ -590,8 +764,11 @@ class ShanTtsService : TextToSpeechService() {
         isStopped = true
         isDirectStopped = true
         stopDirectAudio()
-        englishEngine?.stop()
-        englishEngine?.shutdown()
+        try {
+            englishEngine?.stop()
+            englishEngine?.shutdown()
+        } catch (_: Exception) {}
+        
         utteranceLatches.values.forEach { it.countDown() }
         utteranceLatches.clear()
         
@@ -600,6 +777,11 @@ class ShanTtsService : TextToSpeechService() {
                 cpuWakeLock?.release()
             }
         } catch (e: Exception) {}
+
+        try {
+            dynamicsProcessing?.release()
+            loudnessEnhancer?.release()
+        } catch (_: Exception) {}
 
         if (isOpusInit) {
             destroyOpusDecoder()
