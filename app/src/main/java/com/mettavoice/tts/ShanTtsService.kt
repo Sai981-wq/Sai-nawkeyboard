@@ -471,15 +471,14 @@ class ShanTtsService : TextToSpeechService() {
         stopDirectAudio()
         isDirectStopped = false
         initResources(context)
-        val text = requestText
-        if (text.isBlank()) return
+        if (requestText.isBlank()) return
         
         prepareDirectAudioTrackForAutoTTS()
         
         try {
             directAudioTrack?.play()
         } catch (_: Exception) {}
-        synthesizeBurmeseDirect(text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f))
+        synthesizeBurmeseDirect(requestText, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f))
         try {
             directAudioTrack?.stop()
             directAudioTrack?.release()
@@ -519,9 +518,14 @@ class ShanTtsService : TextToSpeechService() {
             try {
                 val builder = DynamicsProcessing.Config.Builder(
                     DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
-                    1, true, 1, true, 1, true, 1, true
+                    1, false, 0, true, 1, false, 0, true
                 )
-                builder.setMbcBand(0, 0, true, 40.0f, -30.0f, 4.0f, -10.0f, 2.0f)
+                
+                val mbc = DynamicsProcessing.Mbc(true, true, 1)
+                val mbcBand = DynamicsProcessing.MbcBand(true, 20000.0f, 10.0f, 50.0f, 4.0f, -30.0f, 2.0f, -90.0f, 1.0f, 0.0f, 5.0f)
+                mbc.setBand(0, mbcBand)
+                builder.setMbc(mbc)
+                
                 val config = builder.build()
                 
                 dynamicsProcessing = DynamicsProcessing(0, audioSessionId, config)
