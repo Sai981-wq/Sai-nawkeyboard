@@ -1,174 +1,131 @@
-#include <jni.h>
-#include <string>
-#include <vector>
-#include <cstring>
-#include <cmath>
-#include <stdint.h>
-#include "sonic.h"
-#include <opus.h>
-#include <opusfile.h>
+cat > process_audio_raw_opus.py << 'EOF'
+import os
+import subprocess
+import math
+import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-extern "C" {
+WAV_DIR = "storage/shared/my_wavs"
+OUTPUT_DIR = "storage/shared/processed_audio"
+RAW_DIR = os.path.join(OUTPUT_DIR, "raw_opus")
+TEMP_DIR = os.path.join(OUTPUT_DIR, "temp_ogg")
 
-typedef struct {
-    const unsigned char* data;
-    opus_int64 size;
-    opus_int64 pos;
-} MemoryStream;
+TARGET_SAMPLE_RATE = 24000
+TARGET_RMS_DB = -20.0
+PEAK_LIMIT_DB = -3.0
+MAX_WORKERS = os.cpu_count() or 4
 
-int read_mem(void* _stream, unsigned char* _ptr, int _nbytes) {
-    MemoryStream* stream = (MemoryStream*)_stream;
-    opus_int64 remaining = stream->size - stream->pos;
-    int check = _nbytes > remaining ? remaining : _nbytes;
-    if (check > 0) {
-        memcpy(_ptr, stream->data + stream->pos, check);
-        stream->pos += check;
-    }
-    return check;
-}
+def extract_raw_opus(ogg_path, raw_path):
+    try:
+        with open(ogg_path, 'rb') as f:
+            data = f.read()
 
-int seek_mem(void* _stream, opus_int64 _offset, int _whence) {
-    MemoryStream* stream = (MemoryStream*)_stream;
-    opus_int64 new_pos;
-    switch (_whence) {
-        case SEEK_SET: new_pos = _offset; break;
-        case SEEK_CUR: new_pos = stream->pos + _offset; break;
-        case SEEK_END: new_pos = stream->size + _offset; break;
-        default: return -1;
-    }
-    if (new_pos < 0 || new_pos > stream->size) return -1;
-    stream->pos = new_pos;
-    return 0;
-}
+        pos = 0
+        packets = []
+        curr_packet = bytearray()
 
-opus_int64 tell_mem(void* _stream) {
-    MemoryStream* stream = (MemoryStream*)_stream;
-    return stream->pos;
-}
+        while pos < len(data) - 27:
+            if data[pos:pos+4] != b'OggS':
+                pos += 1
+                continue
+            
+            segments = data[pos+26]
+            pos += 27
+            seg_table = data[pos:pos+segments]
+            pos += segments
 
-static const OpusFileCallbacks mem_callbacks = {
-    read_mem, seek_mem, tell_mem, NULL
-};
+            for seg_len in seg_table:
+                curr_packet.extend(data[pos:pos+seg_len])
+                pos += seg_len
+                if seg_len < 255:
+                    packets.append(curr_packet)
+                    curr_packet = bytearray()
 
-#define DOWNSAMPLE_RATIO 3
+        if len(packets) > 2:
+            with open(raw_path, 'wb') as f:
+                for p in packets[2:]:
+                    f.write(len(p).to_bytes(2, byteorder='little'))
+                    f.write(p)
+            return True
+        return False
+    except:
+        return False
 
-JNIEXPORT jlong JNICALL
-Java_com_mettavoice_tts_ShanTtsService_sonicCreateStream(JNIEnv *env, jobject thiz, jint sampleRate, jint numChannels) {
-    // (intptr_t) ကို ကြားခံအဖြစ်သုံး၍ Pointer Error ကို ဖြေရှင်းထားပါသည်
-    return (jlong) (intptr_t) sonicCreateStream(sampleRate, numChannels);
-}
+def get_stats(filepath):
+    try:
+        res = subprocess.run(["sox", filepath, "-c", "1", "-n", "stat"], capture_output=True, text=True)
+        rms, peak = None, None
+        for line in res.stderr.split('\n'):
+            if 'RMS     amplitude:' in line: rms = float(line.split(':')[1])
+            elif 'Maximum amplitude:' in line: peak = float(line.split(':')[1])
+        return rms, peak
+    except:
+        return None, None
 
-JNIEXPORT void JNICALL
-Java_com_mettavoice_tts_ShanTtsService_sonicDestroyStream(JNIEnv *env, jobject thiz, jlong streamId) {
-    sonicDestroyStream((sonicStream) (intptr_t) streamId);
-}
-
-JNIEXPORT void JNICALL
-Java_com_mettavoice_tts_ShanTtsService_sonicSetSpeed(JNIEnv *env, jobject thiz, jlong streamId, jfloat speed) {
-    sonicSetSpeed((sonicStream) (intptr_t) streamId, speed);
-}
-
-JNIEXPORT void JNICALL
-Java_com_mettavoice_tts_ShanTtsService_sonicSetPitch(JNIEnv *env, jobject thiz, jlong streamId, jfloat pitch) {
-    sonicSetPitch((sonicStream) (intptr_t) streamId, pitch);
-}
-
-JNIEXPORT jint JNICALL
-Java_com_mettavoice_tts_ShanTtsService_sonicWriteShortToStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
-    jshort *data = env->GetShortArrayElements(audioData, NULL);
-    int ret = sonicWriteShortToStream((sonicStream) (intptr_t) streamId, data, len);
-    env->ReleaseShortArrayElements(audioData, data, 0);
-    return ret;
-}
-
-JNIEXPORT jint JNICALL
-Java_com_mettavoice_tts_ShanTtsService_sonicReadShortFromStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
-    jshort *data = env->GetShortArrayElements(audioData, NULL);
-    int ret = sonicReadShortFromStream((sonicStream) (intptr_t) streamId, data, len);
-    env->ReleaseShortArrayElements(audioData, data, 0);
-    return ret;
-}
-
-JNIEXPORT void JNICALL
-Java_com_mettavoice_tts_ShanTtsService_sonicFlushStream(JNIEnv *env, jobject thiz, jlong streamId) {
-    sonicFlushStream((sonicStream) (intptr_t) streamId);
-}
-
-JNIEXPORT jint JNICALL
-Java_com_mettavoice_tts_ShanTtsService_sonicSamplesAvailable(JNIEnv *env, jobject thiz, jlong streamId) {
-    return sonicSamplesAvailable((sonicStream) (intptr_t) streamId);
-}
-
-JNIEXPORT void JNICALL
-Java_com_mettavoice_tts_ShanTtsService_initOpusDecoder(JNIEnv *env, jobject thiz, jint sampleRate) {
-}
-
-JNIEXPORT void JNICALL
-Java_com_mettavoice_tts_ShanTtsService_destroyOpusDecoder(JNIEnv *env, jobject thiz) {
-}
-
-JNIEXPORT jshortArray JNICALL
-Java_com_mettavoice_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jbyteArray encodedData, jint len) {
-    if (encodedData == nullptr || len <= 0) return nullptr;
-
-    jbyte *oggData = env->GetByteArrayElements(encodedData, nullptr);
+def process(wav_file):
+    in_path = os.path.join(WAV_DIR, wav_file)
+    name = wav_file[:-4]
+    raw_path = os.path.join(RAW_DIR, f"{name}.rawopus")
+    ogg_path = os.path.join(TEMP_DIR, f"{name}.ogg")
     
-    MemoryStream memStream;
-    memStream.data = (unsigned char*)oggData;
-    memStream.size = len;
-    memStream.pos = 0;
-
-    int error = 0;
-    OggOpusFile *of = op_open_callbacks(&memStream, &mem_callbacks, NULL, 0, &error);
+    if os.path.exists(raw_path) and os.path.getsize(raw_path) > 0:
+        return True
+        
+    rms, peak = get_stats(in_path)
+    if rms and peak and peak > 0:
+        gain = TARGET_RMS_DB - (20 * math.log10(rms))
+        max_gain = PEAK_LIMIT_DB - (20 * math.log10(peak))
+        final_gain = max(-20.0, min(20.0, min(gain, max_gain)))
+    else:
+        final_gain = 0.0
+        
+    cmd = f"sox '{in_path}' -t wav - channels 1 highpass 80 gain {final_gain:.2f} rate -v {TARGET_SAMPLE_RATE} | opusenc --speech --bitrate 32 --comp 10 --framesize 20 --vbr - '{ogg_path}'"
     
-    if (error != 0 || of == nullptr) {
-        env->ReleaseByteArrayElements(encodedData, oggData, 0);
-        return nullptr;
-    }
+    try:
+        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(ogg_path):
+            success = extract_raw_opus(ogg_path, raw_path)
+            os.remove(ogg_path)
+            return success
+        return False
+    except:
+        return False
 
-    std::vector<opus_int16> allPcm48k;
-    int channels = 1;
+def pack():
+    files = sorted([f for f in os.listdir(RAW_DIR) if f.endswith('.rawopus')])
+    offset = 0
+    with open(os.path.join(OUTPUT_DIR, "audio.bin"), 'wb') as b_out, open(os.path.join(OUTPUT_DIR, "index.txt"), 'w') as i_out:
+        for f_name in files:
+            path = os.path.join(RAW_DIR, f_name)
+            with open(path, 'rb') as f: data = f.read()
+            length = len(data)
+            b_out.write(data)
+            i_out.write(f"{f_name[:-8]}:{offset}:{length}\n")
+            offset += length
 
-    opus_int16 buffer[5760 * 2]; 
+def main():
+    os.makedirs(RAW_DIR, exist_ok=True)
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    if not os.path.exists(WAV_DIR): return
+    
+    wavs = sorted([f for f in os.listdir(WAV_DIR) if f.endswith('.wav')])
+    if not wavs: return
 
-    while (true) {
-        int samplesRead = op_read(of, buffer, 5760, NULL);
-        if (samplesRead <= 0) break;
+    print(f"Processing {len(wavs)} files (Raw Opus Packets Extractor)...")
+    success = 0
+    with ThreadPoolExecutor(MAX_WORKERS) as exe:
+        futures = [exe.submit(process, w) for w in wavs]
+        for i, f in enumerate(as_completed(futures), 1):
+            if f.result(): success += 1
+            if i % 100 == 0: print(f"Processed {i}/{len(wavs)}...")
 
-        channels = op_channel_count(of, -1);
+    pack()
+    shutil.rmtree(TEMP_DIR, ignore_errors=True)
+    print(f"Done! {success}/{len(wavs)} successful.")
 
-        for (int i = 0; i < samplesRead; i++) {
-            allPcm48k.push_back(buffer[i * channels]);
-        }
-    }
+if __name__ == "__main__":
+    main()
+EOF
 
-    op_free(of);
-    env->ReleaseByteArrayElements(encodedData, oggData, 0);
-
-    if (allPcm48k.empty()) return nullptr;
-
-    int totalSamples = (int)allPcm48k.size();
-    std::vector<opus_int16> pcmOutput;
-    pcmOutput.reserve(totalSamples / DOWNSAMPLE_RATIO + 1);
-
-    for (int i = 0; i + DOWNSAMPLE_RATIO <= totalSamples; i += DOWNSAMPLE_RATIO) {
-        float sum = 0.0f;
-        for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
-            sum += (float)allPcm48k[i + j];
-        }
-        float avg = sum / DOWNSAMPLE_RATIO;
-        if (avg > 32767.0f) avg = 32767.0f;
-        if (avg < -32768.0f) avg = -32768.0f;
-        pcmOutput.push_back((opus_int16)avg);
-    }
-
-    if (pcmOutput.empty()) return nullptr;
-
-    jshortArray result = env->NewShortArray(pcmOutput.size());
-    env->SetShortArrayRegion(result, 0, pcmOutput.size(), pcmOutput.data());
-
-    return result;
-}
-
-}
+python process_audio_raw_opus.py
 
