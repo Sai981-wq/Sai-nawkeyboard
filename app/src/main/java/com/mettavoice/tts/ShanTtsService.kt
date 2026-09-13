@@ -74,11 +74,9 @@ class ShanTtsService : TextToSpeechService() {
 
     override fun onCreate() {
         super.onCreate()
-        
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MettaVoice::CpuWakeLock")
         cpuWakeLock?.setReferenceCounted(false)
-        
         initResources(this)
         initEnglishEngine()
     }
@@ -86,11 +84,9 @@ class ShanTtsService : TextToSpeechService() {
     private fun initEnglishEngine() {
         val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
         val enginePkg = prefs.getString("pref_secondary_engine", "com.google.android.tts")
-        
         englishEngine = TextToSpeech(this, { status ->
             if (status == TextToSpeech.SUCCESS) {
                 englishEngine?.language = Locale.US
-                
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     val attrs = AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
@@ -104,20 +100,16 @@ class ShanTtsService : TextToSpeechService() {
 
         englishEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
-            
             override fun onDone(utteranceId: String?) {
                 utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
             }
-            
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
                 utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
             }
-            
             override fun onError(utteranceId: String?, errorCode: Int) {
                 utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
             }
-
             override fun onStop(utteranceId: String?, interrupted: Boolean) {
                 utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
             }
@@ -127,14 +119,12 @@ class ShanTtsService : TextToSpeechService() {
     fun initResources(context: Context) {
         copyAssetToFile(context, BIN_FILENAME)
         copyAssetToFile(context, INDEX_FILENAME)
-        
         if (charMap == null) {
             charMap = loadMapFromFile(context, "mapping.txt")
             singleCharMap = loadMapFromFile(context, "mapping_single.txt")
             phraseMap = loadMapFromFile(context, "mapping_phrase.txt")
         }
         if (indexMap.isEmpty()) loadIndexMap(context)
-
         if (randomAccessFile == null) {
             val binFile = File(context.filesDir, BIN_FILENAME)
             if (binFile.exists()) {
@@ -145,7 +135,6 @@ class ShanTtsService : TextToSpeechService() {
                 }
             }
         }
-
         if (!isOpusInit) {
             try {
                 initOpusDecoder(OUTPUT_SAMPLE_RATE)
@@ -245,12 +234,10 @@ class ShanTtsService : TextToSpeechService() {
         try {
             englishEngine?.stop()
         } catch (_: Exception) {}
-        
         try {
             directAudioTrack?.pause()
             directAudioTrack?.flush()
         } catch (_: Exception) {}
-        
         utteranceLatches.values.forEach { it.countDown() }
         utteranceLatches.clear()
     }
@@ -259,6 +246,7 @@ class ShanTtsService : TextToSpeechService() {
         val rawText = request.charSequenceText?.toString() ?: ""
         val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else rawText
         isStopped = false
+        isDirectStopped = false
 
         if (text.isBlank()) {
             callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
@@ -279,8 +267,12 @@ class ShanTtsService : TextToSpeechService() {
         val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
         val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
 
-        // AudioTrack အစား Callback ကို တိုက်ရိုက်အသုံးပြုပါမည်
-        callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
+        val startStatus = callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
+        if (startStatus == TextToSpeech.ERROR) {
+            safeCallbackDone(callback)
+            try { cpuWakeLock?.release() } catch (e: Exception) {}
+            return
+        }
 
         for (chunk in chunks) {
             if (isStopped) break
@@ -524,17 +516,31 @@ class ShanTtsService : TextToSpeechService() {
                         byteArray[i * 2] = (shortVal and 0xFF).toByte()
                         byteArray[i * 2 + 1] = ((shortVal ushr 8) and 0xFF).toByte()
                     }
+                    
                     val maxBufferSize = callback.maxBufferSize
+                    val limit = if (maxBufferSize > 0) maxBufferSize else 8192
+                    
                     var offset = 0
                     while (offset < byteArray.size && !isStopped) {
-                        val chunk = min(maxBufferSize, byteArray.size - offset)
-                        callback.audioAvailable(byteArray, offset, chunk)
+                        val chunk = min(limit, byteArray.size - offset)
+                        if (chunk <= 0) break 
+                        
+                        val status = callback.audioAvailable(byteArray, offset, chunk)
+                        if (status == TextToSpeech.ERROR) {
+                            isStopped = true
+                            break
+                        }
                         offset += chunk
                     }
                 } else if (track != null) {
                     try {
-                        track.write(outputBuffer, 0, readCount)
-                    } catch (_: Exception) {}
+                        val res = track.write(outputBuffer, 0, readCount)
+                        if (res < 0) {
+                            isDirectStopped = true
+                        }
+                    } catch (_: Exception) {
+                        isDirectStopped = true
+                    }
                 }
             }
         }
