@@ -288,7 +288,9 @@ class ShanTtsService : TextToSpeechService() {
                     if (myanmarBytesAccumulated > 0) {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                        val sleepTime = expectedDurationMs - elapsedTime + 250L
+                        
+                        // အပိုစောင့်ဆိုင်းချိန် 250L ကို လုံးဝ ဖြုတ်ချလိုက်ပါပြီ (ပို၍ ကပ်သွားစေရန်)
+                        val sleepTime = expectedDurationMs - elapsedTime
                         
                         if (sleepTime > 0) {
                             var waitTime = sleepTime
@@ -406,7 +408,10 @@ class ShanTtsService : TextToSpeechService() {
                 if (myanmarBytesAccumulated > 0) {
                     val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                     val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                    val sleepTime = expectedDurationMs - elapsedTime + 250L
+                    
+                    // အပိုစောင့်ဆိုင်းချိန် 250L ကို လုံးဝ ဖြုတ်ချလိုက်ပါပြီ
+                    val sleepTime = expectedDurationMs - elapsedTime
+                    
                     if (sleepTime > 0) {
                         var waitTime = sleepTime
                         while (waitTime > 0 && !isDirectStopped) {
@@ -565,7 +570,8 @@ class ShanTtsService : TextToSpeechService() {
             totalBytesGenerated += processSonicOutput(streamId, outputBuffer, callback, track)
 
             if ((callback != null && !isStopped) || (track != null && !isDirectStopped)) {
-                val postSilence = ByteArray((OUTPUT_SAMPLE_RATE * 200 / 1000) * 2)
+                // အသံတိတ်အမြီးဆွဲကို 200ms မှ 150ms သို့ လျှော့ချလိုက်ပါပြီ
+                val postSilence = ByteArray((OUTPUT_SAMPLE_RATE * 150 / 1000) * 2)
                 var offset = 0
                 while (offset < postSilence.size && ((callback != null && !isStopped) || (track != null && !isDirectStopped))) {
                     val chunkLen = min(8192, postSilence.size - offset)
