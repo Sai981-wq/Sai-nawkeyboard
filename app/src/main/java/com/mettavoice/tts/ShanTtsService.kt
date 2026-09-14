@@ -35,13 +35,13 @@ class ShanTtsService : TextToSpeechService() {
                 e.printStackTrace()
             }
         }
-        private const val OUTPUT_SAMPLE_RATE = 24000
+        private const val OUTPUT_SAMPLE_RATE = 16000
         private const val OUTPUT_CHANNEL_COUNT = 1
         private const val OUTPUT_ENCODING = AudioFormat.ENCODING_PCM_16BIT
         private const val BIN_FILENAME = "audio.bin"
         private const val INDEX_FILENAME = "index.txt"
-        private const val CROSSFADE_SAMPLES = 120
-        private const val FADE_SAMPLES = 72
+        private const val CROSSFADE_SAMPLES = 80
+        private const val FADE_SAMPLES = 48
     }
 
     private external fun sonicCreateStream(sampleRate: Int, numChannels: Int): Long
