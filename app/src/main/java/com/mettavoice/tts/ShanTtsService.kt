@@ -271,18 +271,14 @@ class ShanTtsService : TextToSpeechService() {
                 return
             }
 
-            // စပီကာ Amp ကို အသင့်နိုးကြားစေရန် အသံတိတ် 70ms အရင်ပို့ပေးပါမည်
-            val preSilence = ByteArray((OUTPUT_SAMPLE_RATE * 70 / 1000) * 2)
-            callback.audioAvailable(preSilence, 0, preSilence.size)
-
-            var myanmarBytesAccumulated = preSilence.size
-            var myanmarStartTime = System.currentTimeMillis()
+            var myanmarBytesAccumulated = 0
+            var myanmarStartTime = 0L
 
             for (chunk in chunks) {
                 if (isStopped) break
                 
                 if (chunk.lang == "MYANMAR") {
-                    if (myanmarStartTime == 0L) {
+                    if (myanmarBytesAccumulated == 0) {
                         myanmarStartTime = System.currentTimeMillis()
                     }
                     myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null)
@@ -292,7 +288,7 @@ class ShanTtsService : TextToSpeechService() {
                     if (myanmarBytesAccumulated > 0) {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                        val sleepTime = expectedDurationMs - elapsedTime
+                        val sleepTime = expectedDurationMs - elapsedTime + 250L
                         
                         if (sleepTime > 0) {
                             var waitTime = sleepTime
@@ -316,7 +312,6 @@ class ShanTtsService : TextToSpeechService() {
                     
                     val params = Bundle()
                     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-                    params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
                     
                     val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
                     if (result == TextToSpeech.SUCCESS) {
@@ -331,20 +326,6 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             }
-
-            // စာလုံးတိုများ စပီကာတွင် အပြည့်အဝ ထွက်ပေါ်နိုင်စေရန် အမြီးဆွဲ 250ms အသံတိတ် ဖြည့်ပေးပါမည်
-            if (!isStopped) {
-                val postSilence = ByteArray((OUTPUT_SAMPLE_RATE * 250 / 1000) * 2)
-                val maxBufferSize = callback.maxBufferSize
-                val limit = if (maxBufferSize > 0) maxBufferSize else 8192
-                var postOffset = 0
-                while (postOffset < postSilence.size && !isStopped) {
-                    val cSize = min(limit, postSilence.size - postOffset)
-                    callback.audioAvailable(postSilence, postOffset, cSize)
-                    postOffset += cSize
-                }
-            }
-
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
@@ -408,18 +389,15 @@ class ShanTtsService : TextToSpeechService() {
         try {
             directAudioTrack?.play()
         } catch (_: Exception) {}
-
-        val prePadding = ShortArray(OUTPUT_SAMPLE_RATE * 70 / 1000)
-        directAudioTrack?.write(prePadding, 0, prePadding.size)
         
         val chunks = TTSUtils.splitText(text)
-        var myanmarBytesAccumulated = prePadding.size * 2
-        var myanmarStartTime = System.currentTimeMillis()
+        var myanmarBytesAccumulated = 0
+        var myanmarStartTime = 0L
 
         for (chunk in chunks) {
             if (isDirectStopped) break
             if (chunk.lang == "MYANMAR") {
-                if (myanmarStartTime == 0L) {
+                if (myanmarBytesAccumulated == 0) {
                     myanmarStartTime = System.currentTimeMillis()
                 }
                 myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack)
@@ -428,7 +406,7 @@ class ShanTtsService : TextToSpeechService() {
                 if (myanmarBytesAccumulated > 0) {
                     val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                     val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                    val sleepTime = expectedDurationMs - elapsedTime
+                    val sleepTime = expectedDurationMs - elapsedTime + 250L
                     if (sleepTime > 0) {
                         var waitTime = sleepTime
                         while (waitTime > 0 && !isDirectStopped) {
@@ -451,7 +429,6 @@ class ShanTtsService : TextToSpeechService() {
                 
                 val params = Bundle()
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
                 
                 val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
                 if (result == TextToSpeech.SUCCESS) {
@@ -465,11 +442,6 @@ class ShanTtsService : TextToSpeechService() {
                     utteranceLatches.remove(utteranceId)
                 }
             }
-        }
-
-        if (!isDirectStopped) {
-            val postPadding = ShortArray(OUTPUT_SAMPLE_RATE * 250 / 1000)
-            directAudioTrack?.write(postPadding, 0, postPadding.size)
         }
         
         try {
@@ -518,7 +490,6 @@ class ShanTtsService : TextToSpeechService() {
                     continue
                 }
 
-                // ဖိုင်မတွေ့ဘဲ ကျော်သွားခြင်းမရှိစေရန် အဆင့်ဆင့် ရှာဖွေပါမည်
                 val baseName = if (isSingleChar && currentSingleMap.containsKey(unit)) {
                     currentSingleMap[unit]
                 } else {
@@ -592,6 +563,31 @@ class ShanTtsService : TextToSpeechService() {
             }
             sonicFlushStream(streamId)
             totalBytesGenerated += processSonicOutput(streamId, outputBuffer, callback, track)
+
+            if ((callback != null && !isStopped) || (track != null && !isDirectStopped)) {
+                val postSilence = ByteArray((OUTPUT_SAMPLE_RATE * 200 / 1000) * 2)
+                var offset = 0
+                while (offset < postSilence.size && ((callback != null && !isStopped) || (track != null && !isDirectStopped))) {
+                    val chunkLen = min(8192, postSilence.size - offset)
+                    if (callback != null) {
+                        val status = callback.audioAvailable(postSilence, offset, chunkLen)
+                        if (status == TextToSpeech.ERROR) {
+                            isStopped = true
+                            break
+                        }
+                    } else if (track != null) {
+                        try {
+                            val res = track.write(postSilence, offset, chunkLen)
+                            if (res < 0) isDirectStopped = true
+                        } catch (e: Exception) {
+                            isDirectStopped = true
+                        }
+                    }
+                    offset += chunkLen
+                }
+                totalBytesGenerated += offset 
+            }
+
         } finally {
             sonicDestroyStream(streamId)
         }
