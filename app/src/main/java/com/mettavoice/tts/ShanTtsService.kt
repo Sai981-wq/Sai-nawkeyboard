@@ -242,6 +242,7 @@ class ShanTtsService : TextToSpeechService() {
         utteranceLatches.clear()
     }
 
+    // Android ၏ System/TalkBack အတွက် သီးသန့်အသုံးပြုသော လမ်းကြောင်း
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         val rawText = request.charSequenceText?.toString() ?: ""
         val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else rawText
@@ -266,6 +267,7 @@ class ShanTtsService : TextToSpeechService() {
             val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
 
+            // Callback သို့ အသံပို့ရန် အစပြုခြင်း (တိုက်ရိုက် AudioTrack အစား ဤလမ်းကြောင်းကိုသာ သုံးရပါမည်)
             val startStatus = callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
             if (startStatus == TextToSpeech.ERROR) {
                 return
@@ -275,6 +277,7 @@ class ShanTtsService : TextToSpeechService() {
                 if (isStopped) break
                 
                 if (chunk.lang == "MYANMAR") {
+                    // Android ၏ စံနှုန်းအတိုင်း callback သို့သာ အသံဒေတာကို ရေးသွင်းပါမည်
                     synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null)
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
@@ -305,7 +308,7 @@ class ShanTtsService : TextToSpeechService() {
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
-            // Error တက်ခဲ့လျှင်ပင် Android ကို ပြီးဆုံးကြောင်း အမြဲတမ်း အကြောင်းကြားပေးပါမည်
+            // Android ကို အလုပ်ပြီးစီးကြောင်း အသိပေးသည့်လမ်းကြောင်း (Deadlock လုံးဝ မဖြစ်စေပါ)
             safeCallbackDone(callback)
             try {
                 if (cpuWakeLock?.isHeld == true) {
@@ -352,6 +355,7 @@ class ShanTtsService : TextToSpeechService() {
         directAudioTrack = null
     }
 
+    // App ထဲမှ Test Button နှိပ်ချိန်တွင် အလုပ်လုပ်မည့် သီးသန့်လမ်းကြောင်း
     fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float) {
         stopDirectAudio()
         isDirectStopped = false
@@ -371,6 +375,7 @@ class ShanTtsService : TextToSpeechService() {
         for (chunk in chunks) {
             if (isDirectStopped) break
             if (chunk.lang == "MYANMAR") {
+                // Test နှိပ်ချိန်တွင်မူ AudioTrack သို့သာ တိုက်ရိုက် ရေးသွင်းပါမည်
                 synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack)
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                 val utteranceId = "utt_${System.nanoTime()}"
@@ -573,7 +578,6 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             } else {
-                // Sonic အင်ဂျင် Error တက်ပြီး 0 ပြန်ပေးပါက Infinite loop မဖြစ်စေရန် ရပ်တန့်ပါမည်
                 break
             }
         }
