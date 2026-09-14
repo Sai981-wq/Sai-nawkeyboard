@@ -266,28 +266,17 @@ class ShanTtsService : TextToSpeechService() {
             val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
 
-            // မူရင်း AudioTrack သို့ ပြန်ပြောင်းထားပါသည်
-            prepareDirectAudioTrackForAutoTTS()
+            val startStatus = callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
+            if (startStatus == TextToSpeech.ERROR) {
+                return
+            }
 
             for (chunk in chunks) {
                 if (isStopped) break
                 
                 if (chunk.lang == "MYANMAR") {
-                    try {
-                        if (directAudioTrack?.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                            directAudioTrack?.play()
-                        }
-                    } catch (e: Exception) {}
-                    
-                    // Callback အစား AudioTrack ကို တိုက်ရိုက်အသုံးပြုပါမည်
-                    synthesizeBurmese(chunk.text, finalRate, finalPitch, null, directAudioTrack)
-                    
-                    if (!isStopped) {
-                        val padding = ShortArray((OUTPUT_SAMPLE_RATE * 0.25).toInt())
-                        try {
-                            directAudioTrack?.write(padding, 0, padding.size)
-                        } catch (_: Exception) {}
-                    }
+                    // System (TalkBack) တွင် AudioTrack အစား callback ကို မဖြစ်မနေ သုံးရပါမည်
+                    synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null)
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                     val utteranceId = "utt_${System.nanoTime()}"
@@ -306,6 +295,14 @@ class ShanTtsService : TextToSpeechService() {
                         try {
                             val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
                             latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+                            
+                            // အင်္ဂလိပ်စာဖတ်ချိန်တွင် TalkBack ရှေ့ဆက်မပြေးသွားစေရန် Silence ဖြင့် ထိန်းထားပါမည်
+                            val silenceMs = min(chunk.text.length * 70, 5000)
+                            if (silenceMs > 0) {
+                                val silenceBytes = ByteArray((OUTPUT_SAMPLE_RATE * 2 * silenceMs) / 1000)
+                                callback.audioAvailable(silenceBytes, 0, silenceBytes.size)
+                            }
+                            
                         } catch (e: InterruptedException) {
                             isStopped = true
                         }
@@ -314,20 +311,10 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             }
-            
-            try {
-                directAudioTrack?.stop()
-            } catch (_: Exception) {}
-            
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
-            // Android ကို အလုပ်ပြီးစီးကြောင်း အသိပေးသည့် လမ်းကြောင်း ဖွင့်ပေးထားပါသည် (Deadlock မဖြစ်စေရန်)
-            try {
-                callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
-            } catch (_: Exception) {}
             safeCallbackDone(callback)
-            
             try {
                 if (cpuWakeLock?.isHeld == true) {
                     cpuWakeLock?.release()
@@ -392,6 +379,7 @@ class ShanTtsService : TextToSpeechService() {
         for (chunk in chunks) {
             if (isDirectStopped) break
             if (chunk.lang == "MYANMAR") {
+                // Test နှိပ်ချိန်တွင် AudioTrack သို့သာ တိုက်ရိုက်ရေးသွင်းပါမည်
                 synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack)
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                 val utteranceId = "utt_${System.nanoTime()}"
