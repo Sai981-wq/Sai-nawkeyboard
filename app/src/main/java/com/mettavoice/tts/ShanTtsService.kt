@@ -17,6 +17,8 @@ import android.speech.tts.Voice
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -284,23 +286,25 @@ class ShanTtsService : TextToSpeechService() {
                 val latch = CountDownLatch(1)
                 utteranceLatches[utteranceId] = latch
                 
+                val tempFile = File(cacheDir, "${utteranceId}.wav")
+                
                 englishEngine?.setSpeechRate(finalRate)
                 englishEngine?.setPitch(finalPitch)
                 
                 val params = Bundle()
                 params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY)
                 
-                val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+                val result = englishEngine?.synthesizeToFile(chunk.text, params, tempFile, utteranceId)
                 if (result == TextToSpeech.SUCCESS) {
                     try {
-                        val timeoutMs = Math.max(30000L, (chunk.text.length * 300).toLong())
-                        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                    } catch (e: InterruptedException) {
+                        // ပိတ်ဆို့ခြင်းမဖြစ်စေရန် အများဆုံး ၅ စက္ကန့်သာ စောင့်ဆိုင်းပါမည်
+                        latch.await(5000, TimeUnit.MILLISECONDS) 
+                    } catch (e: Exception) {
                         isStopped = true
                     }
+                    processEnglishWav(tempFile, callback, null)
                 } else {
-                    utteranceLatches.remove(utteranceId)?.countDown()
+                    utteranceLatches.remove(utteranceId)
                 }
             }
         }
@@ -366,13 +370,119 @@ class ShanTtsService : TextToSpeechService() {
             directAudioTrack?.play()
         } catch (_: Exception) {}
         
-        synthesizeBurmese(text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack)
+        val chunks = TTSUtils.splitText(text)
+        for (chunk in chunks) {
+            if (isDirectStopped) break
+            if (chunk.lang == "MYANMAR") {
+                synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack)
+            } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
+                val utteranceId = "utt_${System.nanoTime()}"
+                val latch = CountDownLatch(1)
+                utteranceLatches[utteranceId] = latch
+                val tempFile = File(cacheDir, "${utteranceId}.wav")
+                englishEngine?.setSpeechRate(rate)
+                englishEngine?.setPitch(pitch)
+                val params = Bundle()
+                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                val result = englishEngine?.synthesizeToFile(chunk.text, params, tempFile, utteranceId)
+                if (result == TextToSpeech.SUCCESS) {
+                    try { latch.await(5000, TimeUnit.MILLISECONDS) } catch (e: Exception) { isDirectStopped = true }
+                    processEnglishWav(tempFile, null, directAudioTrack)
+                } else {
+                    utteranceLatches.remove(utteranceId)
+                }
+            }
+        }
         
         try {
             directAudioTrack?.stop()
             directAudioTrack?.release()
         } catch (_: Exception) {}
         directAudioTrack = null
+    }
+
+    // Google TTS မှရလာသော အင်္ဂလိပ် WAV အသံဖိုင်ကို Android TTS လမ်းကြောင်းထဲသို့ ဆွဲသွင်းပေးသည့် လုပ်ငန်းစဉ်
+    private fun processEnglishWav(tempFile: File, callback: SynthesisCallback?, track: AudioTrack?) {
+        if (!tempFile.exists() || tempFile.length() <= 44) {
+            tempFile.delete()
+            return
+        }
+        try {
+            val bytes = tempFile.readBytes()
+            val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+            
+            val riff = ByteArray(4)
+            buffer.get(riff)
+            if (String(riff) != "RIFF") return
+            
+            buffer.position(22)
+            val channels = buffer.short.toInt()
+            val sampleRate = buffer.int
+            
+            buffer.position(44)
+            val pcmLength = (bytes.size - 44) / 2
+            var pcmShorts = ShortArray(pcmLength)
+            for (i in 0 until pcmLength) {
+                pcmShorts[i] = buffer.short
+            }
+            
+            if (channels == 2) {
+                val mono = ShortArray(pcmLength / 2)
+                for (i in mono.indices) {
+                    mono[i] = ((pcmShorts[i * 2] + pcmShorts[i * 2 + 1]) / 2).toShort()
+                }
+                pcmShorts = mono
+            }
+            
+            val outPcm = resamplePcm(pcmShorts, sampleRate, OUTPUT_SAMPLE_RATE)
+            
+            if (callback != null) {
+                val outBytes = ByteArray(outPcm.size * 2)
+                for (i in outPcm.indices) {
+                    val s = outPcm[i].toInt()
+                    outBytes[i * 2] = (s and 0xFF).toByte()
+                    outBytes[i * 2 + 1] = ((s ushr 8) and 0xFF).toByte()
+                }
+                val maxBuffer = callback.maxBufferSize
+                val limit = if (maxBuffer > 0) maxBuffer else 8192
+                var offset = 0
+                while (offset < outBytes.size && !isStopped) {
+                    val chunk = min(limit, outBytes.size - offset)
+                    if (chunk <= 0) break
+                    val status = callback.audioAvailable(outBytes, offset, chunk)
+                    if (status == TextToSpeech.ERROR) {
+                        isStopped = true
+                        break
+                    }
+                    offset += chunk
+                }
+            } else if (track != null) {
+                try {
+                    track.write(outPcm, 0, outPcm.size)
+                } catch (_: Exception) {}
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            try { tempFile.delete() } catch (_: Exception) {}
+        }
+    }
+
+    // Google TTS မှထွက်လာသော အသံနှုန်းထားကို Android စနစ်နှင့် ကိုက်ညီအောင် ညှိပေးသည့်စနစ်
+    private fun resamplePcm(input: ShortArray, inRate: Int, outRate: Int): ShortArray {
+        if (inRate == outRate || inRate == 0) return input
+        val ratio = inRate.toDouble() / outRate.toDouble()
+        val outLength = (input.size / ratio).toInt()
+        val output = ShortArray(outLength)
+        for (i in 0 until outLength) {
+            val inIndex = i * ratio
+            val index1 = inIndex.toInt()
+            val index2 = min(index1 + 1, input.size - 1)
+            val fraction = inIndex - index1
+            val sample = (input[index1] * (1.0 - fraction) + input[index2] * fraction).toInt()
+            output[i] = sample.coerceIn(-32768, 32767).toShort()
+        }
+        return output
     }
 
     private fun synthesizeBurmese(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?) {
