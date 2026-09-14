@@ -271,14 +271,18 @@ class ShanTtsService : TextToSpeechService() {
                 return
             }
 
-            var myanmarBytesAccumulated = 0
-            var myanmarStartTime = 0L
+            // စပီကာ Amp ကို အသင့်နိုးကြားစေရန် အသံတိတ် 70ms အရင်ပို့ပေးပါမည်
+            val preSilence = ByteArray((OUTPUT_SAMPLE_RATE * 70 / 1000) * 2)
+            callback.audioAvailable(preSilence, 0, preSilence.size)
+
+            var myanmarBytesAccumulated = preSilence.size
+            var myanmarStartTime = System.currentTimeMillis()
 
             for (chunk in chunks) {
                 if (isStopped) break
                 
                 if (chunk.lang == "MYANMAR") {
-                    if (myanmarBytesAccumulated == 0) {
+                    if (myanmarStartTime == 0L) {
                         myanmarStartTime = System.currentTimeMillis()
                     }
                     myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null)
@@ -291,10 +295,9 @@ class ShanTtsService : TextToSpeechService() {
                         val sleepTime = expectedDurationMs - elapsedTime
                         
                         if (sleepTime > 0) {
-                            // "အသေအိပ်စက်ခြင်း" အစား "နိုးကြားသော စောင့်ဆိုင်းခြင်း" သို့ ပြောင်းလဲထားပါသည်
                             var waitTime = sleepTime
                             while (waitTime > 0 && !isStopped) {
-                                val step = Math.min(30L, waitTime) // ၃၀ မီလီစက္ကန့်တိုင်း အခြေအနေကို စစ်ဆေးမည်
+                                val step = Math.min(30L, waitTime)
                                 try { Thread.sleep(step) } catch (e: Exception) {}
                                 waitTime -= step
                             }
@@ -302,7 +305,7 @@ class ShanTtsService : TextToSpeechService() {
                         myanmarBytesAccumulated = 0
                     }
 
-                    if (isStopped) break // ပွတ်ဆွဲလိုက်လျှင် ချက်ချင်းရပ်မည်
+                    if (isStopped) break
 
                     val utteranceId = "utt_${System.nanoTime()}"
                     val latch = CountDownLatch(1)
@@ -328,6 +331,20 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             }
+
+            // စာလုံးတိုများ စပီကာတွင် အပြည့်အဝ ထွက်ပေါ်နိုင်စေရန် အမြီးဆွဲ 250ms အသံတိတ် ဖြည့်ပေးပါမည်
+            if (!isStopped) {
+                val postSilence = ByteArray((OUTPUT_SAMPLE_RATE * 250 / 1000) * 2)
+                val maxBufferSize = callback.maxBufferSize
+                val limit = if (maxBufferSize > 0) maxBufferSize else 8192
+                var postOffset = 0
+                while (postOffset < postSilence.size && !isStopped) {
+                    val cSize = min(limit, postSilence.size - postOffset)
+                    callback.audioAvailable(postSilence, postOffset, cSize)
+                    postOffset += cSize
+                }
+            }
+
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
@@ -391,15 +408,18 @@ class ShanTtsService : TextToSpeechService() {
         try {
             directAudioTrack?.play()
         } catch (_: Exception) {}
+
+        val prePadding = ShortArray(OUTPUT_SAMPLE_RATE * 70 / 1000)
+        directAudioTrack?.write(prePadding, 0, prePadding.size)
         
         val chunks = TTSUtils.splitText(text)
-        var myanmarBytesAccumulated = 0
-        var myanmarStartTime = 0L
+        var myanmarBytesAccumulated = prePadding.size * 2
+        var myanmarStartTime = System.currentTimeMillis()
 
         for (chunk in chunks) {
             if (isDirectStopped) break
             if (chunk.lang == "MYANMAR") {
-                if (myanmarBytesAccumulated == 0) {
+                if (myanmarStartTime == 0L) {
                     myanmarStartTime = System.currentTimeMillis()
                 }
                 myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack)
@@ -445,6 +465,11 @@ class ShanTtsService : TextToSpeechService() {
                     utteranceLatches.remove(utteranceId)
                 }
             }
+        }
+
+        if (!isDirectStopped) {
+            val postPadding = ShortArray(OUTPUT_SAMPLE_RATE * 250 / 1000)
+            directAudioTrack?.write(postPadding, 0, postPadding.size)
         }
         
         try {
@@ -493,7 +518,13 @@ class ShanTtsService : TextToSpeechService() {
                     continue
                 }
 
-                val baseName = if (isSingleChar) currentSingleMap[unit] else (currentPhraseMap[unit] ?: currentMap[unit])
+                // ဖိုင်မတွေ့ဘဲ ကျော်သွားခြင်းမရှိစေရန် အဆင့်ဆင့် ရှာဖွေပါမည်
+                val baseName = if (isSingleChar && currentSingleMap.containsKey(unit)) {
+                    currentSingleMap[unit]
+                } else {
+                    currentPhraseMap[unit] ?: currentMap[unit] ?: currentSingleMap[unit]
+                }
+
                 if (baseName == null) continue
                 val encodedBytes = readAudioFromBin(baseName)
 
