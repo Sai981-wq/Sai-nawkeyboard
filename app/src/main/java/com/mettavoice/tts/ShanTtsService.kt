@@ -285,17 +285,24 @@ class ShanTtsService : TextToSpeechService() {
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                     
-                    // အင်္ဂလိပ်စာ မဖတ်ခင် မြန်မာစာဖတ်ဖို့ ကျန်နေသေးတဲ့ အချိန်ကို တွက်ချက်ပြီး စောင့်ဆိုင်းပေးပါမည်
                     if (myanmarBytesAccumulated > 0) {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
                         val sleepTime = expectedDurationMs - elapsedTime
                         
                         if (sleepTime > 0) {
-                            try { Thread.sleep(sleepTime) } catch (e: Exception) {}
+                            // "အသေအိပ်စက်ခြင်း" အစား "နိုးကြားသော စောင့်ဆိုင်းခြင်း" သို့ ပြောင်းလဲထားပါသည်
+                            var waitTime = sleepTime
+                            while (waitTime > 0 && !isStopped) {
+                                val step = Math.min(30L, waitTime) // ၃၀ မီလီစက္ကန့်တိုင်း အခြေအနေကို စစ်ဆေးမည်
+                                try { Thread.sleep(step) } catch (e: Exception) {}
+                                waitTime -= step
+                            }
                         }
                         myanmarBytesAccumulated = 0
                     }
+
+                    if (isStopped) break // ပွတ်ဆွဲလိုက်လျှင် ချက်ချင်းရပ်မည်
 
                     val utteranceId = "utt_${System.nanoTime()}"
                     val latch = CountDownLatch(1)
@@ -313,7 +320,6 @@ class ShanTtsService : TextToSpeechService() {
                         try {
                             val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
                             latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                            // SilenceArray အကြီးကြီး ထည့်ခြင်းကို လုံးဝ ဖယ်ရှားလိုက်ပါပြီ (Deadlock ကင်းရှင်းသွားပါပြီ)
                         } catch (e: InterruptedException) {
                             isStopped = true
                         }
@@ -404,10 +410,17 @@ class ShanTtsService : TextToSpeechService() {
                     val elapsedTime = System.currentTimeMillis() - myanmarStartTime
                     val sleepTime = expectedDurationMs - elapsedTime
                     if (sleepTime > 0) {
-                        try { Thread.sleep(sleepTime) } catch (e: Exception) {}
+                        var waitTime = sleepTime
+                        while (waitTime > 0 && !isDirectStopped) {
+                            val step = Math.min(30L, waitTime)
+                            try { Thread.sleep(step) } catch (e: Exception) {}
+                            waitTime -= step
+                        }
                     }
                     myanmarBytesAccumulated = 0
                 }
+
+                if (isDirectStopped) break
 
                 val utteranceId = "utt_${System.nanoTime()}"
                 val latch = CountDownLatch(1)
