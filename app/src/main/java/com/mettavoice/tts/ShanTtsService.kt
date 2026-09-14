@@ -242,7 +242,6 @@ class ShanTtsService : TextToSpeechService() {
         utteranceLatches.clear()
     }
 
-    // Android ၏ System/TalkBack အတွက် သီးသန့်အသုံးပြုသော လမ်းကြောင်း
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         val rawText = request.charSequenceText?.toString() ?: ""
         val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else rawText
@@ -267,18 +266,28 @@ class ShanTtsService : TextToSpeechService() {
             val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
 
-            // Callback သို့ အသံပို့ရန် အစပြုခြင်း (တိုက်ရိုက် AudioTrack အစား ဤလမ်းကြောင်းကိုသာ သုံးရပါမည်)
-            val startStatus = callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
-            if (startStatus == TextToSpeech.ERROR) {
-                return
-            }
+            // မူရင်း AudioTrack သို့ ပြန်ပြောင်းထားပါသည်
+            prepareDirectAudioTrackForAutoTTS()
 
             for (chunk in chunks) {
                 if (isStopped) break
                 
                 if (chunk.lang == "MYANMAR") {
-                    // Android ၏ စံနှုန်းအတိုင်း callback သို့သာ အသံဒေတာကို ရေးသွင်းပါမည်
-                    synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null)
+                    try {
+                        if (directAudioTrack?.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                            directAudioTrack?.play()
+                        }
+                    } catch (e: Exception) {}
+                    
+                    // Callback အစား AudioTrack ကို တိုက်ရိုက်အသုံးပြုပါမည်
+                    synthesizeBurmese(chunk.text, finalRate, finalPitch, null, directAudioTrack)
+                    
+                    if (!isStopped) {
+                        val padding = ShortArray((OUTPUT_SAMPLE_RATE * 0.25).toInt())
+                        try {
+                            directAudioTrack?.write(padding, 0, padding.size)
+                        } catch (_: Exception) {}
+                    }
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                     val utteranceId = "utt_${System.nanoTime()}"
@@ -305,11 +314,20 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             }
+            
+            try {
+                directAudioTrack?.stop()
+            } catch (_: Exception) {}
+            
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
-            // Android ကို အလုပ်ပြီးစီးကြောင်း အသိပေးသည့်လမ်းကြောင်း (Deadlock လုံးဝ မဖြစ်စေပါ)
+            // Android ကို အလုပ်ပြီးစီးကြောင်း အသိပေးသည့် လမ်းကြောင်း ဖွင့်ပေးထားပါသည် (Deadlock မဖြစ်စေရန်)
+            try {
+                callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
+            } catch (_: Exception) {}
             safeCallbackDone(callback)
+            
             try {
                 if (cpuWakeLock?.isHeld == true) {
                     cpuWakeLock?.release()
@@ -355,7 +373,6 @@ class ShanTtsService : TextToSpeechService() {
         directAudioTrack = null
     }
 
-    // App ထဲမှ Test Button နှိပ်ချိန်တွင် အလုပ်လုပ်မည့် သီးသန့်လမ်းကြောင်း
     fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float) {
         stopDirectAudio()
         isDirectStopped = false
@@ -375,7 +392,6 @@ class ShanTtsService : TextToSpeechService() {
         for (chunk in chunks) {
             if (isDirectStopped) break
             if (chunk.lang == "MYANMAR") {
-                // Test နှိပ်ချိန်တွင်မူ AudioTrack သို့သာ တိုက်ရိုက် ရေးသွင်းပါမည်
                 synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack)
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                 val utteranceId = "utt_${System.nanoTime()}"
