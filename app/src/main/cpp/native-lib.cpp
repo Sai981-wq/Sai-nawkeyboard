@@ -9,7 +9,8 @@
 
 extern "C" {
 
-#define DOWNSAMPLE_RATIO 3
+// 24kHz Quality အတွက် 3 မှ 2 သို့ ပြင်ဆင်ထားပါသည် (48000 / 2 = 24000)
+#define DOWNSAMPLE_RATIO 2
 
 JNIEXPORT jlong JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicCreateStream(JNIEnv *env, jobject thiz, jint sampleRate, jint numChannels) {
