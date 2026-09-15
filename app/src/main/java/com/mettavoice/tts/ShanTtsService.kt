@@ -35,7 +35,8 @@ class ShanTtsService : TextToSpeechService() {
                 e.printStackTrace()
             }
         }
-        private const val OUTPUT_SAMPLE_RATE = 16000
+        // 24kHz Quality အတွက် ဤနေရာတွင် 24000 ဟုသာ ပြင်ဆင်ထားပါသည်
+        private const val OUTPUT_SAMPLE_RATE = 24000
         private const val OUTPUT_CHANNEL_COUNT = 1
         private const val OUTPUT_ENCODING = AudioFormat.ENCODING_PCM_16BIT
         private const val BIN_FILENAME = "audio.bin"
@@ -288,8 +289,6 @@ class ShanTtsService : TextToSpeechService() {
                     if (myanmarBytesAccumulated > 0) {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                        
-                        // အပိုစောင့်ဆိုင်းချိန် 250L ကို လုံးဝ ဖြုတ်ချလိုက်ပါပြီ (ပို၍ ကပ်သွားစေရန်)
                         val sleepTime = expectedDurationMs - elapsedTime
                         
                         if (sleepTime > 0) {
@@ -408,10 +407,7 @@ class ShanTtsService : TextToSpeechService() {
                 if (myanmarBytesAccumulated > 0) {
                     val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                     val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                    
-                    // အပိုစောင့်ဆိုင်းချိန် 250L ကို လုံးဝ ဖြုတ်ချလိုက်ပါပြီ
                     val sleepTime = expectedDurationMs - elapsedTime
-                    
                     if (sleepTime > 0) {
                         var waitTime = sleepTime
                         while (waitTime > 0 && !isDirectStopped) {
@@ -570,7 +566,6 @@ class ShanTtsService : TextToSpeechService() {
             totalBytesGenerated += processSonicOutput(streamId, outputBuffer, callback, track)
 
             if ((callback != null && !isStopped) || (track != null && !isDirectStopped)) {
-                // အသံတိတ်အမြီးဆွဲကို 200ms မှ 150ms သို့ လျှော့ချလိုက်ပါပြီ
                 val postSilence = ByteArray((OUTPUT_SAMPLE_RATE * 150 / 1000) * 2)
                 var offset = 0
                 while (offset < postSilence.size && ((callback != null && !isStopped) || (track != null && !isDirectStopped))) {
