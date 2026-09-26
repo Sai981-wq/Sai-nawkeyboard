@@ -35,6 +35,7 @@ class ShanTtsService : TextToSpeechService() {
                 e.printStackTrace()
             }
         }
+        // 24kHz Quality အတွက် ဤနေရာတွင် 24000 ဟုသာ ပြင်ဆင်ထားပါသည်
         private const val OUTPUT_SAMPLE_RATE = 24000
         private const val OUTPUT_CHANNEL_COUNT = 1
         private const val OUTPUT_ENCODING = AudioFormat.ENCODING_PCM_16BIT
@@ -451,17 +452,43 @@ class ShanTtsService : TextToSpeechService() {
         directAudioTrack = null
     }
 
-    // စာလုံးဖြတ်တောက်မှု မမှားယွင်းစေရန် မြန်မာစာ မှီခိုအက္ခရာများ (သရ၊ ဗျည်းတွဲ၊ အသတ်၊ တက်ကျသံ) ကို စစ်ဆေးသည့် စည်းမျဉ်း
-    private fun isMyanmarModifier(c: Char): Boolean {
-        return c in '\u102B'..'\u103E' || 
-               c in '\u1056'..'\u1059' ||
-               c in '\u105E'..'\u1060' ||
-               c in '\u1062'..'\u1064' ||
-               c in '\u1067'..'\u106D' ||
-               c in '\u1071'..'\u1074' ||
-               c in '\u1082'..'\u108D' ||
-               c == '\u108F' ||
-               c in '\u109A'..'\u109D'
+    // [အသစ်ထည့်သွင်းထားသောအပိုင်း] မြန်မာစာ စာလုံးပေါင်းသတ်ပုံအရ မှန်ကန်သော အဖြတ်အတောက် (Syllable Boundary) ဟုတ်မဟုတ် စစ်ဆေးသည့်စနစ်
+    private fun isValidSyllableBoundary(text: String, j: Int): Boolean {
+        if (j >= text.length) return true
+        val c = text[j]
+        
+        // စည်းမျဉ်း ၁: ဖြတ်မည့်နေရာ၏ နောက်စာလုံးသည် သရ၊ အောက်မြစ်၊ ဝစ္စပေါက် စသည့် မှီခိုအက္ခရာများ ဖြစ်နေလျှင် လုံးဝမဖြတ်ရ
+        if (c in '\u102B'..'\u103E' || 
+            c in '\u1056'..'\u1059' ||
+            c in '\u105E'..'\u1060' ||
+            c in '\u1062'..'\u1064' ||
+            c in '\u1067'..'\u106D' ||
+            c in '\u1071'..'\u1074' ||
+            c in '\u1082'..'\u108D' ||
+            c == '\u108F' ||
+            c in '\u109A'..'\u109D') {
+            return false
+        }
+        
+        // စည်းမျဉ်း ၂: နောက်စာလုံးသည် ဗျည်းဖြစ်သော်လည်း ၎င်း၏နောက်တွင် အသတ် (်) သို့မဟုတ် ပါဌ်ဆင့် (္) ပါနေလျှင်
+        // ၎င်းသည် ရှေ့စာလုံး၏ အသတ်သံဖြစ်သောကြောင့် ခွဲထုတ်ခွင့် မပြုပါ (ဥပမာ - မ်း, က်)
+        if (j + 1 < text.length) {
+            val nextC = text[j + 1]
+            if (nextC == '\u103A' || nextC == '\u1039') {
+                return false
+            }
+        }
+        
+        // အချို့စာရိုက်မှားတတ်သော (ဗျည်း + ဝစ္စပေါက်/အောက်မြစ် + အသတ်) ပုံစံများကိုပါ ကာကွယ်ထားခြင်း
+        if (j + 2 < text.length) {
+            val nextC = text[j + 1]
+            val nextNextC = text[j + 2]
+            if ((nextC == '\u1037' || nextC == '\u1038') && nextNextC == '\u103A') {
+                return false
+            }
+        }
+
+        return true
     }
 
     private fun synthesizeBurmese(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?): Int {
@@ -721,15 +748,8 @@ class ShanTtsService : TextToSpeechService() {
                 val sub = text.substring(i, j)
                 if (phraseMap.containsKey(sub) || map.containsKey(sub)) {
                     
-                    // စာလုံးဖြတ်တောက်မှု မမှားယွင်းစေရန် မှီခိုအက္ခရာများပါလျှင် ဖြတ်တောက်ခြင်းကို တားမြစ်ပါမည်
-                    var isValidBoundary = true
-                    if (j < text.length) {
-                        if (isMyanmarModifier(text[j])) {
-                            isValidBoundary = false
-                        }
-                    }
-                    
-                    if (isValidBoundary) {
+                    // [အသစ်ထည့်သွင်းထားသောအပိုင်း] - စာလုံးဖြတ်တောက်မှု မှန်ကန်မှသာ အတည်ပြုပါမည်
+                    if (isValidSyllableBoundary(text, j)) {
                         best = sub
                         break
                     }
