@@ -35,7 +35,6 @@ class ShanTtsService : TextToSpeechService() {
                 e.printStackTrace()
             }
         }
-        // 24kHz Quality အတွက် ဤနေရာတွင် 24000 ဟုသာ ပြင်ဆင်ထားပါသည်
         private const val OUTPUT_SAMPLE_RATE = 24000
         private const val OUTPUT_CHANNEL_COUNT = 1
         private const val OUTPUT_ENCODING = AudioFormat.ENCODING_PCM_16BIT
@@ -452,6 +451,19 @@ class ShanTtsService : TextToSpeechService() {
         directAudioTrack = null
     }
 
+    // စာလုံးဖြတ်တောက်မှု မမှားယွင်းစေရန် မြန်မာစာ မှီခိုအက္ခရာများ (သရ၊ ဗျည်းတွဲ၊ အသတ်၊ တက်ကျသံ) ကို စစ်ဆေးသည့် စည်းမျဉ်း
+    private fun isMyanmarModifier(c: Char): Boolean {
+        return c in '\u102B'..'\u103E' || 
+               c in '\u1056'..'\u1059' ||
+               c in '\u105E'..'\u1060' ||
+               c in '\u1062'..'\u1064' ||
+               c in '\u1067'..'\u106D' ||
+               c in '\u1071'..'\u1074' ||
+               c in '\u1082'..'\u108D' ||
+               c == '\u108F' ||
+               c in '\u109A'..'\u109D'
+    }
+
     private fun synthesizeBurmese(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?): Int {
         val currentMap = charMap ?: return 0
         val currentSingleMap = singleCharMap ?: emptyMap()
@@ -708,8 +720,19 @@ class ShanTtsService : TextToSpeechService() {
             for (j in minOf(text.length, i + 50) downTo i + 1) {
                 val sub = text.substring(i, j)
                 if (phraseMap.containsKey(sub) || map.containsKey(sub)) {
-                    best = sub
-                    break
+                    
+                    // စာလုံးဖြတ်တောက်မှု မမှားယွင်းစေရန် မှီခိုအက္ခရာများပါလျှင် ဖြတ်တောက်ခြင်းကို တားမြစ်ပါမည်
+                    var isValidBoundary = true
+                    if (j < text.length) {
+                        if (isMyanmarModifier(text[j])) {
+                            isValidBoundary = false
+                        }
+                    }
+                    
+                    if (isValidBoundary) {
+                        best = sub
+                        break
+                    }
                 }
             }
             if (best.isNotEmpty()) {
