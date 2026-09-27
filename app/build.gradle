@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace 'com.mettavoice.tts'
+    namespace 'com.shan.tts'
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.mettavoice.tts"
+        applicationId "com.shan.tts"
         minSdk 24
         targetSdk 35
-        versionCode 1
-        versionName "1.0"
+        versionCode 11
+        versionName "4.7"
 
         externalNativeBuild {
             cmake {
