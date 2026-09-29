@@ -150,7 +150,7 @@ class ShanTtsService : TextToSpeechService() {
     }
     
     private fun fixTypo(text: String): String {
-        return text.replace("\u1009\u103A", "\u1025\u103A")
+        return text.replace("\u1025\u103A", "\u1009\u103A")
             .replace(Regex("\u1040(?=[\u1000-\u103E])"), "\u101D")
     }
 
