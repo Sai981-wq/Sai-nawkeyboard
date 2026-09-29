@@ -117,8 +117,28 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     fun initResources(context: Context) {
-        copyAssetToFile(context, BIN_FILENAME)
-        copyAssetToFile(context, INDEX_FILENAME)
+        val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
+        val currentVersion = try {
+            val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode else pInfo.versionCode.toLong()
+        } catch (e: Exception) { 1L }
+
+        val savedVersion = prefs.getLong("assets_version", -1L)
+        val isUpdate = savedVersion != currentVersion
+
+        copyAsset(context, BIN_FILENAME, isUpdate)
+        copyAsset(context, INDEX_FILENAME, isUpdate)
+        
+        if (isUpdate) {
+            prefs.edit().putLong("assets_version", currentVersion).apply()
+            try { randomAccessFile?.close() } catch (e: Exception) {}
+            randomAccessFile = null
+            indexMap.clear()
+            charMap = null
+            singleCharMap = null
+            phraseMap = null
+        }
+
         if (charMap == null) {
             charMap = loadMapFromFile(context, "mapping.txt")
             singleCharMap = loadMapFromFile(context, "mapping_single.txt")
@@ -178,10 +198,11 @@ class ShanTtsService : TextToSpeechService() {
         return tempMap
     }
 
-    private fun copyAssetToFile(context: Context, filename: String) {
+    private fun copyAsset(context: Context, filename: String, force: Boolean) {
         val file = File(context.filesDir, filename)
-        if (!file.exists() || file.length() == 0L) {
+        if (force || !file.exists() || file.length() == 0L) {
             try {
+                if (file.exists()) file.delete()
                 context.assets.open(filename).use { input ->
                     FileOutputStream(file).use { output ->
                         input.copyTo(output)
@@ -271,7 +292,6 @@ class ShanTtsService : TextToSpeechService() {
             val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
             
-            // Punctuation ဖတ်/မဖတ် User Option ကို ရယူခြင်း (Default အနေဖြင့် မဖတ်ဘဲ Pause သာလုပ်မည်)
             val readPunctuation = prefs.getBoolean("pref_read_punctuation", false)
 
             val startStatus = callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
@@ -561,6 +581,9 @@ class ShanTtsService : TextToSpeechService() {
         val units = if (isSingleChar) listOf(text) else splitTextIntoPlayableUnits(text, currentPhraseMap, currentMap)
         if (units.isEmpty()) return 0
 
+        val nonWhitespaceUnits = units.filter { it != "[SPACE]" && it != "[NEWLINE]" }
+        val isIsolatedPunctuation = nonWhitespaceUnits.size == 1 && (nonWhitespaceUnits[0] == "၊" || nonWhitespaceUnits[0] == "။")
+
         val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
         sonicSetSpeed(streamId, rate)
         sonicSetPitch(streamId, pitch)
@@ -578,16 +601,15 @@ class ShanTtsService : TextToSpeechService() {
                 
                 var pauseDuration = 0
                 when (unit) {
-                    "[NEWLINE]" -> pauseDuration = 800
-                    "[SPACE]" -> pauseDuration = 200
+                    "[NEWLINE]" -> pauseDuration = 400
+                    "[SPACE]" -> pauseDuration = 150
                 }
                 
-                // User က ပုဒ်ဖြတ် ပုဒ်မ များကို ဖတ်ရန် ပိတ်ထားပါက အသံမထွက်ဘဲ Pause အနေဖြင့်သာ အသုံးပြုပါမည်
-                if (!readPunctuation) {
+                if (!readPunctuation && !isIsolatedPunctuation) {
                     if (unit == "၊") {
-                        pauseDuration = 400
+                        pauseDuration = 200
                     } else if (unit == "။") {
-                        pauseDuration = 800
+                        pauseDuration = 400
                     }
                 }
 
