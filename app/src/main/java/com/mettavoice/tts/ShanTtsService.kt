@@ -151,7 +151,7 @@ class ShanTtsService : TextToSpeechService() {
     
     private fun fixTypo(text: String): String {
         return text.replace("\u1025\u103A", "\u1009\u103A")
-            .replace(Regex("\u1040(?=[\u1000-\u103E])"), "\u101D")
+            .replace(Regex("\u1040(?=[\u102B-\u103E]*[\u1000-\u1021][\u103A\u1039])"), "\u101D")
     }
 
     private fun loadMapFromFile(context: Context, filename: String): Map<String, String> {
@@ -270,6 +270,9 @@ class ShanTtsService : TextToSpeechService() {
             val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
             val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
+            
+            // Punctuation ဖတ်/မဖတ် User Option ကို ရယူခြင်း (Default အနေဖြင့် မဖတ်ဘဲ Pause သာလုပ်မည်)
+            val readPunctuation = prefs.getBoolean("pref_read_punctuation", false)
 
             val startStatus = callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
             if (startStatus == TextToSpeech.ERROR) {
@@ -286,7 +289,7 @@ class ShanTtsService : TextToSpeechService() {
                     if (myanmarBytesAccumulated == 0) {
                         myanmarStartTime = System.currentTimeMillis()
                     }
-                    myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null)
+                    myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null, readPunctuation)
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                     
@@ -391,6 +394,9 @@ class ShanTtsService : TextToSpeechService() {
             directAudioTrack?.play()
         } catch (_: Exception) {}
         
+        val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
+        val readPunctuation = prefs.getBoolean("pref_read_punctuation", false)
+
         val chunks = TTSUtils.splitText(text)
         var myanmarBytesAccumulated = 0
         var myanmarStartTime = 0L
@@ -401,7 +407,7 @@ class ShanTtsService : TextToSpeechService() {
                 if (myanmarBytesAccumulated == 0) {
                     myanmarStartTime = System.currentTimeMillis()
                 }
-                myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack)
+                myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation)
                 
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                 if (myanmarBytesAccumulated > 0) {
@@ -546,7 +552,7 @@ class ShanTtsService : TextToSpeechService() {
         return res
     }
 
-    private fun synthesizeBurmese(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?): Int {
+    private fun synthesizeBurmese(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, readPunctuation: Boolean): Int {
         val currentMap = charMap ?: return 0
         val currentSingleMap = singleCharMap ?: emptyMap()
         val currentPhraseMap = phraseMap ?: emptyMap()
@@ -575,6 +581,16 @@ class ShanTtsService : TextToSpeechService() {
                     "[NEWLINE]" -> pauseDuration = 800
                     "[SPACE]" -> pauseDuration = 200
                 }
+                
+                // User က ပုဒ်ဖြတ် ပုဒ်မ များကို ဖတ်ရန် ပိတ်ထားပါက အသံမထွက်ဘဲ Pause အနေဖြင့်သာ အသုံးပြုပါမည်
+                if (!readPunctuation) {
+                    if (unit == "၊") {
+                        pauseDuration = 400
+                    } else if (unit == "။") {
+                        pauseDuration = 800
+                    }
+                }
+
                 if (pauseDuration > 0) {
                     if (prevTail != null) {
                         applyFadeOut(prevTail, prevTail.size)

@@ -1,3 +1,4 @@
+
 package com.mettavoice.tts
 
 import android.content.Context
@@ -16,6 +17,7 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         const val PREF_SPEED = "pref_speed"
         const val PREF_PITCH = "pref_pitch"
         const val PREF_SECONDARY_ENGINE = "pref_secondary_engine"
+        const val PREF_READ_PUNCTUATION = "pref_read_punctuation"
     }
 
     private lateinit var speedLabel: TextView
@@ -29,6 +31,7 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     private lateinit var secondaryContainer: ScrollView
     private lateinit var spinnerEngines: Spinner
     private lateinit var btnTestEnglish: Button
+    private lateinit var cbReadPunctuation: CheckBox
     private var externalTts: TextToSpeech? = null
     private var engineList = listOf<TextToSpeech.EngineInfo>()
     private val directPlayer = ShanTtsService()
@@ -50,6 +53,7 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         btnListen = findViewById(R.id.btn_listen)
         spinnerEngines = findViewById(R.id.spinner_tts_engines)
         btnTestEnglish = findViewById(R.id.btn_test_english)
+        cbReadPunctuation = findViewById(R.id.cb_read_punctuation)
 
         setupTabs()
         setupPrimaryTtsControls(prefs)
@@ -57,8 +61,8 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     }
 
     private fun setupTabs() {
-        tabLayout.addTab(tabLayout.newTab().setText("Primary TTS (Myanmar)"))
-        tabLayout.addTab(tabLayout.newTab().setText("Secondary TTS (English)"))
+        tabLayout.addTab(tabLayout.newTab().setText("Primary TTS"))
+        tabLayout.addTab(tabLayout.newTab().setText("Secondary TTS"))
 
         tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab?) {
@@ -118,6 +122,11 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         pitchBar.max = 150
         pitchBar.progress = ((currentPitch * 100) - 50).toInt()
         updatePitchLabel(currentPitch)
+
+        cbReadPunctuation.isChecked = prefs.getBoolean(PREF_READ_PUNCTUATION, false)
+        cbReadPunctuation.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(PREF_READ_PUNCTUATION, isChecked).apply()
+        }
 
         speedBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -188,4 +197,3 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
-
