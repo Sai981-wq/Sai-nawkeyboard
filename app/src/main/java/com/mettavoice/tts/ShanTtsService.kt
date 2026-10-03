@@ -169,9 +169,76 @@ class ShanTtsService : TextToSpeechService() {
         return false 
     }
     
+    // ဂဏန်းများကို မြန်မာစာသားအဖြစ် ပြောင်းလဲပေးသည့်စနစ် (Number to Word Conversion)
+    private fun convertNumberToBurmese(numStr: String): String {
+        var standardStr = ""
+        for (c in numStr) {
+            when (c) {
+                '၀', '0' -> standardStr += "0"
+                '၁', '1' -> standardStr += "1"
+                '၂', '2' -> standardStr += "2"
+                '၃', '3' -> standardStr += "3"
+                '၄', '4' -> standardStr += "4"
+                '၅', '5' -> standardStr += "5"
+                '၆', '6' -> standardStr += "6"
+                '၇', '7' -> standardStr += "7"
+                '၈', '8' -> standardStr += "8"
+                '၉', '9' -> standardStr += "9"
+            }
+        }
+
+        if (standardStr.isEmpty()) return numStr
+        if (standardStr.all { it == '0' }) return standardStr.map { "သုည" }.joinToString("")
+        if (standardStr == "0") return "သုည"
+
+        // ဖုန်းနံပါတ် သို့မဟုတ် ဂဏန်း ၈ လုံးထက်ကျော်ပါက တစ်လုံးချင်းစီသာ ဖတ်ရန်
+        if (standardStr.length > 8 || standardStr.startsWith("0")) {
+            val names = arrayOf("သုည", "တစ်", "နှစ်", "သုံး", "လေး", "ငါး", "ခြောက်", "ခုနစ်", "ရှစ်", "ကိုး")
+            return standardStr.map { names[it - '0'] }.joinToString("")
+        }
+
+        val numNames = arrayOf("", "တစ်", "နှစ်", "သုံး", "လေး", "ငါး", "ခြောက်", "ခုနစ်", "ရှစ်", "ကိုး")
+        val placeNames = arrayOf("", "ဆယ်", "ရာ", "ထောင်", "သောင်း", "သိန်း", "သန်း", "ကုဋေ")
+        val placeMods = arrayOf("", "ဆယ့်", "ရာ့", "ထောင့်", "သောင်း", "သိန်း", "သန်း", "ကုဋေ")
+
+        var res = ""
+        val len = standardStr.length
+
+        for (i in standardStr.indices) {
+            val d = standardStr[i] - '0'
+            if (d == 0) continue
+
+            val place = len - 1 - i
+            val hasNextNonZero = standardStr.substring(i + 1).any { it != '0' }
+            val placeStr = if (place > 0 && place < 8) {
+                if (hasNextNonZero && place < 4) placeMods[place] else placeNames[place]
+            } else {
+                ""
+            }
+
+            // ၁၁ မှ ၁၉ အတွက် "တစ်ဆယ့်" အစား "ဆယ့်" ဟုသာ ဖတ်ရန်
+            val digitName = if (d == 1 && place == 1 && i == 0) "" else numNames[d]
+            res += digitName + placeStr
+        }
+        return res
+    }
+
+    private fun convertNumbersInText(text: String): String {
+        // ဂဏန်းများနှင့် ကြားတွင် ကော်မာပါသော ဂဏန်းများကို ရှာဖွေဖမ်းယူရန်
+        val regex = Regex("[၀-၉0-9]+(,[၀-၉0-9]+)*")
+        return regex.replace(text) { matchResult ->
+            convertNumberToBurmese(matchResult.value.replace(",", ""))
+        }
+    }
+
     private fun fixTypo(text: String): String {
-        return text.replace("\u1025\u103A", "\u1009\u103A")
+        var processedText = text.replace("\u1025\u103A", "\u1009\u103A")
             .replace(Regex("\u1040(?=[\u102B-\u103E]*[\u1000-\u1021][\u103A\u1039])"), "\u101D")
+        
+        // ဂဏန်းများကို မြန်မာစာသားများအဖြစ် ပြောင်းလဲပေးခြင်း
+        processedText = convertNumbersInText(processedText)
+        
+        return processedText
     }
 
     private fun loadMapFromFile(context: Context, filename: String): Map<String, String> {
@@ -291,9 +358,8 @@ class ShanTtsService : TextToSpeechService() {
             val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
             val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
-            
-            val readPunctuation = prefs.getBoolean("pref_read_punctuation", false)
             val volume = prefs.getInt("pref_volume", 100)
+            val readPunctuation = prefs.getBoolean("pref_read_punctuation", false)
 
             val startStatus = callback.start(OUTPUT_SAMPLE_RATE, OUTPUT_ENCODING, OUTPUT_CHANNEL_COUNT)
             if (startStatus == TextToSpeech.ERROR) {
