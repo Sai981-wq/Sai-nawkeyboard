@@ -18,6 +18,7 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         const val PREF_VOLUME = "pref_volume"
         const val PREF_SECONDARY_ENGINE = "pref_secondary_engine"
         const val PREF_READ_PUNCTUATION = "pref_read_punctuation"
+        const val PREF_READ_NUMBERS = "pref_read_numbers"
     }
 
     private lateinit var speedLabel: TextView
@@ -35,6 +36,7 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     private lateinit var spinnerEngines: Spinner
     private lateinit var btnTestEnglish: Button
     private lateinit var cbReadPunctuation: CheckBox
+    private lateinit var cbReadNumbers: CheckBox
     private var externalTts: TextToSpeech? = null
     private var engineList = listOf<TextToSpeech.EngineInfo>()
     private val directPlayer = ShanTtsService()
@@ -60,6 +62,7 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         spinnerEngines = findViewById(R.id.spinner_tts_engines)
         btnTestEnglish = findViewById(R.id.btn_test_english)
         cbReadPunctuation = findViewById(R.id.cb_read_punctuation)
+        cbReadNumbers = findViewById(R.id.cb_read_numbers)
 
         setupTabs()
         setupPrimaryTtsControls(prefs)
@@ -140,6 +143,11 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         cbReadPunctuation.isChecked = prefs.getBoolean(PREF_READ_PUNCTUATION, false)
         cbReadPunctuation.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(PREF_READ_PUNCTUATION, isChecked).apply()
+        }
+
+        cbReadNumbers.isChecked = prefs.getBoolean(PREF_READ_NUMBERS, true)
+        cbReadNumbers.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(PREF_READ_NUMBERS, isChecked).apply()
         }
 
         speedBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {

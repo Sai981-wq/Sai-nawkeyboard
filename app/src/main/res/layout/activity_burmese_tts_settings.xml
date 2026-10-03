@@ -75,8 +75,17 @@
                     android:id="@+id/cb_read_punctuation"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="24dp"
+                    android:layout_marginBottom="12dp"
                     android:text="Read Punctuation"
+                    android:textColor="@android:color/black"
+                    android:textSize="16sp" />
+
+                <CheckBox
+                    android:id="@+id/cb_read_numbers"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="24dp"
+                    android:text="Read Numbers as Words"
                     android:textColor="@android:color/black"
                     android:textSize="16sp" />
                     

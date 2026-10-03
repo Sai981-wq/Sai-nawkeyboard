@@ -168,22 +168,21 @@ class ShanTtsService : TextToSpeechService() {
     private fun isExpired(): Boolean {
         return false 
     }
-    
-    // ဂဏန်းများကို မြန်မာစာသားအဖြစ် ပြောင်းလဲပေးသည့်စနစ် (Number to Word Conversion)
+
     private fun convertNumberToBurmese(numStr: String): String {
         var standardStr = ""
         for (c in numStr) {
             when (c) {
-                '၀', '0' -> standardStr += "0"
-                '၁', '1' -> standardStr += "1"
-                '၂', '2' -> standardStr += "2"
-                '၃', '3' -> standardStr += "3"
-                '၄', '4' -> standardStr += "4"
-                '၅', '5' -> standardStr += "5"
-                '၆', '6' -> standardStr += "6"
-                '၇', '7' -> standardStr += "7"
-                '၈', '8' -> standardStr += "8"
-                '၉', '9' -> standardStr += "9"
+                '၀' -> standardStr += "0"
+                '၁' -> standardStr += "1"
+                '၂' -> standardStr += "2"
+                '၃' -> standardStr += "3"
+                '၄' -> standardStr += "4"
+                '၅' -> standardStr += "5"
+                '၆' -> standardStr += "6"
+                '၇' -> standardStr += "7"
+                '၈' -> standardStr += "8"
+                '၉' -> standardStr += "9"
             }
         }
 
@@ -191,7 +190,6 @@ class ShanTtsService : TextToSpeechService() {
         if (standardStr.all { it == '0' }) return standardStr.map { "သုည" }.joinToString("")
         if (standardStr == "0") return "သုည"
 
-        // ဖုန်းနံပါတ် သို့မဟုတ် ဂဏန်း ၈ လုံးထက်ကျော်ပါက တစ်လုံးချင်းစီသာ ဖတ်ရန်
         if (standardStr.length > 8 || standardStr.startsWith("0")) {
             val names = arrayOf("သုည", "တစ်", "နှစ်", "သုံး", "လေး", "ငါး", "ခြောက်", "ခုနစ်", "ရှစ်", "ကိုး")
             return standardStr.map { names[it - '0'] }.joinToString("")
@@ -210,13 +208,12 @@ class ShanTtsService : TextToSpeechService() {
 
             val place = len - 1 - i
             val hasNextNonZero = standardStr.substring(i + 1).any { it != '0' }
-            val placeStr = if (place > 0 && place < 8) {
+            val placeStr = if (place in 1..7) {
                 if (hasNextNonZero && place < 4) placeMods[place] else placeNames[place]
             } else {
                 ""
             }
 
-            // ၁၁ မှ ၁၉ အတွက် "တစ်ဆယ့်" အစား "ဆယ့်" ဟုသာ ဖတ်ရန်
             val digitName = if (d == 1 && place == 1 && i == 0) "" else numNames[d]
             res += digitName + placeStr
         }
@@ -224,19 +221,19 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun convertNumbersInText(text: String): String {
-        // ဂဏန်းများနှင့် ကြားတွင် ကော်မာပါသော ဂဏန်းများကို ရှာဖွေဖမ်းယူရန်
-        val regex = Regex("[၀-၉0-9]+(,[၀-၉0-9]+)*")
+        val regex = Regex("[၀-၉]+(,[၀-၉]+)*")
         return regex.replace(text) { matchResult ->
             convertNumberToBurmese(matchResult.value.replace(",", ""))
         }
     }
 
-    private fun fixTypo(text: String): String {
+    private fun fixTypo(text: String, readNumbers: Boolean): String {
         var processedText = text.replace("\u1025\u103A", "\u1009\u103A")
             .replace(Regex("\u1040(?=[\u102B-\u103E]*[\u1000-\u1021][\u103A\u1039])"), "\u101D")
         
-        // ဂဏန်းများကို မြန်မာစာသားများအဖြစ် ပြောင်းလဲပေးခြင်း
-        processedText = convertNumbersInText(processedText)
+        if (readNumbers) {
+            processedText = convertNumbersInText(processedText)
+        }
         
         return processedText
     }
@@ -336,8 +333,11 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
+        val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
+        val readNumbers = prefs.getBoolean("pref_read_numbers", true)
+        
         val rawText = request.charSequenceText?.toString() ?: ""
-        val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else fixTypo(rawText)
+        val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else fixTypo(rawText, readNumbers)
         isStopped = false
         isDirectStopped = false
 
@@ -355,7 +355,7 @@ class ShanTtsService : TextToSpeechService() {
             val chunks = TTSUtils.splitText(text)
             val systemRate = request.speechRate / 100.0f
             val systemPitch = request.pitch / 100.0f
-            val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
+            
             val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
             val volume = prefs.getInt("pref_volume", 100)
@@ -474,14 +474,17 @@ class ShanTtsService : TextToSpeechService() {
         stopDirectAudio()
         isDirectStopped = false
         initResources(context)
-        val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else fixTypo(requestText)
+        
+        val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
+        val readNumbers = prefs.getBoolean("pref_read_numbers", true)
+        
+        val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else fixTypo(requestText, readNumbers)
         if (text.isBlank()) return
         prepareDirectAudioTrackForAutoTTS()
         try {
             directAudioTrack?.play()
         } catch (_: Exception) {}
         
-        val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
         val readPunctuation = prefs.getBoolean("pref_read_punctuation", false)
         val volume = prefs.getInt("pref_volume", 100)
 
