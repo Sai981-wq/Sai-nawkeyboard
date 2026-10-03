@@ -50,12 +50,26 @@
                     android:textColor="@android:color/black"
                     android:textSize="16sp" />
 
-                <Button
-                    android:id="@+id/btn_listen"
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="24dp"
-                    android:text="Listen" />
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="24dp">
+                    
+                    <Button
+                        android:id="@+id/btn_listen"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Listen"
+                        android:layout_marginEnd="8dp"/>
+                        
+                    <Button
+                        android:id="@+id/btn_clear"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Clear" />
+                </LinearLayout>
                     
                 <CheckBox
                     android:id="@+id/cb_read_punctuation"
@@ -65,6 +79,37 @@
                     android:text="Read Punctuation"
                     android:textColor="@android:color/black"
                     android:textSize="16sp" />
+                    
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView
+                        android:id="@+id/tv_volume_label"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Volume: 100%"
+                        android:textColor="@android:color/black"
+                        android:textSize="18sp" />
+                    <Button
+                        android:id="@+id/btn_reset_volume"
+                        style="@style/Widget.AppCompat.Button.Small"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Reset" />
+                </LinearLayout>
+                
+                <SeekBar
+                    android:id="@+id/sb_volume"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:layout_marginBottom="24dp"
+                    android:max="100"
+                    android:minHeight="48dp"
+                    android:progress="100" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
