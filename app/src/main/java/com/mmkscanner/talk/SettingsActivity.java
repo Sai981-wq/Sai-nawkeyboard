@@ -1,6 +1,5 @@
 package com.mmkscanner.talk;
 
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
@@ -8,7 +7,10 @@ import android.widget.Button;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import java.util.List;
 import java.util.Locale;
 
 public class SettingsActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
@@ -33,8 +35,7 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
         setContentView(R.layout.activity_settings);
 
         prefs = getSharedPreferences("money_reader", MODE_PRIVATE);
-        tts = new TextToSpeech(this, this);
-
+        
         speedSeekbar = findViewById(R.id.speedSeekbar);
         volumeSeekbar = findViewById(R.id.volumeSeekbar);
         languageSwitch = findViewById(R.id.languageSwitch);
@@ -48,17 +49,11 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
         volumeValue = findViewById(R.id.volumeValue);
 
         loadSettings();
+        initTTS();
 
         backButton.setOnClickListener(v -> finish());
 
-        ttsEngineButton.setOnClickListener(v -> {
-            try {
-                Intent intent = new Intent("com.android.settings.TTS_SETTINGS");
-                startActivity(intent);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        });
+        ttsEngineButton.setOnClickListener(v -> showTTSEngineDialog());
 
         testVoiceButton.setOnClickListener(v -> {
             if (tts != null) {
@@ -108,6 +103,55 @@ public class SettingsActivity extends AppCompatActivity implements TextToSpeech.
 
         vibrationSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> 
             prefs.edit().putBoolean("vibration", isChecked).apply());
+    }
+
+    private void initTTS() {
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+        }
+        String savedEngine = prefs.getString("tts_engine", null);
+        if (savedEngine != null) {
+            tts = new TextToSpeech(this, this, savedEngine);
+        } else {
+            tts = new TextToSpeech(this, this);
+        }
+    }
+
+    private void showTTSEngineDialog() {
+        if (tts == null) return;
+
+        List<TextToSpeech.EngineInfo> engines = tts.getEngines();
+        if (engines == null || engines.isEmpty()) {
+            Toast.makeText(this, "No TTS engines found", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String[] engineNames = new String[engines.size()];
+        String[] enginePackages = new String[engines.size()];
+        String currentEngine = prefs.getString("tts_engine", tts.getDefaultEngine());
+        int checkedItem = -1;
+
+        for (int i = 0; i < engines.size(); i++) {
+            TextToSpeech.EngineInfo info = engines.get(i);
+            engineNames[i] = info.label;
+            enginePackages[i] = info.name;
+            if (info.name.equals(currentEngine)) {
+                checkedItem = i;
+            }
+        }
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Select TTS Engine");
+        builder.setSingleChoiceItems(engineNames, checkedItem, (dialog, which) -> {
+            String selectedPackage = enginePackages[which];
+            prefs.edit().putString("tts_engine", selectedPackage).apply();
+            initTTS(); 
+            dialog.dismiss();
+            Toast.makeText(SettingsActivity.this, "Engine set to: " + engineNames[which], Toast.LENGTH_SHORT).show();
+        });
+        builder.setNegativeButton("Cancel", null);
+        builder.show();
     }
 
     private void loadSettings() {

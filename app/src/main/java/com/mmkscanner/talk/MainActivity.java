@@ -71,8 +71,9 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         handler = new Handler(Looper.getMainLooper());
         cameraExecutor = Executors.newSingleThreadExecutor();
         vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
-        tts = new TextToSpeech(this, this);
         classifier = new BanknoteClassifier(this);
+
+        initTTS();
 
         flashlightButton.setOnClickListener(v -> toggleFlashlight());
 
@@ -80,6 +81,20 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             surfaceView.getHolder().addCallback(this);
         } else {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION_CODE);
+        }
+    }
+    
+    private void initTTS() {
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+        }
+        SharedPreferences prefs = getSharedPreferences("money_reader", MODE_PRIVATE);
+        String savedEngine = prefs.getString("tts_engine", null);
+        if (savedEngine != null) {
+            tts = new TextToSpeech(this, this, savedEngine);
+        } else {
+            tts = new TextToSpeech(this, this);
         }
     }
 
@@ -433,6 +448,14 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             boolean useMM = prefs.getBoolean("use_myanmar", false);
             Locale targetLocale = useMM ? new Locale("my", "MM") : Locale.US;
             tts.setLanguage(targetLocale);
+            
+            // TTS engine change handling logic can be implemented here if changes were made via settings activity.
+            String savedEngine = prefs.getString("tts_engine", null);
+            if (savedEngine != null && !savedEngine.equals(tts.getDefaultEngine())) {
+                 initTTS();
+            }
+        } else {
+             initTTS();
         }
     }
 
