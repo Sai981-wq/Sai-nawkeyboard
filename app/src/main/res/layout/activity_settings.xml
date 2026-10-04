@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1a1a2e">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Settings"
+            android:textSize="24sp"
+            android:textColor="#ffffff"
+            android:textStyle="bold"
+            android:layout_marginBottom="24dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Speech Rate"
+            android:textSize="16sp"
+            android:textColor="#cccccc"
+            android:layout_marginBottom="4dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <SeekBar
+                android:id="@+id/speedSeekbar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="100"
+                android:progress="50" />
+
+            <TextView
+                android:id="@+id/speedValue"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:text="50%"
+                android:textColor="#ffffff"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Volume"
+            android:textSize="16sp"
+            android:textColor="#cccccc"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="4dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <SeekBar
+                android:id="@+id/volumeSeekbar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="100"
+                android:progress="80" />
+
+            <TextView
+                android:id="@+id/volumeValue"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:text="80%"
+                android:textColor="#ffffff"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/testVoiceButton"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="Test Voice"
+            android:textColor="#ffffff"
+            android:background="#333333"
+            android:layout_marginTop="16dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#333333"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="24dp" />
+
+        <Switch
+            android:id="@+id/languageSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="မြန်မာဘာသာဖြင့် အသုံးပြုရန်"
+            android:textColor="#ffffff"
+            android:textSize="16sp"
+            android:layout_marginBottom="16dp" />
+
+        <Switch
+            android:id="@+id/autoFlashSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="အလိုအလျောက် ဓာတ်မီးဖွင့်ရန်"
+            android:textColor="#ffffff"
+            android:textSize="16sp"
+            android:layout_marginBottom="16dp" />
+
+        <Switch
+            android:id="@+id/autoSpeakSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Auto Speak"
+            android:textColor="#ffffff"
+            android:textSize="16sp"
+            android:layout_marginBottom="16dp" />
+
+        <Switch
+            android:id="@+id/vibrationSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Vibration"
+            android:textColor="#ffffff"
+            android:textSize="16sp"
+            android:layout_marginBottom="24dp" />
+
+        <Button
+            android:id="@+id/ttsEngineButton"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="TTS Engine ရွေးချယ်ရန်"
+            android:textColor="#ffffff"
+            android:background="#333333"
+            android:layout_marginBottom="16dp" />
+
+        <Button
+            android:id="@+id/backButton"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="Back"
+            android:textColor="#ffffff"
+            android:background="#555555"
+            android:layout_marginTop="16dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="MMK Scanner Talk v1.4\nMyanmar Banknote Reader"
+            android:textSize="12sp"
+            android:textColor="#666666"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:layout_marginTop="32dp" />
+    </LinearLayout>
+</ScrollView>
+
