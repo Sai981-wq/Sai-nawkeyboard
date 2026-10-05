@@ -184,32 +184,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         resultText.setTextSize(14f);
     }
 
-    private int getWidestBackCameraId() {
-        int cameraId = 0;
-        float maxFov = 0;
-        Camera.CameraInfo info = new Camera.CameraInfo();
-        for (int i = 0; i < Camera.getNumberOfCameras(); i++) {
-            Camera.getCameraInfo(i, info);
-            if (info.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
-                try {
-                    Camera c = Camera.open(i);
-                    Camera.Parameters params = c.getParameters();
-                    float fov = params.getHorizontalViewAngle();
-                    if (fov > maxFov) {
-                        maxFov = fov;
-                        cameraId = i;
-                    }
-                    c.release();
-                } catch (Exception e) {}
-            }
-        }
-        return cameraId;
-    }
-
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         try {
-            camera = Camera.open(getWidestBackCameraId());
+            camera = Camera.open(0);
             if (camera == null) {
                 showErrorScreen("Camera not found");
                 return;
@@ -449,7 +427,6 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             Locale targetLocale = useMM ? new Locale("my", "MM") : Locale.US;
             tts.setLanguage(targetLocale);
             
-            // TTS engine change handling logic can be implemented here if changes were made via settings activity.
             String savedEngine = prefs.getString("tts_engine", null);
             if (savedEngine != null && !savedEngine.equals(tts.getDefaultEngine())) {
                  initTTS();
