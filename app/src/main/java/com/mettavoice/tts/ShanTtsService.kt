@@ -418,7 +418,6 @@ class ShanTtsService : TextToSpeechService() {
                         myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                     } else {
                         try {
-                            // Added 'this' for Context parameter
                             val neuralBytes = synthesizeNeural(this, chunk.text, voiceType, finalRate, finalPitch, callback, null, volume, null)
                             if (neuralBytes == 0) {
                                 myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
@@ -563,7 +562,6 @@ class ShanTtsService : TextToSpeechService() {
                     myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                 } else {
                     try {
-                        // Added 'context' parameter
                         val neuralBytes = synthesizeNeural(context, chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume, onError)
                         if (neuralBytes == 0) {
                             onError?.invoke("Neural output is 0 bytes, falling back to Legacy.")
@@ -718,9 +716,8 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     // ------------------------------------------------------------------------
-    // Microsoft Speech SDK (Neural) Implementation
+    // Microsoft Speech SDK (Neural) Implementation (Auto-Detect Voice Name)
     // ------------------------------------------------------------------------
-    // Added 'context: Context' parameter to resolve getFilesDir() null object reference
     private fun synthesizeNeural(context: Context, text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, onError: ((String) -> Unit)?): Int {
         var totalBytesGenerated = 0
         var config: EmbeddedSpeechConfig? = null
@@ -728,12 +725,9 @@ class ShanTtsService : TextToSpeechService() {
         
         try {
             val voiceFolder = if (voiceType == "nilar") "Nilar" else "Thiha"
-            val voiceName = if (voiceType == "nilar") 
-                "Microsoft Server Speech Text to Speech Voice (my-MM, NilarNeural)" 
-            else 
-                "Microsoft Server Speech Text to Speech Voice (my-MM, ThihaNeural)"
-
             val voicePath = File(context.filesDir, voiceFolder).absolutePath
+            
+            // ဖိုဒါလမ်းကြောင်းများ သတ်မှတ်ခြင်း
             val paths = arrayListOf<String>(
                 voicePath,
                 context.filesDir.absolutePath
@@ -741,7 +735,26 @@ class ShanTtsService : TextToSpeechService() {
             
             config = EmbeddedSpeechConfig.fromPaths(paths)
             
-            config.setSpeechSynthesisVoice(voiceName, voicePath)
+            // --- Auto-Detect Voice Name ---
+            // ဖိုဒါထဲတွင်ရှိသော အသံနာမည်ကို အလိုအလျောက် ရှာဖွေခြင်း
+            val tempSynthesizer = SpeechSynthesizer(config, null)
+            val voiceListResult = tempSynthesizer.getVoicesAsync("").get()
+            var detectedVoiceName = ""
+            
+            if (voiceListResult.voices != null && voiceListResult.voices.isNotEmpty()) {
+                detectedVoiceName = voiceListResult.voices[0].name
+                Log.d("ShanTts", "Auto-detected Voice Name: $detectedVoiceName")
+            } else {
+                val errorMsg = "Folder ထဲတွင် Voice File ကို ရှာမတွေ့ပါ။ ($voicePath)"
+                Log.e("ShanTts", errorMsg)
+                onError?.invoke(errorMsg)
+            }
+            tempSynthesizer.close()
+            // -----------------------------
+            
+            if (detectedVoiceName.isNotEmpty()) {
+                config.setSpeechSynthesisVoice(detectedVoiceName, voicePath)
+            }
             
             config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
             
@@ -770,7 +783,7 @@ class ShanTtsService : TextToSpeechService() {
                 }
             } else if (result.reason == ResultReason.Canceled) {
                 val cancellation = SpeechSynthesisCancellationDetails.fromResult(result)
-                onError?.invoke("Synthesis Canceled: ${cancellation.reason}, ErrorDetails: ${cancellation.errorDetails}")
+                onError?.invoke("Synthesis Canceled: ${cancellation.reason}, Details: ${cancellation.errorDetails}")
             }
             result.close()
             
