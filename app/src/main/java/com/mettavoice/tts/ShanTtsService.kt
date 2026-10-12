@@ -14,11 +14,11 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import android.util.Log
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.OnnxTensor
 import java.nio.LongBuffer
-import java.nio.FloatBuffer
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
@@ -36,7 +36,7 @@ class ShanTtsService : TextToSpeechService() {
         init {
             try {
                 System.loadLibrary("native-lib")
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 e.printStackTrace()
             }
         }
@@ -90,7 +90,7 @@ class ShanTtsService : TextToSpeechService() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MettaVoice::CpuWakeLock")
         cpuWakeLock?.setReferenceCounted(false)
-        initResources(this)
+        initResources(this, null)
         initEnglishEngine()
     }
 
@@ -129,58 +129,55 @@ class ShanTtsService : TextToSpeechService() {
         })
     }
 
-    fun initResources(context: Context) {
-        val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
-        val currentVersion = try {
-            val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode else pInfo.versionCode.toLong()
-        } catch (e: Exception) { 1L }
+    fun initResources(context: Context, onError: ((String) -> Unit)?) {
+        try {
+            val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
+            val currentVersion = try {
+                val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode else pInfo.versionCode.toLong()
+            } catch (e: Exception) { 1L }
 
-        val savedVersion = prefs.getLong("assets_version", -1L)
-        val isUpdate = savedVersion != currentVersion
+            val savedVersion = prefs.getLong("assets_version", -1L)
+            val isUpdate = savedVersion != currentVersion
 
-        copyAsset(context, BIN_FILENAME, isUpdate)
-        copyAsset(context, INDEX_FILENAME, isUpdate)
-        
-        if (isUpdate) {
-            prefs.edit().putLong("assets_version", currentVersion).apply()
-            try { randomAccessFile?.close() } catch (e: Exception) {}
-            randomAccessFile = null
-            indexMap.clear()
-            charMap = null
-            singleCharMap = null
-            phraseMap = null
-        }
+            copyAsset(context, BIN_FILENAME, isUpdate)
+            copyAsset(context, INDEX_FILENAME, isUpdate)
+            
+            if (isUpdate) {
+                prefs.edit().putLong("assets_version", currentVersion).apply()
+                try { randomAccessFile?.close() } catch (e: Exception) {}
+                randomAccessFile = null
+                indexMap.clear()
+                charMap = null
+                singleCharMap = null
+                phraseMap = null
+            }
 
-        if (charMap == null) {
-            charMap = loadMapFromFile(context, "mapping.txt")
-            singleCharMap = loadMapFromFile(context, "mapping_single.txt")
-            phraseMap = loadMapFromFile(context, "mapping_phrase.txt")
-        }
-        if (indexMap.isEmpty()) loadIndexMap(context)
-        if (randomAccessFile == null) {
-            val binFile = File(context.filesDir, BIN_FILENAME)
-            if (binFile.exists()) {
-                try {
+            if (charMap == null) {
+                charMap = loadMapFromFile(context, "mapping.txt")
+                singleCharMap = loadMapFromFile(context, "mapping_single.txt")
+                phraseMap = loadMapFromFile(context, "mapping_phrase.txt")
+            }
+            if (indexMap.isEmpty()) loadIndexMap(context)
+            if (randomAccessFile == null) {
+                val binFile = File(context.filesDir, BIN_FILENAME)
+                if (binFile.exists()) {
                     randomAccessFile = RandomAccessFile(binFile, "r")
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
             }
-        }
-        if (!isOpusInit) {
-            try {
+            if (!isOpusInit) {
                 initOpusDecoder(OUTPUT_SAMPLE_RATE)
                 isOpusInit = true
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
-        }
 
-        initNeuralModels(context)
+            initNeuralModels(context, onError)
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            onError?.invoke("Legacy Init Error: ${e.message}")
+        }
     }
 
-    private fun initNeuralModels(context: Context) {
+    private fun initNeuralModels(context: Context, onError: ((String) -> Unit)?) {
         try {
             if (ortEnv == null) ortEnv = OrtEnvironment.getEnvironment()
             
@@ -198,21 +195,28 @@ class ShanTtsService : TextToSpeechService() {
             phoneIdMap['{'] = 3L; phoneIdMap['}'] = 3L; phoneIdMap['['] = 3L
             phoneIdMap[']'] = 3L; phoneIdMap['('] = 3L; phoneIdMap[')'] = 3L
             phoneIdMap['"'] = 3L; phoneIdMap['\''] = 3L
-            
-            try {
-                amEncSessionNilar = ortEnv?.createSession(context.assets.open("Nilar/am_v5_encoder.bin").readBytes())
-                amDecSessionNilar = ortEnv?.createSession(context.assets.open("Nilar/am_v5_decoder.bin").readBytes())
-                vocSessionNilar = ortEnv?.createSession(context.assets.open("Nilar/device_vocoder_v6_streaming.bin").readBytes())
-            } catch (e: Exception) {}
+
+            val encOpts = OrtSession.SessionOptions()
 
             try {
-                amEncSessionThiha = ortEnv?.createSession(context.assets.open("Thiha/am_v5_encoder.bin").readBytes())
-                amDecSessionThiha = ortEnv?.createSession(context.assets.open("Thiha/am_v5_decoder.bin").readBytes())
-                vocSessionThiha = ortEnv?.createSession(context.assets.open("Thiha/device_vocoder_v6_streaming.bin").readBytes())
-            } catch (e: Exception) {}
+                amEncSessionNilar = ortEnv?.createSession(context.assets.open("Nilar/am_v5_encoder.bin").readBytes(), encOpts)
+                amDecSessionNilar = ortEnv?.createSession(context.assets.open("Nilar/am_v5_decoder.bin").readBytes(), encOpts)
+                vocSessionNilar = ortEnv?.createSession(context.assets.open("Nilar/device_vocoder_v6_streaming.bin").readBytes(), encOpts)
+            } catch (e: Throwable) {
+                onError?.invoke("Nilar Model Error: ${e.message}")
+            }
 
-        } catch (e: Exception) {
+            try {
+                amEncSessionThiha = ortEnv?.createSession(context.assets.open("Thiha/am_v5_encoder.bin").readBytes(), encOpts)
+                amDecSessionThiha = ortEnv?.createSession(context.assets.open("Thiha/am_v5_decoder.bin").readBytes(), encOpts)
+                vocSessionThiha = ortEnv?.createSession(context.assets.open("Thiha/device_vocoder_v6_streaming.bin").readBytes(), encOpts)
+            } catch (e: Throwable) {
+                onError?.invoke("Thiha Model Error: ${e.message}")
+            }
+
+        } catch (e: Throwable) {
             e.printStackTrace()
+            onError?.invoke("ONNX Environment Error: ${e.message}")
         }
     }
 
@@ -322,9 +326,7 @@ class ShanTtsService : TextToSpeechService() {
                         input.copyTo(output)
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            } catch (e: Exception) {}
         }
     }
 
@@ -341,9 +343,7 @@ class ShanTtsService : TextToSpeechService() {
                     indexMap[name] = Pair(offset, length)
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) {}
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
@@ -428,10 +428,19 @@ class ShanTtsService : TextToSpeechService() {
                         myanmarStartTime = System.currentTimeMillis()
                     }
                     
-                    myanmarBytesAccumulated += if (voiceType == "legacy") {
-                        synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
+                    if (voiceType == "legacy") {
+                        myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                     } else {
-                        synthesizeNeural(chunk.text, voiceType, finalRate, finalPitch, callback, null, readPunctuation, volume)
+                        try {
+                            val neuralBytes = synthesizeNeural(chunk.text, voiceType, finalRate, finalPitch, callback, null, readPunctuation, volume, null)
+                            if (neuralBytes == 0) {
+                                myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
+                            } else {
+                                myanmarBytesAccumulated += neuralBytes
+                            }
+                        } catch (e: Throwable) {
+                            myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
+                        }
                     }
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
@@ -477,7 +486,7 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
         } finally {
             safeCallbackDone(callback)
@@ -526,10 +535,15 @@ class ShanTtsService : TextToSpeechService() {
         directAudioTrack = null
     }
 
-    fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float) {
+    fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float, onError: ((String) -> Unit)? = null) {
         stopDirectAudio()
         isDirectStopped = false
-        initResources(context)
+        
+        try {
+            initResources(context, onError)
+        } catch (e: Throwable) {
+            onError?.invoke("Resources Init Error: ${e.message}")
+        }
         
         val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
         val readNumbers = prefs.getBoolean("pref_read_numbers", true)
@@ -540,7 +554,9 @@ class ShanTtsService : TextToSpeechService() {
         prepareDirectAudioTrackForAutoTTS()
         try {
             directAudioTrack?.play()
-        } catch (_: Exception) {}
+        } catch (e: Throwable) {
+            onError?.invoke("AudioTrack Play Error: ${e.message}")
+        }
         
         val readPunctuation = prefs.getBoolean("pref_read_punctuation", false)
         val volume = prefs.getInt("pref_volume", 100)
@@ -556,10 +572,21 @@ class ShanTtsService : TextToSpeechService() {
                     myanmarStartTime = System.currentTimeMillis()
                 }
                 
-                myanmarBytesAccumulated += if (voiceType == "legacy") {
-                    synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
+                if (voiceType == "legacy") {
+                    myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                 } else {
-                    synthesizeNeural(chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
+                    try {
+                        val neuralBytes = synthesizeNeural(chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume, onError)
+                        if (neuralBytes == 0) {
+                            onError?.invoke("Neural output is 0 bytes, falling back to Legacy.")
+                            myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
+                        } else {
+                            myanmarBytesAccumulated += neuralBytes
+                        }
+                    } catch (e: Throwable) {
+                        onError?.invoke("ONNX Crash: ${e.message}")
+                        myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
+                    }
                 }
                 
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
@@ -702,8 +729,11 @@ class ShanTtsService : TextToSpeechService() {
         return res
     }
 
-    private fun synthesizeNeural(text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, readPunctuation: Boolean, volume: Int): Int {
-        if (ortEnv == null) return 0
+    private fun synthesizeNeural(text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, readPunctuation: Boolean, volume: Int, onError: ((String) -> Unit)?): Int {
+        if (ortEnv == null) {
+            onError?.invoke("ONNX Environment is null.")
+            return 0
+        }
         
         val phoneIds = mutableListOf<Long>()
         phoneIds.add(5L) 
@@ -718,10 +748,10 @@ class ShanTtsService : TextToSpeechService() {
         if (phoneIds.size <= 1) return 0
 
         val amEnc = if (voiceType == "nilar") amEncSessionNilar else amEncSessionThiha
-        val amDec = if (voiceType == "nilar") amDecSessionNilar else amDecSessionThiha
-        val vocoder = if (voiceType == "nilar") vocSessionNilar else vocSessionThiha
-
-        if (amEnc == null || amDec == null || vocoder == null) return 0
+        if (amEnc == null) {
+            onError?.invoke("Encoder model for $voiceType not loaded.")
+            return 0
+        }
 
         var totalBytesGenerated = 0
         
@@ -730,41 +760,15 @@ class ShanTtsService : TextToSpeechService() {
             val inputArray = phoneIds.toLongArray()
             val inputTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(inputArray), longArrayOf(1, inputArray.size.toLong()))
             
-            // ONNX execution block - Models run sequentially
             val encInputs = mapOf("inputs" to inputTensor)
             val encOutput = amEnc.run(encInputs)
             
-            // Note: Exact input keys depend on the exported ONNX model schema. 
-            // Often, it's chained directly if not bundled into a single ONNX file.
-            // val decOutput = amDec.run(mapOf("encoder_out" to encOutput.get(0)))
-            // val audioOutput = vocoder.run(mapOf("mel" to decOutput.get(0)))
-            // val audioTensor = audioOutput.get(0) as OnnxTensor
-            // val audioFloatArray = audioTensor.floatBuffer.array()
-            
-            /* 
-             * Below is a mock simulation showing how the float array from vocoder
-             * is passed into sonic to support Rate, Pitch and Volume adjustments.
-             * 
-             * val pcmShorts = ShortArray(audioFloatArray.size)
-             * for (i in audioFloatArray.indices) {
-             *    pcmShorts[i] = (audioFloatArray[i] * 32767.0f).toInt().coerceIn(-32768, 32767).toShort()
-             * }
-             *
-             * val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
-             * sonicSetSpeed(streamId, rate)
-             * sonicSetPitch(streamId, pitch)
-             * 
-             * val shortBuffer = ShortArray(4096)
-             * val outputBuffer = ShortArray(4096)
-             * totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer, 4096, outputBuffer, callback, track, volume)
-             * sonicDestroyStream(streamId)
-             */
-             
             inputTensor.close()
             encOutput.close()
             
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (e: Throwable) {
+            onError?.invoke("ONNX Model Run Failed: ${e.message}")
+            throw e 
         }
         
         return totalBytesGenerated
@@ -1092,4 +1096,3 @@ class ShanTtsService : TextToSpeechService() {
         super.onDestroy()
     }
 }
-

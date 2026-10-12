@@ -19,7 +19,8 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         const val PREF_SECONDARY_ENGINE = "pref_secondary_engine"
         const val PREF_READ_PUNCTUATION = "pref_read_punctuation"
         const val PREF_READ_NUMBERS = "pref_read_numbers"
-        const val PREF_PRIMARY_VOICE = "pref_primary_voice" // အသံရွေးချယ်မှု သိမ်းရန်
+        const val PREF_PRIMARY_VOICE = "pref_primary_voice"
+        const val PREF_LAST_CRASH = "pref_last_crash"
     }
 
     private lateinit var speedLabel: TextView
@@ -35,10 +36,11 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     private lateinit var primaryContainer: ScrollView
     private lateinit var secondaryContainer: ScrollView
     private lateinit var spinnerEngines: Spinner
-    private lateinit var spinnerPrimaryVoice: Spinner // အသံရွေးမည့် Spinner
+    private lateinit var spinnerPrimaryVoice: Spinner
     private lateinit var btnTestEnglish: Button
     private lateinit var cbReadPunctuation: CheckBox
     private lateinit var cbReadNumbers: CheckBox
+    private lateinit var tvErrorLog: TextView
     private var externalTts: TextToSpeech? = null
     private var engineList = listOf<TextToSpeech.EngineInfo>()
     private val directPlayer = ShanTtsService()
@@ -46,8 +48,16 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_burmese_tts_settings)
+        
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        
+        val defaultExceptionHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            prefs.edit().putString(PREF_LAST_CRASH, "App Crash in ${thread.name}:\n${throwable.stackTraceToString()}").commit()
+            defaultExceptionHandler?.uncaughtException(thread, throwable)
+        }
+
+        setContentView(R.layout.activity_burmese_tts_settings)
 
         tabLayout = findViewById(R.id.tabLayout)
         primaryContainer = findViewById(R.id.primary_container)
@@ -65,13 +75,25 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         btnTestEnglish = findViewById(R.id.btn_test_english)
         cbReadPunctuation = findViewById(R.id.cb_read_punctuation)
         cbReadNumbers = findViewById(R.id.cb_read_numbers)
-        
-        // UI တွင် Spinner ကို Layout မှ ယူရန် (xml တွင် ထည့်သွင်းပေးရမည်)
         spinnerPrimaryVoice = findViewById(R.id.spinner_primary_voice)
+        tvErrorLog = findViewById(R.id.tv_error_log)
+
+        val lastCrash = prefs.getString(PREF_LAST_CRASH, null)
+        if (lastCrash != null) {
+            showErrorLog(lastCrash)
+            prefs.edit().remove(PREF_LAST_CRASH).apply()
+        }
 
         setupTabs()
         setupPrimaryTtsControls(prefs)
         setupSecondaryTtsControls(prefs)
+    }
+
+    private fun showErrorLog(message: String) {
+        runOnUiThread {
+            tvErrorLog.visibility = View.VISIBLE
+            tvErrorLog.text = message
+        }
     }
 
     private fun setupTabs() {
@@ -125,8 +147,6 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     }
 
     private fun setupPrimaryTtsControls(prefs: android.content.SharedPreferences) {
-        
-        // Voice Selection Setup
         val voices = arrayOf("MettaVoice Standard (Offline)", "Nilar (Neural)", "Thiha (Neural)")
         val voiceAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, voices)
         spinnerPrimaryVoice.adapter = voiceAdapter
@@ -231,9 +251,11 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
 
         btnClear.setOnClickListener {
             etTextToAudio.text.clear()
+            tvErrorLog.visibility = View.GONE
         }
 
         btnListen.setOnClickListener {
+            tvErrorLog.visibility = View.GONE
             val text = etTextToAudio.text.toString().trim()
             if (text.isEmpty()) {
                 Toast.makeText(this, "Please enter some text", Toast.LENGTH_SHORT).show()
@@ -243,7 +265,9 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
             val currentPitchVal = prefs.getFloat(PREF_PITCH, 1.0f)
             directPlayer.stopDirectAudio()
             playThread = Thread {
-                directPlayer.playDirectAudio(this@ShanTtsSettingsActivity, text, currentSpeedVal, currentPitchVal)
+                directPlayer.playDirectAudio(this@ShanTtsSettingsActivity, text, currentSpeedVal, currentPitchVal) { error ->
+                    showErrorLog(error)
+                }
             }
             playThread?.start()
         }
