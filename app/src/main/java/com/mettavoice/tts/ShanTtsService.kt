@@ -753,7 +753,8 @@ class ShanTtsService : TextToSpeechService() {
             // -----------------------------
             
             if (detectedVoiceName.isNotEmpty()) {
-                config.setSpeechSynthesisVoice(detectedVoiceName, voicePath)
+                // ပြင်ဆင်ထားသောနေရာ: ဒုတိယတန်ဖိုးကို voicePath အစား null ဟု ပြောင်းပေးလိုက်ပါသည်
+                config.setSpeechSynthesisVoice(detectedVoiceName, null)
             }
             
             config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
