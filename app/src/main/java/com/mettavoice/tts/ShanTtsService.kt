@@ -15,13 +15,12 @@ import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import android.util.Log
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
-import ai.onnxruntime.OnnxTensor
-import java.nio.LongBuffer
+import com.microsoft.cognitiveservices.speech.*
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -61,6 +60,7 @@ class ShanTtsService : TextToSpeechService() {
     private external fun decodeOpus(encodedData: ByteArray, len: Int): ShortArray?
     private external fun destroyOpusDecoder()
 
+    // Legacy State
     private var charMap: Map<String, String>? = null
     private var singleCharMap: Map<String, String>? = null
     private var phraseMap: Map<String, String>? = null
@@ -68,15 +68,7 @@ class ShanTtsService : TextToSpeechService() {
     private var randomAccessFile: RandomAccessFile? = null
     @Volatile private var isOpusInit = false
 
-    private var ortEnv: OrtEnvironment? = null
-    private var amEncSessionNilar: OrtSession? = null
-    private var amDecSessionNilar: OrtSession? = null
-    private var vocSessionNilar: OrtSession? = null
-    private var amEncSessionThiha: OrtSession? = null
-    private var amDecSessionThiha: OrtSession? = null
-    private var vocSessionThiha: OrtSession? = null
-    private val phoneIdMap = HashMap<Char, Long>()
-
+    // Global State
     @Volatile private var isStopped = false
     @Volatile private var isDirectStopped = false
     private var directAudioTrack: AudioTrack? = null
@@ -140,11 +132,23 @@ class ShanTtsService : TextToSpeechService() {
             val savedVersion = prefs.getLong("assets_version", -1L)
             val isUpdate = savedVersion != currentVersion
 
-            copyAsset(context, BIN_FILENAME, isUpdate)
-            copyAsset(context, INDEX_FILENAME, isUpdate)
-            
             if (isUpdate) {
+                // Legacy Files Copy
+                copyAsset(context, BIN_FILENAME)
+                copyAsset(context, INDEX_FILENAME)
+                copyAsset(context, "mapping.txt")
+                copyAsset(context, "mapping_single.txt")
+                copyAsset(context, "mapping_phrase.txt")
+                
+                // Copy MSTTSLocMyMM.dat if it exists in root
+                copyAsset(context, "MSTTSLocMyMM.dat")
+
+                // Neural Folders Copy
+                copyAssetFolder(context, "Nilar", File(context.filesDir, "Nilar").absolutePath)
+                copyAssetFolder(context, "Thiha", File(context.filesDir, "Thiha").absolutePath)
+
                 prefs.edit().putLong("assets_version", currentVersion).apply()
+                
                 try { randomAccessFile?.close() } catch (e: Exception) {}
                 randomAccessFile = null
                 indexMap.clear()
@@ -169,54 +173,50 @@ class ShanTtsService : TextToSpeechService() {
                 initOpusDecoder(OUTPUT_SAMPLE_RATE)
                 isOpusInit = true
             }
-
-            initNeuralModels(context, onError)
         } catch (e: Throwable) {
             e.printStackTrace()
-            onError?.invoke("Legacy Init Error: ${e.message}")
+            onError?.invoke("Init Error: ${e.message}")
         }
     }
 
-    private fun initNeuralModels(context: Context, onError: ((String) -> Unit)?) {
+    private fun copyAssetFolder(context: Context, srcFolder: String, destPath: String) {
+        val destDir = File(destPath)
+        if (!destDir.exists()) destDir.mkdirs()
         try {
-            if (ortEnv == null) ortEnv = OrtEnvironment.getEnvironment()
-            
-            for (c in 'a'..'z') phoneIdMap[c] = (c - 'a' + 4).toLong()
-            for (c in 'A'..'Z') phoneIdMap[c] = (c - 'A' + 4).toLong()
-            
-            val mmChars = "ကခဂဃငစဆဇဈဉညဋဌဍဏတထဒဓနပဖဗဘမယရလဝသဟဠအဤဥဦဧဩါာိီုူေဲံ့း္်ျြွှဿ၌၍၎၏"
-            for (i in mmChars.indices) {
-                phoneIdMap[mmChars[i]] = (i + 30).toLong()
+            val files = context.assets.list(srcFolder) ?: return
+            for (filename in files) {
+                val srcFile = if (srcFolder.isEmpty()) filename else "$srcFolder/$filename"
+                val destFile = File(destPath, filename)
+                
+                val subFiles = context.assets.list(srcFile)
+                if (subFiles != null && subFiles.isNotEmpty()) {
+                    copyAssetFolder(context, srcFile, destFile.absolutePath)
+                } else {
+                    if (!destFile.exists()) {
+                        context.assets.open(srcFile).use { input ->
+                            FileOutputStream(destFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                    }
+                }
             }
-            
-            phoneIdMap['.'] = 1L; phoneIdMap['?'] = 1L; phoneIdMap['!'] = 1L; phoneIdMap['။'] = 1L
-            phoneIdMap[','] = 2L; phoneIdMap[';'] = 2L; phoneIdMap['၊'] = 2L
-            phoneIdMap[':'] = 3L; phoneIdMap['-'] = 3L; phoneIdMap['|'] = 3L
-            phoneIdMap['{'] = 3L; phoneIdMap['}'] = 3L; phoneIdMap['['] = 3L
-            phoneIdMap[']'] = 3L; phoneIdMap['('] = 3L; phoneIdMap[')'] = 3L
-            phoneIdMap['"'] = 3L; phoneIdMap['\''] = 3L
-
-            val encOpts = OrtSession.SessionOptions()
-
-            try {
-                amEncSessionNilar = ortEnv?.createSession(context.assets.open("Nilar/am_v5_encoder.bin").readBytes(), encOpts)
-                amDecSessionNilar = ortEnv?.createSession(context.assets.open("Nilar/am_v5_decoder.bin").readBytes(), encOpts)
-                vocSessionNilar = ortEnv?.createSession(context.assets.open("Nilar/device_vocoder_v6_streaming.bin").readBytes(), encOpts)
-            } catch (e: Throwable) {
-                onError?.invoke("Nilar Model Error: ${e.message}")
-            }
-
-            try {
-                amEncSessionThiha = ortEnv?.createSession(context.assets.open("Thiha/am_v5_encoder.bin").readBytes(), encOpts)
-                amDecSessionThiha = ortEnv?.createSession(context.assets.open("Thiha/am_v5_decoder.bin").readBytes(), encOpts)
-                vocSessionThiha = ortEnv?.createSession(context.assets.open("Thiha/device_vocoder_v6_streaming.bin").readBytes(), encOpts)
-            } catch (e: Throwable) {
-                onError?.invoke("Thiha Model Error: ${e.message}")
-            }
-
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
             e.printStackTrace()
-            onError?.invoke("ONNX Environment Error: ${e.message}")
+        }
+    }
+
+    private fun copyAsset(context: Context, filename: String) {
+        val file = File(context.filesDir, filename)
+        if (!file.exists() || file.length() == 0L) {
+            try {
+                if (file.exists()) file.delete()
+                context.assets.open(filename).use { input ->
+                    FileOutputStream(file).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            } catch (e: Exception) {}
         }
     }
 
@@ -314,20 +314,6 @@ class ShanTtsService : TextToSpeechService() {
             }
         } catch (e: Exception) {}
         return tempMap
-    }
-
-    private fun copyAsset(context: Context, filename: String, force: Boolean) {
-        val file = File(context.filesDir, filename)
-        if (force || !file.exists() || file.length() == 0L) {
-            try {
-                if (file.exists()) file.delete()
-                context.assets.open(filename).use { input ->
-                    FileOutputStream(file).use { output ->
-                        input.copyTo(output)
-                    }
-                }
-            } catch (e: Exception) {}
-        }
     }
 
     private fun loadIndexMap(context: Context) {
@@ -432,7 +418,7 @@ class ShanTtsService : TextToSpeechService() {
                         myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                     } else {
                         try {
-                            val neuralBytes = synthesizeNeural(chunk.text, voiceType, finalRate, finalPitch, callback, null, readPunctuation, volume, null)
+                            val neuralBytes = synthesizeNeural(chunk.text, voiceType, finalRate, finalPitch, callback, null, volume, null)
                             if (neuralBytes == 0) {
                                 myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                             } else {
@@ -576,7 +562,7 @@ class ShanTtsService : TextToSpeechService() {
                     myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                 } else {
                     try {
-                        val neuralBytes = synthesizeNeural(chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume, onError)
+                        val neuralBytes = synthesizeNeural(chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume, onError)
                         if (neuralBytes == 0) {
                             onError?.invoke("Neural output is 0 bytes, falling back to Legacy.")
                             myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
@@ -584,7 +570,7 @@ class ShanTtsService : TextToSpeechService() {
                             myanmarBytesAccumulated += neuralBytes
                         }
                     } catch (e: Throwable) {
-                        onError?.invoke("ONNX Crash: ${e.message}")
+                        onError?.invoke("Microsoft SDK Error: ${e.message}")
                         myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                     }
                 }
@@ -729,48 +715,69 @@ class ShanTtsService : TextToSpeechService() {
         return res
     }
 
-    private fun synthesizeNeural(text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, readPunctuation: Boolean, volume: Int, onError: ((String) -> Unit)?): Int {
-        if (ortEnv == null) {
-            onError?.invoke("ONNX Environment is null.")
-            return 0
-        }
-        
-        val phoneIds = mutableListOf<Long>()
-        phoneIds.add(5L) 
-        
-        for (char in text) {
-            val id = phoneIdMap[char]
-            if (id != null) {
-                phoneIds.add(id)
-            }
-        }
-        
-        if (phoneIds.size <= 1) return 0
-
-        val amEnc = if (voiceType == "nilar") amEncSessionNilar else amEncSessionThiha
-        if (amEnc == null) {
-            onError?.invoke("Encoder model for $voiceType not loaded.")
-            return 0
-        }
-
+    // ------------------------------------------------------------------------
+    // Microsoft Speech SDK (Neural) Implementation
+    // ------------------------------------------------------------------------
+    private fun synthesizeNeural(text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, onError: ((String) -> Unit)?): Int {
         var totalBytesGenerated = 0
+        var config: EmbeddedSpeechConfig? = null
+        var synthesizer: SpeechSynthesizer? = null
         
         try {
-            val env = ortEnv ?: return 0
-            val inputArray = phoneIds.toLongArray()
-            val inputTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(inputArray), longArrayOf(1, inputArray.size.toLong()))
+            val voiceFolder = if (voiceType == "nilar") "Nilar" else "Thiha"
+            val voiceName = if (voiceType == "nilar") 
+                "Microsoft Server Speech Text to Speech Voice (my-MM, NilarNeural)" 
+            else 
+                "Microsoft Server Speech Text to Speech Voice (my-MM, ThihaNeural)"
+
+            // MSTTSLocMyMM.dat နှင့် မော်ဒယ်ဖိုင်များရှိရာ Folder လမ်းကြောင်းများကို ထည့်သွင်းခြင်း
+            val paths = arrayListOf<String>(
+                File(filesDir, voiceFolder).absolutePath,
+                filesDir.absolutePath
+            )
             
-            val encInputs = mapOf("inputs" to inputTensor)
-            val encOutput = amEnc.run(encInputs)
+            config = EmbeddedSpeechConfig.fromPaths(paths)
+            config.setSpeechSynthesisVoiceName(voiceName)
+            config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
             
-            inputTensor.close()
-            encOutput.close()
+            synthesizer = SpeechSynthesizer(config, null)
+            val result = synthesizer.SpeakText(text)
+            
+            if (result.reason == ResultReason.SynthesizingAudioCompleted) {
+                val audioData = result.audioData // PCM Byte Array (24Khz, 16bit, mono)
+                if (audioData != null && audioData.isNotEmpty()) {
+                    
+                    // Microsoft SDK မှ ရရှိလာသော အသံကို Sonic အင်ဂျင်ထဲသို့ ထည့်သွင်း၍ အနှေးအမြန်နှင့် အသံတက်ကျ ပြောင်းလဲခြင်း
+                    val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
+                    sonicSetSpeed(streamId, rate)
+                    sonicSetPitch(streamId, pitch)
+                    
+                    val pcmShorts = ShortArray(audioData.size / 2)
+                    ByteBuffer.wrap(audioData).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmShorts)
+                    
+                    val shortBuffer = ShortArray(4096)
+                    val outputBuffer = ShortArray(4096)
+                    
+                    totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer, 4096, outputBuffer, callback, track, volume)
+                    sonicFlushStream(streamId)
+                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer, callback, track, volume)
+                    
+                    sonicDestroyStream(streamId)
+                }
+            } else if (result.reason == ResultReason.Canceled) {
+                val cancellation = SpeechSynthesisCancellationDetails.fromResult(result)
+                onError?.invoke("Synthesis Canceled: ${cancellation.reason}, ErrorDetails: ${cancellation.errorDetails}")
+            }
+            result.close()
             
         } catch (e: Throwable) {
-            onError?.invoke("ONNX Model Run Failed: ${e.message}")
-            throw e 
+            e.printStackTrace()
+            onError?.invoke("Microsoft SDK Execution Error: ${e.message}")
+            throw e
+        } finally {
+            synthesizer?.close()
+            config?.close()
         }
-        
         return totalBytesGenerated
     }
 
@@ -1084,14 +1091,6 @@ class ShanTtsService : TextToSpeechService() {
             isOpusInit = false
         }
         
-        try { amEncSessionNilar?.close() } catch (_: Exception) {}
-        try { amDecSessionNilar?.close() } catch (_: Exception) {}
-        try { vocSessionNilar?.close() } catch (_: Exception) {}
-        try { amEncSessionThiha?.close() } catch (_: Exception) {}
-        try { amDecSessionThiha?.close() } catch (_: Exception) {}
-        try { vocSessionThiha?.close() } catch (_: Exception) {}
-        try { ortEnv?.close() } catch (_: Exception) {}
-
         try { randomAccessFile?.close() } catch (_: Exception) {}
         super.onDestroy()
     }
