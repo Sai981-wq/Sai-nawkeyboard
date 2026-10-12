@@ -25,6 +25,11 @@ android {
         }
     }
 
+    // ဖိုင်နှစ်ခု ထပ်နေခဲ့ပါက ပထမဖိုင်ကိုသာ ယူသုံးရန် စည်းမျဉ်း
+    packagingOptions {
+        pickFirst 'lib/**/*.so'
+    }
+
     signingConfigs {
         release {
         }
