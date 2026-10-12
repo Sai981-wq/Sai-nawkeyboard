@@ -418,7 +418,8 @@ class ShanTtsService : TextToSpeechService() {
                         myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                     } else {
                         try {
-                            val neuralBytes = synthesizeNeural(chunk.text, voiceType, finalRate, finalPitch, callback, null, volume, null)
+                            // Added 'this' for Context parameter
+                            val neuralBytes = synthesizeNeural(this, chunk.text, voiceType, finalRate, finalPitch, callback, null, volume, null)
                             if (neuralBytes == 0) {
                                 myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                             } else {
@@ -562,7 +563,8 @@ class ShanTtsService : TextToSpeechService() {
                     myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                 } else {
                     try {
-                        val neuralBytes = synthesizeNeural(chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume, onError)
+                        // Added 'context' parameter
+                        val neuralBytes = synthesizeNeural(context, chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume, onError)
                         if (neuralBytes == 0) {
                             onError?.invoke("Neural output is 0 bytes, falling back to Legacy.")
                             myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
@@ -718,7 +720,8 @@ class ShanTtsService : TextToSpeechService() {
     // ------------------------------------------------------------------------
     // Microsoft Speech SDK (Neural) Implementation
     // ------------------------------------------------------------------------
-    private fun synthesizeNeural(text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, onError: ((String) -> Unit)?): Int {
+    // Added 'context: Context' parameter to resolve getFilesDir() null object reference
+    private fun synthesizeNeural(context: Context, text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, onError: ((String) -> Unit)?): Int {
         var totalBytesGenerated = 0
         var config: EmbeddedSpeechConfig? = null
         var synthesizer: SpeechSynthesizer? = null
@@ -730,15 +733,14 @@ class ShanTtsService : TextToSpeechService() {
             else 
                 "Microsoft Server Speech Text to Speech Voice (my-MM, ThihaNeural)"
 
-            val voicePath = File(filesDir, voiceFolder).absolutePath
+            val voicePath = File(context.filesDir, voiceFolder).absolutePath
             val paths = arrayListOf<String>(
                 voicePath,
-                filesDir.absolutePath
+                context.filesDir.absolutePath
             )
             
             config = EmbeddedSpeechConfig.fromPaths(paths)
             
-            // Error ဖြစ်နေသော နေရာကို ပြင်ဆင်လိုက်ပါသည်
             config.setSpeechSynthesisVoice(voiceName, voicePath)
             
             config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
