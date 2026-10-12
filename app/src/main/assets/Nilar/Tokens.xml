@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Tokens>
+  <Category name="Voices" categoryBase="HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech Server\v11.0">
+    <Token name="TTS_MS_Apollo_my-MM_NilarNeural_11.0">
+      <String name="" value="Microsoft Server Speech Text to Speech Voice (my-MM, NilarNeural)" />
+      <String name="455" value="Microsoft Server Speech Text to Speech Voice (my-MM, NilarNeural)" />
+      <String name="CLSID" value="{a12bdfa1-c3a1-48ea-8e3f-27945e16cf7e}" />
+      <String name="LangDataPath" value="[INSTALLDIR]MSTTSLocMyMM.dat" />
+      <String name="VoicePath" value="[INSTALLDIR]1109" />
+      <Attribute name="Age" value="Adult" />
+      <Attribute name="AudioFormats" value="18" />
+      <Attribute name="Gender" value="Female" />
+      <Attribute name="Language" value="455" />
+      <Attribute name="Name" value="Microsoft Server Speech Text to Speech Voice (my-MM, NilarNeural)" />
+      <Attribute name="Vendor" value="Microsoft" />
+      <Attribute name="Version" value="TDX_2" />
+      <Attribute name="VoiceType" value="Neural" />
+      <Attribute name="Project" value="tobii-resource-id" />
+      <Attribute name="LicenseVersion" value="1" />
+    </Token>
+  </Category>
+</Tokens>
