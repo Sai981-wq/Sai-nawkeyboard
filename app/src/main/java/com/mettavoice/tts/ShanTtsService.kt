@@ -730,14 +730,17 @@ class ShanTtsService : TextToSpeechService() {
             else 
                 "Microsoft Server Speech Text to Speech Voice (my-MM, ThihaNeural)"
 
-            // MSTTSLocMyMM.dat နှင့် မော်ဒယ်ဖိုင်များရှိရာ Folder လမ်းကြောင်းများကို ထည့်သွင်းခြင်း
+            val voicePath = File(filesDir, voiceFolder).absolutePath
             val paths = arrayListOf<String>(
-                File(filesDir, voiceFolder).absolutePath,
+                voicePath,
                 filesDir.absolutePath
             )
             
             config = EmbeddedSpeechConfig.fromPaths(paths)
-            config.setSpeechSynthesisVoiceName(voiceName)
+            
+            // Error ဖြစ်နေသော နေရာကို ပြင်ဆင်လိုက်ပါသည်
+            config.setSpeechSynthesisVoice(voiceName, voicePath)
+            
             config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
             
             synthesizer = SpeechSynthesizer(config, null)
@@ -747,7 +750,6 @@ class ShanTtsService : TextToSpeechService() {
                 val audioData = result.audioData // PCM Byte Array (24Khz, 16bit, mono)
                 if (audioData != null && audioData.isNotEmpty()) {
                     
-                    // Microsoft SDK မှ ရရှိလာသော အသံကို Sonic အင်ဂျင်ထဲသို့ ထည့်သွင်း၍ အနှေးအမြန်နှင့် အသံတက်ကျ ပြောင်းလဲခြင်း
                     val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
                     sonicSetSpeed(streamId, rate)
                     sonicSetPitch(streamId, pitch)
