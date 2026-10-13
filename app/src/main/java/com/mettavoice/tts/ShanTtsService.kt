@@ -76,12 +76,16 @@ class ShanTtsService : TextToSpeechService() {
     private val utteranceLatches = ConcurrentHashMap<String, CountDownLatch>()
     private var cpuWakeLock: PowerManager.WakeLock? = null
 
-    // UI (Activity) ပေါ်သို့ Error များလှမ်းပို့မည့်လုပ်ဆောင်ချက်
-    private fun broadcastLogToUI(message: String) {
+    // UI (Activity) ပေါ်သို့ Error များလှမ်းပို့မည့်လုပ်ဆောင်ချက် (Context ထည့်သွင်းပေးထားပါသည်)
+    private fun broadcastLogToUI(context: Context, message: String) {
         Log.e("ShanTts_Error", message)
-        val intent = Intent("com.mettavoice.tts.TTS_LOG")
-        intent.putExtra("log_msg", message)
-        sendBroadcast(intent)
+        try {
+            val intent = Intent("com.mettavoice.tts.TTS_LOG")
+            intent.putExtra("log_msg", message)
+            context.sendBroadcast(intent)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     override fun onCreate() {
@@ -89,7 +93,7 @@ class ShanTtsService : TextToSpeechService() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MettaVoice::CpuWakeLock")
         cpuWakeLock?.setReferenceCounted(false)
-        initResources(this) { err -> broadcastLogToUI(err) }
+        initResources(this) { err -> broadcastLogToUI(this, err) }
         initEnglishEngine()
     }
 
@@ -420,7 +424,7 @@ class ShanTtsService : TextToSpeechService() {
                     } else {
                         try {
                             val neuralBytes = synthesizeNeural(this, chunk.text, voiceType, finalRate, finalPitch, callback, null, volume) { err ->
-                                broadcastLogToUI(err)
+                                broadcastLogToUI(this, err)
                             }
                             if (neuralBytes == 0) {
                                 myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
@@ -749,7 +753,7 @@ class ShanTtsService : TextToSpeechService() {
                 if (detectedVoiceName.isEmpty()) {
                     detectedVoiceName = voiceListResult.voices[0].name
                 }
-                broadcastLogToUI("Voice detected: $detectedVoiceName")
+                broadcastLogToUI(context, "Voice detected: $detectedVoiceName")
             } else {
                 onError?.invoke("Voice files not found in ${context.filesDir.absolutePath}")
             }
