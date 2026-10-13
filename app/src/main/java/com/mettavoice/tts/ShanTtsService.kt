@@ -724,29 +724,41 @@ class ShanTtsService : TextToSpeechService() {
         
         try {
             val voiceFolder = if (voiceType == "nilar") "Nilar" else "Thiha"
-            val voicePath = File(context.filesDir, voiceFolder).absolutePath
             
+            // ပြင်ဆင်ချက် - ဖိုင်လမ်းကြောင်းများ ထပ်မနေစေရန် Parent Folder တစ်ခုတည်းကိုသာ ပေးပါမည်။
             val paths = arrayListOf<String>(
-                voicePath,
                 context.filesDir.absolutePath
             )
             
             config = EmbeddedSpeechConfig.fromPaths(paths)
             
+            // --- Auto-Detect Voice Name ---
             val tempSynthesizer = SpeechSynthesizer(config, null)
             val voiceListResult = tempSynthesizer.getVoicesAsync("").get()
             var detectedVoiceName = ""
             
             if (voiceListResult.voices != null && voiceListResult.voices.isNotEmpty()) {
-                detectedVoiceName = voiceListResult.voices[0].name
+                // ရှာတွေ့သော အသံများထဲမှ မိမိရွေးချယ်ထားသော (Nilar/Thiha) ကို ရွေးထုတ်ခြင်း
+                for (v in voiceListResult.voices) {
+                    if (v.name.contains(voiceFolder, ignoreCase = true) || v.shortName.contains(voiceFolder, ignoreCase = true)) {
+                        detectedVoiceName = v.name
+                        break
+                    }
+                }
+                // မတွေ့ပါက ပထမဆုံးအသံကို ယူရန်
+                if (detectedVoiceName.isEmpty()) {
+                    detectedVoiceName = voiceListResult.voices[0].name
+                }
                 broadcastLogToUI("Voice detected: $detectedVoiceName")
             } else {
-                onError?.invoke("Voice file not found in $voicePath")
+                onError?.invoke("Voice files not found in ${context.filesDir.absolutePath}")
             }
             tempSynthesizer.close()
+            // -----------------------------
             
             if (detectedVoiceName.isNotEmpty()) {
-                config.setSpeechSynthesisVoice(detectedVoiceName, voicePath)
+                // လမ်းကြောင်း ထပ်မံမပေးတော့ဘဲ null သာ ထားပါမည်
+                config.setSpeechSynthesisVoice(detectedVoiceName, null)
             }
             
             config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
@@ -755,8 +767,9 @@ class ShanTtsService : TextToSpeechService() {
             val result = synthesizer.SpeakText(text)
             
             if (result.reason == ResultReason.SynthesizingAudioCompleted) {
-                val audioData = result.audioData
+                val audioData = result.audioData // PCM Byte Array (24Khz, 16bit, mono)
                 if (audioData != null && audioData.isNotEmpty()) {
+                    
                     val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
                     sonicSetSpeed(streamId, rate)
                     sonicSetPitch(streamId, pitch)
