@@ -66,15 +66,15 @@ class ShanTtsService : TextToSpeechService() {
     private var phraseMap: Map<String, String>? = null
     private val indexMap = HashMap<String, Pair<Long, Int>>()
     private var randomAccessFile: RandomAccessFile? = null
+    @Volatile private var isOpusInit = false
+
     @Volatile private var isStopped = false
-    private var directAudioTrack: AudioTrack? = null
     @Volatile private var isDirectStopped = false
-    private var isOpusInit = false
-    
+    private var directAudioTrack: AudioTrack? = null
     private var englishEngine: TextToSpeech? = null
-    private var isEnglishReady = false
+    private var currentEnglishEnginePkg: String? = null
+    @Volatile private var isEnglishReady = false
     private val utteranceLatches = ConcurrentHashMap<String, CountDownLatch>()
-    
     private var cpuWakeLock: PowerManager.WakeLock? = null
 
     // UI (Settings) သို့ Error များကို လှမ်းပို့ရန်
@@ -379,7 +379,10 @@ class ShanTtsService : TextToSpeechService() {
         
         try {
             val voiceFolder = if (voiceType == "nilar") "Nilar" else "Thiha"
-            val paths = arrayListOf<String>(context.filesDir.absolutePath)
+            val fullVoicePath = File(context.filesDir, voiceFolder).absolutePath
+            
+            // ပြင်ဆင်ချက်: တိကျသော Voice Folder လမ်းကြောင်းကိုသာ ထည့်ပေးရပါမည်
+            val paths = arrayListOf<String>(fullVoicePath)
             config = EmbeddedSpeechConfig.fromPaths(paths)
             
             val tempSynthesizer = SpeechSynthesizer(config, null)
@@ -397,12 +400,11 @@ class ShanTtsService : TextToSpeechService() {
                     detectedVoiceName = voiceListResult.voices[0].name
                 }
             } else {
-                onError?.invoke("Voice files not found in ${context.filesDir.absolutePath}")
+                onError?.invoke("Voice files not found in $fullVoicePath")
             }
             tempSynthesizer.close()
             
             if (detectedVoiceName.isNotEmpty()) {
-                val fullVoicePath = File(context.filesDir, voiceFolder).absolutePath
                 val decryptionKey = getDecryptionKey(fullVoicePath)
                 
                 config.setSpeechSynthesisVoice(detectedVoiceName, decryptionKey)
@@ -472,7 +474,7 @@ class ShanTtsService : TextToSpeechService() {
             val cpuTimeout = Math.max(120000L, (text.length * 300).toLong())
             try { cpuWakeLock?.acquire(cpuTimeout) } catch (e: Exception) {}
             
-            val chunks = TTSUtils.splitText(text)
+            val chunks = TTSUtils.splitText(text) //[span_1](start_span)[span_1](end_span)
             val systemRate = request.speechRate / 100.0f
             val systemPitch = request.pitch / 100.0f
             
@@ -625,7 +627,7 @@ class ShanTtsService : TextToSpeechService() {
         val readPunctuation = prefs.getBoolean("pref_read_punctuation", false)
         val volume = prefs.getInt("pref_volume", 100)
 
-        val chunks = TTSUtils.splitText(text)
+        val chunks = TTSUtils.splitText(text) //[span_2](start_span)[span_2](end_span)
         var myanmarBytesAccumulated = 0
         var myanmarStartTime = 0L
 
@@ -1109,4 +1111,3 @@ class ShanTtsService : TextToSpeechService() {
         super.onDestroy()
     }
 }
-
