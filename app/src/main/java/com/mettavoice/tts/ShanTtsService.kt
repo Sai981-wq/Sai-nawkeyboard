@@ -270,7 +270,7 @@ class ShanTtsService : TextToSpeechService() {
                 '၇' -> standardStr += "7"
                 '၈' -> standardStr += "8"
                 '၉' -> standardStr += "9"
-                else -> standardStr += c
+                else -> standardStr += c 
             }
         }
 
@@ -411,47 +411,24 @@ class ShanTtsService : TextToSpeechService() {
         utteranceLatches.clear()
     }
 
-    private fun findVoiceModelPath(dir: File): String? {
-        if (!dir.exists() || !dir.isDirectory) return null
-        val files = dir.listFiles() ?: return null
-        
-        for (file in files) {
-            if (file.isFile && file.name.equals("Tokens.xml", ignoreCase = true)) {
-                return dir.absolutePath
+    // မူလအက်ပ်စနစ် (Code B) အတိုင်း Type Mismatch မဖြစ်စေရန် String လက်ခံသော လုပ်ဆောင်ချက်ကို အသုံးပြုပါသည်
+    private fun getDecryptionKey(voiceFolderPath: String): String {
+        val file = File(voiceFolderPath, "am_v5_decoder.bin")
+        if (!file.exists()) return ""
+        try {
+            val bytes = ByteArray(4096)
+            val fis = java.io.FileInputStream(file)
+            val length = fis.read(bytes)
+            fis.close()
+            if (length > 0) {
+                val content = String(bytes, 0, length, Charsets.UTF_8)
+                val markerIndex = content.indexOf("ffffffff")
+                if (markerIndex != -1) {
+                    return content.substring(0, markerIndex).trim()
+                }
             }
-        }
-        
-        for (file in files) {
-            if (file.isDirectory) {
-                val found = findVoiceModelPath(file)
-                if (found != null) return found
-            }
-        }
-        return null
-    }
-
-    private fun getDecryptionKey(dir: File): String {
-        if (!dir.exists() || !dir.isDirectory) return ""
-        val files = dir.listFiles() ?: return ""
-        for (file in files) {
-            if (file.isFile && file.name == "am_v5_decoder.bin") {
-                try {
-                    val bytes = ByteArray(4096)
-                    val fis = java.io.FileInputStream(file)
-                    val length = fis.read(bytes)
-                    fis.close()
-                    if (length > 0) {
-                        val content = String(bytes, 0, length, Charsets.UTF_8)
-                        val markerIndex = content.indexOf("ffffffff")
-                        if (markerIndex != -1) {
-                            return content.substring(0, markerIndex).trim()
-                        }
-                    }
-                } catch (e: Exception) { e.printStackTrace() }
-            } else if (file.isDirectory) {
-                val key = getDecryptionKey(file)
-                if (key.isNotEmpty()) return key
-            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
         return ""
     }
@@ -507,7 +484,6 @@ class ShanTtsService : TextToSpeechService() {
         }
     }
 
-    // ပြင်ဆင်ချက် ၁: Latency (နောက်ကျခြင်း) လုံးဝကင်းဝေးစေရန် Streaming (AudioDataStream) အား အသုံးပြုထားပါသည်
     private fun synthesizeNeural(context: Context, text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int): Int {
         var totalBytesGenerated = 0
         try {
@@ -518,7 +494,6 @@ class ShanTtsService : TextToSpeechService() {
                 return -1 
             }
             
-            // AudioDataStream အားအသုံးပြု၍ အသံထွက်ပေါ်လာသည်နှင့် တစ်ပြိုင်နက် ချက်ချင်း Streaming ပြုလုပ်မည်
             val result = synthesizer.StartSpeakingTextAsync(text).get()
             
             if (result.reason == ResultReason.SynthesizingAudioStarted || result.reason == ResultReason.SynthesizingAudioCompleted) {
@@ -567,7 +542,6 @@ class ShanTtsService : TextToSpeechService() {
         return totalBytesGenerated
     }
 
-    // လိုအပ်ပါက Sample Rate ညှိပေးမည့် လုပ်ဆောင်ချက်
     private fun resample(input: ShortArray, inRate: Int, outRate: Int): ShortArray {
         if (inRate == outRate) return input
         val ratio = inRate.toDouble() / outRate.toDouble()
@@ -582,7 +556,6 @@ class ShanTtsService : TextToSpeechService() {
         return output
     }
 
-    // ပြင်ဆင်ချက် ၂: အင်္ဂလိပ်စာ ဝင်ဝင်အော်ခြင်း မရှိစေရန် Audio Bytes အား ကြိုတင်ထုတ်ယူ၍ တန်းစီပေးသည့်စနစ်
     private fun synthesizeEnglishBytes(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int): Int {
         var totalWritten = 0
         try {
@@ -601,15 +574,15 @@ class ShanTtsService : TextToSpeechService() {
             val result = englishEngine?.synthesizeToFile(text, params, tempFile, utteranceId)
 
             if (result == TextToSpeech.SUCCESS) {
-                latch.await(10, TimeUnit.SECONDS) // အင်္ဂလိပ်အသံပြောင်းသည်အထိ စောင့်မည်
+                latch.await(10, TimeUnit.SECONDS)
                 if (tempFile.exists() && tempFile.length() > 44 && !isStopped && (!isDirectStopped || track == null)) {
                     val raf = RandomAccessFile(tempFile, "r")
-                    raf.seek(24) // Sample Rate ရယူခြင်း
+                    raf.seek(24) 
                     val srBytes = ByteArray(4)
                     raf.read(srBytes)
                     val sampleRate = ByteBuffer.wrap(srBytes).order(ByteOrder.LITTLE_ENDIAN).int
 
-                    raf.seek(44) // Audio Data သက်သက်ရယူခြင်း
+                    raf.seek(44) 
                     val pcmBytes = ByteArray((tempFile.length() - 44).toInt())
                     raf.read(pcmBytes)
                     raf.close()
@@ -624,9 +597,8 @@ class ShanTtsService : TextToSpeechService() {
                         pcmShorts
                     }
 
-                    // Sonic သို့ ဖြတ်၍ Volume ချိန်ညှိပြီး တန်းစီထုတ်လွှင့်မည်
                     val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
-                    sonicSetSpeed(streamId, 1.0f) // Rate ကို System TTS မှ ပြင်ဆင်ပြီးဖြစ်သည်
+                    sonicSetSpeed(streamId, 1.0f) 
                     sonicSetPitch(streamId, 1.0f)
 
                     val shortBuffer = ShortArray(4096)
@@ -692,7 +664,6 @@ class ShanTtsService : TextToSpeechService() {
                         }
                     }
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
-                    // English စာသားများကို Bytes အဖြစ်ပြောင်း၍ တိုက်ရိုက်ဆက်တိုက် (Synchronous) သွင်းပေးမည်
                     synthesizeEnglishBytes(chunk.text, finalRate, finalPitch, callback, null, volume)
                 }
             }
@@ -766,7 +737,6 @@ class ShanTtsService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitText(text)
 
-        // ယခင် Thread.sleep() နှင့် Timer များကို ဖြုတ်ပစ်လိုက်ပါပြီ
         for (chunk in chunks) {
             if (isDirectStopped) break
             if (chunk.lang == "MYANMAR") {
@@ -779,7 +749,6 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
-                // English ကိုလည်း တိုက်ရိုက်ချိတ်ဆက်မည်
                 synthesizeEnglishBytes(chunk.text, rate, pitch, null, directAudioTrack, volume)
             }
         }
