@@ -484,8 +484,9 @@ class ShanTtsService : TextToSpeechService() {
                 tempSynthesizer.close()
                 
                 if (detectedVoiceName.isNotEmpty()) {
-                    val fullVoicePath = File(context.filesDir, voiceFolder).absolutePath
-                    val decryptionKey = getDecryptionKey(fullVoicePath)
+                    // ပြင်ဆင်ချက်: getDecryptionKey သို့ String အစား File Object အား တိုက်ရိုက်ပေးပို့ပါသည်
+                    val voiceBaseDir = File(context.filesDir, voiceFolder)
+                    val decryptionKey = getDecryptionKey(voiceBaseDir)
                     
                     config.setSpeechSynthesisVoice(detectedVoiceName, decryptionKey)
                     if (decryptionKey.isNotEmpty()) {
@@ -623,7 +624,6 @@ class ShanTtsService : TextToSpeechService() {
                     }
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
-                    // ပြင်ဆင်ချက်: မူရင်း Code B အတိုင်း Android System TTS ဖြင့်သာ တိုက်ရိုက်ဖတ်စေမည်
                     if (myanmarBytesAccumulated > 0) {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
@@ -756,7 +756,6 @@ class ShanTtsService : TextToSpeechService() {
                 }
                 
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
-                // ပြင်ဆင်ချက်: မူရင်း Code B အတိုင်း Android System TTS ဖြင့်သာ တိုက်ရိုက်ဖတ်စေမည်
                 if (myanmarBytesAccumulated > 0) {
                     val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                     val elapsedTime = System.currentTimeMillis() - myanmarStartTime
