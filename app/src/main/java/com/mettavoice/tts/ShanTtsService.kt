@@ -587,9 +587,12 @@ class ShanTtsService : TextToSpeechService() {
             try { cpuWakeLock?.acquire(cpuTimeout) } catch (e: Exception) {}
             
             val chunks = TTSUtils.splitText(text)
+            
+            // ပြင်ဆင်ချက်: Screen Reader မှလာသော System Rate ကို သီးသန့်ထုတ်ယူထားပါမည်
             val systemRate = request.speechRate / 100.0f
             val systemPitch = request.pitch / 100.0f
             
+            // မြန်မာစာအတွက်သာ App ရဲ့ Slider တန်ဖိုးများကို အသုံးပြုပါမည်
             val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
             val volume = prefs.getInt("pref_volume", 100)
@@ -626,7 +629,6 @@ class ShanTtsService : TextToSpeechService() {
                     if (myanmarBytesAccumulated > 0) {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                        // ပြင်ဆင်ချက် ၁: မြန်မာစာမှ အင်္ဂလိပ်စာသို့ ကူးပြောင်းချိန်တွင် ကပ်မနေစေရန် ၃၀၀ မီလီစက္ကန့် ပေါင်းထည့်၍ စောင့်ဆိုင်းပေးမည်
                         val sleepTime = expectedDurationMs - elapsedTime + 300L 
                         
                         if (sleepTime > 0) {
@@ -646,9 +648,9 @@ class ShanTtsService : TextToSpeechService() {
                     val latch = CountDownLatch(1)
                     utteranceLatches[utteranceId] = latch
                     
-                    // ပြင်ဆင်ချက် ၂: အင်္ဂလိပ်စာအား App ၏ Settings များနှင့် မသက်ဆိုင်စေဘဲ မူလ (1.0f) အတိုင်းသာ ဖတ်စေမည်
-                    englishEngine?.setSpeechRate(1.0f)
-                    englishEngine?.setPitch(1.0f)
+                    // ပြင်ဆင်ချက်: အင်္ဂလိပ်စာအတွက် App Slider ကို လျစ်လျူရှုပြီး Screen Reader (System) ၏ Rate/Pitch အတိုင်းသာ ဖတ်စေမည်
+                    englishEngine?.setSpeechRate(systemRate)
+                    englishEngine?.setPitch(systemPitch)
                     
                     val params = Bundle()
                     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
@@ -658,7 +660,6 @@ class ShanTtsService : TextToSpeechService() {
                         try {
                             val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
                             latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                            // ပြင်ဆင်ချက် ၁ (ခ): အင်္ဂလိပ်စာအပြီး မြန်မာစာသို့ ပြန်အကူးတွင် ကပ်မနေစေရန် ၂၅၀ မီလီစက္ကန့် ထပ်မံခြားပေးမည်
                             if (!isStopped) Thread.sleep(250L)
                         } catch (e: InterruptedException) {
                             isStopped = true
@@ -762,7 +763,6 @@ class ShanTtsService : TextToSpeechService() {
                 if (myanmarBytesAccumulated > 0) {
                     val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                     val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                    // ပြင်ဆင်ချက် ၁: မြန်မာစာမှ အင်္ဂလိပ်စာသို့ ကူးပြောင်းချိန်တွင် ကပ်မနေစေရန် ၃၀၀ မီလီစက္ကန့် ပေါင်းထည့်၍ စောင့်ဆိုင်းပေးမည်
                     val sleepTime = expectedDurationMs - elapsedTime + 300L
                     if (sleepTime > 0) {
                         var waitTime = sleepTime
@@ -781,7 +781,7 @@ class ShanTtsService : TextToSpeechService() {
                 val latch = CountDownLatch(1)
                 utteranceLatches[utteranceId] = latch
                 
-                // ပြင်ဆင်ချက် ၂: အင်္ဂလိပ်စာအား App ၏ Settings များနှင့် မသက်ဆိုင်စေဘဲ မူလ (1.0f) အတိုင်းသာ ဖတ်စေမည်
+                // ပြင်ဆင်ချက်: UI မှ စမ်းသပ်ပါက အင်္ဂလိပ်စာအား မူလ 1.0f ဖြင့်သာ အမြဲဖတ်စေမည်
                 englishEngine?.setSpeechRate(1.0f)
                 englishEngine?.setPitch(1.0f)
                 
@@ -793,7 +793,6 @@ class ShanTtsService : TextToSpeechService() {
                     try {
                         val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
                         latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                        // ပြင်ဆင်ချက် ၁ (ခ): အင်္ဂလိပ်စာအပြီး မြန်မာစာသို့ ပြန်အကူးတွင် ကပ်မနေစေရန် ၂၅၀ မီလီစက္ကန့် ထပ်မံခြားပေးမည်
                         if (!isDirectStopped) Thread.sleep(250L)
                     } catch (e: InterruptedException) {
                         isDirectStopped = true
@@ -1084,7 +1083,8 @@ class ShanTtsService : TextToSpeechService() {
             
             val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
             if (readCount > 0) {
-                applyGain(outputBuffer, readCount, 1.8f * (volume / 100f))
+                // ပြင်ဆင်ချက်: မြန်မာအသံ ပိုကျယ်လာစေရန် Base Volume ကို 2.8 ဆ မြှင့်တင်ပေးထားပါသည်
+                applyGain(outputBuffer, readCount, 2.8f * (volume / 100f))
                 
                 if (callback != null) {
                     val byteArray = ByteArray(readCount * 2)
