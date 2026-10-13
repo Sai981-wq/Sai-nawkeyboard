@@ -1,6 +1,7 @@
 package com.mettavoice.tts
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -60,7 +61,6 @@ class ShanTtsService : TextToSpeechService() {
     private external fun decodeOpus(encodedData: ByteArray, len: Int): ShortArray?
     private external fun destroyOpusDecoder()
 
-    // Legacy State
     private var charMap: Map<String, String>? = null
     private var singleCharMap: Map<String, String>? = null
     private var phraseMap: Map<String, String>? = null
@@ -68,7 +68,6 @@ class ShanTtsService : TextToSpeechService() {
     private var randomAccessFile: RandomAccessFile? = null
     @Volatile private var isOpusInit = false
 
-    // Global State
     @Volatile private var isStopped = false
     @Volatile private var isDirectStopped = false
     private var directAudioTrack: AudioTrack? = null
@@ -77,12 +76,20 @@ class ShanTtsService : TextToSpeechService() {
     private val utteranceLatches = ConcurrentHashMap<String, CountDownLatch>()
     private var cpuWakeLock: PowerManager.WakeLock? = null
 
+    // UI (Activity) ပေါ်သို့ Error များလှမ်းပို့မည့်လုပ်ဆောင်ချက်
+    private fun broadcastLogToUI(message: String) {
+        Log.e("ShanTts_Error", message)
+        val intent = Intent("com.mettavoice.tts.TTS_LOG")
+        intent.putExtra("log_msg", message)
+        sendBroadcast(intent)
+    }
+
     override fun onCreate() {
         super.onCreate()
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MettaVoice::CpuWakeLock")
         cpuWakeLock?.setReferenceCounted(false)
-        initResources(this, null)
+        initResources(this) { err -> broadcastLogToUI(err) }
         initEnglishEngine()
     }
 
@@ -133,17 +140,13 @@ class ShanTtsService : TextToSpeechService() {
             val isUpdate = savedVersion != currentVersion
 
             if (isUpdate) {
-                // Legacy Files Copy
                 copyAsset(context, BIN_FILENAME)
                 copyAsset(context, INDEX_FILENAME)
                 copyAsset(context, "mapping.txt")
                 copyAsset(context, "mapping_single.txt")
                 copyAsset(context, "mapping_phrase.txt")
-                
-                // Copy MSTTSLocMyMM.dat if it exists in root
                 copyAsset(context, "MSTTSLocMyMM.dat")
 
-                // Neural Folders Copy
                 copyAssetFolder(context, "Nilar", File(context.filesDir, "Nilar").absolutePath)
                 copyAssetFolder(context, "Thiha", File(context.filesDir, "Thiha").absolutePath)
 
@@ -220,9 +223,7 @@ class ShanTtsService : TextToSpeechService() {
         }
     }
 
-    private fun isExpired(): Boolean {
-        return false 
-    }
+    private fun isExpired(): Boolean = false
 
     private fun convertNumberToBurmese(numStr: String): String {
         var standardStr = ""
@@ -418,7 +419,9 @@ class ShanTtsService : TextToSpeechService() {
                         myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                     } else {
                         try {
-                            val neuralBytes = synthesizeNeural(this, chunk.text, voiceType, finalRate, finalPitch, callback, null, volume, null)
+                            val neuralBytes = synthesizeNeural(this, chunk.text, voiceType, finalRate, finalPitch, callback, null, volume) { err ->
+                                broadcastLogToUI(err)
+                            }
                             if (neuralBytes == 0) {
                                 myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                             } else {
@@ -430,7 +433,6 @@ class ShanTtsService : TextToSpeechService() {
                     }
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
-                    
                     if (myanmarBytesAccumulated > 0) {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
@@ -715,9 +717,6 @@ class ShanTtsService : TextToSpeechService() {
         return res
     }
 
-    // ------------------------------------------------------------------------
-    // Microsoft Speech SDK (Neural) Implementation (Auto-Detect Voice Name)
-    // ------------------------------------------------------------------------
     private fun synthesizeNeural(context: Context, text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, onError: ((String) -> Unit)?): Int {
         var totalBytesGenerated = 0
         var config: EmbeddedSpeechConfig? = null
@@ -727,7 +726,6 @@ class ShanTtsService : TextToSpeechService() {
             val voiceFolder = if (voiceType == "nilar") "Nilar" else "Thiha"
             val voicePath = File(context.filesDir, voiceFolder).absolutePath
             
-            // ဖိုဒါလမ်းကြောင်းများ သတ်မှတ်ခြင်း
             val paths = arrayListOf<String>(
                 voicePath,
                 context.filesDir.absolutePath
@@ -735,26 +733,20 @@ class ShanTtsService : TextToSpeechService() {
             
             config = EmbeddedSpeechConfig.fromPaths(paths)
             
-            // --- Auto-Detect Voice Name ---
-            // ဖိုဒါထဲတွင်ရှိသော အသံနာမည်ကို အလိုအလျောက် ရှာဖွေခြင်း
             val tempSynthesizer = SpeechSynthesizer(config, null)
             val voiceListResult = tempSynthesizer.getVoicesAsync("").get()
             var detectedVoiceName = ""
             
             if (voiceListResult.voices != null && voiceListResult.voices.isNotEmpty()) {
                 detectedVoiceName = voiceListResult.voices[0].name
-                Log.d("ShanTts", "Auto-detected Voice Name: $detectedVoiceName")
+                broadcastLogToUI("Voice detected: $detectedVoiceName")
             } else {
-                val errorMsg = "Folder ထဲတွင် Voice File ကို ရှာမတွေ့ပါ။ ($voicePath)"
-                Log.e("ShanTts", errorMsg)
-                onError?.invoke(errorMsg)
+                onError?.invoke("Voice file not found in $voicePath")
             }
             tempSynthesizer.close()
-            // -----------------------------
             
             if (detectedVoiceName.isNotEmpty()) {
-                // ပြင်ဆင်ထားသောနေရာ: ဒုတိယတန်ဖိုးကို voicePath အစား null ဟု ပြောင်းပေးလိုက်ပါသည်
-                config.setSpeechSynthesisVoice(detectedVoiceName, null)
+                config.setSpeechSynthesisVoice(detectedVoiceName, voicePath)
             }
             
             config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
@@ -763,9 +755,8 @@ class ShanTtsService : TextToSpeechService() {
             val result = synthesizer.SpeakText(text)
             
             if (result.reason == ResultReason.SynthesizingAudioCompleted) {
-                val audioData = result.audioData // PCM Byte Array (24Khz, 16bit, mono)
+                val audioData = result.audioData
                 if (audioData != null && audioData.isNotEmpty()) {
-                    
                     val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
                     sonicSetSpeed(streamId, rate)
                     sonicSetPitch(streamId, pitch)
@@ -784,13 +775,14 @@ class ShanTtsService : TextToSpeechService() {
                 }
             } else if (result.reason == ResultReason.Canceled) {
                 val cancellation = SpeechSynthesisCancellationDetails.fromResult(result)
-                onError?.invoke("Synthesis Canceled: ${cancellation.reason}, Details: ${cancellation.errorDetails}")
+                val errDetails = "Canceled: ${cancellation.reason}\nDetails: ${cancellation.errorDetails}"
+                onError?.invoke(errDetails)
             }
             result.close()
             
         } catch (e: Throwable) {
             e.printStackTrace()
-            onError?.invoke("Microsoft SDK Execution Error: ${e.message}")
+            onError?.invoke("SDK Runtime Error: ${e.message}")
             throw e
         } finally {
             synthesizer?.close()

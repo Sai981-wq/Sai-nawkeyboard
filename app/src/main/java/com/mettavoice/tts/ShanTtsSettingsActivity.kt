@@ -1,6 +1,9 @@
 package com.mettavoice.tts
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.view.View
@@ -8,6 +11,7 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.tabs.TabLayout
 import java.util.Locale
+import android.os.Build
 
 class ShanTtsSettingsActivity : AppCompatActivity() {
 
@@ -45,6 +49,16 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
     private var engineList = listOf<TextToSpeech.EngineInfo>()
     private val directPlayer = ShanTtsService()
     private var playThread: Thread? = null
+
+    // Service မှ လှမ်းပို့မည့် Error များကို လက်ခံဖမ်းယူပြီး UI တွင် ပြပေးမည့် Receiver
+    private val logReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val message = intent?.getStringExtra("log_msg")
+            if (message != null) {
+                showErrorLog(message)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,10 +103,33 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         setupSecondaryTtsControls(prefs)
     }
 
+    // App ပွင့်လာချိန်တွင် Receiver ကို အသက်သွင်းခြင်း
+    override fun onResume() {
+        super.onResume()
+        val filter = IntentFilter("com.mettavoice.tts.TTS_LOG")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(logReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(logReceiver, filter)
+        }
+    }
+
+    // App နောက်ကွယ်ရောက်သွားချိန်တွင် Receiver ကို ပိတ်ထားခြင်း
+    override fun onPause() {
+        super.onPause()
+        unregisterReceiver(logReceiver)
+    }
+
     private fun showErrorLog(message: String) {
         runOnUiThread {
             tvErrorLog.visibility = View.VISIBLE
-            tvErrorLog.text = message
+            // Error အသစ်ဝင်လာတိုင်း အဟောင်းအောက်တွင် ဆက်၍ပြပေးရန်
+            val currentText = tvErrorLog.text.toString()
+            if (currentText.isEmpty()) {
+                tvErrorLog.text = message
+            } else {
+                tvErrorLog.text = "$currentText\n\n$message"
+            }
         }
     }
 
@@ -252,10 +289,12 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
         btnClear.setOnClickListener {
             etTextToAudio.text.clear()
             tvErrorLog.visibility = View.GONE
+            tvErrorLog.text = ""
         }
 
         btnListen.setOnClickListener {
             tvErrorLog.visibility = View.GONE
+            tvErrorLog.text = ""
             val text = etTextToAudio.text.toString().trim()
             if (text.isEmpty()) {
                 Toast.makeText(this, "Please enter some text", Toast.LENGTH_SHORT).show()
