@@ -36,7 +36,7 @@ class ShanTtsService : TextToSpeechService() {
         init {
             try {
                 System.loadLibrary("native-lib")
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 e.printStackTrace()
             }
         }
@@ -71,10 +71,8 @@ class ShanTtsService : TextToSpeechService() {
     @Volatile private var isStopped = false
     @Volatile private var isDirectStopped = false
     private var directAudioTrack: AudioTrack? = null
-    
     private var englishEngine: TextToSpeech? = null
-    private var currentEnglishEnginePkg: String? = null
-    @Volatile private var isEnglishReady = false
+    private var isEnglishReady = false
     private val utteranceLatches = ConcurrentHashMap<String, CountDownLatch>()
     private var cpuWakeLock: PowerManager.WakeLock? = null
 
@@ -94,143 +92,156 @@ class ShanTtsService : TextToSpeechService() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MettaVoice::CpuWakeLock")
         cpuWakeLock?.setReferenceCounted(false)
-        initResources(this)
-        initEnglishEngine(this)
+        initResources(this) { err -> broadcastLogToUI(this, err) }
+        initEnglishEngine()
     }
 
-    // မူရင်းအတိုင်း အသံလမ်းကြောင်းကို USAGE_ASSISTANCE_ACCESSIBILITY အဖြစ် ဆက်လက်ထားရှိပါသည်
-    private fun initEnglishEngine(context: Context) {
-        val appContext = context.applicationContext ?: context
-        val prefs = appContext.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
-        
-        var enginePkg: String? = prefs.getString("pref_secondary_engine", "")
-        if (enginePkg.isNullOrEmpty() || enginePkg == appContext.packageName) {
-            enginePkg = null // ဖုန်း၏ ပုံသေ System TTS အားရယူရန်
-        }
-
-        if (englishEngine != null && currentEnglishEnginePkg == enginePkg) {
-            return
-        }
-
-        currentEnglishEnginePkg = enginePkg
-        isEnglishReady = false
-
-        // Memory Error မတက်စေရန် MainThread တွင် အသက်သွင်းခြင်း
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            try {
-                englishEngine?.stop()
-                englishEngine?.shutdown()
-            } catch (_: Exception) {}
-
-            englishEngine = TextToSpeech(appContext, { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    try {
-                        englishEngine?.language = Locale.US
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                            val attrs = AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .build()
-                            englishEngine?.setAudioAttributes(attrs)
-                        }
-                    } catch (e: Exception) { e.printStackTrace() }
-                    
-                    englishEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) {}
-                        override fun onDone(utteranceId: String?) {
-                            utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
-                        }
-                        @Deprecated("Deprecated in Java")
-                        override fun onError(utteranceId: String?) {
-                            utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
-                        }
-                        override fun onError(utteranceId: String?, errorCode: Int) {
-                            utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
-                        }
-                        override fun onStop(utteranceId: String?, interrupted: Boolean) {
-                            utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
-                        }
-                    })
-
-                    isEnglishReady = true
-                } else {
-                    isEnglishReady = false
-                    broadcastLogToUI(appContext, "Secondary English TTS Engine failed to initialize.")
+    private fun initEnglishEngine() {
+        val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
+        val enginePkg = prefs.getString("pref_secondary_engine", "com.google.android.tts")
+        englishEngine = TextToSpeech(this, { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                englishEngine?.language = Locale.US
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    val attrs = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                    englishEngine?.setAudioAttributes(attrs)
                 }
-            }, enginePkg)
-        }
+                isEnglishReady = true
+            }
+        }, enginePkg)
+
+        englishEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) {
+                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+            }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+            }
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+            }
+            override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+            }
+        })
     }
 
-    fun initResources(context: Context) {
-        val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
-        val currentVersion = try {
-            val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode else pInfo.versionCode.toLong()
-        } catch (e: Exception) { 1L }
+    fun initResources(context: Context, onError: ((String) -> Unit)?) {
+        try {
+            val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
+            val currentVersion = try {
+                val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode else pInfo.versionCode.toLong()
+            } catch (e: Exception) { 1L }
 
-        val savedVersion = prefs.getLong("assets_version", -1L)
-        val isUpdate = savedVersion != currentVersion
+            val savedVersion = prefs.getLong("assets_version", -1L)
+            val isUpdate = savedVersion != currentVersion
 
-        copyAsset(context, BIN_FILENAME, isUpdate)
-        copyAsset(context, INDEX_FILENAME, isUpdate)
-        
-        if (isUpdate) {
-            prefs.edit().putLong("assets_version", currentVersion).apply()
-            try { randomAccessFile?.close() } catch (e: Exception) {}
-            randomAccessFile = null
-            indexMap.clear()
-            charMap = null
-            singleCharMap = null
-            phraseMap = null
-        }
+            if (isUpdate) {
+                copyAsset(context, BIN_FILENAME)
+                copyAsset(context, INDEX_FILENAME)
+                copyAsset(context, "mapping.txt")
+                copyAsset(context, "mapping_single.txt")
+                copyAsset(context, "mapping_phrase.txt")
+                copyAsset(context, "MSTTSLocMyMM.dat")
 
-        if (charMap == null) {
-            charMap = loadMapFromFile(context, "mapping.txt")
-            singleCharMap = loadMapFromFile(context, "mapping_single.txt")
-            phraseMap = loadMapFromFile(context, "mapping_phrase.txt")
-        }
-        if (indexMap.isEmpty()) loadIndexMap(context)
-        if (randomAccessFile == null) {
-            val binFile = File(context.filesDir, BIN_FILENAME)
-            if (binFile.exists()) {
-                try {
+                copyAssetFolder(context, "Nilar", File(context.filesDir, "Nilar").absolutePath)
+                copyAssetFolder(context, "Thiha", File(context.filesDir, "Thiha").absolutePath)
+
+                prefs.edit().putLong("assets_version", currentVersion).apply()
+                
+                try { randomAccessFile?.close() } catch (e: Exception) {}
+                randomAccessFile = null
+                indexMap.clear()
+                charMap = null
+                singleCharMap = null
+                phraseMap = null
+            }
+
+            if (charMap == null) {
+                charMap = loadMapFromFile(context, "mapping.txt")
+                singleCharMap = loadMapFromFile(context, "mapping_single.txt")
+                phraseMap = loadMapFromFile(context, "mapping_phrase.txt")
+            }
+            if (indexMap.isEmpty()) loadIndexMap(context)
+            if (randomAccessFile == null) {
+                val binFile = File(context.filesDir, BIN_FILENAME)
+                if (binFile.exists()) {
                     randomAccessFile = RandomAccessFile(binFile, "r")
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
             }
-        }
-        if (!isOpusInit) {
-            try {
+            if (!isOpusInit) {
                 initOpusDecoder(OUTPUT_SAMPLE_RATE)
                 isOpusInit = true
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            onError?.invoke("Init Error: ${e.message}")
         }
-        
-        // Listen ခလုတ်နှိပ်သောအခါ English Engine လိုအပ်ပါက အလိုအလျောက် ခေါ်ယူရန်
-        initEnglishEngine(context)
     }
 
-    private fun isExpired(): Boolean {
-        return false 
+    private fun copyAssetFolder(context: Context, srcFolder: String, destPath: String) {
+        val destDir = File(destPath)
+        if (!destDir.exists()) destDir.mkdirs()
+        try {
+            val files = context.assets.list(srcFolder) ?: return
+            for (filename in files) {
+                val srcFile = if (srcFolder.isEmpty()) filename else "$srcFolder/$filename"
+                val destFile = File(destPath, filename)
+                
+                val subFiles = context.assets.list(srcFile)
+                if (subFiles != null && subFiles.isNotEmpty()) {
+                    copyAssetFolder(context, srcFile, destFile.absolutePath)
+                } else {
+                    if (!destFile.exists()) {
+                        context.assets.open(srcFile).use { input ->
+                            FileOutputStream(destFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
+
+    private fun copyAsset(context: Context, filename: String) {
+        val file = File(context.filesDir, filename)
+        if (!file.exists() || file.length() == 0L) {
+            try {
+                if (file.exists()) file.delete()
+                context.assets.open(filename).use { input ->
+                    FileOutputStream(file).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            } catch (e: Exception) {}
+        }
+    }
+
+    private fun isExpired(): Boolean = false
 
     private fun convertNumberToBurmese(numStr: String): String {
         var standardStr = ""
         for (c in numStr) {
             when (c) {
-                '၀' -> standardStr += "0"
-                '၁' -> standardStr += "1"
-                '၂' -> standardStr += "2"
-                '၃' -> standardStr += "3"
-                '၄' -> standardStr += "4"
-                '၅' -> standardStr += "5"
-                '၆' -> standardStr += "6"
-                '၇' -> standardStr += "7"
-                '၈' -> standardStr += "8"
-                '၉' -> standardStr += "9"
+                '၀', '0' -> standardStr += "0"
+                '၁', '1' -> standardStr += "1"
+                '၂', '2' -> standardStr += "2"
+                '၃', '3' -> standardStr += "3"
+                '၄', '4' -> standardStr += "4"
+                '၅', '5' -> standardStr += "5"
+                '၆', '6' -> standardStr += "6"
+                '၇', '7' -> standardStr += "7"
+                '၈', '8' -> standardStr += "8"
+                '၉', '9' -> standardStr += "9"
             }
         }
 
@@ -269,7 +280,7 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun convertNumbersInText(text: String): String {
-        val regex = Regex("[၀-၉]+(,[၀-၉]+)*")
+        val regex = Regex("[၀-၉0-9]+(,[၀-၉0-9]+)*")
         return regex.replace(text) { matchResult ->
             convertNumberToBurmese(matchResult.value.replace(",", ""))
         }
@@ -282,7 +293,6 @@ class ShanTtsService : TextToSpeechService() {
         if (readNumbers) {
             processedText = convertNumbersInText(processedText)
         }
-        
         return processedText
     }
 
@@ -310,22 +320,6 @@ class ShanTtsService : TextToSpeechService() {
         return tempMap
     }
 
-    private fun copyAsset(context: Context, filename: String, force: Boolean) {
-        val file = File(context.filesDir, filename)
-        if (force || !file.exists() || file.length() == 0L) {
-            try {
-                if (file.exists()) file.delete()
-                context.assets.open(filename).use { input ->
-                    FileOutputStream(file).use { output ->
-                        input.copyTo(output)
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
-
     private fun loadIndexMap(context: Context) {
         val indexFile = File(context.filesDir, INDEX_FILENAME)
         if (!indexFile.exists()) return
@@ -339,9 +333,7 @@ class ShanTtsService : TextToSpeechService() {
                     indexMap[name] = Pair(offset, length)
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) {}
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
@@ -380,114 +372,25 @@ class ShanTtsService : TextToSpeechService() {
         utteranceLatches.clear()
     }
 
-    // am_v5_decoder.bin ကို သတ်မှတ်ထားသော ဖိုဒါနှင့် ၎င်း၏ Sub-folders များအတွင်း အလိုအလျောက် လိုက်ရှာပေးမည့်စနစ်
-    private fun getDecryptionKey(dir: File): String {
-        if (!dir.exists() || !dir.isDirectory) return ""
-        val files = dir.listFiles() ?: return ""
-        for (file in files) {
-            if (file.isFile && file.name == "am_v5_decoder.bin") {
-                try {
-                    val bytes = ByteArray(4096)
-                    val fis = java.io.FileInputStream(file)
-                    val length = fis.read(bytes)
-                    fis.close()
-                    if (length > 0) {
-                        val content = String(bytes, 0, length, Charsets.UTF_8)
-                        val markerIndex = content.indexOf("ffffffff")
-                        if (markerIndex != -1) {
-                            return content.substring(0, markerIndex).trim()
-                        }
-                    }
-                } catch (e: Exception) { e.printStackTrace() }
-            } else if (file.isDirectory) {
-                val key = getDecryptionKey(file)
-                if (key.isNotEmpty()) return key
+    private fun getDecryptionKey(voiceFolderPath: String): String {
+        val file = File(voiceFolderPath, "am_v5_decoder.bin")
+        if (!file.exists()) return ""
+        try {
+            val bytes = ByteArray(4096)
+            val fis = java.io.FileInputStream(file)
+            val length = fis.read(bytes)
+            fis.close()
+            if (length > 0) {
+                val content = String(bytes, 0, length, Charsets.UTF_8)
+                val markerIndex = content.indexOf("ffffffff")
+                if (markerIndex != -1) {
+                    return content.substring(0, markerIndex).trim()
+                }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
         return ""
-    }
-
-    // Neural (Nilar/Thiha) အား အလုပ်လုပ်စေမည့် အပိုင်းသစ်
-    private fun synthesizeNeural(context: Context, text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, onError: ((String) -> Unit)?): Int {
-        var totalBytesGenerated = 0
-        var config: EmbeddedSpeechConfig? = null
-        var synthesizer: SpeechSynthesizer? = null
-        
-        try {
-            val voiceFolder = if (voiceType == "nilar") "Nilar" else "Thiha"
-            
-            // မူရင်းအောင်မြင်ခဲ့သည့်အတိုင်း Root FilesDir ကိုသာ ပေးပါမည် (SDK မှ Subfolders ကို အလိုအလျောက် ရှာဖွေပါမည်)
-            val paths = arrayListOf<String>(context.filesDir.absolutePath)
-            config = EmbeddedSpeechConfig.fromPaths(paths)
-            
-            val tempSynthesizer = SpeechSynthesizer(config, null)
-            val voiceListResult = tempSynthesizer.getVoicesAsync("").get()
-            var detectedVoiceName = ""
-            
-            if (voiceListResult.voices != null && voiceListResult.voices.isNotEmpty()) {
-                for (v in voiceListResult.voices) {
-                    if (v.name.contains(voiceFolder, ignoreCase = true) || v.shortName.contains(voiceFolder, ignoreCase = true)) {
-                        detectedVoiceName = v.name
-                        break
-                    }
-                }
-                if (detectedVoiceName.isEmpty()) {
-                    detectedVoiceName = voiceListResult.voices[0].name
-                }
-            } else {
-                onError?.invoke("Voice files not found in ${context.filesDir.absolutePath}")
-            }
-            tempSynthesizer.close()
-            
-            if (detectedVoiceName.isNotEmpty()) {
-                // Key ရှာဖွေရန် သက်ဆိုင်ရာ Voice Folder ကို တိတိကျကျ ရွေးပေးပါမည်
-                val specificVoiceDir = File(context.filesDir, voiceFolder)
-                val decryptionKey = getDecryptionKey(specificVoiceDir)
-                
-                config.setSpeechSynthesisVoice(detectedVoiceName, decryptionKey)
-                if (decryptionKey.isNotEmpty()) {
-                    config.setProperty(PropertyId.SpeechServiceConnection_SynthModelKey, decryptionKey)
-                }
-            }
-            
-            config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
-            
-            synthesizer = SpeechSynthesizer(config, null)
-            val result = synthesizer.SpeakText(text)
-            
-            if (result.reason == ResultReason.SynthesizingAudioCompleted) {
-                val audioData = result.audioData 
-                if (audioData != null && audioData.isNotEmpty()) {
-                    val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
-                    sonicSetSpeed(streamId, rate)
-                    sonicSetPitch(streamId, pitch)
-                    
-                    val pcmShorts = ShortArray(audioData.size / 2)
-                    ByteBuffer.wrap(audioData).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmShorts)
-                    
-                    val shortBuffer = ShortArray(4096)
-                    val outputBuffer = ShortArray(4096)
-                    
-                    totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer, 4096, outputBuffer, callback, track, volume)
-                    sonicFlushStream(streamId)
-                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer, callback, track, volume)
-                    
-                    sonicDestroyStream(streamId)
-                }
-            } else if (result.reason == ResultReason.Canceled) {
-                val cancellation = SpeechSynthesisCancellationDetails.fromResult(result)
-                val errDetails = "Canceled: ${cancellation.reason}\nDetails: ${cancellation.errorDetails}"
-                onError?.invoke(errDetails)
-            }
-            result.close()
-        } catch (e: Throwable) {
-            e.printStackTrace()
-            onError?.invoke("SDK Runtime Error: ${e.message}")
-        } finally {
-            synthesizer?.close()
-            config?.close()
-        }
-        return totalBytesGenerated
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
@@ -536,76 +439,65 @@ class ShanTtsService : TextToSpeechService() {
                         myanmarStartTime = System.currentTimeMillis()
                     }
                     
-                    if (voiceType == "legacy" || voiceType == null) {
-                        myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
+                    if (voiceType == "legacy") {
+                        myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                     } else {
                         try {
                             val neuralBytes = synthesizeNeural(this, chunk.text, voiceType, finalRate, finalPitch, callback, null, volume) { err ->
                                 broadcastLogToUI(this, err)
                             }
                             if (neuralBytes == 0) {
-                                myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
+                                myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                             } else {
                                 myanmarBytesAccumulated += neuralBytes
                             }
                         } catch (e: Throwable) {
-                            myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
+                            myanmarBytesAccumulated += synthesizeLegacy(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                         }
                     }
                     
-                } else if (chunk.lang == "ENGLISH") {
-                    
-                    // UI မှ တိုက်ရိုက်ခေါ်ချိန်တွင် English Engine အသက်ဝင်ရန် အချိန်အနည်းငယ် စောင့်ပေးခြင်း
-                    var waitCount = 0
-                    while (!isEnglishReady && waitCount < 40 && !isStopped) {
-                        try { Thread.sleep(50) } catch (e: Exception) {}
-                        waitCount++
+                } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
+                    if (myanmarBytesAccumulated > 0) {
+                        val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
+                        val elapsedTime = System.currentTimeMillis() - myanmarStartTime
+                        val sleepTime = expectedDurationMs - elapsedTime
+                        if (sleepTime > 0) {
+                            var waitTime = sleepTime
+                            while (waitTime > 0 && !isStopped) {
+                                val step = Math.min(30L, waitTime)
+                                try { Thread.sleep(step) } catch (e: Exception) {}
+                                waitTime -= step
+                            }
+                        }
+                        myanmarBytesAccumulated = 0
                     }
 
-                    if (isEnglishReady) {
-                        if (myanmarBytesAccumulated > 0) {
-                            val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
-                            val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                            val sleepTime = expectedDurationMs - elapsedTime
-                            
-                            if (sleepTime > 0) {
-                                var waitTime = sleepTime
-                                while (waitTime > 0 && !isStopped) {
-                                    val step = Math.min(30L, waitTime)
-                                    try { Thread.sleep(step) } catch (e: Exception) {}
-                                    waitTime -= step
-                                }
-                            }
-                            myanmarBytesAccumulated = 0
-                        }
+                    if (isStopped) break
 
-                        if (isStopped) break
-
-                        val utteranceId = "utt_${System.nanoTime()}"
-                        val latch = CountDownLatch(1)
-                        utteranceLatches[utteranceId] = latch
-                        
-                        englishEngine?.setSpeechRate(finalRate)
-                        englishEngine?.setPitch(finalPitch)
-                        
-                        val params = Bundle()
-                        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-                        
-                        val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
-                        if (result == TextToSpeech.SUCCESS) {
-                            try {
-                                val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
-                                latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                            } catch (e: InterruptedException) {
-                                isStopped = true
-                            }
-                        } else {
-                            utteranceLatches.remove(utteranceId)
+                    val utteranceId = "utt_${System.nanoTime()}"
+                    val latch = CountDownLatch(1)
+                    utteranceLatches[utteranceId] = latch
+                    
+                    englishEngine?.setSpeechRate(finalRate)
+                    englishEngine?.setPitch(finalPitch)
+                    
+                    val params = Bundle()
+                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                    
+                    val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+                    if (result == TextToSpeech.SUCCESS) {
+                        try {
+                            val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
+                            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+                        } catch (e: InterruptedException) {
+                            isStopped = true
                         }
+                    } else {
+                        utteranceLatches.remove(utteranceId)
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
         } finally {
             safeCallbackDone(callback)
@@ -654,10 +546,15 @@ class ShanTtsService : TextToSpeechService() {
         directAudioTrack = null
     }
 
-    fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float) {
+    fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float, onError: ((String) -> Unit)? = null) {
         stopDirectAudio()
         isDirectStopped = false
-        initResources(context)
+        
+        try {
+            initResources(context, onError)
+        } catch (e: Throwable) {
+            onError?.invoke("Resources Init Error: ${e.message}")
+        }
         
         val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
         val readNumbers = prefs.getBoolean("pref_read_numbers", true)
@@ -668,7 +565,9 @@ class ShanTtsService : TextToSpeechService() {
         prepareDirectAudioTrackForAutoTTS()
         try {
             directAudioTrack?.play()
-        } catch (_: Exception) {}
+        } catch (e: Throwable) {
+            onError?.invoke("AudioTrack Play Error: ${e.message}")
+        }
         
         val readPunctuation = prefs.getBoolean("pref_read_punctuation", false)
         val volume = prefs.getInt("pref_volume", 100)
@@ -684,70 +583,61 @@ class ShanTtsService : TextToSpeechService() {
                     myanmarStartTime = System.currentTimeMillis()
                 }
                 
-                if (voiceType == "legacy" || voiceType == null) {
-                    myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
+                if (voiceType == "legacy") {
+                    myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                 } else {
                     try {
-                        val neuralBytes = synthesizeNeural(context, chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume) { err ->
-                            broadcastLogToUI(context, err)
-                        }
+                        val neuralBytes = synthesizeNeural(context, chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume, onError)
                         if (neuralBytes == 0) {
-                            myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
+                            onError?.invoke("Neural output is 0 bytes, falling back to Legacy.")
+                            myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                         } else {
                             myanmarBytesAccumulated += neuralBytes
                         }
                     } catch (e: Throwable) {
-                        myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
+                        onError?.invoke("Microsoft SDK Error: ${e.message}")
+                        myanmarBytesAccumulated += synthesizeLegacy(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                     }
                 }
                 
-            } else if (chunk.lang == "ENGLISH") {
-                
-                var waitCount = 0
-                while (!isEnglishReady && waitCount < 40 && !isDirectStopped) {
-                    try { Thread.sleep(50) } catch (e: Exception) {}
-                    waitCount++
+            } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
+                if (myanmarBytesAccumulated > 0) {
+                    val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
+                    val elapsedTime = System.currentTimeMillis() - myanmarStartTime
+                    val sleepTime = expectedDurationMs - elapsedTime
+                    if (sleepTime > 0) {
+                        var waitTime = sleepTime
+                        while (waitTime > 0 && !isDirectStopped) {
+                            val step = Math.min(30L, waitTime)
+                            try { Thread.sleep(step) } catch (e: Exception) {}
+                            waitTime -= step
+                        }
+                    }
+                    myanmarBytesAccumulated = 0
                 }
 
-                if (isEnglishReady) {
-                    if (myanmarBytesAccumulated > 0) {
-                        val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
-                        val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                        val sleepTime = expectedDurationMs - elapsedTime
-                        if (sleepTime > 0) {
-                            var waitTime = sleepTime
-                            while (waitTime > 0 && !isDirectStopped) {
-                                val step = Math.min(30L, waitTime)
-                                try { Thread.sleep(step) } catch (e: Exception) {}
-                                waitTime -= step
-                            }
-                        }
-                        myanmarBytesAccumulated = 0
-                    }
+                if (isDirectStopped) break
 
-                    if (isDirectStopped) break
-
-                    val utteranceId = "utt_${System.nanoTime()}"
-                    val latch = CountDownLatch(1)
-                    utteranceLatches[utteranceId] = latch
-                    
-                    englishEngine?.setSpeechRate(rate)
-                    englishEngine?.setPitch(pitch)
-                    
-                    val params = Bundle()
-                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-                    
-                    val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
-                    if (result == TextToSpeech.SUCCESS) {
-                        try {
-                            val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
-                            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                        } catch (e: InterruptedException) {
-                            isDirectStopped = true
-                        }
-                    } else {
-                        utteranceLatches.remove(utteranceId)
+                val utteranceId = "utt_${System.nanoTime()}"
+                val latch = CountDownLatch(1)
+                utteranceLatches[utteranceId] = latch
+                
+                englishEngine?.setSpeechRate(rate)
+                englishEngine?.setPitch(pitch)
+                
+                val params = Bundle()
+                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                
+                val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+                if (result == TextToSpeech.SUCCESS) {
+                    try {
+                        val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
+                        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+                    } catch (e: InterruptedException) {
+                        isDirectStopped = true
                     }
+                } else {
+                    utteranceLatches.remove(utteranceId)
                 }
             }
         }
@@ -794,9 +684,7 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun getFallbackSyllable(sub: String): String? {
-        val codas = arrayOf(
-            "လ်", "စ်", "ဇ်", "ဖ်", "ဗ်", "ဒ်", "ဂ်", "သ်", "ဟ်", "ရ်", "က်စ်", "ပ်စ်"
-        )
+        val codas = arrayOf("လ်", "စ်", "ဇ်", "ဖ်", "ဗ်", "ဒ်", "ဂ်", "သ်", "ဟ်", "ရ်", "က်စ်", "ပ်စ်")
         for (coda in codas) {
             if (sub.endsWith(coda) && sub.length > coda.length) {
                 return sub.substring(0, sub.length - coda.length)
@@ -852,7 +740,92 @@ class ShanTtsService : TextToSpeechService() {
         return res
     }
 
-    private fun synthesizeBurmese(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, readPunctuation: Boolean, volume: Int): Int {
+    private fun synthesizeNeural(context: Context, text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, onError: ((String) -> Unit)?): Int {
+        var totalBytesGenerated = 0
+        var config: EmbeddedSpeechConfig? = null
+        var synthesizer: SpeechSynthesizer? = null
+        
+        try {
+            val voiceFolder = if (voiceType == "nilar") "Nilar" else "Thiha"
+            
+            val paths = arrayListOf<String>(
+                context.filesDir.absolutePath
+            )
+            
+            config = EmbeddedSpeechConfig.fromPaths(paths)
+            
+            val tempSynthesizer = SpeechSynthesizer(config, null)
+            val voiceListResult = tempSynthesizer.getVoicesAsync("").get()
+            var detectedVoiceName = ""
+            
+            if (voiceListResult.voices != null && voiceListResult.voices.isNotEmpty()) {
+                for (v in voiceListResult.voices) {
+                    if (v.name.contains(voiceFolder, ignoreCase = true) || v.shortName.contains(voiceFolder, ignoreCase = true)) {
+                        detectedVoiceName = v.name
+                        break
+                    }
+                }
+                if (detectedVoiceName.isEmpty()) {
+                    detectedVoiceName = voiceListResult.voices[0].name
+                }
+            } else {
+                onError?.invoke("Voice files not found in ${context.filesDir.absolutePath}")
+            }
+            tempSynthesizer.close()
+            
+            if (detectedVoiceName.isNotEmpty()) {
+                val fullVoicePath = File(context.filesDir, voiceFolder).absolutePath
+                val decryptionKey = getDecryptionKey(fullVoicePath)
+                config.setSpeechSynthesisVoice(detectedVoiceName, decryptionKey)
+                if (decryptionKey.isNotEmpty()) {
+                    config.setProperty(PropertyId.SpeechServiceConnection_SynthModelKey, decryptionKey)
+                }
+            }
+            
+            config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
+            
+            synthesizer = SpeechSynthesizer(config, null)
+            val result = synthesizer.SpeakText(text)
+            
+            if (result.reason == ResultReason.SynthesizingAudioCompleted) {
+                val audioData = result.audioData
+                if (audioData != null && audioData.isNotEmpty()) {
+                    
+                    val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
+                    sonicSetSpeed(streamId, rate)
+                    sonicSetPitch(streamId, pitch)
+                    
+                    val pcmShorts = ShortArray(audioData.size / 2)
+                    ByteBuffer.wrap(audioData).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmShorts)
+                    
+                    val shortBuffer = ShortArray(4096)
+                    val outputBuffer = ShortArray(4096)
+                    
+                    totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer, 4096, outputBuffer, callback, track, volume)
+                    sonicFlushStream(streamId)
+                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer, callback, track, volume)
+                    
+                    sonicDestroyStream(streamId)
+                }
+            } else if (result.reason == ResultReason.Canceled) {
+                val cancellation = SpeechSynthesisCancellationDetails.fromResult(result)
+                val errDetails = "Canceled: ${cancellation.reason}\nDetails: ${cancellation.errorDetails}"
+                onError?.invoke(errDetails)
+            }
+            result.close()
+            
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            onError?.invoke("SDK Runtime Error: ${e.message}")
+            throw e
+        } finally {
+            synthesizer?.close()
+            config?.close()
+        }
+        return totalBytesGenerated
+    }
+
+    private fun synthesizeLegacy(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, readPunctuation: Boolean, volume: Int): Int {
         val currentMap = charMap ?: return 0
         val currentSingleMap = singleCharMap ?: emptyMap()
         val currentPhraseMap = phraseMap ?: emptyMap()
