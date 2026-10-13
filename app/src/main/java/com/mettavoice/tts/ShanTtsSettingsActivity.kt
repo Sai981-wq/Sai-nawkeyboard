@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Build
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.view.View
@@ -11,7 +12,6 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.tabs.TabLayout
 import java.util.Locale
-import android.os.Build
 
 class ShanTtsSettingsActivity : AppCompatActivity() {
 
@@ -304,9 +304,8 @@ class ShanTtsSettingsActivity : AppCompatActivity() {
             val currentPitchVal = prefs.getFloat(PREF_PITCH, 1.0f)
             directPlayer.stopDirectAudio()
             playThread = Thread {
-                directPlayer.playDirectAudio(this@ShanTtsSettingsActivity, text, currentSpeedVal, currentPitchVal) { error ->
-                    showErrorLog(error)
-                }
+                // ပြင်ဆင်ချက် - callback မပို့တော့ဘဲ ၄ ခုသာ ပို့ပါမည်။ Error များကို BroadcastReceiver မှတစ်ဆင့် ဖမ်းပါမည်။
+                directPlayer.playDirectAudio(this@ShanTtsSettingsActivity, text, currentSpeedVal, currentPitchVal)
             }
             playThread?.start()
         }
