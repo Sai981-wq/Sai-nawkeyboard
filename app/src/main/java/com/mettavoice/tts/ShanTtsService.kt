@@ -9,6 +9,7 @@ import android.media.AudioTrack
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.os.Process
 import android.speech.tts.SynthesisCallback
 import android.speech.tts.SynthesisRequest
 import android.speech.tts.TextToSpeech
@@ -206,8 +207,16 @@ class ShanTtsService : TextToSpeechService() {
         }
         
         Thread {
-            getNeuralSynthesizer(context, "Nilar")
-            getNeuralSynthesizer(context, "Thiha")
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            try {
+                val nilarSynth = getNeuralSynthesizer(context, "Nilar")
+                nilarSynth?.StartSpeakingTextAsync(" ")?.get() 
+            } catch (_: Exception) {}
+            
+            try {
+                val thihaSynth = getNeuralSynthesizer(context, "Thiha")
+                thihaSynth?.StartSpeakingTextAsync(" ")?.get()
+            } catch (_: Exception) {}
         }.start()
     }
 
@@ -331,6 +340,19 @@ class ShanTtsService : TextToSpeechService() {
             processedText = convertNumbersInText(processedText)
         }
         return processedText
+    }
+
+    // --- (ပြင်ဆင်ချက်) စာသားများကို Space ဖြင့်သာ ဖြတ်ထုတ်ပေးမည့် စနစ် ---
+    private fun chunkTextForNeural(text: String): List<String> {
+        val chunks = mutableListOf<String>()
+        // Space များနှင့် Newline များကို အခြေခံ၍ အပိုင်းပိုင်း ဖြတ်ထုတ်မည်
+        val parts = text.split("\\s+".toRegex())
+        for (part in parts) {
+            if (part.isNotBlank()) {
+                chunks.add(part.trim())
+            }
+        }
+        return chunks
     }
 
     private fun loadMapFromFile(context: Context, filename: String): Map<String, String> {
@@ -566,6 +588,8 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        
         val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
         val readNumbers = prefs.getBoolean("pref_read_numbers", true)
         val voiceType = prefs.getString(ShanTtsSettingsActivity.PREF_PRIMARY_VOICE, "legacy")
@@ -587,12 +611,9 @@ class ShanTtsService : TextToSpeechService() {
             try { cpuWakeLock?.acquire(cpuTimeout) } catch (e: Exception) {}
             
             val chunks = TTSUtils.splitText(text)
-            
-            // ပြင်ဆင်ချက်: Screen Reader မှလာသော System Rate ကို သီးသန့်ထုတ်ယူထားပါမည်
             val systemRate = request.speechRate / 100.0f
             val systemPitch = request.pitch / 100.0f
             
-            // မြန်မာစာအတွက်သာ App ရဲ့ Slider တန်ဖိုးများကို အသုံးပြုပါမည်
             val finalRate = (systemRate * prefs.getFloat("pref_speed", 0.8f)).coerceIn(0.1f, 4.0f)
             val finalPitch = (systemPitch * prefs.getFloat("pref_pitch", 1.0f)).coerceIn(0.5f, 2.0f)
             val volume = prefs.getInt("pref_volume", 100)
@@ -617,11 +638,14 @@ class ShanTtsService : TextToSpeechService() {
                     if (voiceType == "legacy" || voiceType == null) {
                         myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                     } else {
-                        val neuralBytes = synthesizeNeural(this, chunk.text, voiceType, finalRate, finalPitch, callback, null, volume)
-                        if (neuralBytes < 0) {
-                            myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
-                        } else {
-                            myanmarBytesAccumulated += neuralBytes
+                        val neuralChunks = chunkTextForNeural(chunk.text)
+                        for (nChunk in neuralChunks) {
+                            if (isStopped) break
+                            val neuralBytes = synthesizeNeural(this, nChunk, voiceType, finalRate, finalPitch, callback, null, volume)
+                            // ပြင်ဆင်ချက် ၂: အသံထွက်မရသော စာလုံးများကို Legacy သို့ ပြောင်းမဖတ်တော့ဘဲ အလိုအလျောက် ကျော်သွားမည်
+                            if (neuralBytes > 0) {
+                                myanmarBytesAccumulated += neuralBytes
+                            }
                         }
                     }
                     
@@ -648,7 +672,6 @@ class ShanTtsService : TextToSpeechService() {
                     val latch = CountDownLatch(1)
                     utteranceLatches[utteranceId] = latch
                     
-                    // ပြင်ဆင်ချက်: အင်္ဂလိပ်စာအတွက် App Slider ကို လျစ်လျူရှုပြီး Screen Reader (System) ၏ Rate/Pitch အတိုင်းသာ ဖတ်စေမည်
                     englishEngine?.setSpeechRate(systemRate)
                     englishEngine?.setPitch(systemPitch)
                     
@@ -719,6 +742,8 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     fun playDirectAudio(context: Context, requestText: String, rate: Float, pitch: Float) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        
         stopDirectAudio()
         isDirectStopped = false
         initResources(context)
@@ -751,11 +776,14 @@ class ShanTtsService : TextToSpeechService() {
                 if (voiceType == "legacy" || voiceType == null) {
                     myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                 } else {
-                    val neuralBytes = synthesizeNeural(context, chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume)
-                    if (neuralBytes < 0) {
-                        myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
-                    } else {
-                        myanmarBytesAccumulated += neuralBytes
+                    val neuralChunks = chunkTextForNeural(chunk.text)
+                    for (nChunk in neuralChunks) {
+                        if (isDirectStopped) break
+                        val neuralBytes = synthesizeNeural(context, nChunk, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume)
+                        // ပြင်ဆင်ချက် ၂: အသံထွက်မရသော စာလုံးများကို Legacy သို့ ပြောင်းမဖတ်တော့ဘဲ အလိုအလျောက် ကျော်သွားမည်
+                        if (neuralBytes > 0) {
+                            myanmarBytesAccumulated += neuralBytes
+                        }
                     }
                 }
                 
@@ -781,7 +809,6 @@ class ShanTtsService : TextToSpeechService() {
                 val latch = CountDownLatch(1)
                 utteranceLatches[utteranceId] = latch
                 
-                // ပြင်ဆင်ချက်: UI မှ စမ်းသပ်ပါက အင်္ဂလိပ်စာအား မူလ 1.0f ဖြင့်သာ အမြဲဖတ်စေမည်
                 englishEngine?.setSpeechRate(1.0f)
                 englishEngine?.setPitch(1.0f)
                 
@@ -1083,7 +1110,6 @@ class ShanTtsService : TextToSpeechService() {
             
             val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
             if (readCount > 0) {
-                // ပြင်ဆင်ချက်: မြန်မာအသံ ပိုကျယ်လာစေရန် Base Volume ကို 2.8 ဆ မြှင့်တင်ပေးထားပါသည်
                 applyGain(outputBuffer, readCount, 2.8f * (volume / 100f))
                 
                 if (callback != null) {
