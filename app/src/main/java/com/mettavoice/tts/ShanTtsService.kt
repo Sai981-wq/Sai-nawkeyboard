@@ -72,7 +72,8 @@ class ShanTtsService : TextToSpeechService() {
     @Volatile private var isDirectStopped = false
     private var directAudioTrack: AudioTrack? = null
     private var englishEngine: TextToSpeech? = null
-    private var isEnglishReady = false
+    private var currentEnglishEnginePkg: String? = null
+    @Volatile private var isEnglishReady = false
     private val utteranceLatches = ConcurrentHashMap<String, CountDownLatch>()
     private var cpuWakeLock: PowerManager.WakeLock? = null
 
@@ -93,42 +94,69 @@ class ShanTtsService : TextToSpeechService() {
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MettaVoice::CpuWakeLock")
         cpuWakeLock?.setReferenceCounted(false)
         initResources(this) { err -> broadcastLogToUI(this, err) }
-        initEnglishEngine()
     }
 
-    private fun initEnglishEngine() {
-        val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
-        val enginePkg = prefs.getString("pref_secondary_engine", "com.google.android.tts")
-        englishEngine = TextToSpeech(this, { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                englishEngine?.language = Locale.US
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    val attrs = AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                    englishEngine?.setAudioAttributes(attrs)
-                }
-                isEnglishReady = true
-            }
-        }, enginePkg)
+    // ပြင်ဆင်ချက် - English Engine အား Main Thread တွင်သာ အသက်သွင်းရန်နှင့် Loop ပြဿနာကို ဖြေရှင်းရန်
+    private fun initEnglishEngine(context: Context) {
+        val appContext = context.applicationContext ?: context
+        val prefs = appContext.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
+        
+        // မူလအတိုင်း Google TTS ကို Fallback အနေဖြင့် ပြန်လည်သတ်မှတ်ပါသည်
+        var enginePkg = prefs.getString("pref_secondary_engine", "com.google.android.tts")
+        if (enginePkg.isNullOrEmpty() || enginePkg == appContext.packageName) {
+            enginePkg = "com.google.android.tts"
+        }
 
-        englishEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) {
-                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
-            }
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
-            }
-            override fun onError(utteranceId: String?, errorCode: Int) {
-                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
-            }
-            override fun onStop(utteranceId: String?, interrupted: Boolean) {
-                utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
-            }
-        })
+        if (englishEngine != null && currentEnglishEnginePkg == enginePkg) {
+            return
+        }
+
+        currentEnglishEnginePkg = enginePkg
+        isEnglishReady = false
+
+        // TextToSpeech အား Background Thread မှ ခေါ်ယူခြင်းမပြုဘဲ Main Thread မှသာ ခေါ်ယူစေရန်
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                englishEngine?.stop()
+                englishEngine?.shutdown()
+            } catch (_: Exception) {}
+
+            englishEngine = TextToSpeech(appContext, { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    try {
+                        englishEngine?.language = Locale.US
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            val attrs = AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build()
+                            englishEngine?.setAudioAttributes(attrs)
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
+                    isEnglishReady = true
+                } else {
+                    isEnglishReady = false
+                    broadcastLogToUI(appContext, "Secondary English TTS Engine failed to initialize.")
+                }
+            }, enginePkg)
+
+            englishEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) {
+                    utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+                }
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+                }
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+                }
+                override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                    utteranceId?.let { utteranceLatches.remove(it)?.countDown() }
+                }
+            })
+        }
     }
 
     fun initResources(context: Context, onError: ((String) -> Unit)?) {
@@ -179,6 +207,9 @@ class ShanTtsService : TextToSpeechService() {
                 initOpusDecoder(OUTPUT_SAMPLE_RATE)
                 isOpusInit = true
             }
+
+            initEnglishEngine(context)
+
         } catch (e: Throwable) {
             e.printStackTrace()
             onError?.invoke("Init Error: ${e.message}")
@@ -373,7 +404,6 @@ class ShanTtsService : TextToSpeechService() {
         utteranceLatches.clear()
     }
 
-    // မူလအက်ပ်၏ gp0.smali စနစ်အတိုင်း am_v5_decoder.bin မှ လျှို့ဝှက်ကီးကို အလိုအလျောက် ရယူပေးမည့် လုပ်ဆောင်ချက်
     private fun getDecryptionKey(voiceFolderPath: String): String {
         val file = File(voiceFolderPath, "am_v5_decoder.bin")
         if (!file.exists()) return ""
@@ -458,44 +488,53 @@ class ShanTtsService : TextToSpeechService() {
                         }
                     }
                     
-                } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
-                    if (myanmarBytesAccumulated > 0) {
-                        val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
-                        val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                        val sleepTime = expectedDurationMs - elapsedTime
-                        if (sleepTime > 0) {
-                            var waitTime = sleepTime
-                            while (waitTime > 0 && !isStopped) {
-                                val step = Math.min(30L, waitTime)
-                                try { Thread.sleep(step) } catch (e: Exception) {}
-                                waitTime -= step
-                            }
-                        }
-                        myanmarBytesAccumulated = 0
+                } else if (chunk.lang == "ENGLISH") {
+                    var waitCount = 0
+                    while (!isEnglishReady && waitCount < 20 && !isStopped) {
+                        try { Thread.sleep(50) } catch (e: Exception) {}
+                        waitCount++
                     }
 
-                    if (isStopped) break
-
-                    val utteranceId = "utt_${System.nanoTime()}"
-                    val latch = CountDownLatch(1)
-                    utteranceLatches[utteranceId] = latch
-                    
-                    englishEngine?.setSpeechRate(finalRate)
-                    englishEngine?.setPitch(finalPitch)
-                    
-                    val params = Bundle()
-                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-                    
-                    val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
-                    if (result == TextToSpeech.SUCCESS) {
-                        try {
-                            val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
-                            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                        } catch (e: InterruptedException) {
-                            isStopped = true
+                    if (isEnglishReady) {
+                        if (myanmarBytesAccumulated > 0) {
+                            val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
+                            val elapsedTime = System.currentTimeMillis() - myanmarStartTime
+                            val sleepTime = expectedDurationMs - elapsedTime
+                            
+                            if (sleepTime > 0) {
+                                var waitTime = sleepTime
+                                while (waitTime > 0 && !isStopped) {
+                                    val step = Math.min(30L, waitTime)
+                                    try { Thread.sleep(step) } catch (e: Exception) {}
+                                    waitTime -= step
+                                }
+                            }
+                            myanmarBytesAccumulated = 0
                         }
-                    } else {
-                        utteranceLatches.remove(utteranceId)
+
+                        if (isStopped) break
+
+                        val utteranceId = "utt_${System.nanoTime()}"
+                        val latch = CountDownLatch(1)
+                        utteranceLatches[utteranceId] = latch
+                        
+                        englishEngine?.setSpeechRate(finalRate)
+                        englishEngine?.setPitch(finalPitch)
+                        
+                        val params = Bundle()
+                        params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                        
+                        val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+                        if (result == TextToSpeech.SUCCESS) {
+                            try {
+                                val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
+                                latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+                            } catch (e: InterruptedException) {
+                                isStopped = true
+                            }
+                        } else {
+                            utteranceLatches.remove(utteranceId)
+                        }
                     }
                 }
             }
@@ -602,44 +641,52 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
                 
-            } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
-                if (myanmarBytesAccumulated > 0) {
-                    val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
-                    val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                    val sleepTime = expectedDurationMs - elapsedTime
-                    if (sleepTime > 0) {
-                        var waitTime = sleepTime
-                        while (waitTime > 0 && !isDirectStopped) {
-                            val step = Math.min(30L, waitTime)
-                            try { Thread.sleep(step) } catch (e: Exception) {}
-                            waitTime -= step
-                        }
-                    }
-                    myanmarBytesAccumulated = 0
+            } else if (chunk.lang == "ENGLISH") {
+                var waitCount = 0
+                while (!isEnglishReady && waitCount < 20 && !isDirectStopped) {
+                    try { Thread.sleep(50) } catch (e: Exception) {}
+                    waitCount++
                 }
 
-                if (isDirectStopped) break
-
-                val utteranceId = "utt_${System.nanoTime()}"
-                val latch = CountDownLatch(1)
-                utteranceLatches[utteranceId] = latch
-                
-                englishEngine?.setSpeechRate(rate)
-                englishEngine?.setPitch(pitch)
-                
-                val params = Bundle()
-                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-                
-                val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
-                if (result == TextToSpeech.SUCCESS) {
-                    try {
-                        val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
-                        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                    } catch (e: InterruptedException) {
-                        isDirectStopped = true
+                if (isEnglishReady) {
+                    if (myanmarBytesAccumulated > 0) {
+                        val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
+                        val elapsedTime = System.currentTimeMillis() - myanmarStartTime
+                        val sleepTime = expectedDurationMs - elapsedTime
+                        if (sleepTime > 0) {
+                            var waitTime = sleepTime
+                            while (waitTime > 0 && !isDirectStopped) {
+                                val step = Math.min(30L, waitTime)
+                                try { Thread.sleep(step) } catch (e: Exception) {}
+                                waitTime -= step
+                            }
+                        }
+                        myanmarBytesAccumulated = 0
                     }
-                } else {
-                    utteranceLatches.remove(utteranceId)
+
+                    if (isDirectStopped) break
+
+                    val utteranceId = "utt_${System.nanoTime()}"
+                    val latch = CountDownLatch(1)
+                    utteranceLatches[utteranceId] = latch
+                    
+                    englishEngine?.setSpeechRate(rate)
+                    englishEngine?.setPitch(pitch)
+                    
+                    val params = Bundle()
+                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                    
+                    val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+                    if (result == TextToSpeech.SUCCESS) {
+                        try {
+                            val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
+                            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+                        } catch (e: InterruptedException) {
+                            isDirectStopped = true
+                        }
+                    } else {
+                        utteranceLatches.remove(utteranceId)
+                    }
                 }
             }
         }
@@ -776,13 +823,9 @@ class ShanTtsService : TextToSpeechService() {
             tempSynthesizer.close()
             
             if (detectedVoiceName.isNotEmpty()) {
-                // အသံမော်ဒယ်ရှိရာ ဖိုဒါလမ်းကြောင်း
                 val fullVoicePath = File(context.filesDir, voiceFolder).absolutePath
-                
-                // လျှို့ဝှက်ကီးကို am_v5_decoder.bin ဖိုင်ထဲမှ ထုတ်ယူခြင်း
                 val decryptionKey = getDecryptionKey(fullVoicePath)
                 
-                // Key ဖြင့် ချိတ်ဆက်ခြင်း
                 config.setSpeechSynthesisVoice(detectedVoiceName, decryptionKey)
                 if (decryptionKey.isNotEmpty()) {
                     config.setProperty(PropertyId.SpeechServiceConnection_SynthModelKey, decryptionKey)
@@ -795,7 +838,7 @@ class ShanTtsService : TextToSpeechService() {
             val result = synthesizer.SpeakText(text)
             
             if (result.reason == ResultReason.SynthesizingAudioCompleted) {
-                val audioData = result.audioData // PCM Byte Array (24Khz, 16bit, mono)
+                val audioData = result.audioData 
                 if (audioData != null && audioData.isNotEmpty()) {
                     
                     val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
