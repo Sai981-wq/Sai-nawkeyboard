@@ -76,7 +76,6 @@ class ShanTtsService : TextToSpeechService() {
     private val utteranceLatches = ConcurrentHashMap<String, CountDownLatch>()
     private var cpuWakeLock: PowerManager.WakeLock? = null
 
-    // UI (Activity) ပေါ်သို့ Error များလှမ်းပို့မည့်လုပ်ဆောင်ချက် (Context ထည့်သွင်းပေးထားပါသည်)
     private fun broadcastLogToUI(context: Context, message: String) {
         Log.e("ShanTts_Error", message)
         try {
@@ -364,6 +363,7 @@ class ShanTtsService : TextToSpeechService() {
         isDirectStopped = true
         try {
             englishEngine?.stop()
+            englishEngine?.shutdown()
         } catch (_: Exception) {}
         try {
             directAudioTrack?.pause()
@@ -371,6 +371,28 @@ class ShanTtsService : TextToSpeechService() {
         } catch (_: Exception) {}
         utteranceLatches.values.forEach { it.countDown() }
         utteranceLatches.clear()
+    }
+
+    // မူလအက်ပ်၏ gp0.smali စနစ်အတိုင်း am_v5_decoder.bin မှ လျှို့ဝှက်ကီးကို အလိုအလျောက် ရယူပေးမည့် လုပ်ဆောင်ချက်
+    private fun getDecryptionKey(voiceFolderPath: String): String {
+        val file = File(voiceFolderPath, "am_v5_decoder.bin")
+        if (!file.exists()) return ""
+        try {
+            val bytes = ByteArray(4096)
+            val fis = java.io.FileInputStream(file)
+            val length = fis.read(bytes)
+            fis.close()
+            if (length > 0) {
+                val content = String(bytes, 0, length, Charsets.UTF_8)
+                val markerIndex = content.indexOf("ffffffff")
+                if (markerIndex != -1) {
+                    return content.substring(0, markerIndex).trim()
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return ""
     }
 
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
@@ -441,7 +463,6 @@ class ShanTtsService : TextToSpeechService() {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
                         val sleepTime = expectedDurationMs - elapsedTime
-                        
                         if (sleepTime > 0) {
                             var waitTime = sleepTime
                             while (waitTime > 0 && !isStopped) {
@@ -729,40 +750,43 @@ class ShanTtsService : TextToSpeechService() {
         try {
             val voiceFolder = if (voiceType == "nilar") "Nilar" else "Thiha"
             
-            // ပြင်ဆင်ချက် - ဖိုင်လမ်းကြောင်းများ ထပ်မနေစေရန် Parent Folder တစ်ခုတည်းကိုသာ ပေးပါမည်။
             val paths = arrayListOf<String>(
                 context.filesDir.absolutePath
             )
             
             config = EmbeddedSpeechConfig.fromPaths(paths)
             
-            // --- Auto-Detect Voice Name ---
             val tempSynthesizer = SpeechSynthesizer(config, null)
             val voiceListResult = tempSynthesizer.getVoicesAsync("").get()
             var detectedVoiceName = ""
             
             if (voiceListResult.voices != null && voiceListResult.voices.isNotEmpty()) {
-                // ရှာတွေ့သော အသံများထဲမှ မိမိရွေးချယ်ထားသော (Nilar/Thiha) ကို ရွေးထုတ်ခြင်း
                 for (v in voiceListResult.voices) {
                     if (v.name.contains(voiceFolder, ignoreCase = true) || v.shortName.contains(voiceFolder, ignoreCase = true)) {
                         detectedVoiceName = v.name
                         break
                     }
                 }
-                // မတွေ့ပါက ပထမဆုံးအသံကို ယူရန်
                 if (detectedVoiceName.isEmpty()) {
                     detectedVoiceName = voiceListResult.voices[0].name
                 }
-                broadcastLogToUI(context, "Voice detected: $detectedVoiceName")
             } else {
                 onError?.invoke("Voice files not found in ${context.filesDir.absolutePath}")
             }
             tempSynthesizer.close()
-            // -----------------------------
             
             if (detectedVoiceName.isNotEmpty()) {
-                // လမ်းကြောင်း ထပ်မံမပေးတော့ဘဲ null သာ ထားပါမည်
-                config.setSpeechSynthesisVoice(detectedVoiceName, null)
+                // အသံမော်ဒယ်ရှိရာ ဖိုဒါလမ်းကြောင်း
+                val fullVoicePath = File(context.filesDir, voiceFolder).absolutePath
+                
+                // လျှို့ဝှက်ကီးကို am_v5_decoder.bin ဖိုင်ထဲမှ ထုတ်ယူခြင်း
+                val decryptionKey = getDecryptionKey(fullVoicePath)
+                
+                // Key ဖြင့် ချိတ်ဆက်ခြင်း
+                config.setSpeechSynthesisVoice(detectedVoiceName, decryptionKey)
+                if (decryptionKey.isNotEmpty()) {
+                    config.setProperty(PropertyId.SpeechServiceConnection_SynthModelKey, decryptionKey)
+                }
             }
             
             config.setSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm)
