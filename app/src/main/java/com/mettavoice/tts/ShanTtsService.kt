@@ -669,90 +669,6 @@ class ShanTtsService : TextToSpeechService() {
         return totalBytesGenerated
     }
 
-    private fun resampleHighQuality(input: ShortArray, inRate: Int, outRate: Int): ShortArray {
-        if (inRate == outRate) return input
-        val ratio = inRate.toDouble() / outRate.toDouble()
-        val outLen = (input.size / ratio).toInt()
-        val output = ShortArray(outLen)
-
-        for (i in 0 until outLen) {
-            val exactPos = i * ratio
-            val index1 = exactPos.toInt()
-            val index2 = min(index1 + 1, input.size - 1)
-            val fraction = exactPos - index1
-
-            val val1 = input[index1].toDouble()
-            val val2 = input[index2].toDouble()
-
-            val interpolated = val1 + (val2 - val1) * fraction
-            output[i] = interpolated.toInt().toShort()
-        }
-        return output
-    }
-
-    private fun synthesizeEnglishToBytes(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?): Int {
-        var totalWritten = 0
-        try {
-            val tempFile = File(cacheDir, "temp_eng_${System.currentTimeMillis()}.wav")
-            if (tempFile.exists()) tempFile.delete()
-
-            val utteranceId = "eng_${System.nanoTime()}"
-            val latch = CountDownLatch(1)
-            utteranceLatches[utteranceId] = latch
-
-            englishEngine?.setSpeechRate(rate)
-            englishEngine?.setPitch(pitch)
-
-            val params = Bundle()
-            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-            val result = englishEngine?.synthesizeToFile(text, params, tempFile, utteranceId)
-
-            if (result == TextToSpeech.SUCCESS) {
-                latch.await(5, TimeUnit.SECONDS)
-                if (tempFile.exists() && tempFile.length() > 44 && !isStopped && (!isDirectStopped || track == null)) {
-                    val raf = RandomAccessFile(tempFile, "r")
-                    raf.seek(24) 
-                    val srBytes = ByteArray(4)
-                    raf.read(srBytes)
-                    val sampleRate = ByteBuffer.wrap(srBytes).order(ByteOrder.LITTLE_ENDIAN).int
-
-                    raf.seek(44) 
-                    val pcmBytes = ByteArray((tempFile.length() - 44).toInt())
-                    raf.read(pcmBytes)
-                    raf.close()
-                    tempFile.delete()
-
-                    val pcmShorts = ShortArray(pcmBytes.size / 2)
-                    ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmShorts)
-
-                    val finalShorts = if (sampleRate > 0 && sampleRate != OUTPUT_SAMPLE_RATE) {
-                        resampleHighQuality(pcmShorts, sampleRate, OUTPUT_SAMPLE_RATE)
-                    } else {
-                        pcmShorts
-                    }
-
-                    val leadSilence = ByteArray((OUTPUT_SAMPLE_RATE * 200 / 1000) * 2)
-                    writeDirectlyToOutput(leadSilence, callback, track)
-
-                    val byteBuffer = ByteArray(finalShorts.size * 2)
-                    for (i in finalShorts.indices) {
-                        val shortVal = finalShorts[i].toInt()
-                        byteBuffer[i * 2] = (shortVal and 0xFF).toByte()
-                        byteBuffer[i * 2 + 1] = ((shortVal ushr 8) and 0xFF).toByte()
-                    }
-
-                    totalWritten += writeDirectlyToOutput(byteBuffer, callback, track)
-                    
-                    val trailSilence = ByteArray((OUTPUT_SAMPLE_RATE * 250 / 1000) * 2)
-                    writeDirectlyToOutput(trailSilence, callback, track)
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return totalWritten
-    }
-
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         
@@ -791,11 +707,16 @@ class ShanTtsService : TextToSpeechService() {
             }
 
             var myanmarBytesAccumulated = 0
+            var myanmarStartTime = 0L
 
             for (chunk in chunks) {
                 if (isStopped) break
                 
                 if (chunk.lang == "MYANMAR") {
+                    if (myanmarBytesAccumulated == 0) {
+                        myanmarStartTime = System.currentTimeMillis()
+                    }
+                    
                     if (voiceType == "legacy" || voiceType == null) {
                         myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                     } else {
@@ -818,7 +739,46 @@ class ShanTtsService : TextToSpeechService() {
                     }
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
-                    synthesizeEnglishToBytes(chunk.text, systemRate, systemPitch, callback, null)
+                    if (myanmarBytesAccumulated > 0) {
+                        val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
+                        val elapsedTime = System.currentTimeMillis() - myanmarStartTime
+                        val sleepTime = expectedDurationMs - elapsedTime + 300L 
+                        
+                        if (sleepTime > 0) {
+                            var waitTime = sleepTime
+                            while (waitTime > 0 && !isStopped) {
+                                val step = Math.min(30L, waitTime)
+                                try { Thread.sleep(step) } catch (e: Exception) {}
+                                waitTime -= step
+                            }
+                        }
+                        myanmarBytesAccumulated = 0
+                    }
+
+                    if (isStopped) break
+
+                    val utteranceId = "utt_${System.nanoTime()}"
+                    val latch = CountDownLatch(1)
+                    utteranceLatches[utteranceId] = latch
+                    
+                    englishEngine?.setSpeechRate(systemRate)
+                    englishEngine?.setPitch(systemPitch)
+                    
+                    val params = Bundle()
+                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                    
+                    val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+                    if (result == TextToSpeech.SUCCESS) {
+                        try {
+                            val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
+                            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+                            if (!isStopped) Thread.sleep(250L)
+                        } catch (e: InterruptedException) {
+                            isStopped = true
+                        }
+                    } else {
+                        utteranceLatches.remove(utteranceId)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -846,16 +806,7 @@ class ShanTtsService : TextToSpeechService() {
         }
         
         val minBufferSize = AudioTrack.getMinBufferSize(OUTPUT_SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        directAudioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY) 
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-                .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(OUTPUT_SAMPLE_RATE).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-                .setBufferSizeInBytes(minBufferSize * 2)
-                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-                .setTransferMode(AudioTrack.MODE_STREAM).build()
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        directAudioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY) 
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
@@ -903,10 +854,15 @@ class ShanTtsService : TextToSpeechService() {
 
         val chunks = TTSUtils.splitText(text)
         var myanmarBytesAccumulated = 0
+        var myanmarStartTime = 0L
 
         for (chunk in chunks) {
             if (isDirectStopped) break
             if (chunk.lang == "MYANMAR") {
+                if (myanmarBytesAccumulated == 0) {
+                    myanmarStartTime = System.currentTimeMillis()
+                }
+                
                 if (voiceType == "legacy" || voiceType == null) {
                     myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                 } else {
@@ -929,7 +885,45 @@ class ShanTtsService : TextToSpeechService() {
                 }
                 
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
-                synthesizeEnglishToBytes(chunk.text, 1.0f, 1.0f, null, directAudioTrack)
+                if (myanmarBytesAccumulated > 0) {
+                    val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
+                    val elapsedTime = System.currentTimeMillis() - myanmarStartTime
+                    val sleepTime = expectedDurationMs - elapsedTime + 300L
+                    if (sleepTime > 0) {
+                        var waitTime = sleepTime
+                        while (waitTime > 0 && !isDirectStopped) {
+                            val step = Math.min(30L, waitTime)
+                            try { Thread.sleep(step) } catch (e: Exception) {}
+                            waitTime -= step
+                        }
+                    }
+                    myanmarBytesAccumulated = 0
+                }
+
+                if (isDirectStopped) break
+
+                val utteranceId = "utt_${System.nanoTime()}"
+                val latch = CountDownLatch(1)
+                utteranceLatches[utteranceId] = latch
+                
+                englishEngine?.setSpeechRate(1.0f)
+                englishEngine?.setPitch(1.0f)
+                
+                val params = Bundle()
+                params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                
+                val result = englishEngine?.speak(chunk.text, TextToSpeech.QUEUE_ADD, params, utteranceId)
+                if (result == TextToSpeech.SUCCESS) {
+                    try {
+                        val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
+                        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+                        if (!isDirectStopped) Thread.sleep(250L)
+                    } catch (e: InterruptedException) {
+                        isDirectStopped = true
+                    }
+                } else {
+                    utteranceLatches.remove(utteranceId)
+                }
             }
         }
         
