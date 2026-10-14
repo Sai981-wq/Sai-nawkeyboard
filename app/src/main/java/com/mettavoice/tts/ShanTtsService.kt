@@ -708,6 +708,7 @@ class ShanTtsService : TextToSpeechService() {
 
             var myanmarBytesAccumulated = 0
             var myanmarStartTime = 0L
+            var lastMyanmarText = ""
 
             for (chunk in chunks) {
                 if (isStopped) break
@@ -737,12 +738,18 @@ class ShanTtsService : TextToSpeechService() {
                             }
                         }
                     }
+                    lastMyanmarText = chunk.text
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                     if (myanmarBytesAccumulated > 0) {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                        val sleepTime = expectedDurationMs - elapsedTime + 300L 
+                        
+                        val lastMyTextTrimmed = lastMyanmarText.trim()
+                        val hasDot = lastMyTextTrimmed.endsWith(".") || lastMyTextTrimmed.endsWith("။")
+                        val gap = if (hasDot) 50L else 150L 
+                        
+                        val sleepTime = expectedDurationMs - elapsedTime + gap 
                         
                         if (sleepTime > 0) {
                             var waitTime = sleepTime
@@ -772,7 +779,12 @@ class ShanTtsService : TextToSpeechService() {
                         try {
                             val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
                             latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                            if (!isStopped) Thread.sleep(250L)
+                            
+                            val lastEnTextTrimmed = chunk.text.trim()
+                            val hasDot = lastEnTextTrimmed.endsWith(".") || lastEnTextTrimmed.endsWith("။")
+                            val gap = if (hasDot) 50L else 150L
+                            
+                            if (!isStopped) Thread.sleep(gap)
                         } catch (e: InterruptedException) {
                             isStopped = true
                         }
@@ -855,6 +867,7 @@ class ShanTtsService : TextToSpeechService() {
         val chunks = TTSUtils.splitText(text)
         var myanmarBytesAccumulated = 0
         var myanmarStartTime = 0L
+        var lastMyanmarText = ""
 
         for (chunk in chunks) {
             if (isDirectStopped) break
@@ -883,12 +896,18 @@ class ShanTtsService : TextToSpeechService() {
                         }
                     }
                 }
+                lastMyanmarText = chunk.text
                 
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
                 if (myanmarBytesAccumulated > 0) {
                     val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                     val elapsedTime = System.currentTimeMillis() - myanmarStartTime
-                    val sleepTime = expectedDurationMs - elapsedTime + 300L
+                    
+                    val lastMyTextTrimmed = lastMyanmarText.trim()
+                    val hasDot = lastMyTextTrimmed.endsWith(".") || lastMyTextTrimmed.endsWith("။")
+                    val gap = if (hasDot) 50L else 150L
+                    
+                    val sleepTime = expectedDurationMs - elapsedTime + gap
                     if (sleepTime > 0) {
                         var waitTime = sleepTime
                         while (waitTime > 0 && !isDirectStopped) {
@@ -917,7 +936,12 @@ class ShanTtsService : TextToSpeechService() {
                     try {
                         val timeoutMs = Math.max(3000L, (chunk.text.length * 200).toLong())
                         latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-                        if (!isDirectStopped) Thread.sleep(250L)
+                        
+                        val lastEnTextTrimmed = chunk.text.trim()
+                        val hasDot = lastEnTextTrimmed.endsWith(".") || lastEnTextTrimmed.endsWith("။")
+                        val gap = if (hasDot) 50L else 150L
+                        
+                        if (!isDirectStopped) Thread.sleep(gap)
                     } catch (e: InterruptedException) {
                         isDirectStopped = true
                     }
