@@ -342,19 +342,6 @@ class ShanTtsService : TextToSpeechService() {
         return processedText
     }
 
-    // --- (ပြင်ဆင်ချက်) စာသားများကို Space ဖြင့်သာ ဖြတ်ထုတ်ပေးမည့် စနစ် ---
-    private fun chunkTextForNeural(text: String): List<String> {
-        val chunks = mutableListOf<String>()
-        // Space များနှင့် Newline များကို အခြေခံ၍ အပိုင်းပိုင်း ဖြတ်ထုတ်မည်
-        val parts = text.split("\\s+".toRegex())
-        for (part in parts) {
-            if (part.isNotBlank()) {
-                chunks.add(part.trim())
-            }
-        }
-        return chunks
-    }
-
     private fun loadMapFromFile(context: Context, filename: String): Map<String, String> {
         val tempMap = mutableMapOf<String, String>()
         try {
@@ -529,6 +516,34 @@ class ShanTtsService : TextToSpeechService() {
         }
     }
 
+    // တိုက်ရိုက် Output လုပ်မည့် လုပ်ဆောင်ချက် (Sonic ကို ရှောင်ကွင်းသောအခါ အသုံးပြုရန်)
+    private fun writeDirectlyToOutput(byteArray: ByteArray, callback: SynthesisCallback?, track: AudioTrack?): Int {
+        var totalWritten = 0
+        if (callback != null) {
+            val limit = if (callback.maxBufferSize > 0) callback.maxBufferSize else 8192
+            var offset = 0
+            while (offset < byteArray.size && !isStopped) {
+                val chunk = min(limit, byteArray.size - offset)
+                if (chunk <= 0) break
+                if (callback.audioAvailable(byteArray, offset, chunk) == TextToSpeech.ERROR) {
+                    isStopped = true
+                    break
+                }
+                totalWritten += chunk
+                offset += chunk
+            }
+        } else if (track != null) {
+            try {
+                val res = track.write(byteArray, 0, byteArray.size)
+                if (res > 0) totalWritten = res
+                else if (res < 0) isDirectStopped = true
+            } catch (e: Exception) {
+                isDirectStopped = true
+            }
+        }
+        return totalWritten
+    }
+
     private fun synthesizeNeural(context: Context, text: String, voiceType: String?, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?, volume: Int): Int {
         var totalBytesGenerated = 0
         try {
@@ -543,15 +558,25 @@ class ShanTtsService : TextToSpeechService() {
             
             if (result.reason == ResultReason.SynthesizingAudioStarted || result.reason == ResultReason.SynthesizingAudioCompleted) {
                 val stream = AudioDataStream.fromResult(result)
-                val buffer = ByteArray(8192)
+                
+                // ပြင်ဆင်ချက် ၁: Latency ပိုမိုမြန်ဆန်စေရန် Buffer Size အား 8192 မှ 2048 သို့ လျှော့ချထားပါသည်
+                val bufferSize = 2048
+                val buffer = ByteArray(bufferSize)
                 var bytesRead: Long
                 
-                val streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
-                sonicSetSpeed(streamId, rate)
-                sonicSetPitch(streamId, pitch)
+                // ပြင်ဆင်ချက် ၂: Pitch နှင့် Rate ပုံမှန်ဖြစ်နေပါက Sonic ကို ရှောင်ကွင်း၍ (Bypass) တိုက်ရိုက်ထုတ်လွှင့်မည်
+                val bypassSonic = (rate == 1.0f && pitch == 1.0f)
+                var streamId: Long = -1
+                var shortBuffer: ShortArray? = null
+                var outputBuffer: ShortArray? = null
                 
-                val shortBuffer = ShortArray(4096)
-                val outputBuffer = ShortArray(4096)
+                if (!bypassSonic) {
+                    streamId = sonicCreateStream(OUTPUT_SAMPLE_RATE, OUTPUT_CHANNEL_COUNT)
+                    sonicSetSpeed(streamId, rate)
+                    sonicSetPitch(streamId, pitch)
+                    shortBuffer = ShortArray(2048)
+                    outputBuffer = ShortArray(4096)
+                }
                 
                 while (true) {
                     if (isStopped || (track != null && isDirectStopped)) break
@@ -563,12 +588,27 @@ class ShanTtsService : TextToSpeechService() {
                     val pcmShorts = ShortArray(shortsRead)
                     ByteBuffer.wrap(buffer, 0, bytesRead.toInt()).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmShorts)
                     
-                    totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer, 4096, outputBuffer, callback, track, volume)
+                    if (bypassSonic) {
+                        // Sonic မသုံးဘဲ Gain မြှင့်ပြီး တိုက်ရိုက်အသံထွက်စေမည်
+                        applyGain(pcmShorts, shortsRead, 2.8f * (volume / 100f))
+                        val outBytes = ByteArray(shortsRead * 2)
+                        for (i in 0 until shortsRead) {
+                            outBytes[i * 2] = (pcmShorts[i].toInt() and 0xFF).toByte()
+                            outBytes[i * 2 + 1] = ((pcmShorts[i].toInt() ushr 8) and 0xFF).toByte()
+                        }
+                        writeDirectlyToOutput(outBytes, callback, track)
+                        totalBytesGenerated += shortsRead * 2
+                    } else {
+                        // Sonic လိုအပ်ပါက သုံးမည်
+                        totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer!!, 2048, outputBuffer!!, callback, track, volume)
+                    }
                 }
                 
-                sonicFlushStream(streamId)
-                totalBytesGenerated += processSonicOutput(streamId, outputBuffer, callback, track, volume)
-                sonicDestroyStream(streamId)
+                if (!bypassSonic) {
+                    sonicFlushStream(streamId)
+                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume)
+                    sonicDestroyStream(streamId)
+                }
                 stream.close()
                 
             } else if (result.reason == ResultReason.Canceled) {
@@ -638,14 +678,10 @@ class ShanTtsService : TextToSpeechService() {
                     if (voiceType == "legacy" || voiceType == null) {
                         myanmarBytesAccumulated += synthesizeBurmese(chunk.text, finalRate, finalPitch, callback, null, readPunctuation, volume)
                     } else {
-                        val neuralChunks = chunkTextForNeural(chunk.text)
-                        for (nChunk in neuralChunks) {
-                            if (isStopped) break
-                            val neuralBytes = synthesizeNeural(this, nChunk, voiceType, finalRate, finalPitch, callback, null, volume)
-                            // ပြင်ဆင်ချက် ၂: အသံထွက်မရသော စာလုံးများကို Legacy သို့ ပြောင်းမဖတ်တော့ဘဲ အလိုအလျောက် ကျော်သွားမည်
-                            if (neuralBytes > 0) {
-                                myanmarBytesAccumulated += neuralBytes
-                            }
+                        // Neural ဖြင့်ဖတ်မည်၊ Error ရှိပါက ကျော်သွားမည် (Legacy လုံးဝမသုံးပါ)
+                        val neuralBytes = synthesizeNeural(this, chunk.text, voiceType, finalRate, finalPitch, callback, null, volume)
+                        if (neuralBytes > 0) {
+                            myanmarBytesAccumulated += neuralBytes
                         }
                     }
                     
@@ -717,13 +753,25 @@ class ShanTtsService : TextToSpeechService() {
         }
         
         val minBufferSize = AudioTrack.getMinBufferSize(OUTPUT_SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        directAudioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        
+        // ပြင်ဆင်ချက် ၃: AudioTrack အား Low Latency Mode ဖြင့် တည်ဆောက်ခြင်း
+        directAudioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY) 
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
                 .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setSampleRate(OUTPUT_SAMPLE_RATE).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-                .setBufferSizeInBytes(minBufferSize * 2).setTransferMode(AudioTrack.MODE_STREAM).build()
+                .setBufferSizeInBytes(minBufferSize * 2)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY) // ဤနေရာတွင် Low Latency Mode ဖွင့်ထားပါသည်
+                .setTransferMode(AudioTrack.MODE_STREAM).build()
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY) 
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(OUTPUT_SAMPLE_RATE).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                .setBufferSizeInBytes(minBufferSize * 2)
+                .setTransferMode(AudioTrack.MODE_STREAM).build()
         } else {
             @Suppress("DEPRECATION")
             AudioTrack(AudioManager.STREAM_ACCESSIBILITY, OUTPUT_SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufferSize * 2, AudioTrack.MODE_STREAM)
@@ -776,14 +824,9 @@ class ShanTtsService : TextToSpeechService() {
                 if (voiceType == "legacy" || voiceType == null) {
                     myanmarBytesAccumulated += synthesizeBurmese(chunk.text, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, readPunctuation, volume)
                 } else {
-                    val neuralChunks = chunkTextForNeural(chunk.text)
-                    for (nChunk in neuralChunks) {
-                        if (isDirectStopped) break
-                        val neuralBytes = synthesizeNeural(context, nChunk, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume)
-                        // ပြင်ဆင်ချက် ၂: အသံထွက်မရသော စာလုံးများကို Legacy သို့ ပြောင်းမဖတ်တော့ဘဲ အလိုအလျောက် ကျော်သွားမည်
-                        if (neuralBytes > 0) {
-                            myanmarBytesAccumulated += neuralBytes
-                        }
+                    val neuralBytes = synthesizeNeural(context, chunk.text, voiceType, rate.coerceIn(0.1f, 4.0f), pitch.coerceIn(0.5f, 2.0f), null, directAudioTrack, volume)
+                    if (neuralBytes > 0) {
+                        myanmarBytesAccumulated += neuralBytes
                     }
                 }
                 
