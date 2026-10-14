@@ -669,6 +669,90 @@ class ShanTtsService : TextToSpeechService() {
         return totalBytesGenerated
     }
 
+    private fun resampleHighQuality(input: ShortArray, inRate: Int, outRate: Int): ShortArray {
+        if (inRate == outRate) return input
+        val ratio = inRate.toDouble() / outRate.toDouble()
+        val outLen = (input.size / ratio).toInt()
+        val output = ShortArray(outLen)
+
+        for (i in 0 until outLen) {
+            val exactPos = i * ratio
+            val index1 = exactPos.toInt()
+            val index2 = min(index1 + 1, input.size - 1)
+            val fraction = exactPos - index1
+
+            val val1 = input[index1].toDouble()
+            val val2 = input[index2].toDouble()
+
+            val interpolated = val1 + (val2 - val1) * fraction
+            output[i] = interpolated.toInt().toShort()
+        }
+        return output
+    }
+
+    private fun synthesizeEnglishToBytes(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?): Int {
+        var totalWritten = 0
+        try {
+            val tempFile = File(cacheDir, "temp_eng_${System.currentTimeMillis()}.wav")
+            if (tempFile.exists()) tempFile.delete()
+
+            val utteranceId = "eng_${System.nanoTime()}"
+            val latch = CountDownLatch(1)
+            utteranceLatches[utteranceId] = latch
+
+            englishEngine?.setSpeechRate(rate)
+            englishEngine?.setPitch(pitch)
+
+            val params = Bundle()
+            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+            val result = englishEngine?.synthesizeToFile(text, params, tempFile, utteranceId)
+
+            if (result == TextToSpeech.SUCCESS) {
+                latch.await(5, TimeUnit.SECONDS)
+                if (tempFile.exists() && tempFile.length() > 44 && !isStopped && (!isDirectStopped || track == null)) {
+                    val raf = RandomAccessFile(tempFile, "r")
+                    raf.seek(24) 
+                    val srBytes = ByteArray(4)
+                    raf.read(srBytes)
+                    val sampleRate = ByteBuffer.wrap(srBytes).order(ByteOrder.LITTLE_ENDIAN).int
+
+                    raf.seek(44) 
+                    val pcmBytes = ByteArray((tempFile.length() - 44).toInt())
+                    raf.read(pcmBytes)
+                    raf.close()
+                    tempFile.delete()
+
+                    val pcmShorts = ShortArray(pcmBytes.size / 2)
+                    ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmShorts)
+
+                    val finalShorts = if (sampleRate > 0 && sampleRate != OUTPUT_SAMPLE_RATE) {
+                        resampleHighQuality(pcmShorts, sampleRate, OUTPUT_SAMPLE_RATE)
+                    } else {
+                        pcmShorts
+                    }
+
+                    val leadSilence = ByteArray((OUTPUT_SAMPLE_RATE * 200 / 1000) * 2)
+                    writeDirectlyToOutput(leadSilence, callback, track)
+
+                    val byteBuffer = ByteArray(finalShorts.size * 2)
+                    for (i in finalShorts.indices) {
+                        val shortVal = finalShorts[i].toInt()
+                        byteBuffer[i * 2] = (shortVal and 0xFF).toByte()
+                        byteBuffer[i * 2 + 1] = ((shortVal ushr 8) and 0xFF).toByte()
+                    }
+
+                    totalWritten += writeDirectlyToOutput(byteBuffer, callback, track)
+                    
+                    val trailSilence = ByteArray((OUTPUT_SAMPLE_RATE * 250 / 1000) * 2)
+                    writeDirectlyToOutput(trailSilence, callback, track)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return totalWritten
+    }
+
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         
@@ -741,13 +825,20 @@ class ShanTtsService : TextToSpeechService() {
                     lastMyanmarText = chunk.text
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
+                    val isNeural = (voiceType != "legacy" && voiceType != null)
+                    
                     if (myanmarBytesAccumulated > 0) {
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
                         
                         val lastMyTextTrimmed = lastMyanmarText.trim()
                         val hasDot = lastMyTextTrimmed.endsWith(".") || lastMyTextTrimmed.endsWith("။")
-                        val gap = if (hasDot) 50L else 150L 
+                        
+                        val gap = if (isNeural) {
+                            if (hasDot) 50L else 450L
+                        } else {
+                            if (hasDot) 50L else 150L
+                        }
                         
                         val sleepTime = expectedDurationMs - elapsedTime + gap 
                         
@@ -782,9 +873,14 @@ class ShanTtsService : TextToSpeechService() {
                             
                             val lastEnTextTrimmed = chunk.text.trim()
                             val hasDot = lastEnTextTrimmed.endsWith(".") || lastEnTextTrimmed.endsWith("။")
-                            val gap = if (hasDot) 50L else 150L
                             
-                            if (!isStopped) Thread.sleep(gap)
+                            val gap = if (isNeural) {
+                                0L
+                            } else {
+                                if (hasDot) 50L else 150L
+                            }
+                            
+                            if (!isStopped && gap > 0) Thread.sleep(gap)
                         } catch (e: InterruptedException) {
                             isStopped = true
                         }
@@ -899,13 +995,20 @@ class ShanTtsService : TextToSpeechService() {
                 lastMyanmarText = chunk.text
                 
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
+                val isNeural = (voiceType != "legacy" && voiceType != null)
+                
                 if (myanmarBytesAccumulated > 0) {
                     val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                     val elapsedTime = System.currentTimeMillis() - myanmarStartTime
                     
                     val lastMyTextTrimmed = lastMyanmarText.trim()
                     val hasDot = lastMyTextTrimmed.endsWith(".") || lastMyTextTrimmed.endsWith("။")
-                    val gap = if (hasDot) 50L else 150L
+                    
+                    val gap = if (isNeural) {
+                        if (hasDot) 50L else 450L
+                    } else {
+                        if (hasDot) 50L else 150L
+                    }
                     
                     val sleepTime = expectedDurationMs - elapsedTime + gap
                     if (sleepTime > 0) {
@@ -939,9 +1042,14 @@ class ShanTtsService : TextToSpeechService() {
                         
                         val lastEnTextTrimmed = chunk.text.trim()
                         val hasDot = lastEnTextTrimmed.endsWith(".") || lastEnTextTrimmed.endsWith("။")
-                        val gap = if (hasDot) 50L else 150L
                         
-                        if (!isDirectStopped) Thread.sleep(gap)
+                        val gap = if (isNeural) {
+                            0L
+                        } else {
+                            if (hasDot) 50L else 150L
+                        }
+                        
+                        if (!isDirectStopped && gap > 0) Thread.sleep(gap)
                     } catch (e: InterruptedException) {
                         isDirectStopped = true
                     }
