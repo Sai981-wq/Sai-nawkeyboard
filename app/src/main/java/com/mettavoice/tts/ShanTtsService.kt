@@ -81,7 +81,6 @@ class ShanTtsService : TextToSpeechService() {
     private val cachedConfigs = ConcurrentHashMap<String, EmbeddedSpeechConfig>()
     private val neuralLock = Any()
 
-    // Nilar နှင့် Thiha အတွက်သာ သီးသန့်အသုံးပြုမည့် အက္ခရာတစ်လုံးချင်းစီ၏ အသံထွက်များ
     private val neuralSingleCharMap = mapOf(
         "က" to "ကကြီး", "ခ" to "ခခွေး", "ဂ" to "ဂငယ်", "ဃ" to "ဂါ့ကြီး", "င" to "ငါ့",
         "စ" to "စလုံး", "ဆ" to "ဆလိမ်", "ဇ" to "ဇာ့ကွဲ", "ဈ" to "ဈမျဉ်းဆွဲ", "ဉ" to "ဉာ့ကလေး",
@@ -345,15 +344,12 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun convertNumbersInText(text: String): String {
-        // (၁) ဂဏန်းများကြားရှိ (,) ကော်မာများကို အရင်ဖယ်ရှားမည် (ဥပမာ- ၁၀,၀၀၀ -> ၁၀၀၀၀)
-        var processed = text.replace(Regex("([0-9၀-၉]),([0-9၀-၉])"), "$1$2")
-        // ၁၀,၀၀၀,၀၀၀ ကဲ့သို့ ကော်မာအများကြီးပါပါက ထပ်မံဖယ်ရှားရန် Loop သုံးပါသည်
-        while (processed.contains(Regex("([0-9၀-၉]),([0-9၀-၉])"))) {
-            processed = processed.replace(Regex("([0-9၀-၉]),([0-9၀-၉])"), "$1$2")
+        var processed = text.replace(Regex("([၀-၉]),([၀-၉])"), "$1$2")
+        while (processed.contains(Regex("([၀-၉]),([၀-၉])"))) {
+            processed = processed.replace(Regex("([၀-၉]),([၀-၉])"), "$1$2")
         }
 
-        // (၂) ကော်မာများ ကင်းစင်သွားသော ဂဏန်းများကို မြန်မာလို ပေါင်းဖတ်မည်
-        val regex = Regex("[၀-၉0-9]+")
+        val regex = Regex("[၀-၉]+")
         return regex.replace(processed) { matchResult ->
             convertNumberToBurmese(matchResult.value)
         }
@@ -646,13 +642,13 @@ class ShanTtsService : TextToSpeechService() {
                         }
                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                     } else {
-                        totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer!!, 2048, outputBuffer!!, callback, track, volume)
+                        totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer!!, 2048, outputBuffer!!, callback, track, volume, 2.0f)
                     }
                 }
                 
                 if (!bypassSonic) {
                     sonicFlushStream(streamId)
-                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume)
+                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 2.0f)
                     sonicDestroyStream(streamId)
                 }
                 stream.close()
@@ -807,7 +803,6 @@ class ShanTtsService : TextToSpeechService() {
                         for (nChunk in neuralChunks) {
                             if (isStopped) break
                             
-                            // အက္ခရာတစ်လုံးတည်း ဝင်လာပါက Map ထဲမှ အစားထိုးစစ်ဆေးမည်
                             val nChunkTrimmed = nChunk.trim()
                             val textToSynthesize = if (neuralSingleCharMap.containsKey(nChunkTrimmed)) {
                                 neuralSingleCharMap[nChunkTrimmed]!!
@@ -919,7 +914,6 @@ class ShanTtsService : TextToSpeechService() {
                     for (nChunk in neuralChunks) {
                         if (isDirectStopped) break
                         
-                        // အက္ခရာတစ်လုံးတည်း ဝင်လာပါက Map ထဲမှ အစားထိုးစစ်ဆေးမည်
                         val nChunkTrimmed = nChunk.trim()
                         val textToSynthesize = if (neuralSingleCharMap.containsKey(nChunkTrimmed)) {
                             neuralSingleCharMap[nChunkTrimmed]!!
@@ -1099,7 +1093,7 @@ class ShanTtsService : TextToSpeechService() {
                             }
                             totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                         } else {
-                            totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume)
+                            totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 2.0f)
                         }
                         prevTail = null
                     }
@@ -1111,7 +1105,7 @@ class ShanTtsService : TextToSpeechService() {
                         }
                     } else {
                         writeSilenceToSonic(streamId, pauseDuration)
-                        totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume)
+                        totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 2.0f)
                     }
                     continue
                 }
@@ -1155,7 +1149,7 @@ class ShanTtsService : TextToSpeechService() {
                                         }
                                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                     } else {
-                                        totalBytesGenerated += feedToSonic(streamId, prevMain, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume)
+                                        totalBytesGenerated += feedToSonic(streamId, prevMain, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 2.0f)
                                     }
                                 }
                                 
@@ -1168,7 +1162,7 @@ class ShanTtsService : TextToSpeechService() {
                                     }
                                     totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                 } else {
-                                    totalBytesGenerated += feedToSonic(streamId, crossfaded, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume)
+                                    totalBytesGenerated += feedToSonic(streamId, crossfaded, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 2.0f)
                                 }
 
                                 val currentRemaining = pcmShorts.copyOfRange(crossfadeLen, pcmShorts.size)
@@ -1183,7 +1177,7 @@ class ShanTtsService : TextToSpeechService() {
                                         }
                                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                     } else {
-                                        totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume)
+                                        totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 2.0f)
                                     }
                                     prevTail = currentRemaining.copyOfRange(currentRemaining.size - CROSSFADE_SAMPLES, currentRemaining.size)
                                 } else {
@@ -1199,7 +1193,7 @@ class ShanTtsService : TextToSpeechService() {
                                     }
                                     totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                 } else {
-                                    totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume)
+                                    totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 2.0f)
                                 }
                                 
                                 if (pcmShorts.size > CROSSFADE_SAMPLES) {
@@ -1213,7 +1207,7 @@ class ShanTtsService : TextToSpeechService() {
                                         }
                                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                     } else {
-                                        totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume)
+                                        totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 2.0f)
                                     }
                                     prevTail = pcmShorts.copyOfRange(pcmShorts.size - CROSSFADE_SAMPLES, pcmShorts.size)
                                 } else {
@@ -1233,7 +1227,7 @@ class ShanTtsService : TextToSpeechService() {
                                     }
                                     totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                 } else {
-                                    totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume)
+                                    totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 2.0f)
                                 }
                                 prevTail = pcmShorts.copyOfRange(pcmShorts.size - CROSSFADE_SAMPLES, pcmShorts.size)
                             } else {
@@ -1255,14 +1249,14 @@ class ShanTtsService : TextToSpeechService() {
                         }
                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                     } else {
-                        totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume)
+                        totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 2.0f)
                     }
                 }
             }
             
             if (!bypassSonic) {
                 sonicFlushStream(streamId)
-                totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume)
+                totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 2.0f)
             }
 
             if ((callback != null && !isStopped) || (track != null && !isDirectStopped)) {
@@ -1278,7 +1272,7 @@ class ShanTtsService : TextToSpeechService() {
         return totalBytesGenerated
     }
 
-    private fun feedToSonic(streamId: Long, data: ShortArray, shortBuffer: ShortArray, bufferSize: Int, outputBuffer: ShortArray, callback: SynthesisCallback?, track: AudioTrack?, volume: Int): Int {
+    private fun feedToSonic(streamId: Long, data: ShortArray, shortBuffer: ShortArray, bufferSize: Int, outputBuffer: ShortArray, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, gainMultiplier: Float = 2.0f): Int {
         var inputOffset = 0
         var totalWritten = 0
         while (inputOffset < data.size) {
@@ -1288,13 +1282,13 @@ class ShanTtsService : TextToSpeechService() {
             val inputLen = min(bufferSize, data.size - inputOffset)
             System.arraycopy(data, inputOffset, shortBuffer, 0, inputLen)
             sonicWriteShortToStream(streamId, shortBuffer, inputLen)
-            totalWritten += processSonicOutput(streamId, outputBuffer, callback, track, volume)
+            totalWritten += processSonicOutput(streamId, outputBuffer, callback, track, volume, gainMultiplier)
             inputOffset += inputLen
         }
         return totalWritten
     }
 
-    private fun processSonicOutput(streamId: Long, outputBuffer: ShortArray, callback: SynthesisCallback?, track: AudioTrack?, volume: Int): Int {
+    private fun processSonicOutput(streamId: Long, outputBuffer: ShortArray, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, gainMultiplier: Float = 2.0f): Int {
         var totalWritten = 0
         while (sonicSamplesAvailable(streamId) > 0) {
             if (callback != null && isStopped) break
@@ -1302,7 +1296,7 @@ class ShanTtsService : TextToSpeechService() {
             
             val readCount = sonicReadShortFromStream(streamId, outputBuffer, outputBuffer.size)
             if (readCount > 0) {
-                applyGain(outputBuffer, readCount, 2.0f * (volume / 100f))
+                applyGain(outputBuffer, readCount, gainMultiplier * (volume / 100f))
                 
                 val byteArray = ByteArray(readCount * 2)
                 for (i in 0 until readCount) {
@@ -1356,6 +1350,7 @@ class ShanTtsService : TextToSpeechService() {
     }
 
     private fun applyGain(audio: ShortArray, length: Int, gain: Float) {
+        if (gain == 1.0f) return 
         for (i in 0 until length) {
             val amplified = (audio[i] * gain).toInt()
             audio[i] = amplified.coerceIn(-32768, 32767).toShort()
