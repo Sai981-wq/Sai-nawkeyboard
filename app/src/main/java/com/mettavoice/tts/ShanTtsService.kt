@@ -471,25 +471,6 @@ class ShanTtsService : TextToSpeechService() {
         utteranceLatches.clear()
     }
 
-    private fun findVoiceModelPath(dir: File): String? {
-        if (!dir.exists() || !dir.isDirectory) return null
-        val files = dir.listFiles() ?: return null
-        
-        for (file in files) {
-            if (file.isFile && file.name.equals("Tokens.xml", ignoreCase = true)) {
-                return dir.absolutePath
-            }
-        }
-        
-        for (file in files) {
-            if (file.isDirectory) {
-                val found = findVoiceModelPath(file)
-                if (found != null) return found
-            }
-        }
-        return null
-    }
-
     private fun getDecryptionKey(dir: File): String {
         if (!dir.exists() || !dir.isDirectory) return ""
         val files = dir.listFiles() ?: return ""
@@ -669,90 +650,6 @@ class ShanTtsService : TextToSpeechService() {
         return totalBytesGenerated
     }
 
-    private fun resampleHighQuality(input: ShortArray, inRate: Int, outRate: Int): ShortArray {
-        if (inRate == outRate) return input
-        val ratio = inRate.toDouble() / outRate.toDouble()
-        val outLen = (input.size / ratio).toInt()
-        val output = ShortArray(outLen)
-
-        for (i in 0 until outLen) {
-            val exactPos = i * ratio
-            val index1 = exactPos.toInt()
-            val index2 = min(index1 + 1, input.size - 1)
-            val fraction = exactPos - index1
-
-            val val1 = input[index1].toDouble()
-            val val2 = input[index2].toDouble()
-
-            val interpolated = val1 + (val2 - val1) * fraction
-            output[i] = interpolated.toInt().toShort()
-        }
-        return output
-    }
-
-    private fun synthesizeEnglishToBytes(text: String, rate: Float, pitch: Float, callback: SynthesisCallback?, track: AudioTrack?): Int {
-        var totalWritten = 0
-        try {
-            val tempFile = File(cacheDir, "temp_eng_${System.currentTimeMillis()}.wav")
-            if (tempFile.exists()) tempFile.delete()
-
-            val utteranceId = "eng_${System.nanoTime()}"
-            val latch = CountDownLatch(1)
-            utteranceLatches[utteranceId] = latch
-
-            englishEngine?.setSpeechRate(rate)
-            englishEngine?.setPitch(pitch)
-
-            val params = Bundle()
-            params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
-            val result = englishEngine?.synthesizeToFile(text, params, tempFile, utteranceId)
-
-            if (result == TextToSpeech.SUCCESS) {
-                latch.await(5, TimeUnit.SECONDS)
-                if (tempFile.exists() && tempFile.length() > 44 && !isStopped && (!isDirectStopped || track == null)) {
-                    val raf = RandomAccessFile(tempFile, "r")
-                    raf.seek(24) 
-                    val srBytes = ByteArray(4)
-                    raf.read(srBytes)
-                    val sampleRate = ByteBuffer.wrap(srBytes).order(ByteOrder.LITTLE_ENDIAN).int
-
-                    raf.seek(44) 
-                    val pcmBytes = ByteArray((tempFile.length() - 44).toInt())
-                    raf.read(pcmBytes)
-                    raf.close()
-                    tempFile.delete()
-
-                    val pcmShorts = ShortArray(pcmBytes.size / 2)
-                    ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmShorts)
-
-                    val finalShorts = if (sampleRate > 0 && sampleRate != OUTPUT_SAMPLE_RATE) {
-                        resampleHighQuality(pcmShorts, sampleRate, OUTPUT_SAMPLE_RATE)
-                    } else {
-                        pcmShorts
-                    }
-
-                    val leadSilence = ByteArray((OUTPUT_SAMPLE_RATE * 200 / 1000) * 2)
-                    writeDirectlyToOutput(leadSilence, callback, track)
-
-                    val byteBuffer = ByteArray(finalShorts.size * 2)
-                    for (i in finalShorts.indices) {
-                        val shortVal = finalShorts[i].toInt()
-                        byteBuffer[i * 2] = (shortVal and 0xFF).toByte()
-                        byteBuffer[i * 2 + 1] = ((shortVal ushr 8) and 0xFF).toByte()
-                    }
-
-                    totalWritten += writeDirectlyToOutput(byteBuffer, callback, track)
-                    
-                    val trailSilence = ByteArray((OUTPUT_SAMPLE_RATE * 250 / 1000) * 2)
-                    writeDirectlyToOutput(trailSilence, callback, track)
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return totalWritten
-    }
-
     override fun onSynthesizeText(request: SynthesisRequest, callback: SynthesisCallback) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         
@@ -835,9 +732,9 @@ class ShanTtsService : TextToSpeechService() {
                         val hasDot = lastMyTextTrimmed.endsWith(".") || lastMyTextTrimmed.endsWith("။")
                         
                         val gap = if (isNeural) {
-                            if (hasDot) 50L else 450L
+                            if (hasDot) 50L else 150L 
                         } else {
-                            if (hasDot) 50L else 150L
+                            if (hasDot) 50L else 50L 
                         }
                         
                         val sleepTime = expectedDurationMs - elapsedTime + gap 
@@ -877,7 +774,7 @@ class ShanTtsService : TextToSpeechService() {
                             val gap = if (isNeural) {
                                 0L
                             } else {
-                                if (hasDot) 50L else 150L
+                                if (hasDot) 50L else 50L 
                             }
                             
                             if (!isStopped && gap > 0) Thread.sleep(gap)
@@ -1005,9 +902,9 @@ class ShanTtsService : TextToSpeechService() {
                     val hasDot = lastMyTextTrimmed.endsWith(".") || lastMyTextTrimmed.endsWith("။")
                     
                     val gap = if (isNeural) {
-                        if (hasDot) 50L else 450L
+                        if (hasDot) 50L else 150L 
                     } else {
-                        if (hasDot) 50L else 150L
+                        if (hasDot) 50L else 50L 
                     }
                     
                     val sleepTime = expectedDurationMs - elapsedTime + gap
@@ -1046,7 +943,7 @@ class ShanTtsService : TextToSpeechService() {
                         val gap = if (isNeural) {
                             0L
                         } else {
-                            if (hasDot) 50L else 150L
+                            if (hasDot) 50L else 50L 
                         }
                         
                         if (!isDirectStopped && gap > 0) Thread.sleep(gap)
@@ -1248,7 +1145,8 @@ class ShanTtsService : TextToSpeechService() {
                 if (encodedBytes != null && encodedBytes.isNotEmpty()) {
                     val originalPcm = decodeOpus(encodedBytes, encodedBytes.size)
                     if (originalPcm != null && originalPcm.isNotEmpty()) {
-                        val pauseSamples = (OUTPUT_SAMPLE_RATE * 25) / 1000
+                        
+                        val pauseSamples = (OUTPUT_SAMPLE_RATE * 10) / 1000
                         val pcmShorts = ShortArray(originalPcm.size + pauseSamples)
                         System.arraycopy(originalPcm, 0, pcmShorts, 0, originalPcm.size)
 
@@ -1383,11 +1281,6 @@ class ShanTtsService : TextToSpeechService() {
             if (!bypassSonic) {
                 sonicFlushStream(streamId)
                 totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 2.0f)
-            }
-
-            if ((callback != null && !isStopped) || (track != null && !isDirectStopped)) {
-                val postSilence = ByteArray((OUTPUT_SAMPLE_RATE * 150 / 1000) * 2)
-                totalBytesGenerated += writeDirectlyToOutput(postSilence, callback, track)
             }
 
         } finally {
