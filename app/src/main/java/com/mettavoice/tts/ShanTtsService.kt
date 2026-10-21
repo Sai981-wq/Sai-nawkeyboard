@@ -626,7 +626,7 @@ class ShanTtsService : TextToSpeechService() {
                     ByteBuffer.wrap(buffer, 0, bytesRead.toInt()).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmShorts)
                     
                     if (bypassSonic) {
-                        applyGain(pcmShorts, shortsRead, 2.5f * (volume / 100f))
+                        applyGain(pcmShorts, shortsRead, 1.0f * (volume / 100f))
                         val outBytes = ByteArray(shortsRead * 2)
                         for (i in 0 until shortsRead) {
                             outBytes[i * 2] = (pcmShorts[i].toInt() and 0xFF).toByte()
@@ -634,13 +634,13 @@ class ShanTtsService : TextToSpeechService() {
                         }
                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                     } else {
-                        totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer!!, 2048, outputBuffer!!, callback, track, volume, 2.5f)
+                        totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer!!, 2048, outputBuffer!!, callback, track, volume, 1.0f)
                     }
                 }
                 
                 if (!bypassSonic) {
                     sonicFlushStream(streamId)
-                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 2.5f)
+                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 1.0f)
                     sonicDestroyStream(streamId)
                 }
                 stream.close()

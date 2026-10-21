@@ -9,8 +9,9 @@
 
 extern "C" {
 
-// 24kHz Quality အတွက် 3 မှ 2 သို့ ပြင်ဆင်ထားပါသည် (48000 / 2 = 24000)
 #define DOWNSAMPLE_RATIO 2
+#define OPUS_VOLUME_GAIN 2.0f 
+#define SONIC_OUT_GAIN 1.5f 
 
 JNIEXPORT jlong JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicCreateStream(JNIEnv *env, jobject thiz, jint sampleRate, jint numChannels) {
@@ -34,17 +35,27 @@ Java_com_mettavoice_tts_ShanTtsService_sonicSetPitch(JNIEnv *env, jobject thiz, 
 
 JNIEXPORT jint JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicWriteShortToStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
-    jshort *data = env->GetShortArrayElements(audioData, NULL);
+    jshort *data = (jshort *) env->GetPrimitiveArrayCritical(audioData, 0);
     int ret = sonicWriteShortToStream((sonicStream) (intptr_t) streamId, data, len);
-    env->ReleaseShortArrayElements(audioData, data, JNI_ABORT);
+    env->ReleasePrimitiveArrayCritical(audioData, data, JNI_ABORT);
     return ret;
 }
 
 JNIEXPORT jint JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicReadShortFromStream(JNIEnv *env, jobject thiz, jlong streamId, jshortArray audioData, jint len) {
-    jshort *data = env->GetShortArrayElements(audioData, NULL);
+    jshort *data = (jshort *) env->GetPrimitiveArrayCritical(audioData, 0);
     int ret = sonicReadShortFromStream((sonicStream) (intptr_t) streamId, data, len);
-    env->ReleaseShortArrayElements(audioData, data, 0);
+    
+    if (ret > 0) {
+        for (int i = 0; i < ret; i++) {
+            float sample = data[i] * SONIC_OUT_GAIN;
+            if (sample > 32767.0f) sample = 32767.0f;
+            if (sample < -32768.0f) sample = -32768.0f;
+            data[i] = (jshort)sample;
+        }
+    }
+
+    env->ReleasePrimitiveArrayCritical(audioData, data, 0);
     return ret;
 }
 
@@ -70,17 +81,19 @@ JNIEXPORT jshortArray JNICALL
 Java_com_mettavoice_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jbyteArray encodedData, jint len) {
     if (encodedData == nullptr || len <= 0) return nullptr;
 
-    jbyte *opusData = env->GetByteArrayElements(encodedData, nullptr);
+    jbyte *opusData = (jbyte *) env->GetPrimitiveArrayCritical(encodedData, 0);
     
     int error = 0;
     OpusDecoder *decoder = opus_decoder_create(48000, 1, &error);
     
     if (error != OPUS_OK || decoder == nullptr) {
-        env->ReleaseByteArrayElements(encodedData, opusData, JNI_ABORT);
+        env->ReleasePrimitiveArrayCritical(encodedData, opusData, JNI_ABORT);
         return nullptr;
     }
 
-    std::vector<opus_int16> allPcm48k;
+    std::vector<opus_int16> pcmOutput;
+    pcmOutput.reserve(len * 10);
+
     int offset = 0;
 
     while (offset + 2 <= len) {
@@ -93,37 +106,33 @@ Java_com_mettavoice_tts_ShanTtsService_decodeOpus(JNIEnv *env, jobject thiz, jby
         int samplesRead = opus_decode(decoder, (const unsigned char*)(opusData + offset), packetSize, pcm_buffer, 5760, 0);
 
         if (samplesRead > 0) {
-            for (int i = 0; i < samplesRead; i++) {
-                allPcm48k.push_back(pcm_buffer[i]);
+            for (int i = 0; i + DOWNSAMPLE_RATIO <= samplesRead; i += DOWNSAMPLE_RATIO) {
+                float sum = 0.0f;
+                for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
+                    sum += (float)pcm_buffer[i + j];
+                }
+                
+                float avg = (sum / DOWNSAMPLE_RATIO) * OPUS_VOLUME_GAIN;
+                
+                if (avg > 32767.0f) avg = 32767.0f;
+                if (avg < -32768.0f) avg = -32768.0f;
+                
+                pcmOutput.push_back((opus_int16)avg);
             }
         }
         offset += packetSize;
     }
 
     opus_decoder_destroy(decoder);
-    env->ReleaseByteArrayElements(encodedData, opusData, JNI_ABORT);
-
-    if (allPcm48k.empty()) return nullptr;
-
-    int totalSamples = (int)allPcm48k.size();
-    std::vector<opus_int16> pcmOutput;
-    pcmOutput.reserve(totalSamples / DOWNSAMPLE_RATIO + 1);
-
-    for (int i = 0; i + DOWNSAMPLE_RATIO <= totalSamples; i += DOWNSAMPLE_RATIO) {
-        float sum = 0.0f;
-        for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
-            sum += (float)allPcm48k[i + j];
-        }
-        float avg = sum / DOWNSAMPLE_RATIO;
-        if (avg > 32767.0f) avg = 32767.0f;
-        if (avg < -32768.0f) avg = -32768.0f;
-        pcmOutput.push_back((opus_int16)avg);
-    }
+    env->ReleasePrimitiveArrayCritical(encodedData, opusData, JNI_ABORT);
 
     if (pcmOutput.empty()) return nullptr;
 
     jshortArray result = env->NewShortArray(pcmOutput.size());
-    env->SetShortArrayRegion(result, 0, pcmOutput.size(), pcmOutput.data());
+    
+    jshort *resData = (jshort *) env->GetPrimitiveArrayCritical(result, 0);
+    std::memcpy(resData, pcmOutput.data(), pcmOutput.size() * sizeof(opus_int16));
+    env->ReleasePrimitiveArrayCritical(result, resData, 0);
 
     return result;
 }
