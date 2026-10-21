@@ -28,6 +28,18 @@ android {
     // ဖိုင်နှစ်ခု ထပ်နေခဲ့ပါက ပထမဖိုင်ကိုသာ ယူသုံးရန် စည်းမျဉ်း
     packagingOptions {
         pickFirst 'lib/**/*.so'
+
+        // TTS-only app: exclude unused speech-recognition and keyword-spotting
+        // extensions, including copies supplied by the Speech SDK AAR.
+        // Keep embedded TTS, ONNX Runtime, telemetry and both configured ABIs.
+        exclude 'lib/arm64-v8a/libMicrosoft.CognitiveServices.Speech.extension.embedded.sr.so'
+        exclude 'lib/armeabi-v7a/libMicrosoft.CognitiveServices.Speech.extension.embedded.sr.so'
+        exclude 'lib/arm64-v8a/libMicrosoft.CognitiveServices.Speech.extension.embedded.sr.runtime.so'
+        exclude 'lib/armeabi-v7a/libMicrosoft.CognitiveServices.Speech.extension.embedded.sr.runtime.so'
+        exclude 'lib/arm64-v8a/libMicrosoft.CognitiveServices.Speech.extension.kws.so'
+        exclude 'lib/armeabi-v7a/libMicrosoft.CognitiveServices.Speech.extension.kws.so'
+        exclude 'lib/arm64-v8a/libMicrosoft.CognitiveServices.Speech.extension.kws.ort.so'
+        exclude 'lib/armeabi-v7a/libMicrosoft.CognitiveServices.Speech.extension.kws.ort.so'
     }
 
     signingConfigs {
@@ -86,4 +98,3 @@ if (signingPropertiesFile.exists()) {
     android.signingConfigs.release.keyAlias = props['keyAlias']
     android.signingConfigs.release.keyPassword = props['keyPassword']
 }
-

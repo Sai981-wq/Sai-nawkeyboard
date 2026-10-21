@@ -626,7 +626,7 @@ class ShanTtsService : TextToSpeechService() {
                     ByteBuffer.wrap(buffer, 0, bytesRead.toInt()).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcmShorts)
                     
                     if (bypassSonic) {
-                        applyGain(pcmShorts, shortsRead, 3.0f * (volume / 100f))
+                        applyGain(pcmShorts, shortsRead, 2.5f * (volume / 100f))
                         val outBytes = ByteArray(shortsRead * 2)
                         for (i in 0 until shortsRead) {
                             outBytes[i * 2] = (pcmShorts[i].toInt() and 0xFF).toByte()
@@ -634,13 +634,13 @@ class ShanTtsService : TextToSpeechService() {
                         }
                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                     } else {
-                        totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer!!, 2048, outputBuffer!!, callback, track, volume, 3.0f)
+                        totalBytesGenerated += feedToSonic(streamId, pcmShorts, shortBuffer!!, 2048, outputBuffer!!, callback, track, volume, 2.5f)
                     }
                 }
                 
                 if (!bypassSonic) {
                     sonicFlushStream(streamId)
-                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 3.0f)
+                    totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 2.5f)
                     sonicDestroyStream(streamId)
                 }
                 stream.close()
@@ -1117,7 +1117,7 @@ class ShanTtsService : TextToSpeechService() {
                     if (prevTail != null) {
                         applyFadeOut(prevTail, prevTail.size)
                         if (bypassSonic) {
-                            applyGain(prevTail, prevTail.size, 3.0f * (volume / 100f))
+                            applyGain(prevTail, prevTail.size, 1.0f * (volume / 100f))
                             val outBytes = ByteArray(prevTail.size * 2)
                             for (i in prevTail.indices) {
                                 outBytes[i * 2] = (prevTail[i].toInt() and 0xFF).toByte()
@@ -1125,7 +1125,7 @@ class ShanTtsService : TextToSpeechService() {
                             }
                             totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                         } else {
-                            totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 3.0f)
+                            totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 1.0f)
                         }
                         prevTail = null
                     }
@@ -1137,7 +1137,7 @@ class ShanTtsService : TextToSpeechService() {
                         }
                     } else {
                         writeSilenceToSonic(streamId, pauseDuration)
-                        totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 3.0f)
+                        totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 1.0f)
                     }
                     continue
                 }
@@ -1174,7 +1174,7 @@ class ShanTtsService : TextToSpeechService() {
                                 if (prevMainLen > 0) {
                                     val prevMain = prevTail.copyOfRange(0, prevMainLen)
                                     if (bypassSonic) {
-                                        applyGain(prevMain, prevMain.size, 3.0f * (volume / 100f))
+                                        applyGain(prevMain, prevMain.size, 1.0f * (volume / 100f))
                                         val outBytes = ByteArray(prevMain.size * 2)
                                         for (i in prevMain.indices) {
                                             outBytes[i * 2] = (prevMain[i].toInt() and 0xFF).toByte()
@@ -1182,12 +1182,12 @@ class ShanTtsService : TextToSpeechService() {
                                         }
                                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                     } else {
-                                        totalBytesGenerated += feedToSonic(streamId, prevMain, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 3.0f)
+                                        totalBytesGenerated += feedToSonic(streamId, prevMain, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 1.0f)
                                     }
                                 }
                                 
                                 if (bypassSonic) {
-                                    applyGain(crossfaded, crossfaded.size, 3.0f * (volume / 100f))
+                                    applyGain(crossfaded, crossfaded.size, 1.0f * (volume / 100f))
                                     val outBytes = ByteArray(crossfaded.size * 2)
                                     for (i in crossfaded.indices) {
                                         outBytes[i * 2] = (crossfaded[i].toInt() and 0xFF).toByte()
@@ -1195,14 +1195,14 @@ class ShanTtsService : TextToSpeechService() {
                                     }
                                     totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                 } else {
-                                    totalBytesGenerated += feedToSonic(streamId, crossfaded, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 3.0f)
+                                    totalBytesGenerated += feedToSonic(streamId, crossfaded, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 1.0f)
                                 }
 
                                 val currentRemaining = pcmShorts.copyOfRange(crossfadeLen, pcmShorts.size)
                                 if (currentRemaining.size > CROSSFADE_SAMPLES) {
                                     val mainPart = currentRemaining.copyOfRange(0, currentRemaining.size - CROSSFADE_SAMPLES)
                                     if (bypassSonic) {
-                                        applyGain(mainPart, mainPart.size, 3.0f * (volume / 100f))
+                                        applyGain(mainPart, mainPart.size, 1.0f * (volume / 100f))
                                         val outBytes = ByteArray(mainPart.size * 2)
                                         for (i in mainPart.indices) {
                                             outBytes[i * 2] = (mainPart[i].toInt() and 0xFF).toByte()
@@ -1210,7 +1210,7 @@ class ShanTtsService : TextToSpeechService() {
                                         }
                                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                     } else {
-                                        totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 3.0f)
+                                        totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 1.0f)
                                     }
                                     prevTail = currentRemaining.copyOfRange(currentRemaining.size - CROSSFADE_SAMPLES, currentRemaining.size)
                                 } else {
@@ -1218,7 +1218,7 @@ class ShanTtsService : TextToSpeechService() {
                                 }
                             } else {
                                 if (bypassSonic) {
-                                    applyGain(prevTail, prevTail.size, 3.0f * (volume / 100f))
+                                    applyGain(prevTail, prevTail.size, 1.0f * (volume / 100f))
                                     val outBytes = ByteArray(prevTail.size * 2)
                                     for (i in prevTail.indices) {
                                         outBytes[i * 2] = (prevTail[i].toInt() and 0xFF).toByte()
@@ -1226,13 +1226,13 @@ class ShanTtsService : TextToSpeechService() {
                                     }
                                     totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                 } else {
-                                    totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 3.0f)
+                                    totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 1.0f)
                                 }
                                 
                                 if (pcmShorts.size > CROSSFADE_SAMPLES) {
                                     val mainPart = pcmShorts.copyOfRange(0, pcmShorts.size - CROSSFADE_SAMPLES)
                                     if (bypassSonic) {
-                                        applyGain(mainPart, mainPart.size, 3.0f * (volume / 100f))
+                                        applyGain(mainPart, mainPart.size, 1.0f * (volume / 100f))
                                         val outBytes = ByteArray(mainPart.size * 2)
                                         for (i in mainPart.indices) {
                                             outBytes[i * 2] = (mainPart[i].toInt() and 0xFF).toByte()
@@ -1240,7 +1240,7 @@ class ShanTtsService : TextToSpeechService() {
                                         }
                                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                     } else {
-                                        totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 3.0f)
+                                        totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 1.0f)
                                     }
                                     prevTail = pcmShorts.copyOfRange(pcmShorts.size - CROSSFADE_SAMPLES, pcmShorts.size)
                                 } else {
@@ -1252,7 +1252,7 @@ class ShanTtsService : TextToSpeechService() {
                             if (pcmShorts.size > CROSSFADE_SAMPLES) {
                                 val mainPart = pcmShorts.copyOfRange(0, pcmShorts.size - CROSSFADE_SAMPLES)
                                 if (bypassSonic) {
-                                    applyGain(mainPart, mainPart.size, 3.0f * (volume / 100f))
+                                    applyGain(mainPart, mainPart.size, 1.0f * (volume / 100f))
                                     val outBytes = ByteArray(mainPart.size * 2)
                                     for (i in mainPart.indices) {
                                         outBytes[i * 2] = (mainPart[i].toInt() and 0xFF).toByte()
@@ -1260,7 +1260,7 @@ class ShanTtsService : TextToSpeechService() {
                                     }
                                     totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                                 } else {
-                                    totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 3.0f)
+                                    totalBytesGenerated += feedToSonic(streamId, mainPart, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 1.0f)
                                 }
                                 prevTail = pcmShorts.copyOfRange(pcmShorts.size - CROSSFADE_SAMPLES, pcmShorts.size)
                             } else {
@@ -1274,7 +1274,7 @@ class ShanTtsService : TextToSpeechService() {
                 if ((callback == null || !isStopped) && (track == null || !isDirectStopped)) {
                     applyFadeOut(prevTail, FADE_SAMPLES)
                     if (bypassSonic) {
-                        applyGain(prevTail, prevTail.size, 3.0f * (volume / 100f))
+                        applyGain(prevTail, prevTail.size, 1.0f * (volume / 100f))
                         val outBytes = ByteArray(prevTail.size * 2)
                         for (i in prevTail.indices) {
                             outBytes[i * 2] = (prevTail[i].toInt() and 0xFF).toByte()
@@ -1282,14 +1282,14 @@ class ShanTtsService : TextToSpeechService() {
                         }
                         totalBytesGenerated += writeDirectlyToOutput(outBytes, callback, track)
                     } else {
-                        totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 3.0f)
+                        totalBytesGenerated += feedToSonic(streamId, prevTail, shortBuffer!!, bufferSize, outputBuffer!!, callback, track, volume, 1.0f)
                     }
                 }
             }
             
             if (!bypassSonic) {
                 sonicFlushStream(streamId)
-                totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 3.0f)
+                totalBytesGenerated += processSonicOutput(streamId, outputBuffer!!, callback, track, volume, 1.0f)
             }
 
         } finally {
@@ -1300,7 +1300,7 @@ class ShanTtsService : TextToSpeechService() {
         return totalBytesGenerated
     }
 
-    private fun feedToSonic(streamId: Long, data: ShortArray, shortBuffer: ShortArray, bufferSize: Int, outputBuffer: ShortArray, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, gainMultiplier: Float = 3.0f): Int {
+    private fun feedToSonic(streamId: Long, data: ShortArray, shortBuffer: ShortArray, bufferSize: Int, outputBuffer: ShortArray, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, gainMultiplier: Float = 1.0f): Int {
         var inputOffset = 0
         var totalWritten = 0
         while (inputOffset < data.size) {
@@ -1316,7 +1316,7 @@ class ShanTtsService : TextToSpeechService() {
         return totalWritten
     }
 
-    private fun processSonicOutput(streamId: Long, outputBuffer: ShortArray, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, gainMultiplier: Float = 3.0f): Int {
+    private fun processSonicOutput(streamId: Long, outputBuffer: ShortArray, callback: SynthesisCallback?, track: AudioTrack?, volume: Int, gainMultiplier: Float = 1.0f): Int {
         var totalWritten = 0
         while (sonicSamplesAvailable(streamId) > 0) {
             if (callback != null && isStopped) break
