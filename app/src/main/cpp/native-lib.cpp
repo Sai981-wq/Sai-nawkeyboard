@@ -10,8 +10,8 @@
 extern "C" {
 
 #define DOWNSAMPLE_RATIO 2
-#define OPUS_VOLUME_GAIN 2.0f 
-#define SONIC_OUT_GAIN 1.5f 
+#define OPUS_VOLUME_GAIN 0.6f 
+#define SONIC_OUT_GAIN 2.5f 
 
 JNIEXPORT jlong JNICALL
 Java_com_mettavoice_tts_ShanTtsService_sonicCreateStream(JNIEnv *env, jobject thiz, jint sampleRate, jint numChannels) {
