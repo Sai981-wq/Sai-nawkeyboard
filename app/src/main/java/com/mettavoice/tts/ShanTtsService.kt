@@ -215,7 +215,7 @@ class ShanTtsService : TextToSpeechService() {
         if (isUpdate) {
             Thread {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-                if (Build.VERSION.SDK_INT >= 31) {
+                if (Build.VERSION.SDK_INT >= 30) {
                     unzipAsset(context, "Nilar.zip", File(context.filesDir, "Nilar"))
                     unzipAsset(context, "Thiha.zip", File(context.filesDir, "Thiha"))
                 }
@@ -223,7 +223,7 @@ class ShanTtsService : TextToSpeechService() {
                 clearAllNeuralCaches()
 
                 val voiceType = prefs.getString("pref_primary_voice", "legacy")
-                if (voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 31) {
+                if (voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 30) {
                     try {
                         val voiceFolder = if (voiceType.equals("nilar", ignoreCase = true)) "Nilar" else "Thiha"
                         val synth = getNeuralSynthesizer(context, voiceFolder)
@@ -235,7 +235,7 @@ class ShanTtsService : TextToSpeechService() {
             }.start()
         } else {
             val voiceType = prefs.getString("pref_primary_voice", "legacy")
-            if (voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 31) {
+            if (voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 30) {
                 Thread {
                     Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
                     try {
@@ -667,7 +667,7 @@ class ShanTtsService : TextToSpeechService() {
         val prefs = getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
         val readNumbers = prefs.getBoolean("pref_read_numbers", true)
         val voiceType = prefs.getString("pref_primary_voice", "legacy")
-        val useNeural = voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 31
+        val useNeural = voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 30
         
         val rawText = request.charSequenceText?.toString() ?: ""
         val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else fixTypo(rawText, readNumbers)
@@ -856,7 +856,7 @@ class ShanTtsService : TextToSpeechService() {
         val prefs = context.getSharedPreferences("mettavoice_tts_prefs", Context.MODE_PRIVATE)
         val readNumbers = prefs.getBoolean("pref_read_numbers", true)
         val voiceType = prefs.getString("pref_primary_voice", "legacy")
-        val useNeural = voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 31
+        val useNeural = voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 30
         
         val text = if (isExpired()) "စမ်းသပ်ကာလ ပြီးဆုံးသွားပါပြီ အချောသတ်ဗားရှင်းကို စောင့်မျှော်ပေးပါ" else fixTypo(requestText, readNumbers)
         if (text.isBlank()) return
