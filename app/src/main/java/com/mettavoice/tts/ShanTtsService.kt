@@ -221,21 +221,32 @@ class ShanTtsService : TextToSpeechService() {
                 }
                 prefs.edit().putLong("assets_version", currentVersion).apply()
                 clearAllNeuralCaches()
-            }.start()
-        }
 
-        val voiceType = prefs.getString("pref_primary_voice", "legacy")
-        if (voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 31) {
-            Thread {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-                try {
-                    val voiceFolder = if (voiceType.equals("nilar", ignoreCase = true)) "Nilar" else "Thiha"
-                    val synth = getNeuralSynthesizer(context, voiceFolder)
-                    synth?.StartSpeakingTextAsync(" ")?.get()
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                val voiceType = prefs.getString("pref_primary_voice", "legacy")
+                if (voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 31) {
+                    try {
+                        val voiceFolder = if (voiceType.equals("nilar", ignoreCase = true)) "Nilar" else "Thiha"
+                        val synth = getNeuralSynthesizer(context, voiceFolder)
+                        synth?.StartSpeakingTextAsync(" ")?.get()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
                 }
             }.start()
+        } else {
+            val voiceType = prefs.getString("pref_primary_voice", "legacy")
+            if (voiceType != "legacy" && voiceType != null && Build.VERSION.SDK_INT >= 31) {
+                Thread {
+                    Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                    try {
+                        val voiceFolder = if (voiceType.equals("nilar", ignoreCase = true)) "Nilar" else "Thiha"
+                        val synth = getNeuralSynthesizer(context, voiceFolder)
+                        synth?.StartSpeakingTextAsync(" ")?.get()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }.start()
+            }
         }
     }
 
