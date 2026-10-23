@@ -4,7 +4,7 @@ import android.content.Context;
 import android.os.Build;
 import java.nio.charset.StandardCharsets;
 
-/** One encoding decision. Uses Opus for API 29+, fallback to AAC (.m4a) for older devices. */
+/** Fallbacks to AAC (.m4a) for faster network uploads on older devices. */
 final class ShanVoicePayload {
     interface OpusEncoder { byte[] encode(byte[] pcm, int rate) throws Exception; }
     final byte[] bytes;
@@ -20,7 +20,6 @@ final class ShanVoicePayload {
         return new ShanVoicePayload(wav, "speech.wav", "audio/wav");
     }
 
-    /** AAC Encoding အလုပ်မလုပ်မှသာ WAV ကို အသုံးပြုမည် */
     static ShanVoicePayload aacOrWav(Context context, byte[] pcm, int rate) {
         try {
             byte[] aac = ShanAac.encode(context, pcm, rate);
@@ -53,7 +52,6 @@ final class ShanVoicePayload {
         return aacOrWav(context, validated, rate);
     }
 
-    /** Context ကိုပါ ထည့်သွင်းပေးရန် ပြင်ဆင်ထားသည် */
     static ShanVoicePayload completed(Context context, byte[] pcm, int rate, byte[] ogg) {
         byte[] validated = ShanAudioProcessor.prepare(pcm, rate);
         if (ogg != null && ogg.length > 27 && ogg[0] == 'O' && ogg[1] == 'g'

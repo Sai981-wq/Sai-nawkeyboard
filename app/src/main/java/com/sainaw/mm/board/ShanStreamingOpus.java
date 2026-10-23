@@ -7,7 +7,6 @@ import android.media.MediaFormat;
 import android.media.MediaMuxer;
 import android.os.Build;
 import android.os.SystemClock;
-
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -15,10 +14,10 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.concurrent.TimeoutException;
 
-/** Incremental PCM16 mono to Ogg Opus. Construct, write, finish and close on a worker thread. */
+/** Incremental PCM16 mono to Ogg Opus. Bitrate set to 64k. */
 final class ShanStreamingOpus implements AutoCloseable {
     private static final String MIME = "audio/opus";
-    private static final int BIT_RATE = 32_000;
+    private static final int BIT_RATE = 64_000;
     private static final int MAX_PENDING_BYTES = 6_400;
     private static final int MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
     private static final long FINISH_TIMEOUT_MS = 150;
@@ -63,7 +62,6 @@ final class ShanStreamingOpus implements AutoCloseable {
         catch (Exception | Error e) { if(m!=null)try{m.release();}catch(RuntimeException ignored){} if(c!=null){try{c.stop();}catch(RuntimeException ignored){}try{c.release();}catch(RuntimeException ignored){}} created.delete(); throw e; }
         this.temp=created; this.rate=rate; this.codec=c; this.muxer=m; this.clock=SystemClock::elapsedRealtime;
     }
-    /** Package-private seam for deterministic tests. */
     ShanStreamingOpus(File temp, int rate, Codec codec, Muxer muxer, Clock clock) {
         this.temp=temp; this.rate=rate; this.codec=codec; this.muxer=muxer; this.clock=clock;
     }
@@ -120,7 +118,7 @@ final class ShanStreamingOpus implements AutoCloseable {
         int count=Math.min(pendingSize,in.remaining())&~1;
         if(count>0){long pts=submittedSamples*1_000_000L/rate;in.put(pending,0,count);codec.queueInputBuffer(index,0,count,pts,0);submittedSamples+=count/2L;pendingSize-=count;if(pendingSize>0)System.arraycopy(pending,count,pending,0,pendingSize);}
         else if(finishing && pendingSize==0){long pts=submittedSamples*1_000_000L/rate;codec.queueInputBuffer(index,0,0,pts,MediaCodec.BUFFER_FLAG_END_OF_STREAM);inputEos=true;}
-        else { // Never strand a dequeued index when a pathological zero/odd capacity is returned.
+        else {
             codec.queueInputBuffer(index,0,0,submittedSamples*1_000_000L/rate,0);
             throw new IllegalStateException("Encoder input capacity cannot hold a PCM16 sample");
         }
@@ -139,7 +137,7 @@ final class ShanStreamingOpus implements AutoCloseable {
     @Override public synchronized void close(){if(closed)return;closed=true;
         if(muxerStarted)try{muxer.stop();}catch(RuntimeException ignored){} try{muxer.release();}catch(RuntimeException ignored){}
         try{codec.stop();}catch(RuntimeException ignored){} try{codec.release();}catch(RuntimeException ignored){}
-        //noinspection ResultOfMethodCallIgnored
         temp.delete(); pending=Arrays.copyOf(pending,0);
     }
 }
+

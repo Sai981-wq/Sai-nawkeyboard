@@ -9,13 +9,10 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.nio.ByteBuffer;
 
-/** 
- * Offline PCM16-mono to AAC (.m4a) encoder. 
- * Used as a lightweight fallback instead of bulky WAV files.
- */
+/** Offline PCM16-mono to AAC (.m4a) encoder. 64k bitrate for better accuracy. */
 public final class ShanAac {
     private static final String MIME = "audio/mp4a-latm";
-    private static final int BIT_RATE = 32_000;
+    private static final int BIT_RATE = 64_000;
     private static final int CHUNK_MS = 20;
     private static final long CODEC_TIMEOUT_US = 10_000L;
     private static final long WALL_TIMEOUT_MS = 5_000L;
@@ -124,3 +121,4 @@ public final class ShanAac {
         }
     }
 }
+

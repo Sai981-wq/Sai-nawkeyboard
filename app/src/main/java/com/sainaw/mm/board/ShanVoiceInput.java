@@ -19,7 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Explicit action only. PCM in memory, temporary private Opus muxing, AAC fallback, consent-gated upload with Auto-Retry. */
+/** Optimized network upload with fast timeout, auto-spacing, AAC fallback and auto-retry. */
 final class ShanVoiceInput {
     static final String ENDPOINT = "https://myandev-myantts.hf.space/transcribe";
     private static final int RATE = 16000, MAX_PCM_BYTES = RATE * 2 * 30;
@@ -231,7 +231,6 @@ final class ShanVoiceInput {
                 if (encoder != null) {
                     try { ogg = encoder.finish(); } catch (Exception | LinkageError unavailable) { }
                 }
-                // Modified: AAC fallback support required context
                 payload = ShanVoicePayload.completed(service, samples, RATE, ogg);
             }
         } catch (IllegalArgumentException e) { failed = true; }
@@ -264,7 +263,6 @@ final class ShanVoiceInput {
         });
     }
     
-    // Modified: Uses AAC or WAV fallback
     private void upload(byte[] payload, int token) {
         upload(ShanVoicePayload.aacOrWav(service, payload, RATE), token);
     }
@@ -286,13 +284,14 @@ final class ShanVoiceInput {
                     fail("စာပြောင်းချိန် ကျော်လွန်သွားပါပြီ။ အင်တာနက်စစ်ပြီး ပြန်စမ်းပါ။");
                 }
             };
-            main.postDelayed(deadline, 90000); // Changed to 90 seconds
+            // အမြန်ဆုံး တုံ့ပြန်မှုရရန် Timeout ကို စက္ကန့် ၆၀ သို့ လျှော့ချထားပါသည်
+            main.postDelayed(deadline, 60000); 
         };
         if (Looper.myLooper() == Looper.getMainLooper()) updateState.run();
         else main.post(updateState);
         
         try { worker.execute(() -> {
-            int maxRetries = 2; // Auto-Retry 2 times on error
+            int maxRetries = 1; // မြန်ဆန်စေရန် Retry ကို ၁ ကြိမ်သာ ထားပါသည်
             boolean success = false;
             
             for (int attempt = 0; attempt <= maxRetries && !success; attempt++) {
@@ -303,8 +302,10 @@ final class ShanVoiceInput {
                     http = connectionFactory.open();
                     connection = http;
                     http.setRequestMethod("POST");
-                    http.setConnectTimeout(15000); // Short connection timeout
-                    http.setReadTimeout(60000);    // Stream read timeout
+                    
+                    // မြန်ဆန်စေရန် Connection Timeout ကို 8 စက္ကန့်နှင့် Read Timeout ကို 30 စက္ကန့်သာ ထားပါသည်
+                    http.setConnectTimeout(8000); 
+                    http.setReadTimeout(30000);    
                     http.setInstanceFollowRedirects(false);
                     http.setDoOutput(true);
                     
@@ -344,7 +345,8 @@ final class ShanVoiceInput {
                     Object value = new JSONObject(new String(body.toByteArray(), StandardCharsets.UTF_8)).opt("text");
                     if (!(value instanceof String) || ((String)value).trim().isEmpty()) throw new java.io.IOException("Empty text");
                     
-                    final String text = ((String)value).trim();
+                    // စကားစုတစ်စုနှင့်တစ်စုကြား Space ( ) လေး အလိုအလျောက်ခြားပေးရန် ပေါင်းထည့်ထားပါသည်
+                    final String text = ((String)value).trim() + " ";
                     success = true;
                     
                     main.post(() -> {
@@ -353,7 +355,7 @@ final class ShanVoiceInput {
                         if (!hasConsent()) { cancel(); return; }
                         if (service.commitShanTranscript(text)) {
                             cancel(); bells.success();
-                            render("ရှမ်းစာ ထည့်ပြီးပါပြီ။ ဆက်ရိုက်နိုင်ပါသည်။ မှားလျှင် ပုံမှန်ကီးဘုတ်ဖြင့် ပြန်ပြင်နိုင်သည်။");
+                            render("ရှမ်းစာ ထည့်ပြီးပါပြီ။ ဆက်ရိုက်နိုင်ပါသည်။");
                         } else {
                             fail("စာရိုက်နေရာတွင် စာထည့်မရပါ။");
                         }
@@ -366,7 +368,7 @@ final class ShanVoiceInput {
                             fail("စာပြောင်းမရပါ။ အင်တာနက် သို့မဟုတ် ဆာဗာအခြေအနေကို စစ်ပါ။");
                         });
                     } else {
-                        try { Thread.sleep(1500); } catch (InterruptedException ie) {} // Wait 1.5s before retry
+                        try { Thread.sleep(500); } catch (InterruptedException ie) {} // မြန်ဆန်စေရန် Retry စောင့်ချိန် 0.5 စက္ကန့်
                     }
                 } finally {
                     if (http != null) http.disconnect();

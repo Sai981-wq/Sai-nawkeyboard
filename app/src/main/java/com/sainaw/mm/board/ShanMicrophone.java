@@ -6,7 +6,7 @@ import android.media.MediaRecorder;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.NoiseSuppressor;
 
-/** PCM16 mono microphone capture. Platform echo processing is best-effort, never a privacy guarantee. */
+/** PCM16 mono microphone capture. NoiseSuppressor is disabled for raw accuracy. */
 final class ShanMicrophone {
     private ShanMicrophone() { }
 
@@ -30,7 +30,6 @@ final class ShanMicrophone {
         return create(rate, new AndroidPlatform());
     }
 
-    /** Package-private seam allows source/effect/lifecycle tests without real audio hardware. */
     static ShanVoiceInput.CaptureDevice create(int rate, Platform platform) {
         if (rate <= 0) throw new IllegalArgumentException("rate must be positive");
         int min = platform.minBufferSize(rate);
@@ -64,8 +63,11 @@ final class ShanMicrophone {
     private static EffectBundle attachEffects(Platform p, int session, int source) {
         EffectBundle bundle = new EffectBundle();
         bundle.add(createEffect(() -> p.createAec(session)));
+        // ရှင်းလင်းသော သဘာဝအသံ (Raw Audio) ရရှိစေရန် Noise Suppressor ကို ပိတ်ထားပါသည်
+        /*
         if (source != MediaRecorder.AudioSource.VOICE_RECOGNITION)
             bundle.add(createEffect(() -> p.createNoiseSuppressor(session)));
+        */
         return bundle;
     }
     private interface EffectCreator { Effect create(); }
@@ -177,3 +179,4 @@ final class ShanMicrophone {
         }
     }
 }
+

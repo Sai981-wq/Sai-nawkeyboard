@@ -2,19 +2,17 @@ package com.sainaw.mm.board;
 
 import android.content.Context;
 import android.media.MediaCodec;
-import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
 import android.os.Build;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.nio.ByteBuffer;
 
-/** Offline PCM16-mono to Ogg Opus encoder. Call on a worker thread, never the UI thread. */
+/** Offline PCM16-mono to Ogg Opus encoder. Bitrate set to 64k for better accuracy. */
 final class ShanOpus {
     private static final String MIME = "audio/opus";
-    private static final int BIT_RATE = 32_000;
+    private static final int BIT_RATE = 64_000;
     private static final int CHUNK_MS = 20;
     private static final int MAX_AUDIO_MS = 30_000;
     private static final int MAX_PCM_BYTES = 2 * 1024 * 1024;
@@ -23,10 +21,6 @@ final class ShanOpus {
 
     private ShanOpus() { }
 
-    /**
-     * Encodes complete PCM16 mono samples into a real Ogg container (audio/ogg).
-     * API < 29, unsupported codecs, or codec failures throw for the caller to fall back to WAV.
-     */
     static byte[] encode(Context context, byte[] pcm, int rate) throws Exception {
         if (Build.VERSION.SDK_INT < 29) throw new UnsupportedOperationException("Ogg muxing requires Android API 29+");
         if (context == null) throw new IllegalArgumentException("Context must not be null");
@@ -88,7 +82,7 @@ final class ShanOpus {
                 int outputIndex = codec.dequeueOutputBuffer(info, CODEC_TIMEOUT_US);
                 if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     if (muxerStarted) throw new IllegalStateException("Encoder output format changed twice");
-                    track = muxer.addTrack(codec.getOutputFormat()); // includes OpusHead/Tags codec-specific data
+                    track = muxer.addTrack(codec.getOutputFormat());
                     muxer.start();
                     muxerStarted = true;
                 } else if (outputIndex >= 0) {
@@ -105,20 +99,14 @@ final class ShanOpus {
                 }
             }
             if (!muxerStarted) throw new IllegalStateException("Encoder produced no Ogg track");
-            muxer.stop();
-            muxerStarted = false;
-            codec.stop();
-            codecStarted = false;
-            if (temp.length() < 32 || temp.length() > MAX_PCM_BYTES)
-                throw new IllegalStateException("Invalid Ogg output size");
+            muxer.stop(); muxerStarted = false;
+            codec.stop(); codecStarted = false;
+            
             try (FileInputStream in = new FileInputStream(temp); java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream((int) temp.length())) {
                 byte[] buffer = new byte[8192];
                 int n;
                 while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
-                byte[] result = out.toByteArray();
-                if (result.length < 4 || result[0] != 'O' || result[1] != 'g' || result[2] != 'g' || result[3] != 'S')
-                    throw new IllegalStateException("Muxer did not create an Ogg stream");
-                return result;
+                return out.toByteArray();
             }
         } finally {
             if (muxer != null) {
@@ -129,8 +117,8 @@ final class ShanOpus {
                 if (codecStarted) try { codec.stop(); } catch (RuntimeException ignored) { }
                 try { codec.release(); } catch (RuntimeException ignored) { }
             }
-            //noinspection ResultOfMethodCallIgnored
             temp.delete();
         }
     }
 }
+
