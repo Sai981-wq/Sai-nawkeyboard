@@ -1,45 +1,17 @@
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
 }
 
 android {
-    namespace 'com.mettavoice.tts'
-    compileSdk 35
+    namespace 'com.sainaw.mm.board'
+    compileSdk 34
 
     defaultConfig {
-        applicationId "com.mettavoice.tts"
-        minSdk 24
-        targetSdk 35
-        versionCode 8
-        versionName "1.7"
-
-        externalNativeBuild {
-            cmake {
-                cppFlags "-std=c++17"
-            }
-        }
-
-        ndk {
-            abiFilters "armeabi-v7a", "arm64-v8a"
-        }
-    }
-
-    // ဖိုင်နှစ်ခု ထပ်နေခဲ့ပါက ပထမဖိုင်ကိုသာ ယူသုံးရန် စည်းမျဉ်း
-    packagingOptions {
-        pickFirst 'lib/**/*.so'
-
-        // TTS-only app: exclude unused speech-recognition and keyword-spotting
-        // extensions, including copies supplied by the Speech SDK AAR.
-        // Keep embedded TTS, ONNX Runtime, telemetry and both configured ABIs.
-        exclude 'lib/arm64-v8a/libMicrosoft.CognitiveServices.Speech.extension.embedded.sr.so'
-        exclude 'lib/armeabi-v7a/libMicrosoft.CognitiveServices.Speech.extension.embedded.sr.so'
-        exclude 'lib/arm64-v8a/libMicrosoft.CognitiveServices.Speech.extension.embedded.sr.runtime.so'
-        exclude 'lib/armeabi-v7a/libMicrosoft.CognitiveServices.Speech.extension.embedded.sr.runtime.so'
-        exclude 'lib/arm64-v8a/libMicrosoft.CognitiveServices.Speech.extension.kws.so'
-        exclude 'lib/armeabi-v7a/libMicrosoft.CognitiveServices.Speech.extension.kws.so'
-        exclude 'lib/arm64-v8a/libMicrosoft.CognitiveServices.Speech.extension.kws.ort.so'
-        exclude 'lib/armeabi-v7a/libMicrosoft.CognitiveServices.Speech.extension.kws.ort.so'
+        applicationId "com.sainaw.mm.board"
+        minSdk 21
+        targetSdk 34
+        versionCode 19
+        versionName "5.2.12"
     }
 
     signingConfigs {
@@ -49,51 +21,39 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled true
-            shrinkResources true
+            minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
     }
-
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = '17'
-    }
-
-    externalNativeBuild {
-        cmake {
-            path file('src/main/cpp/CMakeLists.txt')
-            version '3.22.1'
+    testOptions {
+        unitTests.includeAndroidResources = true
+        unitTests.all {
+            systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2'
         }
     }
-
-    buildFeatures {
-        viewBinding true
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
     }
 }
 
 dependencies {
-    implementation 'androidx.core:core-ktx:1.15.0'
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'com.google.android.material:material:1.12.0'
-    implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
-    implementation 'androidx.lifecycle:lifecycle-service:2.8.7'
-    
-    // Nilar နှင့် Thiha အော့ဖ်လိုင်း Neural အသံများအတွက် တရားဝင် Microsoft Speech SDK
-    implementation 'com.microsoft.cognitiveservices.speech:client-sdk:1.34.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.12.2'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 }
 
-File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
+String signingPath = System.getenv('SAINAW_SIGNING_PROPERTIES')
+File signingPropertiesFile = signingPath ? new File(signingPath) : rootProject.file('credentials/release.keystore.properties')
 if (signingPropertiesFile.exists()) {
     Properties props = new Properties()
     props.load(new FileInputStream(signingPropertiesFile))
-
-    android.signingConfigs.release.storeFile = rootProject.file('credentials/release.keystore')
+    
+    String suppliedKey = System.getenv('SAINAW_KEYSTORE')
+    android.signingConfigs.release.storeFile = suppliedKey ? new File(suppliedKey) : rootProject.file('credentials/release.keystore')
     android.signingConfigs.release.storePassword = props['storePassword']
     android.signingConfigs.release.keyAlias = props['keyAlias']
     android.signingConfigs.release.keyPassword = props['keyPassword']
