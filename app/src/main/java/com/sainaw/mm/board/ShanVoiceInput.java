@@ -19,7 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Optimized network upload with fast timeout, auto-spacing, AAC fallback and auto-retry. */
+/** Optimized for Speed: Includes Real-Time VAD Auto-Stop (like Google Voice Typing), AAC fallback and auto-retry. */
 final class ShanVoiceInput {
     static final String ENDPOINT = "https://myandev-myantts.hf.space/transcribe";
     private static final int RATE = 16000, MAX_PCM_BYTES = RATE * 2 * 30;
@@ -204,11 +204,38 @@ final class ShanVoiceInput {
     private void capture(CaptureDevice capture, int token, EncodingSession encoder) {
         ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         boolean failed = false;
+        
+        // --- မြန်ဆန်စေရန် Google ကဲ့သို့ Auto-Stop စနစ် ထည့်သွင်းခြင်း ---
+        long lastVoiceTime = System.currentTimeMillis();
+        int silenceThreshold = 800; // အသံတိတ်/မတိတ် ခွဲခြားမည့် အတိုင်းအတာ
+        int maxSilenceMs = 1200; // ၁.၂ စက္ကန့် စကားပြောရပ်သွားပါက အလိုအလျောက် ရပ်တန့်မည်
+
         try {
             byte[] chunk = new byte[640]; 
             while (recording && generation == token && pcm.size() < MAX_PCM_BYTES) {
                 int n = capture.read(chunk, 0, Math.min(chunk.length, MAX_PCM_BYTES - pcm.size()));
                 if (n > 0 && generation == token) {
+                    
+                    // --- Real-time Silence Detection ---
+                    boolean hasVoice = false;
+                    for (int i = 0; i < n - 1; i += 2) {
+                        short sample = (short) ((chunk[i] & 0xFF) | (chunk[i + 1] << 8));
+                        if (Math.abs(sample) > silenceThreshold) {
+                            hasVoice = true;
+                            break;
+                        }
+                    }
+                    
+                    if (hasVoice) {
+                        lastVoiceTime = System.currentTimeMillis(); // အသံဝင်နေပါက အချိန်ကို အသစ်ပြန်မှတ်မည်
+                    } else if (pcm.size() > RATE * 0.8 && (System.currentTimeMillis() - lastVoiceTime) > maxSilenceMs) {
+                        // အနည်းဆုံး ၀.၈ စက္ကန့်ခန့် စကားပြောထားပြီး၊ ၁.၂ စက္ကန့်ခန့် အသံတိတ်သွားပါက ချက်ချင်းရပ်မည်
+                        recording = false;
+                        main.post(this::stopMicrophone); // UI တွင် ရပ်တန့်သွားကြောင်း ပြသမည်
+                        break; // စောင့်ဆိုင်းခြင်းကို ဖြတ်တောက်ပြီး ဆာဗာသို့ ချက်ချင်းပို့မည်
+                    }
+                    // -----------------------------------
+
                     pcm.write(chunk, 0, n);
                     if (encoder != null) {
                         try { encoder.write(chunk, 0, n); }
@@ -284,14 +311,13 @@ final class ShanVoiceInput {
                     fail("စာပြောင်းချိန် ကျော်လွန်သွားပါပြီ။ အင်တာနက်စစ်ပြီး ပြန်စမ်းပါ။");
                 }
             };
-            // အမြန်ဆုံး တုံ့ပြန်မှုရရန် Timeout ကို စက္ကန့် ၆၀ သို့ လျှော့ချထားပါသည်
             main.postDelayed(deadline, 60000); 
         };
         if (Looper.myLooper() == Looper.getMainLooper()) updateState.run();
         else main.post(updateState);
         
         try { worker.execute(() -> {
-            int maxRetries = 1; // မြန်ဆန်စေရန် Retry ကို ၁ ကြိမ်သာ ထားပါသည်
+            int maxRetries = 1; 
             boolean success = false;
             
             for (int attempt = 0; attempt <= maxRetries && !success; attempt++) {
@@ -303,7 +329,6 @@ final class ShanVoiceInput {
                     connection = http;
                     http.setRequestMethod("POST");
                     
-                    // မြန်ဆန်စေရန် Connection Timeout ကို 8 စက္ကန့်နှင့် Read Timeout ကို 30 စက္ကန့်သာ ထားပါသည်
                     http.setConnectTimeout(8000); 
                     http.setReadTimeout(30000);    
                     http.setInstanceFollowRedirects(false);
@@ -345,7 +370,6 @@ final class ShanVoiceInput {
                     Object value = new JSONObject(new String(body.toByteArray(), StandardCharsets.UTF_8)).opt("text");
                     if (!(value instanceof String) || ((String)value).trim().isEmpty()) throw new java.io.IOException("Empty text");
                     
-                    // စကားစုတစ်စုနှင့်တစ်စုကြား Space ( ) လေး အလိုအလျောက်ခြားပေးရန် ပေါင်းထည့်ထားပါသည်
                     final String text = ((String)value).trim() + " ";
                     success = true;
                     
@@ -368,7 +392,7 @@ final class ShanVoiceInput {
                             fail("စာပြောင်းမရပါ။ အင်တာနက် သို့မဟုတ် ဆာဗာအခြေအနေကို စစ်ပါ။");
                         });
                     } else {
-                        try { Thread.sleep(500); } catch (InterruptedException ie) {} // မြန်ဆန်စေရန် Retry စောင့်ချိန် 0.5 စက္ကန့်
+                        try { Thread.sleep(500); } catch (InterruptedException ie) {} 
                     }
                 } finally {
                     if (http != null) http.disconnect();
