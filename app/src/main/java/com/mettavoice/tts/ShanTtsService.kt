@@ -16,6 +16,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import android.util.Base64
 import android.util.Log
 import com.microsoft.cognitiveservices.speech.*
 import java.io.File
@@ -411,7 +412,16 @@ class ShanTtsService : TextToSpeechService() {
                 lines.forEach { line ->
                     val trimmed = line.trim()
                     if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
-                        val parts = trimmed.split("=", limit = 2)
+                        var decodedString = trimmed
+                        try {
+                            val decodedBytes = Base64.decode(trimmed, Base64.DEFAULT)
+                            val tempDecoded = String(decodedBytes, Charsets.UTF_8)
+                            if (tempDecoded.contains("=")) {
+                                decodedString = tempDecoded.trim()
+                            }
+                        } catch (e: Exception) {}
+                        
+                        val parts = decodedString.split("=", limit = 2)
                         if (parts.size == 2) {
                             val key = parts[0].trim()
                             val value = parts[1].trim()
@@ -702,11 +712,13 @@ class ShanTtsService : TextToSpeechService() {
             var myanmarBytesAccumulated = 0
             var myanmarStartTime = 0L
             var lastMyanmarText = ""
+            var wasLastChunkMyanmar = false
 
             for (chunk in chunks) {
                 if (isStopped) break
                 
                 if (chunk.lang == "MYANMAR") {
+                    wasLastChunkMyanmar = true
                     if (myanmarBytesAccumulated == 0) {
                         myanmarStartTime = System.currentTimeMillis()
                     }
@@ -734,23 +746,23 @@ class ShanTtsService : TextToSpeechService() {
                     lastMyanmarText = chunk.text
                     
                 } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
+                    wasLastChunkMyanmar = false
                     if (myanmarBytesAccumulated > 0) {
+                        val minBytes = 8192
+                        if (myanmarBytesAccumulated < minBytes) {
+                            val missing = minBytes - myanmarBytesAccumulated
+                            writeDirectlyToOutput(ByteArray(missing), callback, null)
+                            myanmarBytesAccumulated += missing
+                        }
+                        
                         val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                         val elapsedTime = System.currentTimeMillis() - myanmarStartTime
                         
                         val lastMyTextTrimmed = lastMyanmarText.trim()
                         val hasDot = lastMyTextTrimmed.endsWith(".") || lastMyTextTrimmed.endsWith("။")
+                        val gap = if (hasDot) 50L else 0L
                         
-                        val gap = if (useNeural) {
-                            if (hasDot) 50L else 150L 
-                        } else {
-                            if (hasDot) 50L else 50L 
-                        }
-                        
-                        var sleepTime = expectedDurationMs - elapsedTime + gap
-                        if (expectedDurationMs < 500L) sleepTime += 200L
-                        if (sleepTime < 150L) sleepTime = 150L
-                        
+                        val sleepTime = expectedDurationMs - elapsedTime + gap
                         if (sleepTime > 0) {
                             var waitTime = sleepTime
                             while (waitTime > 0 && !isStopped) {
@@ -782,12 +794,7 @@ class ShanTtsService : TextToSpeechService() {
                             
                             val lastEnTextTrimmed = chunk.text.trim()
                             val hasDot = lastEnTextTrimmed.endsWith(".") || lastEnTextTrimmed.endsWith("။")
-                            
-                            val gap = if (useNeural) {
-                                0L
-                            } else {
-                                if (hasDot) 50L else 50L 
-                            }
+                            val gap = if (hasDot) 50L else 0L
                             
                             if (!isStopped && gap > 0) Thread.sleep(gap)
                         } catch (e: InterruptedException) {
@@ -798,6 +805,29 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 }
             }
+
+            if (wasLastChunkMyanmar && myanmarBytesAccumulated > 0) {
+                val minBytes = 8192
+                if (myanmarBytesAccumulated < minBytes) {
+                    val missing = minBytes - myanmarBytesAccumulated
+                    writeDirectlyToOutput(ByteArray(missing), callback, null)
+                    myanmarBytesAccumulated += missing
+                }
+                
+                val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
+                val elapsedTime = System.currentTimeMillis() - myanmarStartTime
+                val sleepTime = expectedDurationMs - elapsedTime
+                
+                if (sleepTime > 0) {
+                    var waitTime = sleepTime
+                    while (waitTime > 0 && !isStopped) {
+                        val step = Math.min(30L, waitTime)
+                        try { Thread.sleep(step) } catch (e: Exception) {}
+                        waitTime -= step
+                    }
+                }
+            }
+
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
@@ -874,10 +904,12 @@ class ShanTtsService : TextToSpeechService() {
         var myanmarBytesAccumulated = 0
         var myanmarStartTime = 0L
         var lastMyanmarText = ""
+        var wasLastChunkMyanmar = false
 
         for (chunk in chunks) {
             if (isDirectStopped) break
             if (chunk.lang == "MYANMAR") {
+                wasLastChunkMyanmar = true
                 if (myanmarBytesAccumulated == 0) {
                     myanmarStartTime = System.currentTimeMillis()
                 }
@@ -905,23 +937,23 @@ class ShanTtsService : TextToSpeechService() {
                 lastMyanmarText = chunk.text
                 
             } else if (chunk.lang == "ENGLISH" && isEnglishReady) {
+                wasLastChunkMyanmar = false
                 if (myanmarBytesAccumulated > 0) {
+                    val minBytes = 8192
+                    if (myanmarBytesAccumulated < minBytes) {
+                        val missing = minBytes - myanmarBytesAccumulated
+                        writeDirectlyToOutput(ByteArray(missing), null, directAudioTrack)
+                        myanmarBytesAccumulated += missing
+                    }
+                    
                     val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
                     val elapsedTime = System.currentTimeMillis() - myanmarStartTime
                     
                     val lastMyTextTrimmed = lastMyanmarText.trim()
                     val hasDot = lastMyTextTrimmed.endsWith(".") || lastMyTextTrimmed.endsWith("။")
+                    val gap = if (hasDot) 50L else 0L
                     
-                    val gap = if (useNeural) {
-                        if (hasDot) 50L else 150L 
-                    } else {
-                        if (hasDot) 50L else 50L 
-                    }
-                    
-                    var sleepTime = expectedDurationMs - elapsedTime + gap
-                    if (expectedDurationMs < 500L) sleepTime += 200L
-                    if (sleepTime < 150L) sleepTime = 150L
-                    
+                    val sleepTime = expectedDurationMs - elapsedTime + gap
                     if (sleepTime > 0) {
                         var waitTime = sleepTime
                         while (waitTime > 0 && !isDirectStopped) {
@@ -953,12 +985,7 @@ class ShanTtsService : TextToSpeechService() {
                         
                         val lastEnTextTrimmed = chunk.text.trim()
                         val hasDot = lastEnTextTrimmed.endsWith(".") || lastEnTextTrimmed.endsWith("။")
-                        
-                        val gap = if (useNeural) {
-                            0L
-                        } else {
-                            if (hasDot) 50L else 50L 
-                        }
+                        val gap = if (hasDot) 50L else 0L
                         
                         if (!isDirectStopped && gap > 0) Thread.sleep(gap)
                     } catch (e: InterruptedException) {
@@ -966,6 +993,28 @@ class ShanTtsService : TextToSpeechService() {
                     }
                 } else {
                     utteranceLatches.remove(utteranceId)
+                }
+            }
+        }
+
+        if (wasLastChunkMyanmar && myanmarBytesAccumulated > 0) {
+            val minBytes = 8192
+            if (myanmarBytesAccumulated < minBytes) {
+                val missing = minBytes - myanmarBytesAccumulated
+                writeDirectlyToOutput(ByteArray(missing), null, directAudioTrack)
+                myanmarBytesAccumulated += missing
+            }
+            
+            val expectedDurationMs = (myanmarBytesAccumulated * 1000L) / (OUTPUT_SAMPLE_RATE * OUTPUT_CHANNEL_COUNT * 2)
+            val elapsedTime = System.currentTimeMillis() - myanmarStartTime
+            val sleepTime = expectedDurationMs - elapsedTime
+            
+            if (sleepTime > 0) {
+                var waitTime = sleepTime
+                while (waitTime > 0 && !isDirectStopped) {
+                    val step = Math.min(30L, waitTime)
+                    try { Thread.sleep(step) } catch (e: Exception) {}
+                    waitTime -= step
                 }
             }
         }
@@ -1160,7 +1209,7 @@ class ShanTtsService : TextToSpeechService() {
                     val originalPcm = decodeOpus(encodedBytes, encodedBytes.size)
                     if (originalPcm != null && originalPcm.isNotEmpty()) {
                         
-                        val pauseSamples = (OUTPUT_SAMPLE_RATE * 10) / 1000
+                        val pauseSamples = (OUTPUT_SAMPLE_RATE * 30) / 1000
                         val pcmShorts = ShortArray(originalPcm.size + pauseSamples)
                         System.arraycopy(originalPcm, 0, pcmShorts, 0, originalPcm.size)
 
