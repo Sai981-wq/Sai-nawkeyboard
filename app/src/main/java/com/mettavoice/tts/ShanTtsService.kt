@@ -29,7 +29,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.min
 
 class ShanTtsService : TextToSpeechService() {
@@ -1148,7 +1150,6 @@ class ShanTtsService : TextToSpeechService() {
         var prevTail: ShortArray? = null
         var totalBytesGenerated = 0
 
-        // Applied a fixed 1.5x gain multiplier specifically for Burmese (audio.bin) synthesis to slightly amplify the inherently low volume audio
         val audioBinGainMultiplier = 1.5f
 
         try {
@@ -1436,9 +1437,19 @@ class ShanTtsService : TextToSpeechService() {
 
     private fun applyGain(audio: ShortArray, length: Int, gain: Float) {
         if (gain == 1.0f) return
+        val threshold = 24000f
+        val range = 8767f
         for (i in 0 until length) {
-            val amplified = (audio[i] * gain).toInt()
-            audio[i] = amplified.coerceIn(-32768, 32767).toShort()
+            val amplified = audio[i] * gain
+            val absVal = abs(amplified)
+            val out = if (absVal <= threshold) {
+                amplified
+            } else {
+                val excess = absVal - threshold
+                val sign = if (amplified < 0) -1f else 1f
+                sign * (threshold + range * (1f - exp(-excess / range)))
+            }
+            audio[i] = out.toInt().coerceIn(-32768, 32767).toShort()
         }
     }
 
