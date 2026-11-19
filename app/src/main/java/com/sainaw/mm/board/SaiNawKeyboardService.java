@@ -407,6 +407,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     updateHelperState();
                     break;
 
+                case -104:
+                    layoutManager.currentEmojiPage = 3;
+                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                    layoutManager.updateKeyboardLayout();
+                    updateHelperState();
+                    break;
+
+                case -105:
+                    layoutManager.currentEmojiPage = 4;
+                    feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                    layoutManager.updateKeyboardLayout();
+                    updateHelperState();
+                    break;
+
                 case -101: 
                     manualShiftOverride = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
