@@ -19,7 +19,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Optimized for Speed: Includes Real-Time VAD Auto-Stop (like Google Voice Typing), AAC fallback and auto-retry. */
 final class ShanVoiceInput {
     static final String ENDPOINT = "https://myandev-myantts.hf.space/transcribe";
     private static final int RATE = 16000, MAX_PCM_BYTES = RATE * 2 * 30;
@@ -205,18 +204,15 @@ final class ShanVoiceInput {
         ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         boolean failed = false;
         
-        // --- မြန်ဆန်စေရန် Google ကဲ့သို့ Auto-Stop စနစ် ထည့်သွင်းခြင်း ---
         long lastVoiceTime = System.currentTimeMillis();
-        int silenceThreshold = 800; // အသံတိတ်/မတိတ် ခွဲခြားမည့် အတိုင်းအတာ
-        int maxSilenceMs = 1200; // ၁.၂ စက္ကန့် စကားပြောရပ်သွားပါက အလိုအလျောက် ရပ်တန့်မည်
+        int silenceThreshold = 800;
+        int maxSilenceMs = 1200;
 
         try {
             byte[] chunk = new byte[640]; 
             while (recording && generation == token && pcm.size() < MAX_PCM_BYTES) {
                 int n = capture.read(chunk, 0, Math.min(chunk.length, MAX_PCM_BYTES - pcm.size()));
                 if (n > 0 && generation == token) {
-                    
-                    // --- Real-time Silence Detection ---
                     boolean hasVoice = false;
                     for (int i = 0; i < n - 1; i += 2) {
                         short sample = (short) ((chunk[i] & 0xFF) | (chunk[i + 1] << 8));
@@ -227,14 +223,12 @@ final class ShanVoiceInput {
                     }
                     
                     if (hasVoice) {
-                        lastVoiceTime = System.currentTimeMillis(); // အသံဝင်နေပါက အချိန်ကို အသစ်ပြန်မှတ်မည်
+                        lastVoiceTime = System.currentTimeMillis();
                     } else if (pcm.size() > RATE * 0.8 && (System.currentTimeMillis() - lastVoiceTime) > maxSilenceMs) {
-                        // အနည်းဆုံး ၀.၈ စက္ကန့်ခန့် စကားပြောထားပြီး၊ ၁.၂ စက္ကန့်ခန့် အသံတိတ်သွားပါက ချက်ချင်းရပ်မည်
                         recording = false;
-                        main.post(this::stopMicrophone); // UI တွင် ရပ်တန့်သွားကြောင်း ပြသမည်
-                        break; // စောင့်ဆိုင်းခြင်းကို ဖြတ်တောက်ပြီး ဆာဗာသို့ ချက်ချင်းပို့မည်
+                        main.post(this::stopMicrophone);
+                        break;
                     }
-                    // -----------------------------------
 
                     pcm.write(chunk, 0, n);
                     if (encoder != null) {
@@ -258,7 +252,7 @@ final class ShanVoiceInput {
                 if (encoder != null) {
                     try { ogg = encoder.finish(); } catch (Exception | LinkageError unavailable) { }
                 }
-                payload = ShanVoicePayload.completed(service, samples, RATE, ogg);
+                payload = ShanVoicePayload.completed(samples, RATE, ogg);
             }
         } catch (IllegalArgumentException e) { failed = true; }
         finally { if (encoder != null) encoder.close(); }
@@ -291,7 +285,7 @@ final class ShanVoiceInput {
     }
     
     private void upload(byte[] payload, int token) {
-        upload(ShanVoicePayload.aacOrWav(service, payload, RATE), token);
+        upload(ShanVoicePayload.prepare(service, payload, RATE), token);
     }
     
     private void upload(ShanVoicePayload encoded, int token) {
