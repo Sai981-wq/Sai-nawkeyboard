@@ -17,7 +17,7 @@ public class SaiNawLayoutManager {
     public Keyboard symbolsEnKeyboard, symbolsMmKeyboard;
     public Keyboard symbolsEnShiftKeyboard, symbolsMmShiftKeyboard;
     public Keyboard numberKeyboard;
-    public Keyboard emojiKeyboard1, emojiKeyboard2;
+    public Keyboard emojiKeyboard1, emojiKeyboard2, emojiKeyboard3, emojiKeyboard4;
     
     private Keyboard currentKeyboard;
     private EditorInfo currentEditorInfo;
@@ -83,6 +83,12 @@ public class SaiNawLayoutManager {
             
             int emoji2Id = service.getResId("kbd_emoji_2");
             emojiKeyboard2 = (emoji2Id != 0) ? new Keyboard(context, emoji2Id) : emojiKeyboard1;
+
+            int emoji3Id = service.getResId("kbd_emoji_3");
+            emojiKeyboard3 = (emoji3Id != 0) ? new Keyboard(context, emoji3Id) : emojiKeyboard1;
+
+            int emoji4Id = service.getResId("kbd_emoji_4");
+            emojiKeyboard4 = (emoji4Id != 0) ? new Keyboard(context, emoji4Id) : emojiKeyboard1;
             
         } catch (Exception e) {
             e.printStackTrace();
@@ -123,7 +129,10 @@ public class SaiNawLayoutManager {
         try {
             Keyboard nextKeyboard;
             if (isEmoji) {
-                nextKeyboard = (currentEmojiPage == 2) ? emojiKeyboard2 : emojiKeyboard1;
+                if (currentEmojiPage == 2) nextKeyboard = emojiKeyboard2;
+                else if (currentEmojiPage == 3) nextKeyboard = emojiKeyboard3;
+                else if (currentEmojiPage == 4) nextKeyboard = emojiKeyboard4;
+                else nextKeyboard = emojiKeyboard1;
             } else if (isSymbols) {
                 if (currentKeyboard == numberKeyboard) {
                     nextKeyboard = numberKeyboard;

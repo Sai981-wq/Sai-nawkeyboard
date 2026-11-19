@@ -200,7 +200,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         String description = getKeyDescription(key);
         
         if (currentLanguageId == 2 && isShanPhoneticEnabled && !isNativeTalkBackText(description)) {
-            // လက်ဖြင့်ရှာချိန် (Hover) တွင် TalkBack ကို တိတ်ဆိတ်စေရန် 
             node.setContentDescription("\u00A0");
         } else {
             node.setContentDescription(description);
@@ -245,7 +244,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                         event.setContentDescription("\u00A0");
                         
                         if (listener != null) {
-                            // ဤနေရာသည် Hover လုပ်ချိန်ဖြစ်၍ Shan TTS ကိုသာ အလုပ်လုပ်စေမည်
                             listener.onCustomAnnounce(textToSpeak);
                         }
                     }
@@ -415,6 +413,11 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (code == -101) return "Switch Language";
         if (code == -10) return "Voice Typing";
         if (code == -100) return ""; 
+        if (code == -102 || code == -104 || code == -105) {
+            if (key.label != null && "⬅️".equals(key.label.toString())) return "Previous Emoji Page";
+            return "Next Emoji Page";
+        }
+        if (code == -103) return "Previous Emoji Page";
 
         String label = (key.label != null) ? key.label.toString() : ((key.text != null) ? key.text.toString() : null);
         boolean isShanOrMyanmar = (currentLanguageId == 1 || currentLanguageId == 2);
