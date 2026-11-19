@@ -3,15 +3,15 @@ plugins {
 }
 
 android {
-    namespace 'com.cherry.sme.tts'
-    compileSdk 36
+    namespace 'com.sainaw.mm.board'
+    compileSdk 34
 
     defaultConfig {
-        applicationId "com.cherry.sme.tts"
-        minSdk 24
-        targetSdk 36
-        versionCode 14
-        versionName "2.5.8"
+        applicationId "com.sainaw.mm.board"
+        minSdk 21
+        targetSdk 34
+        versionCode 20
+        versionName "5.2.13"
     }
 
     signingConfigs {
@@ -21,37 +21,39 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled true
-            shrinkResources true
+            minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
     }
-
+    testOptions {
+        unitTests.includeAndroidResources = true
+        unitTests.all {
+            systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2'
+        }
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-
-    lintOptions {
-        checkReleaseBuilds false
-        abortOnError false
-    }
 }
 
 dependencies {
-    implementation fileTree(dir: 'libs', include: ['*.jar'])
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'com.google.android.material:material:1.12.0'
-    implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.12.2'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 }
 
-File signingPropertiesFile = rootProject.file('credentials/release.keystore.properties')
+String signingPath = System.getenv('SAINAW_SIGNING_PROPERTIES')
+File signingPropertiesFile = signingPath ? new File(signingPath) : rootProject.file('credentials/release.keystore.properties')
 if (signingPropertiesFile.exists()) {
     Properties props = new Properties()
     props.load(new FileInputStream(signingPropertiesFile))
     
-    android.signingConfigs.release.storeFile = rootProject.file('credentials/release.keystore')
+    String suppliedKey = System.getenv('SAINAW_KEYSTORE')
+    android.signingConfigs.release.storeFile = suppliedKey ? new File(suppliedKey) : rootProject.file('credentials/release.keystore')
     android.signingConfigs.release.storePassword = props['storePassword']
     android.signingConfigs.release.keyAlias = props['keyAlias']
     android.signingConfigs.release.keyPassword = props['keyPassword']
