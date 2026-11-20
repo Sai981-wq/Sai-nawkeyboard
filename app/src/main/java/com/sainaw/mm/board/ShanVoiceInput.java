@@ -1,12 +1,20 @@
 package com.sainaw.mm.board;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
+import android.media.audiofx.AcousticEchoCanceler;
+import android.media.audiofx.AutomaticGainControl;
+import android.media.audiofx.NoiseSuppressor;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.widget.LinearLayout;
 import androidx.core.content.ContextCompat;
 import org.json.JSONObject;
@@ -24,7 +32,7 @@ final class ShanVoiceInput {
     private static final int RATE = 16000, MAX_PCM_BYTES = RATE * 2 * 30;
     private enum State { IDLE, STARTING, RECORDING, STOPPING, UPLOADING }
     interface ConnectionFactory { HttpURLConnection open() throws java.io.IOException; }
-    
+
     interface CaptureDevice {
         void start();
         int read(byte[] data, int offset, int count);
@@ -38,13 +46,13 @@ final class ShanVoiceInput {
         void close();
     }
     interface EncodingFactory { EncodingSession open() throws Exception; }
-    
+
     private final EncodingFactory encodingFactory;
     private final CaptureFactory captureFactory;
     private final ConnectionFactory connectionFactory;
     private final SaiNawKeyboardService service;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ExecutorService worker = Executors.newSingleThreadExecutor(); 
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService audioWorker = Executors.newSingleThreadExecutor();
     private final ExecutorService audioStopper = Executors.newSingleThreadExecutor();
     private final Object recorderLock = new Object();
@@ -57,17 +65,13 @@ final class ShanVoiceInput {
     private State state = State.IDLE;
     private boolean visible, destroyed;
     private Runnable deadline;
-    private volatile SharedPreferences privacy;
-    private final SharedPreferences.OnSharedPreferenceChangeListener privacyListener = (prefs, key) -> {
-        if (ShanVoiceConsentActivity.CONSENT.equals(key) && !prefs.getBoolean(key, false))
-            main.post(() -> { if (!destroyed) cancel(); });
-    };
+    private String activeLanguageCode = "shn";
 
     ShanVoiceInput(SaiNawKeyboardService service, LinearLayout parent, boolean dark) {
         this(service, parent, dark, () -> (HttpURLConnection) new URL(ENDPOINT).openConnection());
     }
     ShanVoiceInput(SaiNawKeyboardService service, LinearLayout parent, boolean dark, ConnectionFactory connectionFactory) {
-        this(service, parent, dark, connectionFactory, ShanVoiceInput::createMicrophone);
+        this(service, parent, dark, connectionFactory, ShanVoiceInput::createHighQualityMicrophone);
     }
     ShanVoiceInput(SaiNawKeyboardService service, LinearLayout parent, boolean dark,
                    ConnectionFactory connectionFactory, CaptureFactory captureFactory) {
@@ -94,38 +98,38 @@ final class ShanVoiceInput {
         if (visible && !available) cancel();
         visible = available;
     }
+    void setLanguageCode(String langCode) {
+        this.activeLanguageCode = (langCode != null && !langCode.isEmpty()) ? langCode : "shn";
+    }
     void toggle() {
         if (destroyed || !visible) return;
         if (state == State.RECORDING) { stopRecording(); return; }
         if (state == State.STARTING) { cancel(); return; }
         if (state != State.IDLE) return;
-        if (!hasConsent() || ContextCompat.checkSelfPermission(service, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Intent intent = new Intent(service, ShanVoiceConsentActivity.class);
+        if (ContextCompat.checkSelfPermission(service, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + service.getPackageName()));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             service.startActivity(intent);
-            return; 
+            return;
         }
         if (recorder != null || openingMicrophone) { fail("မိုက်ပိတ်သိမ်းနေဆဲ ဖြစ်သည်။ ခဏစောင့်ပြီး ပြန်နှိပ်ပါ။"); return; }
         final int token = ++generation;
         int settleMillis = service.prepareShanVoiceCapture();
         state = State.STARTING;
-        render("Voice Typing — အသံဖမ်းရန် ပြင်ဆင်နေသည်။ ထပ်နှိပ်၍ ပယ်ဖျက်နိုင်သည်။");
-        
+        render("");
+
         main.postDelayed(() -> {
             if (!destroyed && visible && generation == token && state == State.STARTING)
                 bells.start(() -> { if (!destroyed && visible && generation == token && state == State.STARTING) startRecording(token); });
         }, settleMillis);
     }
-    private synchronized boolean hasConsent() {
+    private boolean isUserUnlocked() {
         if (android.os.Build.VERSION.SDK_INT >= 24) {
             android.os.UserManager users = (android.os.UserManager) service.getSystemService(Context.USER_SERVICE);
-            if (users == null || !users.isUserUnlocked()) return false;
+            return users != null && users.isUserUnlocked();
         }
-        if (privacy == null) {
-            privacy = service.getSharedPreferences(ShanVoiceConsentActivity.PREFS, Context.MODE_PRIVATE);
-            privacy.registerOnSharedPreferenceChangeListener(privacyListener);
-        }
-        return privacy.getBoolean(ShanVoiceConsentActivity.CONSENT, false);
+        return true;
     }
     private void render(String message) {
         service.onShanVoiceStateChanged();
@@ -141,25 +145,89 @@ final class ShanVoiceInput {
         render(message);
     }
     private void startRecording(int token) {
-        if (!hasConsent() || service.getCurrentInputConnection() == null ||
+        if (!isUserUnlocked() || service.getCurrentInputConnection() == null ||
             ContextCompat.checkSelfPermission(service, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            fail("မိုက်ခွင့် သို့မဟုတ် စာရိုက်နေရာ မရပါ။ အသံမဖမ်းပါ။"); return;
+            fail(""); return;
         }
         recording = true;
         openingMicrophone = true;
         state = State.RECORDING;
-        render(""); 
+        render("");
         audioWorker.execute(() -> openAndCapture(token));
     }
-    private static CaptureDevice createMicrophone() {
-        return ShanMicrophone.create(RATE);
+
+    @SuppressLint("MissingPermission")
+    private static CaptureDevice createHighQualityMicrophone() {
+        int channelConfig = AudioFormat.CHANNEL_IN_MONO;
+        int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
+        int minBuffer = AudioRecord.getMinBufferSize(RATE, channelConfig, audioFormat);
+        int bufferSize = Math.max(minBuffer * 2, RATE * 2);
+
+        AudioRecord audioRecord = null;
+        int[] sources = new int[]{
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            MediaRecorder.AudioSource.MIC
+        };
+
+        for (int src : sources) {
+            try {
+                AudioRecord candidate = new AudioRecord(src, RATE, channelConfig, audioFormat, bufferSize);
+                if (candidate.getState() == AudioRecord.STATE_INITIALIZED) {
+                    audioRecord = candidate;
+                    break;
+                } else {
+                    candidate.release();
+                }
+            } catch (Exception ignored) { }
+        }
+
+        if (audioRecord == null) {
+            return ShanMicrophone.create(RATE);
+        }
+
+        final AudioRecord finalRecord = audioRecord;
+        final int sessionId = finalRecord.getAudioSessionId();
+        final NoiseSuppressor ns = NoiseSuppressor.isAvailable() ? NoiseSuppressor.create(sessionId) : null;
+        final AutomaticGainControl agc = AutomaticGainControl.isAvailable() ? AutomaticGainControl.create(sessionId) : null;
+        final AcousticEchoCanceler aec = AcousticEchoCanceler.isAvailable() ? AcousticEchoCanceler.create(sessionId) : null;
+
+        if (ns != null) { try { ns.setEnabled(true); } catch (Exception ignored) { } }
+        if (agc != null) { try { agc.setEnabled(true); } catch (Exception ignored) { } }
+        if (aec != null) { try { aec.setEnabled(true); } catch (Exception ignored) { } }
+
+        return new CaptureDevice() {
+            @Override
+            public void start() {
+                finalRecord.startRecording();
+            }
+            @Override
+            public int read(byte[] data, int offset, int count) {
+                return finalRecord.read(data, offset, count);
+            }
+            @Override
+            public void stop() {
+                try {
+                    if (finalRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
+                        finalRecord.stop();
+                    }
+                } catch (Exception ignored) { }
+            }
+            @Override
+            public void release() {
+                if (ns != null) { try { ns.release(); } catch (Exception ignored) { } }
+                if (agc != null) { try { agc.release(); } catch (Exception ignored) { } }
+                if (aec != null) { try { aec.release(); } catch (Exception ignored) { } }
+                try { finalRecord.release(); } catch (Exception ignored) { }
+            }
+        };
     }
 
     private void openAndCapture(int token) {
         CaptureDevice local = null;
         EncodingSession encoder = null;
         boolean openFailed = false, openingComplete = false, handedToCapture = false;
-        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO); }
+        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO); }
         catch (RuntimeException ignored) { }
         try {
             if (!recording || generation != token) return;
@@ -168,15 +236,15 @@ final class ShanVoiceInput {
                 if (!recording || generation != token) return;
                 local = captureFactory.create();
                 recorder = local;
-                if (!recording || generation != token) return;
+                if (generation != token) return;
                 local.start();
             }
             openingMicrophone = false;
             openingComplete = true;
             handedToCapture = true;
             capture(local, token, encoder);
-            encoder = null; 
-            local = null; 
+            encoder = null;
+            local = null;
         } catch (Exception e) {
             openFailed = true;
         } finally {
@@ -188,7 +256,7 @@ final class ShanVoiceInput {
             main.post(() -> {
                 if (!destroyed && generation == token && (error || (noCapture && state == State.STOPPING))) {
                     recording = false;
-                    fail("အသံမရပါ။ Voice Typing ကို ပြန်စမ်းနိုင်ပါသည်။");
+                    fail("");
                 }
             });
         }
@@ -200,34 +268,79 @@ final class ShanVoiceInput {
             if (recorder == local) recorder = null;
         }
     }
+
     private void capture(CaptureDevice capture, int token, EncodingSession encoder) {
         ByteArrayOutputStream pcm = new ByteArrayOutputStream();
         boolean failed = false;
-        
-        long lastVoiceTime = System.currentTimeMillis();
-        int silenceThreshold = 800;
-        int maxSilenceMs = 1200;
+
+        long startTime = System.currentTimeMillis();
+        long lastVoiceTime = startTime;
+        boolean speechDetected = false;
+        int maxSilenceAfterSpeechMs = 500;
+        int maxInitialSilenceMs = 4500;
+
+        // High-pass filter state (~85Hz cutoff at 16kHz) to remove wind, fan, and low rumble noise
+        final float alpha = 0.967f;
+        float prevInput = 0f;
+        float prevOutput = 0f;
+
+        // Adaptive background noise floor tracking
+        double noiseFloorRms = 180.0;
+        int calibrationChunks = 0;
 
         try {
-            byte[] chunk = new byte[640]; 
+            byte[] chunk = new byte[640]; // 20ms frame at 16kHz 16-bit mono
             while (recording && generation == token && pcm.size() < MAX_PCM_BYTES) {
                 int n = capture.read(chunk, 0, Math.min(chunk.length, MAX_PCM_BYTES - pcm.size()));
                 if (n > 0 && generation == token) {
-                    boolean hasVoice = false;
-                    for (int i = 0; i < n - 1; i += 2) {
-                        short sample = (short) ((chunk[i] & 0xFF) | (chunk[i + 1] << 8));
-                        if (Math.abs(sample) > silenceThreshold) {
-                            hasVoice = true;
+                    int sampleCount = n / 2;
+                    double sumSquares = 0.0;
+
+                    for (int i = 0; i < sampleCount; i++) {
+                        int idx = i * 2;
+                        short rawSample = (short) ((chunk[idx] & 0xFF) | (chunk[idx + 1] << 8));
+                        float filtered = alpha * (prevOutput + rawSample - prevInput);
+                        prevInput = rawSample;
+                        prevOutput = filtered;
+
+                        // Soft noise gate & clean clamping
+                        int cleanSample = Math.max(-32768, Math.min(32767, Math.round(filtered)));
+                        if (Math.abs(cleanSample) < 90) {
+                            cleanSample = 0;
+                        }
+                        chunk[idx] = (byte) (cleanSample & 0xFF);
+                        chunk[idx + 1] = (byte) ((cleanSample >> 8) & 0xFF);
+
+                        sumSquares += (double) cleanSample * cleanSample;
+                    }
+
+                    double rms = sampleCount > 0 ? Math.sqrt(sumSquares / sampleCount) : 0.0;
+
+                    if (calibrationChunks < 6) {
+                        noiseFloorRms = (noiseFloorRms * calibrationChunks + Math.min(rms, 600.0)) / (calibrationChunks + 1);
+                        calibrationChunks++;
+                    }
+
+                    double dynamicThreshold = Math.max(240.0, noiseFloorRms * 2.2);
+                    boolean hasVoice = rms > dynamicThreshold;
+
+                    long now = System.currentTimeMillis();
+                    if (hasVoice) {
+                        speechDetected = true;
+                        lastVoiceTime = now;
+                    } else {
+                        if (!speechDetected && calibrationChunks >= 6) {
+                            noiseFloorRms = noiseFloorRms * 0.92 + Math.min(rms, 500.0) * 0.08;
+                        }
+                        if (speechDetected && (now - lastVoiceTime) >= maxSilenceAfterSpeechMs) {
+                            recording = false;
+                            main.post(this::stopMicrophone);
+                            break;
+                        } else if (!speechDetected && (now - startTime) >= maxInitialSilenceMs) {
+                            recording = false;
+                            main.post(this::stopMicrophone);
                             break;
                         }
-                    }
-                    
-                    if (hasVoice) {
-                        lastVoiceTime = System.currentTimeMillis();
-                    } else if (pcm.size() > RATE * 0.8 && (System.currentTimeMillis() - lastVoiceTime) > maxSilenceMs) {
-                        recording = false;
-                        main.post(this::stopMicrophone);
-                        break;
                     }
 
                     pcm.write(chunk, 0, n);
@@ -245,8 +358,8 @@ final class ShanVoiceInput {
         }
         ShanVoicePayload payload = null;
         try {
-            if (!failed && generation == token && hasConsent()) {
-                byte[] samples = pcm.toByteArray();
+            if (!failed && speechDetected && generation == token && isUserUnlocked()) {
+                byte[] samples = normalizePcmLevel(pcm.toByteArray());
                 ShanAudioProcessor.prepare(samples, RATE);
                 byte[] ogg = null;
                 if (encoder != null) {
@@ -256,20 +369,42 @@ final class ShanVoiceInput {
             }
         } catch (IllegalArgumentException e) { failed = true; }
         finally { if (encoder != null) encoder.close(); }
-        
-        if (payload != null && generation == token) upload(payload, token);
+
+        if (payload != null && generation == token) upload(payload, token, activeLanguageCode);
         else {
             final boolean error = failed;
             main.post(() -> {
                 if (destroyed || generation != token) return;
                 if (error || state == State.STOPPING || state == State.RECORDING)
-                    fail("အသံမရပါ သို့မဟုတ် တိုလွန်းပါသည်။ ပြန်စမ်းပါ။ အသံမပို့ထားပါ။");
+                    fail("");
             });
         }
     }
 
+    private byte[] normalizePcmLevel(byte[] samples) {
+        if (samples == null || samples.length < 4) return samples;
+        int peak = 0;
+        for (int i = 0; i < samples.length - 1; i += 2) {
+            int val = Math.abs((short) ((samples[i] & 0xFF) | (samples[i + 1] << 8)));
+            if (val > peak) peak = val;
+        }
+        // Boost quiet speech cleanly to ~80% full scale without clipping
+        if (peak > 400 && peak < 24000) {
+            float gain = Math.min(3.5f, 26000.0f / peak);
+            byte[] normalized = new byte[samples.length];
+            for (int i = 0; i < samples.length - 1; i += 2) {
+                short raw = (short) ((samples[i] & 0xFF) | (samples[i + 1] << 8));
+                int boosted = Math.max(-32768, Math.min(32767, Math.round(raw * gain)));
+                normalized[i] = (byte) (boosted & 0xFF);
+                normalized[i + 1] = (byte) ((boosted >> 8) & 0xFF);
+            }
+            return normalized;
+        }
+        return samples;
+    }
+
     private void stopRecording() {
-        recording = false; 
+        recording = false;
         state = State.STOPPING;
         stopMicrophone();
         render("");
@@ -283,13 +418,9 @@ final class ShanVoiceInput {
             }
         });
     }
-    
-    private void upload(byte[] payload, int token) {
-        upload(ShanVoicePayload.prepare(service, payload, RATE), token);
-    }
-    
-    private void upload(ShanVoicePayload encoded, int token) {
-        if (generation != token || !hasConsent()) {
+
+    private void upload(ShanVoicePayload encoded, int token, String langCode) {
+        if (generation != token || !isUserUnlocked()) {
             Runnable abort = () -> { if (!destroyed && generation == token) cancel(); };
             if (Looper.myLooper() == Looper.getMainLooper()) abort.run();
             else main.post(abort);
@@ -302,55 +433,57 @@ final class ShanVoiceInput {
             deadline = () -> {
                 if (!destroyed && generation == token && state == State.UPLOADING) {
                     cancel();
-                    fail("စာပြောင်းချိန် ကျော်လွန်သွားပါပြီ။ အင်တာနက်စစ်ပြီး ပြန်စမ်းပါ။");
+                    fail("");
                 }
             };
-            main.postDelayed(deadline, 60000); 
+            main.postDelayed(deadline, 45000);
         };
         if (Looper.myLooper() == Looper.getMainLooper()) updateState.run();
         else main.post(updateState);
-        
+
         try { worker.execute(() -> {
-            int maxRetries = 1; 
+            int maxRetries = 2;
             boolean success = false;
-            
+
             for (int attempt = 0; attempt <= maxRetries && !success; attempt++) {
                 if (generation != token || destroyed) return;
-                
+
                 HttpURLConnection http = null;
                 try {
                     http = connectionFactory.open();
                     connection = http;
                     http.setRequestMethod("POST");
-                    
-                    http.setConnectTimeout(8000); 
-                    http.setReadTimeout(30000);    
-                    http.setInstanceFollowRedirects(false);
+
+                    http.setConnectTimeout(10000);
+                    http.setReadTimeout(25000);
+                    http.setInstanceFollowRedirects(true);
                     http.setDoOutput(true);
-                    
+
                     String boundary = "ShanVoice" + java.util.UUID.randomUUID().toString().replace("-", "");
                     byte[] payload = encoded.bytes;
+                    byte[] langPart = ("--" + boundary + "\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n" + langCode + "\r\n").getBytes(StandardCharsets.UTF_8);
                     byte[] head = encoded.multipartHead(boundary);
                     byte[] tail = ("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8);
-                    
+
                     http.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
                     http.setRequestProperty("Accept", "application/json");
-                    http.setFixedLengthStreamingMode(head.length + payload.length + tail.length);
-                    
+                    http.setFixedLengthStreamingMode(langPart.length + head.length + payload.length + tail.length);
+
                     try (OutputStream out = http.getOutputStream()) {
                         if (generation != token) return;
+                        out.write(langPart);
                         out.write(head);
                         for (int offset = 0; offset < payload.length; offset += 8192) {
-                            if (generation != token || !hasConsent()) return;
+                            if (generation != token || !isUserUnlocked()) return;
                             out.write(payload, offset, Math.min(8192, payload.length - offset));
                         }
-                        if (generation != token || !hasConsent()) return;
+                        if (generation != token || !isUserUnlocked()) return;
                         out.write(tail);
                     }
-                    
+
                     int code = http.getResponseCode();
                     if (code < 200 || code >= 300) throw new java.io.IOException("HTTP Error: " + code);
-                    
+
                     ByteArrayOutputStream body = new ByteArrayOutputStream();
                     try (InputStream in = http.getInputStream()) {
                         byte[] buffer = new byte[4096]; int n;
@@ -360,22 +493,21 @@ final class ShanVoiceInput {
                             body.write(buffer, 0, n);
                         }
                     }
-                    
+
                     Object value = new JSONObject(new String(body.toByteArray(), StandardCharsets.UTF_8)).opt("text");
                     if (!(value instanceof String) || ((String)value).trim().isEmpty()) throw new java.io.IOException("Empty text");
-                    
+
                     final String text = ((String)value).trim() + " ";
                     success = true;
-                    
+
                     main.post(() -> {
                         if (destroyed || generation != token || state != State.UPLOADING) return;
                         clearDeadline();
-                        if (!hasConsent()) { cancel(); return; }
                         if (service.commitShanTranscript(text)) {
-                            cancel(); bells.success();
-                            render("ရှမ်းစာ ထည့်ပြီးပါပြီ။ ဆက်ရိုက်နိုင်ပါသည်။");
+                            cancel();
+                            bells.success();
                         } else {
-                            fail("စာရိုက်နေရာတွင် စာထည့်မရပါ။");
+                            fail("");
                         }
                     });
                 } catch (Exception e) {
@@ -383,10 +515,10 @@ final class ShanVoiceInput {
                         main.post(() -> {
                             if (destroyed || generation != token || state != State.UPLOADING) return;
                             clearDeadline();
-                            fail("စာပြောင်းမရပါ။ အင်တာနက် သို့မဟုတ် ဆာဗာအခြေအနေကို စစ်ပါ။");
+                            fail("");
                         });
                     } else {
-                        try { Thread.sleep(500); } catch (InterruptedException ie) {} 
+                        try { Thread.sleep(1000); } catch (InterruptedException ie) { }
                     }
                 } finally {
                     if (http != null) http.disconnect();
@@ -395,7 +527,7 @@ final class ShanVoiceInput {
             }
         }); } catch (java.util.concurrent.RejectedExecutionException shuttingDown) { }
     }
-    
+
     private void clearDeadline() {
         if (deadline != null) { main.removeCallbacks(deadline); deadline = null; }
     }
@@ -416,9 +548,8 @@ final class ShanVoiceInput {
         cancel();
         destroyed = true;
         main.removeCallbacksAndMessages(null);
-        if (privacy != null) privacy.unregisterOnSharedPreferenceChangeListener(privacyListener);
         worker.shutdownNow();
-        audioWorker.shutdown(); 
+        audioWorker.shutdown();
         audioStopper.shutdown();
         bells.release();
     }
