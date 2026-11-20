@@ -142,7 +142,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         shanVoiceInput = new ShanVoiceInput(this, (LinearLayout) layout, isCurrentDarkTheme);
 
         if (isUserUnlocked()) {
-            suggestionDB = SuggestionDB.getInstance(this);
+            dbExecutor.execute(() -> suggestionDB = SuggestionDB.getInstance(SaiNawKeyboardService.this));
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             registerReceiver(userUnlockReceiver, new IntentFilter(Intent.ACTION_USER_UNLOCKED));
             isReceiverRegistered = true;
@@ -228,8 +228,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         currentWord.setLength(0);
         layoutManager.updateEditorInfo(info);
         layoutManager.determineKeyboardForInputType();
-        triggerCandidateUpdate(0);
+        hideCandidatesImmediately();
         updateShiftState();
+    }
+
+    private void hideCandidatesImmediately() {
+        handler.removeCallbacks(pendingCandidateUpdate);
+        for (TextView tv : candidateViews) {
+            tv.setVisibility(View.GONE);
+        }
     }
 
     private boolean isNativeTalkBackText(String text) {
@@ -290,7 +297,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
             syncAndGetCurrentWord();
-            triggerCandidateUpdate(50);
+            triggerCandidateUpdate(120);
             if (!layoutManager.isSymbols && !layoutManager.isEmoji && layoutManager.isCaps && !layoutManager.isCapsLocked) {
                 layoutManager.isCaps = false;
                 layoutManager.updateKeyboardLayout();
@@ -332,7 +339,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     }
                     
                     syncAndGetCurrentWord();
-                    triggerCandidateUpdate(50);
+                    triggerCandidateUpdate(120);
                     break;
 
                 case -10: 
@@ -492,7 +499,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         layoutManager.updateKeyboardLayout();
                         updateHelperState();
                     }
-                    triggerCandidateUpdate(150);
+                    triggerCandidateUpdate(220);
                     break;
             }
         } catch (Exception e) { e.printStackTrace(); }
@@ -505,7 +512,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         currentWord.setLength(0);
         if (ic == null) return "";
 
-        CharSequence before = ic.getTextBeforeCursor(50, 0);
+        CharSequence before = ic.getTextBeforeCursor(32, 0);
         if (before == null || before.length() == 0) return "";
 
         String s = before.toString();
@@ -577,7 +584,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         boolean inserted = ic.commitText(text, 1);
         if (inserted) {
             currentWord.setLength(0);
-            triggerCandidateUpdate(0);
+            hideCandidatesImmediately();
             updateShiftState();
         }
         return inserted;
@@ -665,35 +672,53 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void triggerCandidateUpdate(long delayMillis) {
         handler.removeCallbacks(pendingCandidateUpdate);
+        if (currentWord.length() == 0) {
+            hideCandidatesImmediately();
+            return;
+        }
         handler.postDelayed(pendingCandidateUpdate, delayMillis);
     }
 
     private void saveWordAndReset() {
-        if (suggestionDB != null && currentWord.length() > 0) {
+        if (currentWord.length() > 0) {
             final String raw = currentWord.toString();
-            dbExecutor.execute(() -> suggestionDB.saveWord(textProcessor.normalizeText(raw)));
+            dbExecutor.execute(() -> {
+                SuggestionDB db = suggestionDB;
+                if (db == null) {
+                    db = SuggestionDB.getInstance(SaiNawKeyboardService.this);
+                    suggestionDB = db;
+                }
+                db.saveWord(textProcessor.normalizeText(raw));
+            });
         }
         currentWord.setLength(0);
-        triggerCandidateUpdate(0);
+        hideCandidatesImmediately();
     }
 
     private void performCandidateSearch() {
-        if (suggestionDB == null || currentWord.length() == 0) {
-            handler.post(() -> { for (TextView tv : candidateViews) tv.setVisibility(View.GONE); });
+        final String queryWord = currentWord.toString();
+        if (queryWord.isEmpty()) {
+            hideCandidatesImmediately();
             return;
         }
-        final String queryWord = currentWord.toString();
         dbExecutor.execute(() -> {
-            final List<String> suggestions = suggestionDB.getSuggestions(queryWord);
+            SuggestionDB db = suggestionDB;
+            if (db == null) {
+                db = SuggestionDB.getInstance(SaiNawKeyboardService.this);
+                suggestionDB = db;
+            }
+            final List<String> suggestions = db.getSuggestions(queryWord);
             handler.post(() -> {
+                if (!currentWord.toString().equals(queryWord)) return;
                 for (int i = 0; i < candidateViews.size(); i++) {
                     TextView tv = candidateViews.get(i);
                     if (i < suggestions.size()) {
                         tv.setText(suggestions.get(i));
                         tv.setTag(suggestions.get(i));
-                        tv.setVisibility(View.VISIBLE);
-                        tv.setOnClickListener(candidateListener);
-                    } else tv.setVisibility(View.GONE);
+                        if (tv.getVisibility() != View.VISIBLE) tv.setVisibility(View.VISIBLE);
+                    } else {
+                        if (tv.getVisibility() != View.GONE) tv.setVisibility(View.GONE);
+                    }
                 }
             });
         });
@@ -708,9 +733,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
             ic.commitText(suggestion + " ", 1);
         }
-        if (suggestionDB != null) dbExecutor.execute(() -> suggestionDB.saveWord(suggestion));
+        dbExecutor.execute(() -> {
+            SuggestionDB db = suggestionDB;
+            if (db == null) {
+                db = SuggestionDB.getInstance(SaiNawKeyboardService.this);
+                suggestionDB = db;
+            }
+            db.saveWord(suggestion);
+        });
         currentWord.setLength(0);
-        triggerCandidateUpdate(0);
+        hideCandidatesImmediately();
     }
 
     private void destroyGoogleSpeechRecognizer() {
@@ -812,7 +844,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
         ic.commitText(prefixSpace + formatted + " ", 1);
         currentWord.setLength(0);
-        triggerCandidateUpdate(0);
+        hideCandidatesImmediately();
         updateShiftState();
     }
     
@@ -925,7 +957,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 isListening = true;
                 speechRecognizer.startListening(speechIntent);
 
-                // Watchdog: if Google Speech service fails to become ready within 3.5s, reset and retry once
                 handler.postDelayed(() -> {
                     if (currentToken == speechSessionToken && isListening && !isSpeechReady) {
                         destroyGoogleSpeechRecognizer();
@@ -956,6 +987,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             tv.setTextSize(18); tv.setPadding(30,10,30,10); tv.setGravity(Gravity.CENTER);
             tv.setBackgroundResource(android.R.drawable.btn_default); tv.setVisibility(View.GONE);
             tv.setFocusable(true);
+            tv.setOnClickListener(candidateListener);
             LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
             p.setMargins(5,0,5,0); candidateContainer.addView(tv, p); candidateViews.add(tv);
         }
@@ -971,7 +1003,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onText(CharSequence t) { 
         getCurrentInputConnection().commitText(t, 1); 
         syncAndGetCurrentWord();
-        triggerCandidateUpdate(50);
+        triggerCandidateUpdate(120);
         feedbackManager.playSound(0);
         if (!layoutManager.isSymbols && !layoutManager.isEmoji && layoutManager.isCaps && !layoutManager.isCapsLocked) { 
             layoutManager.isCaps = false; layoutManager.updateKeyboardLayout(); 
