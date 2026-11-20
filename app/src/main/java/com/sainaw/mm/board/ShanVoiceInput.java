@@ -11,10 +11,8 @@ import android.media.MediaRecorder;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.AutomaticGainControl;
 import android.media.audiofx.NoiseSuppressor;
-import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.Settings;
 import android.widget.LinearLayout;
 import androidx.core.content.ContextCompat;
 import org.json.JSONObject;
@@ -105,15 +103,20 @@ final class ShanVoiceInput {
         if (destroyed || !visible) return;
         if (state == State.RECORDING) { stopRecording(); return; }
         if (state == State.STARTING) { cancel(); return; }
-        if (state != State.IDLE) return;
+        if (state != State.IDLE) {
+            cancel();
+        }
         if (ContextCompat.checkSelfPermission(service, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-            intent.setData(Uri.parse("package:" + service.getPackageName()));
+            Intent intent = new Intent(service, ShanVoiceConsentActivity.class);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             service.startActivity(intent);
             return;
         }
-        if (recorder != null || openingMicrophone) { fail("မိုက်ပိတ်သိမ်းနေဆဲ ဖြစ်သည်။ ခဏစောင့်ပြီး ပြန်နှိပ်ပါ။"); return; }
+        if (recorder != null || openingMicrophone) {
+            CaptureDevice stale = recorder;
+            if (stale != null) closeRecorder(stale);
+            openingMicrophone = false;
+        }
         final int token = ++generation;
         int settleMillis = service.prepareShanVoiceCapture();
         state = State.STARTING;
@@ -279,17 +282,15 @@ final class ShanVoiceInput {
         int maxSilenceAfterSpeechMs = 500;
         int maxInitialSilenceMs = 4500;
 
-        // High-pass filter state (~85Hz cutoff at 16kHz) to remove wind, fan, and low rumble noise
         final float alpha = 0.967f;
         float prevInput = 0f;
         float prevOutput = 0f;
 
-        // Adaptive background noise floor tracking
         double noiseFloorRms = 180.0;
         int calibrationChunks = 0;
 
         try {
-            byte[] chunk = new byte[640]; // 20ms frame at 16kHz 16-bit mono
+            byte[] chunk = new byte[640];
             while (recording && generation == token && pcm.size() < MAX_PCM_BYTES) {
                 int n = capture.read(chunk, 0, Math.min(chunk.length, MAX_PCM_BYTES - pcm.size()));
                 if (n > 0 && generation == token) {
@@ -303,7 +304,6 @@ final class ShanVoiceInput {
                         prevInput = rawSample;
                         prevOutput = filtered;
 
-                        // Soft noise gate & clean clamping
                         int cleanSample = Math.max(-32768, Math.min(32767, Math.round(filtered)));
                         if (Math.abs(cleanSample) < 90) {
                             cleanSample = 0;
@@ -388,7 +388,6 @@ final class ShanVoiceInput {
             int val = Math.abs((short) ((samples[i] & 0xFF) | (samples[i + 1] << 8)));
             if (val > peak) peak = val;
         }
-        // Boost quiet speech cleanly to ~80% full scale without clipping
         if (peak > 400 && peak < 24000) {
             float gain = Math.min(3.5f, 26000.0f / peak);
             byte[] normalized = new byte[samples.length];

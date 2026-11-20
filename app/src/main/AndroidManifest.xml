@@ -25,14 +25,18 @@
         android:label="Sai Naw Keyboard"
         android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
 
-        <activity android:name=".ShanVoiceConsentActivity" android:exported="false" android:label="Voice Typing" />
+        <activity
+            android:name=".ShanVoiceConsentActivity"
+            android:exported="false"
+            android:label="Voice Typing"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <service
             android:name=".SaiNawKeyboardService"
             android:directBootAware="true"
             android:exported="true"
             android:label="Sai Naw Keyboard"
-            android:permission="android.permission.BIND_INPUT_METHOD">
+            android:permission="android:permission.BIND_INPUT_METHOD">
             <intent-filter>
                 <action android:name="android.view.InputMethod" />
             </intent-filter>

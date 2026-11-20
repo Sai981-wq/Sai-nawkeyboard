@@ -1,7 +1,6 @@
 package com.sainaw.mm.board;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -13,21 +12,12 @@ import android.inputmethodservice.InputMethodService;
 import android.inputmethodservice.Keyboard;
 import android.inputmethodservice.KeyboardView;
 import android.media.AudioAttributes;
-import android.media.AudioFormat;
 import android.media.AudioManager;
-import android.media.AudioRecord;
-import android.media.MediaRecorder;
-import android.media.audiofx.AcousticEchoCanceler;
-import android.media.audiofx.AutomaticGainControl;
-import android.media.audiofx.NoiseSuppressor;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.ParcelFileDescriptor;
 import android.os.UserManager;
-import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -47,7 +37,6 @@ import android.widget.TextView;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
-import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -79,12 +68,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     
     private Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
-    private ExecutorService googleAudioExecutor = Executors.newSingleThreadExecutor();
     private SpeechRecognizer speechRecognizer;
     private Intent speechIntent;
-    private volatile boolean isListening = false;
-    private volatile boolean isStreamingGoogleAudio = false;
-    private ParcelFileDescriptor googleAudioReadSide;
+    private boolean isListening = false;
+    private boolean isSpeechReady = false;
+    private int speechSessionToken = 0;
     private String lastPartialTranscript = "";
     private TextToSpeech shanTts;
     private ShanVoiceInput shanVoiceInput;
@@ -184,14 +172,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         
         keyboardView.setOnHoverListener((v, event) -> handleKeyboardHover(event));
 
-        setupSpeechRecognizer();
         return layout;
     }
 
     @Override
     public void onStartInput(EditorInfo attribute, boolean restarting) {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
-        stopGoogleSpeechRecognizer();
+        destroyGoogleSpeechRecognizer();
         super.onStartInput(attribute, restarting);
         if (layoutManager != null) {
             layoutManager.updateEditorInfo(attribute);
@@ -438,7 +425,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 case -101: 
                     manualShiftOverride = false;
-                    stopGoogleSpeechRecognizer();
+                    destroyGoogleSpeechRecognizer();
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.changeLanguage();
                     touchHandler.reset(); 
@@ -726,122 +713,27 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         triggerCandidateUpdate(0);
     }
 
-    private void closeGoogleAudioPipe() {
-        isStreamingGoogleAudio = false;
-        ParcelFileDescriptor readSide = googleAudioReadSide;
-        googleAudioReadSide = null;
-        if (readSide != null) {
-            try { readSide.close(); } catch (Exception ignored) { }
+    private void destroyGoogleSpeechRecognizer() {
+        speechSessionToken++;
+        isListening = false;
+        isSpeechReady = false;
+        lastPartialTranscript = "";
+        if (speechRecognizer != null) {
+            try { speechRecognizer.cancel(); } catch (Exception ignored) { }
+            try { speechRecognizer.destroy(); } catch (Exception ignored) { }
+            speechRecognizer = null;
         }
     }
 
     private void stopGoogleSpeechRecognizer() {
-        closeGoogleAudioPipe();
-        if (speechRecognizer != null) {
+        if (speechRecognizer != null && isListening && isSpeechReady) {
             try {
-                if (isListening) {
-                    speechRecognizer.stopListening();
-                } else {
-                    speechRecognizer.cancel();
-                }
-            } catch (Exception ignored) { }
-        }
-        isListening = false;
-        lastPartialTranscript = "";
-    }
-
-    @SuppressLint("MissingPermission")
-    private ParcelFileDescriptor startCleanAudioStreamForGoogle() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null;
-        try {
-            final int sampleRate = 16000;
-            final int channelConfig = AudioFormat.CHANNEL_IN_MONO;
-            final int audioFormat = AudioFormat.ENCODING_PCM_16BIT;
-            int minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat);
-            int bufSize = Math.max(minBuf * 2, sampleRate * 2);
-
-            AudioRecord candidateRecord = null;
-            int[] sources = new int[]{
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                MediaRecorder.AudioSource.MIC
-            };
-            for (int src : sources) {
-                try {
-                    AudioRecord rec = new AudioRecord(src, sampleRate, channelConfig, audioFormat, bufSize);
-                    if (rec.getState() == AudioRecord.STATE_INITIALIZED) {
-                        candidateRecord = rec;
-                        break;
-                    } else {
-                        rec.release();
-                    }
-                } catch (Exception ignored) { }
+                speechRecognizer.stopListening();
+            } catch (Exception ignored) {
+                destroyGoogleSpeechRecognizer();
             }
-            if (candidateRecord == null) return null;
-
-            ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
-            final ParcelFileDescriptor readPfd = pipe[0];
-            final ParcelFileDescriptor writePfd = pipe[1];
-            final AudioRecord activeRecord = candidateRecord;
-
-            int sessionId = activeRecord.getAudioSessionId();
-            final NoiseSuppressor ns = NoiseSuppressor.isAvailable() ? NoiseSuppressor.create(sessionId) : null;
-            final AutomaticGainControl agc = AutomaticGainControl.isAvailable() ? AutomaticGainControl.create(sessionId) : null;
-            final AcousticEchoCanceler aec = AcousticEchoCanceler.isAvailable() ? AcousticEchoCanceler.create(sessionId) : null;
-
-            if (ns != null) { try { ns.setEnabled(true); } catch (Exception ignored) { } }
-            if (agc != null) { try { agc.setEnabled(true); } catch (Exception ignored) { } }
-            if (aec != null) { try { aec.setEnabled(true); } catch (Exception ignored) { } }
-
-            isStreamingGoogleAudio = true;
-            googleAudioReadSide = readPfd;
-
-            googleAudioExecutor.execute(() -> {
-                try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO); }
-                catch (RuntimeException ignored) { }
-                final float alpha = 0.967f;
-                float prevIn = 0f;
-                float prevOut = 0f;
-                byte[] buffer = new byte[640];
-
-                try (OutputStream out = new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
-                    activeRecord.startRecording();
-                    while (isStreamingGoogleAudio) {
-                        int n = activeRecord.read(buffer, 0, buffer.length);
-                        if (n <= 0) break;
-                        int samples = n / 2;
-                        for (int i = 0; i < samples; i++) {
-                            int idx = i * 2;
-                            short raw = (short) ((buffer[idx] & 0xFF) | (buffer[idx + 1] << 8));
-                            float filtered = alpha * (prevOut + raw - prevIn);
-                            prevIn = raw;
-                            prevOut = filtered;
-
-                            int clean = Math.max(-32768, Math.min(32767, Math.round(filtered * 1.25f)));
-                            if (Math.abs(clean) < 75) clean = 0;
-                            buffer[idx] = (byte) (clean & 0xFF);
-                            buffer[idx + 1] = (byte) ((clean >> 8) & 0xFF);
-                        }
-                        out.write(buffer, 0, n);
-                        out.flush();
-                    }
-                } catch (Exception ignored) {
-                } finally {
-                    try {
-                        if (activeRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
-                            activeRecord.stop();
-                        }
-                    } catch (Exception ignored) { }
-                    if (ns != null) { try { ns.release(); } catch (Exception ignored) { } }
-                    if (agc != null) { try { agc.release(); } catch (Exception ignored) { } }
-                    if (aec != null) { try { aec.release(); } catch (Exception ignored) { } }
-                    try { activeRecord.release(); } catch (Exception ignored) { }
-                }
-            });
-
-            return readPfd;
-        } catch (Exception e) {
-            return null;
+        } else {
+            destroyGoogleSpeechRecognizer();
         }
     }
 
@@ -863,13 +755,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, RecognizerIntent.FORMATTING_OPTIMIZE_QUALITY);
             intent.putExtra(RecognizerIntent.EXTRA_MASK_OFFENSIVE_WORDS, false);
-            ParcelFileDescriptor cleanStream = startCleanAudioStreamForGoogle();
-            if (cleanStream != null) {
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, cleanStream);
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1);
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT);
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, 16000);
-            }
         }
         return intent;
     }
@@ -931,82 +816,82 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateShiftState();
     }
     
-    private void setupSpeechRecognizer() {
-        if (speechRecognizer != null) {
-            try { speechRecognizer.destroy(); } catch (Exception ignored) { }
-            speechRecognizer = null;
-        }
-        if (SpeechRecognizer.isRecognitionAvailable(this)) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
-            speechRecognizer.setRecognitionListener(new RecognitionListener() {
-                @Override
-                public void onReadyForSpeech(Bundle p) {
-                    lastPartialTranscript = "";
+    private SpeechRecognizer createFreshSpeechRecognizer(final int sessionToken) {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) return null;
+        SpeechRecognizer recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        recognizer.setRecognitionListener(new RecognitionListener() {
+            @Override
+            public void onReadyForSpeech(Bundle p) {
+                if (sessionToken != speechSessionToken) return;
+                isSpeechReady = true;
+                lastPartialTranscript = "";
+                feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+            }
+            @Override
+            public void onBeginningOfSpeech() { }
+            @Override
+            public void onRmsChanged(float r) { }
+            @Override
+            public void onBufferReceived(byte[] b) { }
+            @Override
+            public void onEndOfSpeech() {
+                if (sessionToken != speechSessionToken) return;
+                isListening = false;
+            }
+            @Override
+            public void onError(int error) {
+                if (sessionToken != speechSessionToken) return;
+                boolean wasListening = isListening;
+                isListening = false;
+                isSpeechReady = false;
+                InputConnection ic = getCurrentInputConnection();
+                if (ic != null) {
+                    if (!lastPartialTranscript.isEmpty() && (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_NO_MATCH)) {
+                        commitRecognizedSpeech(lastPartialTranscript);
+                    } else {
+                        ic.finishComposingText();
+                    }
+                }
+                lastPartialTranscript = "";
+                if (wasListening) {
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                 }
-                @Override
-                public void onBeginningOfSpeech() { }
-                @Override
-                public void onRmsChanged(float r) { }
-                @Override
-                public void onBufferReceived(byte[] b) { }
-                @Override
-                public void onEndOfSpeech() {
-                    isListening = false;
-                    closeGoogleAudioPipe();
+                destroyGoogleSpeechRecognizer();
+            }
+            @Override
+            public void onResults(Bundle r) {
+                if (sessionToken != speechSessionToken) return;
+                isListening = false;
+                isSpeechReady = false;
+                ArrayList<String> matches = r.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                float[] confidences = r.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES);
+                String chosen = selectBestHypothesis(matches, confidences);
+                if (chosen.trim().isEmpty() && !lastPartialTranscript.isEmpty()) {
+                    chosen = lastPartialTranscript;
                 }
-                @Override
-                public void onError(int error) {
-                    boolean wasListening = isListening;
-                    isListening = false;
-                    closeGoogleAudioPipe();
-                    InputConnection ic = getCurrentInputConnection();
-                    if (ic != null) {
-                        if (!lastPartialTranscript.isEmpty() && (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_NO_MATCH)) {
-                            commitRecognizedSpeech(lastPartialTranscript);
-                        } else {
-                            ic.finishComposingText();
-                        }
-                    }
-                    lastPartialTranscript = "";
-                    if (wasListening) {
-                        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                    }
-                    if (error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
-                        setupSpeechRecognizer();
-                    }
-                }
-                @Override
-                public void onResults(Bundle r) {
-                    isListening = false;
-                    closeGoogleAudioPipe();
-                    ArrayList<String> matches = r.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                    float[] confidences = r.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES);
-                    String chosen = selectBestHypothesis(matches, confidences);
-                    if (chosen.trim().isEmpty() && !lastPartialTranscript.isEmpty()) {
-                        chosen = lastPartialTranscript;
-                    }
-                    lastPartialTranscript = "";
-                    commitRecognizedSpeech(chosen);
-                }
-                @Override
-                public void onPartialResults(Bundle p) {
-                    InputConnection ic = getCurrentInputConnection();
-                    if (ic != null && isListening) {
-                        ArrayList<String> partial = p.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                        if (partial != null && !partial.isEmpty()) {
-                            String liveText = partial.get(0).trim();
-                            if (!liveText.isEmpty()) {
-                                lastPartialTranscript = liveText;
-                                ic.setComposingText(formatFinalTranscript(liveText), 1);
-                            }
+                lastPartialTranscript = "";
+                commitRecognizedSpeech(chosen);
+                destroyGoogleSpeechRecognizer();
+            }
+            @Override
+            public void onPartialResults(Bundle p) {
+                if (sessionToken != speechSessionToken) return;
+                InputConnection ic = getCurrentInputConnection();
+                if (ic != null && isListening) {
+                    ArrayList<String> partial = p.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                    if (partial != null && !partial.isEmpty()) {
+                        String liveText = partial.get(0).trim();
+                        if (!liveText.isEmpty()) {
+                            lastPartialTranscript = liveText;
+                            ic.setComposingText(formatFinalTranscript(liveText), 1);
                         }
                     }
                 }
-                @Override
-                public void onEvent(int t, Bundle p) { }
-            });
-        }
+            }
+            @Override
+            public void onEvent(int t, Bundle p) { }
+        });
+        return recognizer;
     }
 
     private void startVoiceInput() {
@@ -1014,33 +899,50 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (canUseShanVoice() && shanVoiceInput != null) shanVoiceInput.toggle();
             return;
         }
-        if (speechRecognizer == null) {
-            setupSpeechRecognizer();
-            if (speechRecognizer == null) return;
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Intent intent = new Intent(this, ShanVoiceConsentActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return;
         }
         if (isListening) {
             stopGoogleSpeechRecognizer();
             return;
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-            intent.setData(Uri.parse("package:" + getPackageName()));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-            return;
-        }
+
+        destroyGoogleSpeechRecognizer();
+        final int currentToken = ++speechSessionToken;
         int settleMillis = prepareShanVoiceCapture();
-        closeGoogleAudioPipe();
-        speechIntent = createSpeechIntentForCurrentLanguage();
+
         handler.postDelayed(() -> {
+            if (currentToken != speechSessionToken) return;
+            speechRecognizer = createFreshSpeechRecognizer(currentToken);
+            if (speechRecognizer == null) return;
+            speechIntent = createSpeechIntentForCurrentLanguage();
             try {
                 lastPartialTranscript = "";
-                speechRecognizer.startListening(speechIntent);
+                isSpeechReady = false;
                 isListening = true;
+                speechRecognizer.startListening(speechIntent);
+
+                // Watchdog: if Google Speech service fails to become ready within 3.5s, reset and retry once
+                handler.postDelayed(() -> {
+                    if (currentToken == speechSessionToken && isListening && !isSpeechReady) {
+                        destroyGoogleSpeechRecognizer();
+                        final int retryToken = ++speechSessionToken;
+                        speechRecognizer = createFreshSpeechRecognizer(retryToken);
+                        if (speechRecognizer != null) {
+                            try {
+                                isListening = true;
+                                speechRecognizer.startListening(createSpeechIntentForCurrentLanguage());
+                            } catch (Exception e) {
+                                destroyGoogleSpeechRecognizer();
+                            }
+                        }
+                    }
+                }, 3500);
             } catch (Exception e) {
-                isListening = false;
-                closeGoogleAudioPipe();
-                setupSpeechRecognizer();
+                destroyGoogleSpeechRecognizer();
             }
         }, settleMillis);
     }
@@ -1186,33 +1088,31 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override public void onWindowHidden() {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
-        stopGoogleSpeechRecognizer();
+        destroyGoogleSpeechRecognizer();
         super.onWindowHidden();
     }
 
     @Override public void onFinishInputView(boolean finishingInput) {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
-        stopGoogleSpeechRecognizer();
+        destroyGoogleSpeechRecognizer();
         super.onFinishInputView(finishingInput);
     }
 
     @Override public void onFinishInput() {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
-        stopGoogleSpeechRecognizer();
+        destroyGoogleSpeechRecognizer();
         super.onFinishInput();
     }
     
     @Override public void onDestroy() { 
         if (shanVoiceInput != null) shanVoiceInput.destroy();
-        closeGoogleAudioPipe();
+        destroyGoogleSpeechRecognizer();
         super.onDestroy(); 
         if (shanTts != null) {
             shanTts.stop();
             shanTts.shutdown();
         }
-        if(speechRecognizer!=null) speechRecognizer.destroy(); 
         if(dbExecutor != null && !dbExecutor.isShutdown()) dbExecutor.shutdown();
-        if(googleAudioExecutor != null && !googleAudioExecutor.isShutdown()) googleAudioExecutor.shutdownNow();
         if(isReceiverRegistered) unregisterReceiver(userUnlockReceiver);
         if (touchHandler != null) {
             touchHandler.cancelAllLongPress();
@@ -1230,4 +1130,3 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         super.onUpdateCursorAnchorInfo(cursorAnchorInfo);
     }
 }
-
