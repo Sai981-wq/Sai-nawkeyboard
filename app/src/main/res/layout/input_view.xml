@@ -3,30 +3,33 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="#F5F7F8">
+    android:background="#E8EAED">
 
     <LinearLayout
         android:id="@+id/candidates_container"
         android:layout_width="match_parent"
-        android:layout_height="48dp"
+        android:layout_height="40dp"
         android:orientation="horizontal"
-        android:background="#F5F7F8"
-        android:paddingLeft="8dp"
-        android:paddingRight="8dp"
+        android:background="#E8EAED"
+        android:paddingLeft="6dp"
+        android:paddingRight="6dp"
         android:gravity="center_vertical" />
 
     <com.sainaw.mm.board.SaiNawKeyboardView
         android:id="@+id/keyboard_view"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:background="#E8EAED"
         android:keyPreviewLayout="@null"
-        android:keyTextColor="#1A1C1E"
-        android:keyTextSize="20sp"
+        android:keyTextColor="#202124"
+        android:keyTextSize="19sp"
+        android:labelTextSize="14sp"
         android:keyBackground="@drawable/key_background"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp"
+        android:paddingLeft="3dp"
+        android:paddingRight="3dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="6dp"
         android:popupLayout="@null"
-        android:shadowColor="#FFFFFF"
         android:shadowRadius="0.0" />
 
 </LinearLayout>

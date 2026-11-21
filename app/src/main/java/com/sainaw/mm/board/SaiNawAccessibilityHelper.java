@@ -464,7 +464,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     private String getKeyDescription(Keyboard.Key key) {
         int code = key.codes[0];
-        if (code == -4 && key.label != null) return key.label.toString();
+        if (code == -4) return (key.label != null && key.label.length() > 0) ? key.label.toString() : "Enter";
 
         boolean checkPhonetic = (currentLanguageId == 1 && isMmPhoneticEnabled) || (currentLanguageId == 2 && isShanPhoneticEnabled);
         if (checkPhonetic) {
@@ -477,6 +477,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (code == 32) return "Space";
         if (code == -2) return "Symbol Keyboard";
         if (code == -6) return "Alphabet Keyboard";
+        if (code == -7) return "Emoji";
         if (code == -101) return "Switch Language";
         if (code == -10) return "Voice Typing";
         if (code == -100) return "";
