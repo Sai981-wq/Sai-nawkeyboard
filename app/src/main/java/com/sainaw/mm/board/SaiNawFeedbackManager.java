@@ -53,7 +53,18 @@ public class SaiNawFeedbackManager {
     private volatile long cachedDurLongPress = 45L;
     private volatile long cachedDurFocus = 15L;
 
-    private final Runnable hapticDispatcher = () -> {
+    private final Runnable hapticDispatcher = this::dispatchHaptic;
+
+    public SaiNawFeedbackManager(Context context) {
+        this.context = context.getApplicationContext();
+        this.vibrator = (Vibrator) this.context.getSystemService(Context.VIBRATOR_SERVICE);
+        this.hasVibrator = (this.vibrator != null && this.vibrator.hasVibrator());
+        this.audioManager = (AudioManager) this.context.getSystemService(Context.AUDIO_SERVICE);
+        initSoundPool();
+        rebuildVibrationEffects(0);
+    }
+
+    private void dispatchHaptic() {
         hapticTaskScheduled.set(false);
         if (released || !vibrateOn || !hasVibrator) {
             pendingHapticType.set(0);
@@ -79,23 +90,13 @@ public class SaiNawFeedbackManager {
             }
         } catch (Exception ignored) { }
 
-        // If another haptic arrived while vibrating, reschedule cleanly
         if (pendingHapticType.get() != 0 && hapticTaskScheduled.compareAndSet(false, true)) {
             if (!hapticExecutor.isShutdown()) {
-                hapticExecutor.execute(this.hapticDispatcher);
+                hapticExecutor.execute(hapticDispatcher);
             } else {
                 hapticTaskScheduled.set(false);
             }
         }
-    };
-
-    public SaiNawFeedbackManager(Context context) {
-        this.context = context.getApplicationContext();
-        this.vibrator = (Vibrator) this.context.getSystemService(Context.VIBRATOR_SERVICE);
-        this.hasVibrator = (this.vibrator != null && this.vibrator.hasVibrator());
-        this.audioManager = (AudioManager) this.context.getSystemService(Context.AUDIO_SERVICE);
-        initSoundPool();
-        rebuildVibrationEffects(0);
     }
 
     private void initSoundPool() {
@@ -200,7 +201,6 @@ public class SaiNawFeedbackManager {
             lastFocusHapticMs = now;
         }
 
-        // Preserve higher-priority TYPE / LONG_PRESS haptic if already queued
         while (true) {
             int cur = pendingHapticType.get();
             if (type == HAPTIC_FOCUS && (cur == HAPTIC_TYPE || cur == HAPTIC_LONG_PRESS)) {
