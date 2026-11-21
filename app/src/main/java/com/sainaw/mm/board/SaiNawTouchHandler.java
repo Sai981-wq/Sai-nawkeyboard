@@ -15,11 +15,42 @@ import java.util.List;
 public class SaiNawTouchHandler {
     private static final long FOCUS_HAPTIC_THROTTLE_MS = 32L;
 
+    // Swipe / gesture rejection constants for Screen Reader Lift-to-Type
+    private static final int HOVER_SAMPLE_CAPACITY = 12;
+    private static final long RECENT_MOTION_WINDOW_MS = 130L;
+    private static final long FAST_SWIPE_MAX_DURATION_MS = 260L;
+    private static final long MIN_DWELL_AFTER_UPWARD_SWIPE_MS = 140L;
+    private static final long MIN_DWELL_AFTER_FAST_SLIDE_MS = 110L;
+    private static final float FLICK_SPEED_DP_PER_SEC = 300f;
+
     private final SaiNawKeyboardService service;
     private final SaiNawLayoutManager layoutManager;
     private final SaiNawFeedbackManager feedbackManager;
     private final SaiNawEmojiManager emojiManager;
     private final Handler handler = new Handler(Looper.getMainLooper());
+
+    private final float density;
+    private final float strongUpwardSwipePx;
+    private final float moderateUpwardSwipePx;
+    private final float fastUpwardTotalPx;
+    private final float strongSlideDistPx;
+    private final float fastSlideDistPx;
+    private final float flickMinDistPx;
+    private final float topEdgeZonePx;
+    private final float topEdgeUpwardPx;
+
+    // Zero-allocation ring buffer tracking recent hover coordinates
+    private final float[] sampleX = new float[HOVER_SAMPLE_CAPACITY];
+    private final float[] sampleY = new float[HOVER_SAMPLE_CAPACITY];
+    private final long[] sampleTime = new long[HOVER_SAMPLE_CAPACITY];
+    private int sampleHead = 0;
+    private int sampleCount = 0;
+
+    private float hoverEnterX = 0f;
+    private float hoverEnterY = 0f;
+    private long hoverEnterTime = 0L;
+    private long lastKeyEnterTime = 0L;
+    private int keysVisitedInSession = 0;
 
     private boolean isLiftToType = true;
     private int lastHoverKeyIndex = -1;
@@ -43,6 +74,16 @@ public class SaiNawTouchHandler {
         this.layoutManager = layoutManager;
         this.feedbackManager = feedbackManager;
         this.emojiManager = emojiManager;
+
+        this.density = service.getResources().getDisplayMetrics().density;
+        this.strongUpwardSwipePx = 24f * density;
+        this.moderateUpwardSwipePx = 16f * density;
+        this.fastUpwardTotalPx = 24f * density;
+        this.strongSlideDistPx = 30f * density;
+        this.fastSlideDistPx = 22f * density;
+        this.flickMinDistPx = 16f * density;
+        this.topEdgeZonePx = 14f * density;
+        this.topEdgeUpwardPx = 8f * density;
 
         this.spaceLongPressTask = () -> {
             isLongPressHandled = true;
@@ -134,33 +175,154 @@ public class SaiNawTouchHandler {
         return null;
     }
 
+    private void resetHoverTracking() {
+        sampleHead = 0;
+        sampleCount = 0;
+        hoverEnterX = 0f;
+        hoverEnterY = 0f;
+        hoverEnterTime = 0L;
+        lastKeyEnterTime = 0L;
+        keysVisitedInSession = 0;
+    }
+
+    private void recordHoverSample(float rawX, float rawY, long eventTime) {
+        sampleX[sampleHead] = rawX;
+        sampleY[sampleHead] = rawY;
+        sampleTime[sampleHead] = eventTime;
+        sampleHead = (sampleHead + 1) % HOVER_SAMPLE_CAPACITY;
+        if (sampleCount < HOVER_SAMPLE_CAPACITY) {
+            sampleCount++;
+        }
+    }
+
+    private boolean isSwipeOrEdgeExit(float rawX, float rawY, long exitTime, View hostView) {
+        // 1. Finger left the keyboard view bounds completely
+        if (rawY < 0f || rawX < 0f) return true;
+        if (hostView != null) {
+            int width = hostView.getWidth();
+            int height = hostView.getHeight();
+            if ((width > 0 && rawX > width) || (height > 0 && rawY > height)) {
+                return true;
+            }
+        }
+
+        if (sampleCount == 0) return false;
+
+        // Find the oldest sample inside the recent motion window (130ms) right before exit
+        int latestIdx = (sampleHead - 1 + HOVER_SAMPLE_CAPACITY) % HOVER_SAMPLE_CAPACITY;
+        int refIdx = latestIdx;
+        for (int i = 0; i < sampleCount; i++) {
+            int idx = (sampleHead - 1 - i + HOVER_SAMPLE_CAPACITY) % HOVER_SAMPLE_CAPACITY;
+            if (exitTime - sampleTime[idx] <= RECENT_MOTION_WINDOW_MS) {
+                refIdx = idx;
+            } else {
+                break;
+            }
+        }
+
+        float recentDx = rawX - sampleX[refIdx];
+        float recentDy = rawY - sampleY[refIdx]; // negative = moving upward
+        long recentDt = Math.max(1L, exitTime - sampleTime[refIdx]);
+        float recentDist = (float) Math.hypot(recentDx, recentDy);
+
+        float totalDx = rawX - hoverEnterX;
+        float totalDy = rawY - hoverEnterY;
+        long totalDuration = Math.max(1L, exitTime - hoverEnterTime);
+        long dwellOnExitKey = Math.max(0L, exitTime - lastKeyEnterTime);
+
+        // 2. Sliding upward out of the top edge toward the candidate bar or app above
+        if (rawY < topEdgeZonePx && recentDy < -topEdgeUpwardPx && dwellOnExitKey < MIN_DWELL_AFTER_UPWARD_SWIPE_MS) {
+            return true;
+        }
+
+        // 3. Upward single-finger swipe / flick (TalkBack swipe-up gesture)
+        if (recentDy < -strongUpwardSwipePx) {
+            return true;
+        }
+        if (recentDy < -moderateUpwardSwipePx && dwellOnExitKey < MIN_DWELL_AFTER_UPWARD_SWIPE_MS) {
+            return true;
+        }
+        if (totalDuration < FAST_SWIPE_MAX_DURATION_MS
+                && totalDy < -fastUpwardTotalPx
+                && Math.abs(totalDy) >= Math.abs(totalDx)) {
+            return true;
+        }
+
+        // 4. Fast flick / swipe in any direction (TalkBack swipe left / right / down)
+        if (recentDist > strongSlideDistPx) {
+            return true;
+        }
+        if (recentDist > fastSlideDistPx && dwellOnExitKey < MIN_DWELL_AFTER_FAST_SLIDE_MS) {
+            return true;
+        }
+        float speedDpPerSec = (recentDist / density) * 1000f / recentDt;
+        if (recentDist > flickMinDistPx
+                && speedDpPerSec > FLICK_SPEED_DP_PER_SEC
+                && dwellOnExitKey < MIN_DWELL_AFTER_FAST_SLIDE_MS) {
+            return true;
+        }
+
+        // 5. Rapid fly-through across 3+ keys in a single quick swipe
+        if (keysVisitedInSession >= 3
+                && totalDuration < FAST_SWIPE_MAX_DURATION_MS
+                && dwellOnExitKey < MIN_DWELL_AFTER_FAST_SLIDE_MS) {
+            return true;
+        }
+
+        return false;
+    }
+
     public void handleHover(MotionEvent event) {
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         if (!isLiftToType || keys == null || keys.isEmpty()) {
             lastHoverKeyIndex = -1;
+            resetHoverTracking();
             return;
         }
 
         int action = event.getActionMasked();
         View hostView = service.getKeyboardView();
-        float x = event.getX();
-        float y = event.getY();
+        float rawX = event.getX();
+        float rawY = event.getY();
+        long eventTime = event.getEventTime();
 
+        float keyX = rawX;
+        float keyY = rawY;
         if (hostView != null) {
-            x -= hostView.getPaddingLeft();
-            y -= hostView.getPaddingTop();
+            keyX -= hostView.getPaddingLeft();
+            keyY -= hostView.getPaddingTop();
         }
 
         switch (action) {
             case MotionEvent.ACTION_HOVER_ENTER:
                 cancelAllLongPress();
                 lastHoverKeyIndex = -1;
-                // fall through
+                resetHoverTracking();
+                hoverEnterX = rawX;
+                hoverEnterY = rawY;
+                hoverEnterTime = eventTime;
+                lastKeyEnterTime = eventTime;
+                recordHoverSample(rawX, rawY, eventTime);
+                // fall through to focus the touched key
             case MotionEvent.ACTION_HOVER_MOVE:
-                int newKeyIndex = layoutManager.findKeyIndexAt((int) x, (int) y);
+                if (action == MotionEvent.ACTION_HOVER_MOVE) {
+                    if (sampleCount == 0) {
+                        hoverEnterX = rawX;
+                        hoverEnterY = rawY;
+                        hoverEnterTime = eventTime;
+                        lastKeyEnterTime = eventTime;
+                    }
+                    recordHoverSample(rawX, rawY, eventTime);
+                }
+
+                int newKeyIndex = layoutManager.findKeyIndexAt((int) keyX, (int) keyY);
                 if (newKeyIndex != lastHoverKeyIndex) {
                     cancelAllLongPress();
                     lastHoverKeyIndex = newKeyIndex;
+                    lastKeyEnterTime = eventTime;
+                    if (newKeyIndex >= 0) {
+                        keysVisitedInSession++;
+                    }
 
                     if (newKeyIndex >= 0 && newKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(newKeyIndex);
@@ -191,10 +353,13 @@ public class SaiNawTouchHandler {
             case MotionEvent.ACTION_HOVER_EXIT:
                 boolean wasLongPress = isLongPressHandled;
                 int exitKeyIndex = lastHoverKeyIndex;
+                boolean suppressAsSwipe = isSwipeOrEdgeExit(rawX, rawY, eventTime, hostView);
+
                 cancelAllLongPress();
                 lastHoverKeyIndex = -1;
+                resetHoverTracking();
 
-                if (y < -12) {
+                if (suppressAsSwipe || keyY < -12) {
                     service.stopSpeech();
                     return;
                 }
@@ -240,6 +405,7 @@ public class SaiNawTouchHandler {
 
     public void reset() {
         lastHoverKeyIndex = -1;
+        resetHoverTracking();
         cancelAllLongPress();
     }
 }
