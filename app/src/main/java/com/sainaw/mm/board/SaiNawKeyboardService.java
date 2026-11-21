@@ -2,11 +2,13 @@ package com.sainaw.mm.board;
 
 import android.Manifest;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.inputmethodservice.InputMethodService;
 import android.inputmethodservice.Keyboard;
@@ -19,6 +21,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.UserManager;
 import android.speech.RecognitionListener;
+import android.speech.RecognitionService;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
@@ -66,7 +69,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean shadowNeedsResync = true;
     private boolean hasTextSelection = false;
 
-    // RAM-cached settings (never read SharedPreferences inside hot keypress paths)
+    // RAM-cached settings
     private boolean isReceiverRegistered = false;
     private boolean useSmartEcho = false;
     private boolean autoCapsEnabled = true;
@@ -77,14 +80,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
+
+    // Warm reusable Google SpeechRecognizer state (MIUI / HyperOS safe)
+    private static final int ERROR_SERVER_DISCONNECTED_COMPAT = 11;
     private SpeechRecognizer speechRecognizer;
-    private Intent speechIntent;
+    private boolean isSessionActive = false;
     private boolean isListening = false;
     private boolean isSpeechReady = false;
+    private boolean hasRetriedCurrentTap = false;
+    private boolean useAlternateVoiceService = false;
+    private int activeRecognizerId = 0;
     private int speechSessionToken = 0;
     private Runnable speechWatchdog;
+    private Runnable pendingSpeechStartTask;
     private Runnable pendingAnnouncementTask;
     private String lastPartialTranscript = "";
+
     private TextToSpeech shanTts;
     private ShanVoiceInput shanVoiceInput;
     private int voiceLanguageId = -1;
@@ -120,8 +131,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             handler.removeCallbacks(pendingAnnouncementTask);
             pendingAnnouncementTask = null;
         }
+        cancelPendingSpeechStart();
         cancelSpeechWatchdog();
         if (accessibilityHelper != null) accessibilityHelper.shutdown();
+        if (feedbackManager != null) feedbackManager.release();
         if (shanVoiceInput != null) shanVoiceInput.destroy();
         if (shanTts != null) {
             try { shanTts.stop(); shanTts.shutdown(); } catch (Exception ignored) { }
@@ -202,7 +215,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     public void onStartInput(EditorInfo attribute, boolean restarting) {
         if (!restarting) {
             if (shanVoiceInput != null) shanVoiceInput.cancel();
-            destroyGoogleSpeechRecognizer(false);
+            cancelGoogleSpeechListening();
             shadowLine.setLength(0);
             currentWord.setLength(0);
             shadowNeedsResync = true;
@@ -363,10 +376,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     int prepareShanVoiceCapture() {
         stopSpeech();
-        AccessibilityManager manager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
-        if (manager != null && manager.isEnabled()) {
-            manager.interrupt();
-            return 180;
+        if (accessibilityManager != null && accessibilityManager.isEnabled()) {
+            accessibilityManager.interrupt();
+            return 100;
         }
         return 0;
     }
@@ -549,7 +561,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 case -101:
                     manualShiftOverride = false;
-                    destroyGoogleSpeechRecognizer(false);
+                    cancelGoogleSpeechListening();
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.changeLanguage();
                     if (touchHandler != null) touchHandler.reset();
@@ -732,7 +744,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     public int getResId(String name) { return getResources().getIdentifier(name, "xml", getPackageName()); }
 
     public void announceText(String text) {
-        if ((shanVoiceInput != null && shanVoiceInput.isCapturePending()) || isListening) return;
+        if ((shanVoiceInput != null && shanVoiceInput.isCapturePending()) || isSessionActive) return;
 
         if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isNativeTalkBackText(text)) {
             silenceTalkBack();
@@ -757,7 +769,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 handler.removeCallbacks(pendingAnnouncementTask);
             }
             pendingAnnouncementTask = () -> {
-                if ((shanVoiceInput != null && shanVoiceInput.isCapturePending()) || isListening) return;
+                if ((shanVoiceInput != null && shanVoiceInput.isCapturePending()) || isSessionActive) return;
                 AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
                 event.getText().add(text);
                 accessibilityManager.sendAccessibilityEvent(event);
@@ -885,6 +897,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateShiftState(false);
     }
 
+    private void cancelPendingSpeechStart() {
+        if (pendingSpeechStartTask != null) {
+            handler.removeCallbacks(pendingSpeechStartTask);
+            pendingSpeechStartTask = null;
+        }
+    }
+
     private void cancelSpeechWatchdog() {
         if (speechWatchdog != null) {
             handler.removeCallbacks(speechWatchdog);
@@ -898,9 +917,44 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         try { recognizer.destroy(); } catch (Exception ignored) { }
     }
 
-    private void destroyGoogleSpeechRecognizer(boolean asyncCleanup) {
+    /**
+     * Stops active listening while keeping the SpeechRecognizer binder warm (prevents MIUI lag & binder wedge).
+     */
+    private void cancelGoogleSpeechListening() {
         speechSessionToken++;
+        cancelPendingSpeechStart();
         cancelSpeechWatchdog();
+        boolean wasActive = isSessionActive;
+        isSessionActive = false;
+        isListening = false;
+        isSpeechReady = false;
+        lastPartialTranscript = "";
+
+        if (wasActive) {
+            InputConnection ic = getCurrentInputConnection();
+            if (ic != null) {
+                try { ic.finishComposingText(); } catch (Exception ignored) { }
+            }
+        }
+
+        if (speechRecognizer != null) {
+            try {
+                speechRecognizer.cancel();
+            } catch (Exception e) {
+                destroyGoogleSpeechRecognizer(true);
+            }
+        }
+    }
+
+    /**
+     * Full teardown used only on fatal binder/busy errors or service destroy.
+     */
+    private void destroyGoogleSpeechRecognizer(boolean asyncCleanup) {
+        activeRecognizerId++;
+        speechSessionToken++;
+        cancelPendingSpeechStart();
+        cancelSpeechWatchdog();
+        isSessionActive = false;
         isListening = false;
         isSpeechReady = false;
         lastPartialTranscript = "";
@@ -917,6 +971,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private void stopGoogleSpeechRecognizer() {
+        cancelPendingSpeechStart();
         cancelSpeechWatchdog();
         if (speechRecognizer != null && isListening && isSpeechReady) {
             try {
@@ -925,7 +980,35 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 destroyGoogleSpeechRecognizer(true);
             }
         } else {
-            destroyGoogleSpeechRecognizer(true);
+            cancelGoogleSpeechListening();
+        }
+    }
+
+    private ComponentName resolveGoogleRecognitionComponent(boolean preferAlternate) {
+        try {
+            Intent queryIntent = new Intent(RecognitionService.SERVICE_INTERFACE);
+            List<ResolveInfo> services = getPackageManager().queryIntentServices(queryIntent, 0);
+            if (services == null || services.isEmpty()) return null;
+
+            ComponentName googleTts = null;
+            ComponentName googleApp = null;
+            for (ResolveInfo info : services) {
+                if (info == null || info.serviceInfo == null) continue;
+                String pkg = info.serviceInfo.packageName;
+                String cls = info.serviceInfo.name;
+                if ("com.google.android.tts".equals(pkg)) {
+                    googleTts = new ComponentName(pkg, cls);
+                } else if ("com.google.android.googlequicksearchbox".equals(pkg)) {
+                    googleApp = new ComponentName(pkg, cls);
+                }
+            }
+
+            if (preferAlternate) {
+                return (googleApp != null) ? googleApp : googleTts;
+            }
+            return (googleTts != null) ? googleTts : googleApp;
+        } catch (Exception ignored) {
+            return null;
         }
     }
 
@@ -936,14 +1019,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, primaryLang);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, primaryLang);
-        intent.putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true);
         intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
-        intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
         intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
-        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 750L);
-        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 600L);
-        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 400L);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, RecognizerIntent.FORMATTING_OPTIMIZE_QUALITY);
             intent.putExtra(RecognizerIntent.EXTRA_MASK_OFFENSIVE_WORDS, false);
@@ -1010,37 +1088,81 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateShiftState(false);
     }
 
-    private SpeechRecognizer createFreshSpeechRecognizer(final int sessionToken) {
+    private SpeechRecognizer ensureWarmSpeechRecognizer() {
+        if (speechRecognizer != null) {
+            return speechRecognizer;
+        }
         if (!SpeechRecognizer.isRecognitionAvailable(this)) return null;
-        SpeechRecognizer recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+
+        final int recognizerId = ++activeRecognizerId;
+        Context appCtx = getApplicationContext();
+        ComponentName preferred = resolveGoogleRecognitionComponent(useAlternateVoiceService);
+        SpeechRecognizer recognizer;
+        try {
+            recognizer = (preferred != null)
+                    ? SpeechRecognizer.createSpeechRecognizer(appCtx, preferred)
+                    : SpeechRecognizer.createSpeechRecognizer(appCtx);
+        } catch (Exception e) {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(appCtx);
+        }
+
         recognizer.setRecognitionListener(new RecognitionListener() {
             @Override
             public void onReadyForSpeech(Bundle p) {
-                if (sessionToken != speechSessionToken) return;
+                if (recognizerId != activeRecognizerId || !isSessionActive) return;
                 cancelSpeechWatchdog();
                 isSpeechReady = true;
+                hasRetriedCurrentTap = false;
                 lastPartialTranscript = "";
                 if (feedbackManager != null) feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
             }
+
             @Override
             public void onBeginningOfSpeech() { }
+
             @Override
             public void onRmsChanged(float r) { }
+
             @Override
             public void onBufferReceived(byte[] b) { }
+
             @Override
             public void onEndOfSpeech() {
-                if (sessionToken != speechSessionToken) return;
+                if (recognizerId != activeRecognizerId || !isSessionActive) return;
                 isListening = false;
             }
+
             @Override
             public void onError(int error) {
-                if (sessionToken != speechSessionToken) return;
-                boolean wasListening = isListening;
+                if (recognizerId != activeRecognizerId || !isSessionActive) return;
+                cancelSpeechWatchdog();
+
+                boolean isBinderOrBusyError = (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+                        || error == SpeechRecognizer.ERROR_CLIENT
+                        || error == SpeechRecognizer.ERROR_AUDIO
+                        || error == ERROR_SERVER_DISCONNECTED_COMPAT);
+
+                // Auto-recover once if MIUI/HyperOS wedged the binder before speech even started
+                if (isBinderOrBusyError && !isSpeechReady && !hasRetriedCurrentTap) {
+                    hasRetriedCurrentTap = true;
+                    useAlternateVoiceService = !useAlternateVoiceService;
+                    destroyGoogleSpeechRecognizer(true);
+                    startGoogleSpeechSession(true);
+                    return;
+                }
+
+                boolean wasListening = isListening || isSpeechReady;
+                String partialToCommit = lastPartialTranscript;
+
+                isSessionActive = false;
+                isListening = false;
+                isSpeechReady = false;
+                lastPartialTranscript = "";
+
                 InputConnection ic = getCurrentInputConnection();
                 if (ic != null) {
-                    if (!lastPartialTranscript.isEmpty() && (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_NO_MATCH)) {
-                        commitRecognizedSpeech(lastPartialTranscript);
+                    if (!partialToCommit.isEmpty() && (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_NO_MATCH)) {
+                        commitRecognizedSpeech(partialToCommit);
                     } else {
                         ic.finishComposingText();
                     }
@@ -1048,25 +1170,40 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 if (wasListening && feedbackManager != null) {
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                 }
-                destroyGoogleSpeechRecognizer(true);
+
+                // Only tear down recognizer on fatal binder/service errors; otherwise keep warm
+                if (isBinderOrBusyError || error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                    destroyGoogleSpeechRecognizer(true);
+                }
             }
+
             @Override
             public void onResults(Bundle r) {
-                if (sessionToken != speechSessionToken) return;
+                if (recognizerId != activeRecognizerId || !isSessionActive) return;
+                cancelSpeechWatchdog();
+                String partialBackup = lastPartialTranscript;
+
+                isSessionActive = false;
+                isListening = false;
+                isSpeechReady = false;
+                hasRetriedCurrentTap = false;
+                lastPartialTranscript = "";
+
                 ArrayList<String> matches = r != null ? r.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) : null;
                 float[] confidences = r != null ? r.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES) : null;
                 String chosen = selectBestHypothesis(matches, confidences);
-                if (chosen.trim().isEmpty() && !lastPartialTranscript.isEmpty()) {
-                    chosen = lastPartialTranscript;
+                if (chosen.trim().isEmpty() && !partialBackup.isEmpty()) {
+                    chosen = partialBackup;
                 }
                 commitRecognizedSpeech(chosen);
-                destroyGoogleSpeechRecognizer(true);
+                // Keep speechRecognizer warm for instant next tap
             }
+
             @Override
             public void onPartialResults(Bundle p) {
-                if (sessionToken != speechSessionToken) return;
+                if (recognizerId != activeRecognizerId || !isSessionActive) return;
                 InputConnection ic = getCurrentInputConnection();
-                if (ic != null && isListening && p != null) {
+                if (ic != null && p != null) {
                     ArrayList<String> partial = p.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
                     if (partial != null && !partial.isEmpty()) {
                         String liveText = partial.get(0).trim();
@@ -1077,9 +1214,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     }
                 }
             }
+
             @Override
             public void onEvent(int t, Bundle p) { }
         });
+
+        speechRecognizer = recognizer;
         return recognizer;
     }
 
@@ -1094,36 +1234,65 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             startActivity(intent);
             return;
         }
-        if (isListening) {
+        if (isSessionActive) {
             stopGoogleSpeechRecognizer();
             return;
         }
 
-        destroyGoogleSpeechRecognizer(false);
-        final int currentToken = ++speechSessionToken;
-        int settleMillis = Math.max(150, prepareShanVoiceCapture());
+        hasRetriedCurrentTap = false;
+        startGoogleSpeechSession(false);
+    }
 
-        handler.postDelayed(() -> {
+    private void startGoogleSpeechSession(final boolean isRetry) {
+        cancelPendingSpeechStart();
+        cancelSpeechWatchdog();
+        final int currentToken = ++speechSessionToken;
+        int delayMs = isRetry ? 280 : prepareShanVoiceCapture();
+
+        Runnable launchTask = () -> {
+            pendingSpeechStartTask = null;
             if (currentToken != speechSessionToken) return;
-            speechRecognizer = createFreshSpeechRecognizer(currentToken);
-            if (speechRecognizer == null) return;
-            speechIntent = createSpeechIntentForCurrentLanguage();
+
+            SpeechRecognizer recognizer = ensureWarmSpeechRecognizer();
+            if (recognizer == null) return;
+
             try {
                 lastPartialTranscript = "";
+                isSessionActive = true;
                 isSpeechReady = false;
                 isListening = true;
-                speechRecognizer.startListening(speechIntent);
+                recognizer.startListening(createSpeechIntentForCurrentLanguage());
 
+                // Watchdog: if MIUI hangs silently without onReadyForSpeech within 3s, reset & retry once
                 speechWatchdog = () -> {
-                    if (currentToken == speechSessionToken && isListening && !isSpeechReady) {
-                        destroyGoogleSpeechRecognizer(true);
+                    if (currentToken == speechSessionToken && isSessionActive && !isSpeechReady) {
+                        if (!hasRetriedCurrentTap) {
+                            hasRetriedCurrentTap = true;
+                            useAlternateVoiceService = !useAlternateVoiceService;
+                            destroyGoogleSpeechRecognizer(true);
+                            startGoogleSpeechSession(true);
+                        } else {
+                            destroyGoogleSpeechRecognizer(true);
+                        }
                     }
                 };
-                handler.postDelayed(speechWatchdog, 4500);
+                handler.postDelayed(speechWatchdog, 3000);
             } catch (Exception e) {
                 destroyGoogleSpeechRecognizer(true);
+                if (!hasRetriedCurrentTap) {
+                    hasRetriedCurrentTap = true;
+                    useAlternateVoiceService = !useAlternateVoiceService;
+                    startGoogleSpeechSession(true);
+                }
             }
-        }, settleMillis);
+        };
+
+        if (delayMs <= 0) {
+            launchTask.run();
+        } else {
+            pendingSpeechStartTask = launchTask;
+            handler.postDelayed(launchTask, delayMs);
+        }
     }
 
     private void initCandidateViews(boolean isDarkTheme) {
@@ -1282,24 +1451,25 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override public void onWindowHidden() {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
-        destroyGoogleSpeechRecognizer(false);
+        cancelGoogleSpeechListening();
         super.onWindowHidden();
     }
 
     @Override public void onFinishInputView(boolean finishingInput) {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
-        destroyGoogleSpeechRecognizer(false);
+        cancelGoogleSpeechListening();
         super.onFinishInputView(finishingInput);
     }
 
     @Override public void onFinishInput() {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
-        destroyGoogleSpeechRecognizer(false);
+        cancelGoogleSpeechListening();
         super.onFinishInput();
     }
 
     @Override public void onDestroy() {
         if (accessibilityHelper != null) accessibilityHelper.shutdown();
+        if (feedbackManager != null) feedbackManager.release();
         if (shanVoiceInput != null) shanVoiceInput.destroy();
         destroyGoogleSpeechRecognizer(false);
         super.onDestroy();
@@ -1319,6 +1489,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             handler.removeCallbacks(pendingAnnouncementTask);
             pendingAnnouncementTask = null;
         }
+        cancelPendingSpeechStart();
         cancelSpeechWatchdog();
     }
 
