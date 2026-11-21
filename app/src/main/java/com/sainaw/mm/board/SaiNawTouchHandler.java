@@ -3,28 +3,30 @@ package com.sainaw.mm.board;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import java.util.List;
 
 public class SaiNawTouchHandler {
+    private static final long FOCUS_HAPTIC_THROTTLE_MS = 32L;
+
     private final SaiNawKeyboardService service;
     private final SaiNawLayoutManager layoutManager;
     private final SaiNawFeedbackManager feedbackManager;
     private final SaiNawEmojiManager emojiManager;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final Rect tempRect = new Rect();
 
     private boolean isLiftToType = true;
     private int lastHoverKeyIndex = -1;
     private boolean isLongPressHandled = false;
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
+    private long lastFocusHapticTime = 0L;
 
     private final Runnable spaceLongPressTask;
     private final Runnable shiftLongPressTask;
@@ -151,22 +153,25 @@ public class SaiNawTouchHandler {
 
         switch (action) {
             case MotionEvent.ACTION_HOVER_ENTER:
-                // Always start fresh on ENTER so a missed EXIT never locks out same-key taps
                 cancelAllLongPress();
                 lastHoverKeyIndex = -1;
-                // fall through to focus the touched key
+                // fall through
             case MotionEvent.ACTION_HOVER_MOVE:
-                int newKeyIndex = getNearestKeyIndexFast((int) x, (int) y);
+                int newKeyIndex = layoutManager.findKeyIndexAt((int) x, (int) y);
                 if (newKeyIndex != lastHoverKeyIndex) {
                     cancelAllLongPress();
                     lastHoverKeyIndex = newKeyIndex;
 
-                    if (newKeyIndex != -1 && newKeyIndex < keys.size()) {
+                    if (newKeyIndex >= 0 && newKeyIndex < keys.size()) {
                         Keyboard.Key key = keys.get(newKeyIndex);
                         if (key != null && key.codes != null && key.codes.length > 0) {
-                            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS);
-                            int code = key.codes[0];
+                            long now = SystemClock.uptimeMillis();
+                            if (now - lastFocusHapticTime >= FOCUS_HAPTIC_THROTTLE_MS) {
+                                lastFocusHapticTime = now;
+                                feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS);
+                            }
 
+                            int code = key.codes[0];
                             if (code == 32) handler.postDelayed(spaceLongPressTask, 1500);
                             else if (code == -5) handler.postDelayed(deleteStartTask, 1200);
                             else if (code == -1) handler.postDelayed(shiftLongPressTask, 1200);
@@ -186,7 +191,6 @@ public class SaiNawTouchHandler {
             case MotionEvent.ACTION_HOVER_EXIT:
                 boolean wasLongPress = isLongPressHandled;
                 int exitKeyIndex = lastHoverKeyIndex;
-                // Reset state BEFORE dispatching handleInput so rapid next touches never stall
                 cancelAllLongPress();
                 lastHoverKeyIndex = -1;
 
@@ -195,7 +199,7 @@ public class SaiNawTouchHandler {
                     return;
                 }
 
-                if (!wasLongPress && exitKeyIndex != -1 && exitKeyIndex < keys.size()) {
+                if (!wasLongPress && exitKeyIndex >= 0 && exitKeyIndex < keys.size()) {
                     Keyboard.Key key = keys.get(exitKeyIndex);
                     if (key != null && key.codes != null && key.codes.length > 0 && key.codes[0] != -100) {
                         feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
@@ -237,42 +241,6 @@ public class SaiNawTouchHandler {
     public void reset() {
         lastHoverKeyIndex = -1;
         cancelAllLongPress();
-    }
-
-    private int getNearestKeyIndexFast(int x, int y) {
-        List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
-        if (keys == null || keys.isEmpty()) return -1;
-        if (y < -12) return -1;
-
-        int bestKeyIndex = -1;
-        int minDistance = Integer.MAX_VALUE;
-
-        for (int i = 0; i < keys.size(); i++) {
-            Keyboard.Key key = keys.get(i);
-            if (key == null || key.codes == null || key.codes.length == 0 || key.codes[0] == -100) continue;
-
-            tempRect.set(key.x, key.y, key.x + key.width, key.y + key.height);
-            if (tempRect.contains(x, y)) {
-                return i;
-            }
-
-            int dist = getDistanceSq(key, x, y);
-            if (dist < minDistance) {
-                minDistance = dist;
-                bestKeyIndex = i;
-            }
-        }
-        return bestKeyIndex;
-    }
-
-    private int getDistanceSq(Keyboard.Key key, int x, int y) {
-        int dx = 0;
-        int dy = 0;
-        if (x < key.x) dx = key.x - x;
-        else if (x > key.x + key.width) dx = x - (key.x + key.width);
-        if (y < key.y) dy = key.y - y;
-        else if (y > key.y + key.height) dy = y - (key.y + key.height);
-        return (dx * dx) + (dy * dy);
     }
 }
 

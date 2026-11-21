@@ -59,15 +59,24 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private LinearLayout candidateContainer;
     private List<TextView> candidateViews = new ArrayList<>();
 
-    private StringBuilder currentWord = new StringBuilder();
+    // Shadow Text Buffer: avoids blocking InputConnection IPC on every keypress
+    private static final int SHADOW_MAX_LEN = 128;
+    private final StringBuilder shadowLine = new StringBuilder(SHADOW_MAX_LEN);
+    private final StringBuilder currentWord = new StringBuilder(64);
+    private boolean shadowNeedsResync = true;
+    private boolean hasTextSelection = false;
+
+    // RAM-cached settings (never read SharedPreferences inside hot keypress paths)
     private boolean isReceiverRegistered = false;
     private boolean useSmartEcho = false;
     private boolean autoCapsEnabled = true;
+    private boolean useMmPhonetic = true;
+    private boolean useShanPhonetic = true;
     private boolean manualShiftOverride = false;
     private boolean isCurrentDarkTheme = false;
 
-    private Handler handler = new Handler(Looper.getMainLooper());
-    private ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
     private SpeechRecognizer speechRecognizer;
     private Intent speechIntent;
     private boolean isListening = false;
@@ -112,6 +121,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             pendingAnnouncementTask = null;
         }
         cancelSpeechWatchdog();
+        if (accessibilityHelper != null) accessibilityHelper.shutdown();
         if (shanVoiceInput != null) shanVoiceInput.destroy();
         if (shanTts != null) {
             try { shanTts.stop(); shanTts.shutdown(); } catch (Exception ignored) { }
@@ -145,6 +155,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         layoutManager.initKeyboards(prefs);
         useSmartEcho = prefs.getBoolean("smart_echo", false);
         autoCapsEnabled = prefs.getBoolean("auto_caps", true);
+        useMmPhonetic = prefs.getBoolean("use_phonetic_sounds", true);
+        useShanPhonetic = prefs.getBoolean("use_shan_phonetic_sounds", true);
 
         isCurrentDarkTheme = prefs.getBoolean("dark_theme", false);
         View layout = getLayoutInflater().inflate(isCurrentDarkTheme ? R.layout.input_view_dark : R.layout.input_view, null);
@@ -176,8 +188,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         }, phoneticManager, emojiManager);
 
-        boolean useMmPhonetic = prefs.getBoolean("use_phonetic_sounds", true);
-        boolean useShanPhonetic = prefs.getBoolean("use_shan_phonetic_sounds", true);
+        accessibilityHelper.setLayoutManager(layoutManager);
+        accessibilityHelper.loadHapticSettings(prefs);
         accessibilityHelper.setPhoneticEnabled(useMmPhonetic, useShanPhonetic);
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
 
@@ -191,6 +203,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (!restarting) {
             if (shanVoiceInput != null) shanVoiceInput.cancel();
             destroyGoogleSpeechRecognizer(false);
+            shadowLine.setLength(0);
+            currentWord.setLength(0);
+            shadowNeedsResync = true;
+            hasTextSelection = false;
         }
         super.onStartInput(attribute, restarting);
         if (layoutManager != null) {
@@ -225,11 +241,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         layoutManager.initKeyboards(prefs);
         useSmartEcho = prefs.getBoolean("smart_echo", false);
         autoCapsEnabled = prefs.getBoolean("auto_caps", true);
-
-        boolean useMmPhonetic = prefs.getBoolean("use_phonetic_sounds", true);
-        boolean useShanPhonetic = prefs.getBoolean("use_shan_phonetic_sounds", true);
+        useMmPhonetic = prefs.getBoolean("use_phonetic_sounds", true);
+        useShanPhonetic = prefs.getBoolean("use_shan_phonetic_sounds", true);
 
         if (accessibilityHelper != null) {
+            accessibilityHelper.loadHapticSettings(prefs);
             accessibilityHelper.setPhoneticEnabled(useMmPhonetic, useShanPhonetic);
         }
         if (phoneticManager != null) {
@@ -242,13 +258,72 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             layoutManager.isSymbols = false;
             layoutManager.isEmoji = false;
             manualShiftOverride = false;
-            currentWord.setLength(0);
+            syncShadowFromIc(ic);
             hideCandidatesImmediately();
         }
 
         layoutManager.updateEditorInfo(info);
         layoutManager.determineKeyboardForInputType();
-        updateShiftState();
+        updateShiftState(true);
+    }
+
+    private void syncShadowFromIc(InputConnection ic) {
+        shadowLine.setLength(0);
+        currentWord.setLength(0);
+        if (ic == null) {
+            shadowNeedsResync = false;
+            return;
+        }
+        CharSequence before = ic.getTextBeforeCursor(64, 0);
+        if (before != null && before.length() > 0) {
+            String s = before.toString();
+            int lastNewLine = s.lastIndexOf('\n');
+            String line = (lastNewLine != -1) ? s.substring(lastNewLine + 1) : s;
+            shadowLine.append(line);
+            extractCurrentWordFromShadow();
+        }
+        shadowNeedsResync = false;
+    }
+
+    private void appendToShadow(CharSequence text) {
+        if (text == null || text.length() == 0) return;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\n') {
+                shadowLine.setLength(0);
+                currentWord.setLength(0);
+            } else {
+                shadowLine.append(c);
+                if (isWordBoundary(c)) {
+                    currentWord.setLength(0);
+                } else {
+                    currentWord.append(c);
+                }
+            }
+        }
+        trimShadowIfNeeded();
+    }
+
+    private void trimShadowIfNeeded() {
+        if (shadowLine.length() > SHADOW_MAX_LEN) {
+            shadowLine.delete(0, shadowLine.length() - SHADOW_MAX_LEN);
+        }
+    }
+
+    private void extractCurrentWordFromShadow() {
+        currentWord.setLength(0);
+        int len = shadowLine.length();
+        int start = len;
+        while (start > 0 && !isWordBoundary(shadowLine.charAt(start - 1))) {
+            start--;
+        }
+        if (start < len) {
+            currentWord.append(shadowLine, start, len);
+        }
+    }
+
+    private static boolean isWordBoundary(char c) {
+        return Character.isWhitespace(c) || c == '\u104A' || c == '\u104B';
     }
 
     private void hideCandidatesImmediately() {
@@ -326,50 +401,70 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
-            syncAndGetCurrentWord();
-            triggerCandidateUpdate(200);
+            if (!shadowNeedsResync) {
+                appendToShadow(key.text);
+            }
+            triggerCandidateUpdate(160);
             if (!layoutManager.isSymbols && !layoutManager.isEmoji && layoutManager.isCaps && !layoutManager.isCapsLocked) {
                 layoutManager.isCaps = false;
                 layoutManager.updateKeyboardLayout();
             }
             manualShiftOverride = false;
-            updateShiftState();
+            updateShiftState(false);
             return;
         }
 
-        boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
-                .getBoolean("use_shan_phonetic_sounds", true);
         boolean isShanUI = (layoutManager.currentLanguageId == 2);
-
         boolean effectiveSmartEcho = useSmartEcho && !(isShanUI && useShanPhonetic);
 
         try {
             switch (primaryCode) {
                 case -5:
                     manualShiftOverride = false;
-                    CharSequence selectedText = ic.getSelectedText(0);
-                    if (selectedText != null && selectedText.length() > 0) {
-                        ic.commitText("", 1);
-                        if (effectiveSmartEcho) announceText("Deleted selected text");
-                    } else if (!textProcessor.handleCustomBackspace(ic)) {
-                        CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
-                        if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
-                            ic.deleteSurroundingText(1, 0);
-                        }
-                        CharSequence textBefore = ic.getTextBeforeCursor(1, 0);
-                        ic.deleteSurroundingText(1, 0);
-                        if (effectiveSmartEcho) {
-                            if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
-                            else announceText("Delete");
-                        }
-                    } else {
-                        if (effectiveSmartEcho) {
-                            announceText("Deleted");
+                    boolean deletedSelection = false;
+                    if (hasTextSelection) {
+                        CharSequence selectedText = ic.getSelectedText(0);
+                        if (selectedText != null && selectedText.length() > 0) {
+                            ic.commitText("", 1);
+                            hasTextSelection = false;
+                            shadowNeedsResync = true;
+                            deletedSelection = true;
+                            if (effectiveSmartEcho) announceText("Deleted selected text");
                         }
                     }
 
-                    syncAndGetCurrentWord();
-                    triggerCandidateUpdate(200);
+                    if (!deletedSelection) {
+                        if (!textProcessor.handleCustomBackspace(ic)) {
+                            CharSequence textBefore = null;
+                            if (effectiveSmartEcho || layoutManager.currentLanguageId != 0) {
+                                CharSequence beforeDel = ic.getTextBeforeCursor(1, 0);
+                                if (beforeDel != null && beforeDel.length() == 1 && beforeDel.charAt(0) == ZWSP) {
+                                    ic.deleteSurroundingText(1, 0);
+                                }
+                                if (effectiveSmartEcho) {
+                                    textBefore = ic.getTextBeforeCursor(1, 0);
+                                }
+                            }
+                            ic.deleteSurroundingText(1, 0);
+
+                            if (!shadowNeedsResync && shadowLine.length() > 0) {
+                                shadowLine.deleteCharAt(shadowLine.length() - 1);
+                                extractCurrentWordFromShadow();
+                            } else {
+                                shadowNeedsResync = true;
+                            }
+
+                            if (effectiveSmartEcho) {
+                                if (textBefore != null && textBefore.length() > 0) announceText("Deleted " + textBefore);
+                                else announceText("Delete");
+                            }
+                        } else {
+                            shadowNeedsResync = true;
+                            if (effectiveSmartEcho) announceText("Deleted");
+                        }
+                    }
+
+                    triggerCandidateUpdate(160);
                     break;
 
                 case -10:
@@ -465,6 +560,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 case -4:
                     manualShiftOverride = false;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                    if (shadowNeedsResync) {
+                        syncShadowFromIc(ic);
+                    }
                     EditorInfo editorInfo = getCurrentInputEditorInfo();
                     boolean isMultiLine = editorInfo != null && (editorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
                     if (editorInfo != null && !isMultiLine && (editorInfo.imeOptions & EditorInfo.IME_MASK_ACTION) != EditorInfo.IME_ACTION_NONE) {
@@ -474,6 +572,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     }
                     if (effectiveSmartEcho) announceText("Enter");
                     saveWordAndReset();
+                    shadowLine.setLength(0);
+                    shadowNeedsResync = false;
 
                     if (layoutManager.isSymbols || layoutManager.isEmoji) {
                         layoutManager.isSymbols = false;
@@ -485,13 +585,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 case 32:
                     manualShiftOverride = false;
+                    if (shadowNeedsResync) {
+                        syncShadowFromIc(ic);
+                    }
+                    String wordBeforeSpace = currentWord.length() > 0 ? currentWord.toString() : null;
                     ic.commitText(" ", 1);
+                    appendToShadow(" ");
                     if (effectiveSmartEcho) {
-                        String lastWord = getLastWordForEcho();
-                        if (lastWord != null && !lastWord.isEmpty()) announceText(lastWord);
+                        if (wordBeforeSpace != null && !wordBeforeSpace.isEmpty()) announceText(wordBeforeSpace);
                         else announceText("Space");
                     }
-                    saveWordAndReset();
+                    saveWordAndReset(wordBeforeSpace);
 
                     if (layoutManager.isSymbols || layoutManager.isEmoji) {
                         layoutManager.isSymbols = false;
@@ -503,94 +607,78 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 default:
                     manualShiftOverride = false;
-                    if (!textProcessor.handleCustomInsert(ic, primaryCode)) {
+                    boolean wasCaps = layoutManager.isCaps;
+                    boolean customInserted = textProcessor.handleCustomInsert(ic, primaryCode);
+                    if (!customInserted) {
                         inputLogic.processInput(ic, primaryCode, key);
                     }
-                    syncAndGetCurrentWord();
 
-                    if (effectiveSmartEcho) {
-                        String accumulatingWord = getCurrentWordForEcho();
-                        if (accumulatingWord != null && !accumulatingWord.isEmpty()) announceText(accumulatingWord);
+                    if (!customInserted && !shadowNeedsResync && primaryCode >= 32 &&
+                        (layoutManager.currentLanguageId == 0 || layoutManager.isSymbols || layoutManager.isEmoji)) {
+                        int cp = primaryCode;
+                        if (layoutManager.currentLanguageId == 0 && !layoutManager.isSymbols && !layoutManager.isEmoji
+                                && wasCaps && Character.isLetter(cp)) {
+                            cp = Character.toUpperCase(cp);
+                        }
+                        appendToShadow(new String(Character.toChars(cp)));
+                    } else {
+                        shadowNeedsResync = true;
+                        if (effectiveSmartEcho) {
+                            syncShadowFromIc(ic);
+                        }
+                    }
+
+                    if (effectiveSmartEcho && currentWord.length() > 0) {
+                        announceText(currentWord.toString());
                     }
 
                     if (!layoutManager.isSymbols && !layoutManager.isEmoji && layoutManager.isCaps && !layoutManager.isCapsLocked) {
                         layoutManager.isCaps = false;
                         layoutManager.updateKeyboardLayout();
                     }
-                    triggerCandidateUpdate(200);
+                    triggerCandidateUpdate(160);
                     break;
             }
         } catch (Exception e) { e.printStackTrace(); }
 
-        updateShiftState();
+        updateShiftState(false);
     }
 
-    private String syncAndGetCurrentWord() {
-        InputConnection ic = getCurrentInputConnection();
-        currentWord.setLength(0);
-        if (ic == null) return "";
-
-        CharSequence before = ic.getTextBeforeCursor(32, 0);
-        if (before == null || before.length() == 0) return "";
-
-        String s = before.toString();
-        int start = s.length();
-        while (start > 0) {
-            char c = s.charAt(start - 1);
-            if (Character.isWhitespace(c) || c == '\u104A' || c == '\u104B') {
-                break;
-            }
-            start--;
-        }
-        String word = s.substring(start);
-        currentWord.append(word);
-        return word;
-    }
-
-    private void updateShiftState() {
-        InputConnection ic = getCurrentInputConnection();
-        if (layoutManager == null || ic == null) return;
+    private void updateShiftState(boolean allowIpc) {
+        if (layoutManager == null) return;
         if (layoutManager.currentLanguageId != 0 || layoutManager.isSymbols || layoutManager.isEmoji) return;
-        if (layoutManager.isCapsLocked || manualShiftOverride) return;
+        if (layoutManager.isCapsLocked || manualShiftOverride || !autoCapsEnabled) return;
 
-        if (autoCapsEnabled) {
+        boolean shouldBeCaps;
+        if (!allowIpc && !shadowNeedsResync) {
+            shouldBeCaps = computeCapsFromShadow();
+        } else if (allowIpc) {
+            InputConnection ic = getCurrentInputConnection();
             EditorInfo ei = getCurrentInputEditorInfo();
-            if (ei != null && ei.inputType != EditorInfo.TYPE_NULL) {
-                int caps = ic.getCursorCapsMode(ei.inputType);
-                boolean shouldBeCaps = (caps != 0);
-                if (layoutManager.isCaps != shouldBeCaps) {
-                    layoutManager.isCaps = shouldBeCaps;
-                    layoutManager.updateKeyboardLayout();
-                }
-            }
+            if (ic == null || ei == null || ei.inputType == EditorInfo.TYPE_NULL) return;
+            shouldBeCaps = (ic.getCursorCapsMode(ei.inputType) != 0);
+        } else {
+            return;
+        }
+
+        if (layoutManager.isCaps != shouldBeCaps) {
+            layoutManager.isCaps = shouldBeCaps;
+            layoutManager.updateKeyboardLayout();
         }
     }
 
-    private String getCurrentWordForEcho() {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return null;
-        CharSequence text = ic.getTextBeforeCursor(100, 0);
-        if (text == null || text.length() == 0) return null;
-        String s = text.toString();
-        int lastNewLine = s.lastIndexOf('\n');
-        String currentLine = (lastNewLine != -1) ? s.substring(lastNewLine + 1) : s;
-        if (currentLine.isEmpty()) return null;
-        int lastSpaceIndex = currentLine.lastIndexOf(' ');
-        return (lastSpaceIndex != -1) ? currentLine.substring(lastSpaceIndex + 1) : currentLine;
-    }
-
-    private String getLastWordForEcho() {
-        InputConnection ic = getCurrentInputConnection();
-        if (ic == null) return null;
-        CharSequence text = ic.getTextBeforeCursor(100, 0);
-        if (text == null || text.length() == 0) return null;
-        String s = text.toString();
-        int lastNewLine = s.lastIndexOf('\n');
-        String currentLine = (lastNewLine != -1) ? s.substring(lastNewLine + 1) : s;
-        String trimmed = currentLine.trim();
-        if (trimmed.isEmpty()) return null;
-        int lastSpaceIndex = trimmed.lastIndexOf(' ');
-        return (lastSpaceIndex != -1) ? trimmed.substring(lastSpaceIndex + 1) : trimmed;
+    private boolean computeCapsFromShadow() {
+        int len = shadowLine.length();
+        if (len == 0) return true;
+        int i = len - 1;
+        boolean sawSpace = false;
+        while (i >= 0 && shadowLine.charAt(i) == ' ') {
+            sawSpace = true;
+            i--;
+        }
+        if (i < 0) return true;
+        char lastNonSpace = shadowLine.charAt(i);
+        return sawSpace && (lastNonSpace == '.' || lastNonSpace == '!' || lastNonSpace == '?');
     }
 
     public KeyboardView getKeyboardView() { return keyboardView; }
@@ -601,9 +689,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         ic.finishComposingText();
         boolean inserted = ic.commitText(text, 1);
         if (inserted) {
+            appendToShadow(text);
             currentWord.setLength(0);
             hideCandidatesImmediately();
-            updateShiftState();
+            updateShiftState(false);
         }
         return inserted;
     }
@@ -644,8 +733,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     public void announceText(String text) {
         if ((shanVoiceInput != null && shanVoiceInput.isCapturePending()) || isListening) return;
-        boolean useShanPhonetic = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE)
-                .getBoolean("use_shan_phonetic_sounds", true);
 
         if (layoutManager != null && layoutManager.currentLanguageId == 2 && useShanPhonetic && !isNativeTalkBackText(text)) {
             silenceTalkBack();
@@ -694,7 +781,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private void triggerCandidateUpdate(long delayMillis) {
         handler.removeCallbacks(pendingCandidateUpdate);
-        if (currentWord.length() == 0) {
+        if (!shadowNeedsResync && currentWord.length() == 0) {
             hideCandidatesImmediately();
             return;
         }
@@ -702,15 +789,18 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private void saveWordAndReset() {
-        if (currentWord.length() > 0 && isUserUnlocked()) {
-            final String raw = currentWord.toString();
+        saveWordAndReset(currentWord.length() > 0 ? currentWord.toString() : null);
+    }
+
+    private void saveWordAndReset(String wordToSave) {
+        if (wordToSave != null && !wordToSave.isEmpty() && isUserUnlocked()) {
             dbExecutor.execute(() -> {
                 SuggestionDB db = suggestionDB;
                 if (db == null) {
                     db = SuggestionDB.getInstance(SaiNawKeyboardService.this);
                     suggestionDB = db;
                 }
-                db.saveWord(textProcessor.normalizeText(raw));
+                db.saveWord(textProcessor.normalizeText(wordToSave));
             });
         }
         currentWord.setLength(0);
@@ -718,6 +808,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     private void performCandidateSearch() {
+        if (shadowNeedsResync) {
+            syncShadowFromIc(getCurrentInputConnection());
+        }
         final String queryWord = currentWord.toString();
         if (queryWord.isEmpty() || !isUserUnlocked()) {
             hideCandidatesImmediately();
@@ -766,11 +859,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void pickSuggestion(String suggestion) {
         InputConnection ic = getCurrentInputConnection();
         if (ic != null) {
-            String actualCurrentWord = syncAndGetCurrentWord();
-            if (!actualCurrentWord.isEmpty()) {
-                ic.deleteSurroundingText(actualCurrentWord.length(), 0);
+            syncShadowFromIc(ic);
+            int curLen = currentWord.length();
+            if (curLen > 0) {
+                ic.deleteSurroundingText(curLen, 0);
+                if (shadowLine.length() >= curLen) {
+                    shadowLine.delete(shadowLine.length() - curLen, shadowLine.length());
+                }
             }
             ic.commitText(suggestion + " ", 1);
+            appendToShadow(suggestion + " ");
         }
         if (isUserUnlocked()) {
             dbExecutor.execute(() -> {
@@ -784,6 +882,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
         currentWord.setLength(0);
         hideCandidatesImmediately();
+        updateShiftState(false);
     }
 
     private void cancelSpeechWatchdog() {
@@ -903,10 +1002,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 prefixSpace = " ";
             }
         }
-        ic.commitText(prefixSpace + formatted + " ", 1);
+        String committed = prefixSpace + formatted + " ";
+        ic.commitText(committed, 1);
+        appendToShadow(committed);
         currentWord.setLength(0);
         hideCandidatesImmediately();
-        updateShiftState();
+        updateShiftState(false);
     }
 
     private SpeechRecognizer createFreshSpeechRecognizer(final int sessionToken) {
@@ -1060,15 +1161,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         InputConnection ic = getCurrentInputConnection();
         if (ic == null || t == null) return;
         ic.commitText(t, 1);
-        syncAndGetCurrentWord();
-        triggerCandidateUpdate(200);
+        if (!shadowNeedsResync) {
+            appendToShadow(t);
+        }
+        triggerCandidateUpdate(160);
         if (feedbackManager != null) feedbackManager.playSound(0);
         if (layoutManager != null && !layoutManager.isSymbols && !layoutManager.isEmoji && layoutManager.isCaps && !layoutManager.isCapsLocked) {
             layoutManager.isCaps = false;
             layoutManager.updateKeyboardLayout();
         }
         manualShiftOverride = false;
-        updateShiftState();
+        updateShiftState(false);
     }
 
     @Override public void onPress(int p) {
@@ -1168,6 +1271,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (newPos != currentPos) {
             ic.setSelection(newPos, newPos);
+            shadowNeedsResync = true;
             return traversedText;
         }
         return null;
@@ -1195,6 +1299,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     @Override public void onDestroy() {
+        if (accessibilityHelper != null) accessibilityHelper.shutdown();
         if (shanVoiceInput != null) shanVoiceInput.destroy();
         destroyGoogleSpeechRecognizer(false);
         super.onDestroy();
@@ -1220,6 +1325,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd, int candidatesStart, int candidatesEnd) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd);
+        hasTextSelection = (newSelStart != newSelEnd);
+        if (Math.abs(newSelEnd - oldSelEnd) > 2 || newSelEnd == 0) {
+            shadowNeedsResync = true;
+            updateShiftState(true);
+        }
     }
 
     @Override

@@ -6,33 +6,96 @@ import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.SoundPool;
 import android.os.Build;
+import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import java.io.File;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class SaiNawFeedbackManager {
     public static final int HAPTIC_TYPE = 1;
     public static final int HAPTIC_LONG_PRESS = 2;
     public static final int HAPTIC_FOCUS = 3;
 
+    private static final long FOCUS_THROTTLE_MS = 30L;
+
     private final Context context;
     private final Vibrator vibrator;
+    private final boolean hasVibrator;
     private final AudioManager audioManager;
-    private SoundPool soundPool;
-    private final HashMap<String, Integer> soundMap = new HashMap<>();
+    private volatile SoundPool soundPool;
+    private final ConcurrentHashMap<String, Integer> soundMap = new ConcurrentHashMap<>();
 
-    private boolean vibrateOn;
-    private boolean soundOn;
-    private int vibrateStrength;
-    private int soundVolume;
-    private String selectedSoundPack;
+    private final ExecutorService hapticExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService soundExecutor = Executors.newSingleThreadExecutor();
+
+    // Latest-wins haptic state so rapid typing/hovering never builds up delayed vibrations
+    private final AtomicInteger pendingHapticType = new AtomicInteger(0);
+    private final AtomicBoolean hapticTaskScheduled = new AtomicBoolean(false);
+    private volatile long lastFocusHapticMs = 0L;
+
+    private volatile boolean vibrateOn = true;
+    private volatile boolean soundOn = false;
+    private volatile int vibrateStrength = 0;
+    private volatile int soundVolume = 1;
+    private volatile String selectedSoundPack;
+    private volatile boolean released = false;
+
+    // Pre-built VibrationEffect cache (typed as Object for API < 26 class verification safety)
+    private volatile Object cachedEffectType;
+    private volatile Object cachedEffectLongPress;
+    private volatile Object cachedEffectFocus;
+    private volatile long cachedDurType = 30L;
+    private volatile long cachedDurLongPress = 45L;
+    private volatile long cachedDurFocus = 15L;
+
+    private final Runnable hapticDispatcher = () -> {
+        hapticTaskScheduled.set(false);
+        if (released || !vibrateOn || !hasVibrator) {
+            pendingHapticType.set(0);
+            return;
+        }
+        int type = pendingHapticType.getAndSet(0);
+        if (type == 0) return;
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Object effectObj;
+                if (type == HAPTIC_FOCUS) effectObj = cachedEffectFocus;
+                else if (type == HAPTIC_LONG_PRESS) effectObj = cachedEffectLongPress;
+                else effectObj = cachedEffectType;
+
+                if (effectObj instanceof VibrationEffect) {
+                    vibrator.vibrate((VibrationEffect) effectObj);
+                }
+            } else {
+                long dur = (type == HAPTIC_FOCUS) ? cachedDurFocus
+                        : ((type == HAPTIC_LONG_PRESS) ? cachedDurLongPress : cachedDurType);
+                vibrator.vibrate(dur);
+            }
+        } catch (Exception ignored) { }
+
+        // If another haptic arrived while vibrating, reschedule cleanly
+        if (pendingHapticType.get() != 0 && hapticTaskScheduled.compareAndSet(false, true)) {
+            if (!hapticExecutor.isShutdown()) {
+                hapticExecutor.execute(this.hapticDispatcher);
+            } else {
+                hapticTaskScheduled.set(false);
+            }
+        }
+    };
 
     public SaiNawFeedbackManager(Context context) {
-        this.context = context;
-        vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
-        audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        this.context = context.getApplicationContext();
+        this.vibrator = (Vibrator) this.context.getSystemService(Context.VIBRATOR_SERVICE);
+        this.hasVibrator = (this.vibrator != null && this.vibrator.hasVibrator());
+        this.audioManager = (AudioManager) this.context.getSystemService(Context.AUDIO_SERVICE);
         initSoundPool();
+        rebuildVibrationEffects(0);
     }
 
     private void initSoundPool() {
@@ -41,80 +104,131 @@ public class SaiNawFeedbackManager {
                     .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build();
-            soundPool = new SoundPool.Builder().setMaxStreams(5).setAudioAttributes(attributes).build();
+            soundPool = new SoundPool.Builder().setMaxStreams(6).setAudioAttributes(attributes).build();
         } else {
-            soundPool = new SoundPool(5, AudioManager.STREAM_SYSTEM, 0);
+            soundPool = new SoundPool(6, AudioManager.STREAM_SYSTEM, 0);
         }
     }
 
     public void loadSettings(SharedPreferences prefs) {
+        if (prefs == null || released) return;
         vibrateOn = prefs.getBoolean("vibrate_on", true);
         soundOn = prefs.getBoolean("sound_on", false);
-        vibrateStrength = prefs.getInt("vibrate_strength", 0);
+
+        int newStrength = prefs.getInt("vibrate_strength", 0);
+        if (newStrength != vibrateStrength || cachedEffectType == null) {
+            vibrateStrength = newStrength;
+            rebuildVibrationEffects(newStrength);
+        }
+
         soundVolume = prefs.getInt("sound_volume", 1);
         String newPack = prefs.getString("selected_sound_pack", "System Default");
-        
+
         if (selectedSoundPack == null || !selectedSoundPack.equals(newPack)) {
             selectedSoundPack = newPack;
-            loadCustomSounds();
+            loadCustomSoundsAsync(newPack);
         }
     }
 
-    private void loadCustomSounds() {
-        if (soundPool != null) {
-            for (int id : soundMap.values()) soundPool.unload(id);
-        }
-        soundMap.clear();
-        if (selectedSoundPack == null || selectedSoundPack.equals("System Default")) return;
+    private void rebuildVibrationEffects(int strength) {
+        long baseDur;
+        int baseAmp;
+        if (strength == 1) { baseDur = 20L; baseAmp = 80; }
+        else if (strength == 2) { baseDur = 40L; baseAmp = 150; }
+        else if (strength == 3) { baseDur = 60L; baseAmp = 255; }
+        else { baseDur = 30L; baseAmp = -1; }
 
-        File dir = new File(new File(context.getFilesDir(), "custom_sound_packs"), selectedSoundPack);
-        if (dir.exists() && dir.isDirectory()) {
-            File[] files = dir.listFiles();
-            if (files != null) {
-                for (File f : files) {
-                    String name = f.getName();
-                    int dotIdx = name.lastIndexOf('.');
-                    if (dotIdx > 0) {
-                        String keyName = name.substring(0, dotIdx);
-                        int soundId = soundPool.load(f.getAbsolutePath(), 1);
-                        soundMap.put(keyName, soundId);
+        long focusDur = Math.max(10L, baseDur / 2L);
+        long longDur = (long) (baseDur * 1.5);
+
+        cachedDurType = baseDur;
+        cachedDurFocus = focusDur;
+        cachedDurLongPress = longDur;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            int typeAmp = (strength == 0) ? VibrationEffect.DEFAULT_AMPLITUDE : baseAmp;
+            int focusAmp = (strength == 0) ? VibrationEffect.DEFAULT_AMPLITUDE : Math.max(10, baseAmp / 2);
+
+            cachedEffectType = VibrationEffect.createOneShot(baseDur, typeAmp);
+            cachedEffectFocus = VibrationEffect.createOneShot(focusDur, focusAmp);
+            cachedEffectLongPress = VibrationEffect.createOneShot(longDur, typeAmp);
+        }
+    }
+
+    private void loadCustomSoundsAsync(final String packName) {
+        if (released || soundExecutor.isShutdown()) return;
+        soundExecutor.execute(() -> {
+            SoundPool pool = soundPool;
+            if (released || pool == null) return;
+
+            for (Integer id : soundMap.values()) {
+                if (id != null) {
+                    try { pool.unload(id); } catch (Exception ignored) { }
+                }
+            }
+            soundMap.clear();
+
+            if (packName == null || "System Default".equals(packName)) return;
+
+            File dir = new File(new File(context.getFilesDir(), "custom_sound_packs"), packName);
+            if (dir.exists() && dir.isDirectory()) {
+                File[] files = dir.listFiles();
+                if (files != null) {
+                    for (File f : files) {
+                        if (released || !packName.equals(selectedSoundPack)) return;
+                        String name = f.getName();
+                        int dotIdx = name.lastIndexOf('.');
+                        if (dotIdx > 0) {
+                            String keyName = name.substring(0, dotIdx);
+                            try {
+                                int soundId = pool.load(f.getAbsolutePath(), 1);
+                                soundMap.put(keyName, soundId);
+                            } catch (Exception ignored) { }
+                        }
                     }
                 }
+            }
+        });
+    }
+
+    public void playHaptic(int type) {
+        if (released || !vibrateOn || !hasVibrator || hapticExecutor.isShutdown()) return;
+
+        if (type == HAPTIC_FOCUS) {
+            long now = SystemClock.uptimeMillis();
+            if (now - lastFocusHapticMs < FOCUS_THROTTLE_MS) return;
+            lastFocusHapticMs = now;
+        }
+
+        // Preserve higher-priority TYPE / LONG_PRESS haptic if already queued
+        while (true) {
+            int cur = pendingHapticType.get();
+            if (type == HAPTIC_FOCUS && (cur == HAPTIC_TYPE || cur == HAPTIC_LONG_PRESS)) {
+                break;
+            }
+            if (pendingHapticType.compareAndSet(cur, type)) {
+                break;
+            }
+        }
+
+        if (hapticTaskScheduled.compareAndSet(false, true)) {
+            try {
+                hapticExecutor.execute(hapticDispatcher);
+            } catch (Exception ignored) {
+                hapticTaskScheduled.set(false);
             }
         }
     }
 
-    public void playHaptic(int type) {
-        if (!vibrateOn || vibrator == null || !vibrator.hasVibrator()) return;
-        long duration;
-        int amplitude;
-        if (vibrateStrength == 1) { duration = 20; amplitude = 80; }
-        else if (vibrateStrength == 2) { duration = 40; amplitude = 150; }
-        else if (vibrateStrength == 3) { duration = 60; amplitude = 255; }
-        else { duration = 30; amplitude = VibrationEffect.DEFAULT_AMPLITUDE; }
+    public void playSound(final int primaryCode) {
+        if (released || !soundOn || soundExecutor.isShutdown()) return;
 
-        if (type == HAPTIC_FOCUS) {
-            duration = Math.max(10, duration / 2);
-            if (amplitude != VibrationEffect.DEFAULT_AMPLITUDE) amplitude = Math.max(10, amplitude / 2);
-        } else if (type == HAPTIC_LONG_PRESS) {
-            duration = (long) (duration * 1.5);
-        }
+        final float vol = (soundVolume == 0) ? 0.3f : ((soundVolume == 2) ? 1.0f : 0.6f);
+        final String pack = selectedSoundPack;
+        final SoundPool pool = soundPool;
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (vibrateStrength == 0) vibrator.vibrate(VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE));
-            else vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude));
-        } else {
-            vibrator.vibrate(duration);
-        }
-    }
-
-    public void playSound(int primaryCode) {
-        if (!soundOn) return;
-
-        float vol = (soundVolume == 0) ? 0.3f : ((soundVolume == 2) ? 1.0f : 0.6f);
-
-        if (!"System Default".equals(selectedSoundPack) && !soundMap.isEmpty() && soundPool != null) {
-            String keyStr = String.valueOf((char) primaryCode);
+        if (pack != null && !"System Default".equals(pack) && !soundMap.isEmpty() && pool != null) {
+            final String keyStr;
             if (primaryCode == 32) keyStr = "space";
             else if (primaryCode == -5) keyStr = "delete";
             else if (primaryCode == -4) keyStr = "enter";
@@ -122,22 +236,52 @@ public class SaiNawFeedbackManager {
             else if (primaryCode == -101) keyStr = "language";
             else if (primaryCode == -2 || primaryCode == -6) keyStr = "symbols";
             else if (primaryCode == -7 || primaryCode == -102 || primaryCode == -103) keyStr = "emoji";
+            else keyStr = String.valueOf((char) primaryCode);
 
             Integer soundId = soundMap.get(keyStr);
             if (soundId == null) soundId = soundMap.get("default");
 
             if (soundId != null) {
-                soundPool.play(soundId, vol, vol, 1, 0, 1.0f);
+                final int idToPlay = soundId;
+                try {
+                    soundExecutor.execute(() -> {
+                        if (!released) {
+                            try { pool.play(idToPlay, vol, vol, 1, 0, 1.0f); } catch (Exception ignored) { }
+                        }
+                    });
+                } catch (Exception ignored) { }
                 return;
             }
         }
 
         if (audioManager != null) {
-            int soundEffect = AudioManager.FX_KEYPRESS_STANDARD;
+            final int soundEffect;
             if (primaryCode == 32) soundEffect = AudioManager.FX_KEYPRESS_SPACEBAR;
             else if (primaryCode == -5) soundEffect = AudioManager.FX_KEYPRESS_DELETE;
             else if (primaryCode == -4) soundEffect = AudioManager.FX_KEYPRESS_RETURN;
-            audioManager.playSoundEffect(soundEffect, vol);
+            else soundEffect = AudioManager.FX_KEYPRESS_STANDARD;
+
+            try {
+                soundExecutor.execute(() -> {
+                    if (!released) {
+                        try { audioManager.playSoundEffect(soundEffect, vol); } catch (Exception ignored) { }
+                    }
+                });
+            } catch (Exception ignored) { }
+        }
+    }
+
+    public void release() {
+        if (released) return;
+        released = true;
+        pendingHapticType.set(0);
+        if (!hapticExecutor.isShutdown()) hapticExecutor.shutdownNow();
+        if (!soundExecutor.isShutdown()) soundExecutor.shutdownNow();
+        SoundPool pool = soundPool;
+        soundPool = null;
+        soundMap.clear();
+        if (pool != null) {
+            try { pool.release(); } catch (Exception ignored) { }
         }
     }
 }

@@ -7,7 +7,9 @@ import android.os.Build;
 import android.os.UserManager;
 import android.view.inputmethod.EditorInfo;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class SaiNawLayoutManager {
     private static final String PREFS_NAME = "KeyboardPrefs";
@@ -25,6 +27,7 @@ public class SaiNawLayoutManager {
     public Keyboard emojiKeyboard1, emojiKeyboard2, emojiKeyboard3, emojiKeyboard4;
 
     private Keyboard currentKeyboard;
+    private KeyGrid currentKeyGrid;
     private EditorInfo currentEditorInfo;
 
     public boolean isCaps = false;
@@ -37,6 +40,7 @@ public class SaiNawLayoutManager {
     private boolean languageRestored = false;
     private Boolean cachedShowNumRow = null;
     private final List<Integer> enabledLanguages = new ArrayList<>();
+    private final Map<Keyboard, KeyGrid> gridCache = new HashMap<>(16);
 
     public SaiNawLayoutManager(SaiNawKeyboardService service) {
         this.service = service;
@@ -84,10 +88,12 @@ public class SaiNawLayoutManager {
         loadLanguageSettings(prefs);
         boolean showNumRow = prefs.getBoolean("number_row", false);
 
-        // Reuse cached Keyboard objects unless uninitialized or number_row setting changed
         if (qwertyKeyboard != null && cachedShowNumRow != null && cachedShowNumRow == showNumRow) {
             return;
         }
+
+        gridCache.clear();
+        currentKeyGrid = null;
 
         try {
             String suffix = showNumRow ? "_num" : "";
@@ -198,12 +204,34 @@ public class SaiNawLayoutManager {
     }
 
     private void applyKeyboard() {
-        if (currentKeyboard != null && service.getKeyboardView() != null) {
-            updateEnterKeyLabel();
-            service.getKeyboardView().setKeyboard(currentKeyboard);
-            service.getKeyboardView().invalidateAllKeys();
-            service.updateHelperState();
+        if (currentKeyboard != null) {
+            currentKeyGrid = getOrBuildGrid(currentKeyboard);
+            if (service.getKeyboardView() != null) {
+                updateEnterKeyLabel();
+                service.getKeyboardView().setKeyboard(currentKeyboard);
+                service.getKeyboardView().invalidateAllKeys();
+                service.updateHelperState();
+            }
         }
+    }
+
+    private KeyGrid getOrBuildGrid(Keyboard keyboard) {
+        KeyGrid grid = gridCache.get(keyboard);
+        if (grid == null) {
+            grid = new KeyGrid(keyboard);
+            gridCache.put(keyboard, grid);
+        }
+        return grid;
+    }
+
+    public int findKeyIndexAt(int x, int y) {
+        if (currentKeyboard == null) return -1;
+        KeyGrid grid = currentKeyGrid;
+        if (grid == null) {
+            grid = getOrBuildGrid(currentKeyboard);
+            currentKeyGrid = grid;
+        }
+        return grid.findKeyIndex(x, y);
     }
 
     private void updateEnterKeyLabel() {
@@ -230,7 +258,7 @@ public class SaiNawLayoutManager {
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null) return;
         for (Keyboard.Key key : keys) {
-            if (key.codes != null && key.codes.length > 0 && key.codes[0] == -4) {
+            if (key != null && key.codes != null && key.codes.length > 0 && key.codes[0] == -4) {
                 key.label = label;
                 key.icon = null;
                 key.iconPreview = null;
@@ -261,6 +289,125 @@ public class SaiNawLayoutManager {
     public boolean isShanOrMyanmar() {
         return currentKeyboard == myanmarKeyboard || currentKeyboard == myanmarShiftKeyboard ||
                currentKeyboard == shanKeyboard || currentKeyboard == shanShiftKeyboard;
+    }
+
+    /**
+     * Compact 48x24 spatial grid (~2.3 KB per keyboard) for O(1) zero-allocation hit testing.
+     */
+    private static final class KeyGrid {
+        private static final int COLS = 48;
+        private static final int ROWS = 24;
+        private static final int[] NEIGHBOR_DC = {-1, 1, 0, 0};
+        private static final int[] NEIGHBOR_DR = {0, 0, -1, 1};
+
+        private final List<Keyboard.Key> keys;
+        private final int width;
+        private final int height;
+        private final short[] cells;
+
+        KeyGrid(Keyboard keyboard) {
+            this.keys = keyboard.getKeys();
+            int maxW = keyboard.getMinWidth();
+            int maxH = keyboard.getHeight();
+            if (keys != null) {
+                for (int i = 0; i < keys.size(); i++) {
+                    Keyboard.Key k = keys.get(i);
+                    if (k != null) {
+                        int r = k.x + k.width;
+                        int b = k.y + k.height;
+                        if (r > maxW) maxW = r;
+                        if (b > maxH) maxH = b;
+                    }
+                }
+            }
+            this.width = Math.max(1, maxW);
+            this.height = Math.max(1, maxH);
+            this.cells = new short[COLS * ROWS];
+
+            if (keys == null || keys.isEmpty()) {
+                for (int i = 0; i < cells.length; i++) cells[i] = -1;
+                return;
+            }
+
+            for (int r = 0; r < ROWS; r++) {
+                int cy = ((r * 2 + 1) * height) / (ROWS * 2);
+                int rowOffset = r * COLS;
+                for (int c = 0; c < COLS; c++) {
+                    int cx = ((c * 2 + 1) * width) / (COLS * 2);
+                    cells[rowOffset + c] = (short) findNearestLinear(cx, cy);
+                }
+            }
+        }
+
+        private int findNearestLinear(int x, int y) {
+            int bestIdx = -1;
+            int minDist = Integer.MAX_VALUE;
+            for (int i = 0; i < keys.size(); i++) {
+                Keyboard.Key k = keys.get(i);
+                if (k == null || k.codes == null || k.codes.length == 0 || k.codes[0] == -100) continue;
+                if (contains(k, x, y)) return i;
+                int d = distSq(k, x, y);
+                if (d < minDist) {
+                    minDist = d;
+                    bestIdx = i;
+                }
+            }
+            return bestIdx;
+        }
+
+        int findKeyIndex(int x, int y) {
+            if (y < -12 || keys == null || keys.isEmpty()) return -1;
+
+            int clampedX = x < 0 ? 0 : (x >= width ? width - 1 : x);
+            int clampedY = y < 0 ? 0 : (y >= height ? height - 1 : y);
+
+            int col = (clampedX * COLS) / width;
+            int row = (clampedY * ROWS) / height;
+
+            int primaryIdx = cells[row * COLS + col];
+            if (primaryIdx >= 0 && primaryIdx < keys.size()) {
+                Keyboard.Key primaryKey = keys.get(primaryIdx);
+                if (contains(primaryKey, x, y)) {
+                    return primaryIdx;
+                }
+            }
+
+            int bestIdx = primaryIdx;
+            int bestDist = (primaryIdx >= 0 && primaryIdx < keys.size())
+                    ? distSq(keys.get(primaryIdx), x, y) : Integer.MAX_VALUE;
+
+            for (int d = 0; d < 4; d++) {
+                int nc = col + NEIGHBOR_DC[d];
+                int nr = row + NEIGHBOR_DR[d];
+                if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS) {
+                    int candidate = cells[nr * COLS + nc];
+                    if (candidate >= 0 && candidate != primaryIdx && candidate < keys.size()) {
+                        Keyboard.Key k = keys.get(candidate);
+                        if (contains(k, x, y)) return candidate;
+                        int dist = distSq(k, x, y);
+                        if (dist < bestDist) {
+                            bestDist = dist;
+                            bestIdx = candidate;
+                        }
+                    }
+                }
+            }
+            return bestIdx;
+        }
+
+        private static boolean contains(Keyboard.Key k, int x, int y) {
+            return x >= k.x && x < (k.x + k.width) && y >= k.y && y < (k.y + k.height);
+        }
+
+        private static int distSq(Keyboard.Key k, int x, int y) {
+            int dx = 0;
+            int dy = 0;
+            if (x < k.x) dx = k.x - x;
+            else if (x > k.x + k.width) dx = x - (k.x + k.width);
+            if (y < k.y) dy = k.y - y;
+            else if (y > k.y + k.height) dy = y - (k.y + k.height);
+            return (dx * dx) + (dy * dy);
+        }
     }
 }
 
