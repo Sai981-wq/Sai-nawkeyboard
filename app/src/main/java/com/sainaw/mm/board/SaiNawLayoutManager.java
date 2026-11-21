@@ -3,14 +3,19 @@ package com.sainaw.mm.board;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.inputmethodservice.Keyboard;
+import android.os.Build;
+import android.os.UserManager;
 import android.view.inputmethod.EditorInfo;
 import java.util.ArrayList;
 import java.util.List;
 
 public class SaiNawLayoutManager {
+    private static final String PREFS_NAME = "KeyboardPrefs";
+    private static final String KEY_LAST_LANGUAGE_ID = "last_language_id";
+
     private final Context context;
     private final SaiNawKeyboardService service;
-    
+
     public Keyboard qwertyKeyboard, qwertyShiftKeyboard;
     public Keyboard myanmarKeyboard, myanmarShiftKeyboard;
     public Keyboard shanKeyboard, shanShiftKeyboard;
@@ -18,7 +23,7 @@ public class SaiNawLayoutManager {
     public Keyboard symbolsEnShiftKeyboard, symbolsMmShiftKeyboard;
     public Keyboard numberKeyboard;
     public Keyboard emojiKeyboard1, emojiKeyboard2, emojiKeyboard3, emojiKeyboard4;
-    
+
     private Keyboard currentKeyboard;
     private EditorInfo currentEditorInfo;
 
@@ -26,45 +31,76 @@ public class SaiNawLayoutManager {
     public boolean isCapsLocked = false;
     public boolean isSymbols = false;
     public boolean isEmoji = false;
-    public int currentLanguageId = 0; 
+    public int currentLanguageId = 0;
     public int currentEmojiPage = 1;
-    
-    private List<Integer> enabledLanguages = new ArrayList<>();
+
+    private boolean languageRestored = false;
+    private Boolean cachedShowNumRow = null;
+    private final List<Integer> enabledLanguages = new ArrayList<>();
 
     public SaiNawLayoutManager(SaiNawKeyboardService service) {
         this.service = service;
         this.context = service;
     }
 
+    private SharedPreferences getSafePrefs() {
+        Context safeCtx = context;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            UserManager um = (UserManager) context.getSystemService(Context.USER_SERVICE);
+            if (um == null || !um.isUserUnlocked()) {
+                safeCtx = context.createDeviceProtectedStorageContext();
+            }
+        }
+        return safeCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
     public void loadLanguageSettings(SharedPreferences prefs) {
-        boolean useMm = prefs.getBoolean("enable_mm", true);   
-        boolean useShan = prefs.getBoolean("enable_shan", true); 
+        if (!languageRestored) {
+            currentLanguageId = prefs.getInt(KEY_LAST_LANGUAGE_ID, 0);
+            languageRestored = true;
+        }
+
+        boolean useMm = prefs.getBoolean("enable_mm", true);
+        boolean useShan = prefs.getBoolean("enable_shan", true);
 
         enabledLanguages.clear();
-        enabledLanguages.add(0); 
+        enabledLanguages.add(0);
         if (useMm) enabledLanguages.add(1);
         if (useShan) enabledLanguages.add(2);
 
         if (!enabledLanguages.contains(currentLanguageId)) {
-            currentLanguageId = 0; 
+            currentLanguageId = 0;
+            saveCurrentLanguage(prefs);
         }
+    }
+
+    private void saveCurrentLanguage(SharedPreferences prefs) {
+        try {
+            prefs.edit().putInt(KEY_LAST_LANGUAGE_ID, currentLanguageId).apply();
+        } catch (Exception ignored) { }
     }
 
     public void initKeyboards(SharedPreferences prefs) {
         loadLanguageSettings(prefs);
+        boolean showNumRow = prefs.getBoolean("number_row", false);
+
+        // Reuse cached Keyboard objects unless uninitialized or number_row setting changed
+        if (qwertyKeyboard != null && cachedShowNumRow != null && cachedShowNumRow == showNumRow) {
+            return;
+        }
+
         try {
-            boolean showNumRow = prefs.getBoolean("number_row", false);
             String suffix = showNumRow ? "_num" : "";
-            
+
             qwertyKeyboard = new Keyboard(context, service.getResId("qwerty" + suffix));
             qwertyShiftKeyboard = new Keyboard(context, service.getResId("qwerty" + suffix + "_shift"));
-            
+
             myanmarKeyboard = new Keyboard(context, service.getResId("myanmar" + suffix));
             myanmarShiftKeyboard = new Keyboard(context, service.getResId("myanmar_shift"));
-            
+
             shanKeyboard = new Keyboard(context, service.getResId("shan"));
             shanShiftKeyboard = new Keyboard(context, service.getResId("shan_shift"));
-            
+
             int symEnId = service.getResId("symbols");
             int symMmId = service.getResId("symbols_mm");
             symbolsEnKeyboard = (symEnId != 0) ? new Keyboard(context, symEnId) : qwertyKeyboard;
@@ -80,7 +116,7 @@ public class SaiNawLayoutManager {
 
             int emojiId = service.getResId("emoji");
             emojiKeyboard1 = (emojiId != 0) ? new Keyboard(context, emojiId) : symbolsEnKeyboard;
-            
+
             int emoji2Id = service.getResId("kbd_emoji_2");
             emojiKeyboard2 = (emoji2Id != 0) ? new Keyboard(context, emoji2Id) : emojiKeyboard1;
 
@@ -89,11 +125,13 @@ public class SaiNawLayoutManager {
 
             int emoji4Id = service.getResId("kbd_emoji_4");
             emojiKeyboard4 = (emoji4Id != 0) ? new Keyboard(context, emoji4Id) : emojiKeyboard1;
-            
+
+            cachedShowNumRow = showNumRow;
         } catch (Exception e) {
             e.printStackTrace();
             qwertyKeyboard = new Keyboard(context, service.getResId("qwerty"));
             myanmarKeyboard = new Keyboard(context, service.getResId("myanmar"));
+            cachedShowNumRow = false;
         }
     }
 
@@ -105,11 +143,14 @@ public class SaiNawLayoutManager {
         isEmoji = false;
         currentEmojiPage = 1;
 
-        if (currentEditorInfo == null) return;
-        
+        if (currentEditorInfo == null) {
+            updateKeyboardLayout();
+            return;
+        }
+
         int inputType = currentEditorInfo.inputType & EditorInfo.TYPE_MASK_CLASS;
-        if (inputType == EditorInfo.TYPE_CLASS_PHONE || 
-            inputType == EditorInfo.TYPE_CLASS_NUMBER || 
+        if (inputType == EditorInfo.TYPE_CLASS_PHONE ||
+            inputType == EditorInfo.TYPE_CLASS_NUMBER ||
             inputType == EditorInfo.TYPE_CLASS_DATETIME) {
             currentKeyboard = numberKeyboard;
             isSymbols = true;
@@ -148,7 +189,7 @@ public class SaiNawLayoutManager {
                 else if (currentLanguageId == 2) nextKeyboard = isCaps ? shanShiftKeyboard : shanKeyboard;
                 else nextKeyboard = isCaps ? qwertyShiftKeyboard : qwertyKeyboard;
             }
-            currentKeyboard = nextKeyboard;
+            currentKeyboard = (nextKeyboard != null) ? nextKeyboard : qwertyKeyboard;
             applyKeyboard();
         } catch (Exception e) {
             currentKeyboard = qwertyKeyboard;
@@ -157,21 +198,21 @@ public class SaiNawLayoutManager {
     }
 
     private void applyKeyboard() {
-        if (service.getKeyboardView() != null) {
-            updateEnterKeyLabel(); 
+        if (currentKeyboard != null && service.getKeyboardView() != null) {
+            updateEnterKeyLabel();
             service.getKeyboardView().setKeyboard(currentKeyboard);
             service.getKeyboardView().invalidateAllKeys();
-            service.updateHelperState(); 
+            service.updateHelperState();
         }
     }
 
     private void updateEnterKeyLabel() {
         if (currentKeyboard == null || currentEditorInfo == null) return;
-        
+
         boolean isMultiLine = (currentEditorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
-        
+
         int action = currentEditorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
-        String label = "Enter"; 
+        String label = "Enter";
 
         if (isMultiLine) {
             label = "Enter";
@@ -187,28 +228,31 @@ public class SaiNawLayoutManager {
         }
 
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
+        if (keys == null) return;
         for (Keyboard.Key key : keys) {
-            if (key.codes[0] == -4) { 
-                key.label = label; 
-                key.icon = null; 
+            if (key.codes != null && key.codes.length > 0 && key.codes[0] == -4) {
+                key.label = label;
+                key.icon = null;
                 key.iconPreview = null;
                 break;
             }
         }
     }
-    
+
     public void changeLanguage() {
         if (enabledLanguages.isEmpty()) return;
         int currentIndex = enabledLanguages.indexOf(currentLanguageId);
         int nextIndex = (currentIndex + 1) % enabledLanguages.size();
         currentLanguageId = enabledLanguages.get(nextIndex);
-        
-        isCaps = false; 
-        isSymbols = false; 
+
+        saveCurrentLanguage(getSafePrefs());
+
+        isCaps = false;
+        isSymbols = false;
         isCapsLocked = false;
         isEmoji = false;
         currentEmojiPage = 1;
-        
+
         updateKeyboardLayout();
     }
 
