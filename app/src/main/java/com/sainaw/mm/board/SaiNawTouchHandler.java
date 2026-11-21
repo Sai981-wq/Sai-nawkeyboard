@@ -5,9 +5,9 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Rect;
 import android.inputmethodservice.Keyboard;
-import android.view.MotionEvent;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import java.util.List;
@@ -99,7 +99,6 @@ public class SaiNawTouchHandler {
         isLiftToType = prefs.getBoolean("lift_to_type", true);
     }
 
-    // 💡 Lift-to-type ပိတ်ထားချိန် သို့မဟုတ် ရိုးရိုးလက်ဖြင့်ဖိချိန်တွင် Long Press အလုပ်လုပ်စေရန် Method အသစ်
     public void handleStandardPress(int primaryCode) {
         cancelAllLongPress();
         if (primaryCode == 32) handler.postDelayed(spaceLongPressTask, 1500);
@@ -118,7 +117,6 @@ public class SaiNawTouchHandler {
         }
     }
 
-    // 💡 ဤ Getter Method လေးက Keyboard Service မှ Long Press ဝင်/မဝင် စစ်ဆေးရန်ဖြစ်သည်
     public boolean isLongPressHandled() {
         return isLongPressHandled;
     }
@@ -127,7 +125,7 @@ public class SaiNawTouchHandler {
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         if (keys == null) return null;
         for (Keyboard.Key k : keys) {
-            if (k.codes != null && k.codes.length > 0 && k.codes[0] == primaryCode) {
+            if (k != null && k.codes != null && k.codes.length > 0 && k.codes[0] == primaryCode) {
                 return k;
             }
         }
@@ -141,11 +139,11 @@ public class SaiNawTouchHandler {
             return;
         }
 
-        int action = event.getAction();
+        int action = event.getActionMasked();
         View hostView = service.getKeyboardView();
         float x = event.getX();
         float y = event.getY();
-        
+
         if (hostView != null) {
             x -= hostView.getPaddingLeft();
             y -= hostView.getPaddingTop();
@@ -153,6 +151,10 @@ public class SaiNawTouchHandler {
 
         switch (action) {
             case MotionEvent.ACTION_HOVER_ENTER:
+                // Always start fresh on ENTER so a missed EXIT never locks out same-key taps
+                cancelAllLongPress();
+                lastHoverKeyIndex = -1;
+                // fall through to focus the touched key
             case MotionEvent.ACTION_HOVER_MOVE:
                 int newKeyIndex = getNearestKeyIndexFast((int) x, (int) y);
                 if (newKeyIndex != lastHoverKeyIndex) {
@@ -160,19 +162,21 @@ public class SaiNawTouchHandler {
                     lastHoverKeyIndex = newKeyIndex;
 
                     if (newKeyIndex != -1 && newKeyIndex < keys.size()) {
-                        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS);
                         Keyboard.Key key = keys.get(newKeyIndex);
-                        int code = key.codes[0];
+                        if (key != null && key.codes != null && key.codes.length > 0) {
+                            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_FOCUS);
+                            int code = key.codes[0];
 
-                        if (code == 32) handler.postDelayed(spaceLongPressTask, 1500);
-                        else if (code == -5) handler.postDelayed(deleteStartTask, 1200);
-                        else if (code == -1) handler.postDelayed(shiftLongPressTask, 1200);
-                        else if (code == -4) handler.postDelayed(enterLongPressTask, 3000);
-                        else {
-                            int resolvedEmojiCode = resolveEmojiCode(key);
-                            if (resolvedEmojiCode != 0) {
-                                currentEmojiCode = resolvedEmojiCode;
-                                handler.postDelayed(emojiLongPressTask, 1000);
+                            if (code == 32) handler.postDelayed(spaceLongPressTask, 1500);
+                            else if (code == -5) handler.postDelayed(deleteStartTask, 1200);
+                            else if (code == -1) handler.postDelayed(shiftLongPressTask, 1200);
+                            else if (code == -4) handler.postDelayed(enterLongPressTask, 3000);
+                            else {
+                                int resolvedEmojiCode = resolveEmojiCode(key);
+                                if (resolvedEmojiCode != 0) {
+                                    currentEmojiCode = resolvedEmojiCode;
+                                    handler.postDelayed(emojiLongPressTask, 1000);
+                                }
                             }
                         }
                     }
@@ -180,30 +184,31 @@ public class SaiNawTouchHandler {
                 break;
 
             case MotionEvent.ACTION_HOVER_EXIT:
-                if (y < 0) {
-                    cancelAllLongPress();
-                    lastHoverKeyIndex = -1;
-                    service.stopSpeech(); 
+                boolean wasLongPress = isLongPressHandled;
+                int exitKeyIndex = lastHoverKeyIndex;
+                // Reset state BEFORE dispatching handleInput so rapid next touches never stall
+                cancelAllLongPress();
+                lastHoverKeyIndex = -1;
+
+                if (y < -12) {
+                    service.stopSpeech();
                     return;
                 }
 
-                if (!isLongPressHandled && lastHoverKeyIndex != -1) {
-                    if (lastHoverKeyIndex < keys.size()) {
-                        Keyboard.Key key = keys.get(lastHoverKeyIndex);
-                        if (key.codes[0] != -100) {
-                            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                            service.stopSpeech(); 
-                            service.handleInput(key.codes[0], key);
-                        }
+                if (!wasLongPress && exitKeyIndex != -1 && exitKeyIndex < keys.size()) {
+                    Keyboard.Key key = keys.get(exitKeyIndex);
+                    if (key != null && key.codes != null && key.codes.length > 0 && key.codes[0] != -100) {
+                        feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                        service.stopSpeech();
+                        service.handleInput(key.codes[0], key);
                     }
                 }
-                cancelAllLongPress();
-                lastHoverKeyIndex = -1;
                 break;
         }
     }
 
     private int resolveEmojiCode(Keyboard.Key key) {
+        if (key == null || key.codes == null || key.codes.length == 0) return 0;
         int code = key.codes[0];
         if (emojiManager != null && emojiManager.hasDescription(code)) {
             return code;
@@ -237,7 +242,7 @@ public class SaiNawTouchHandler {
     private int getNearestKeyIndexFast(int x, int y) {
         List<Keyboard.Key> keys = layoutManager.getCurrentKeys();
         if (keys == null || keys.isEmpty()) return -1;
-        if (y < 0) return -1;
+        if (y < -12) return -1;
 
         int bestKeyIndex = -1;
         int minDistance = Integer.MAX_VALUE;

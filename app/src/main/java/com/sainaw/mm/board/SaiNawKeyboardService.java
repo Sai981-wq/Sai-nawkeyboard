@@ -74,6 +74,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isSpeechReady = false;
     private int speechSessionToken = 0;
     private Runnable speechWatchdog;
+    private Runnable pendingAnnouncementTask;
     private String lastPartialTranscript = "";
     private TextToSpeech shanTts;
     private ShanVoiceInput shanVoiceInput;
@@ -106,6 +107,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public View onCreateInputView() {
         handler.removeCallbacks(pendingCandidateUpdate);
+        if (pendingAnnouncementTask != null) {
+            handler.removeCallbacks(pendingAnnouncementTask);
+            pendingAnnouncementTask = null;
+        }
         cancelSpeechWatchdog();
         if (shanVoiceInput != null) shanVoiceInput.destroy();
         if (shanTts != null) {
@@ -183,7 +188,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override
     public void onStartInput(EditorInfo attribute, boolean restarting) {
-        // Do NOT kill active voice typing when an app simply restarts input during composing text
         if (!restarting) {
             if (shanVoiceInput != null) shanVoiceInput.cancel();
             destroyGoogleSpeechRecognizer(false);
@@ -250,9 +254,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void hideCandidatesImmediately() {
         handler.removeCallbacks(pendingCandidateUpdate);
         for (TextView tv : candidateViews) {
-            if (tv.getVisibility() != View.GONE) {
-                tv.setVisibility(View.GONE);
+            if (tv.getVisibility() != View.INVISIBLE) {
+                tv.setVisibility(View.INVISIBLE);
             }
+            if (tv.getTag() != null) {
+                tv.setText("");
+                tv.setTag(null);
+            }
+            tv.setClickable(false);
+            tv.setFocusable(false);
+            tv.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         }
     }
 
@@ -286,7 +297,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     boolean handleKeyboardHover(android.view.MotionEvent event) {
-        if (accessibilityHelper != null) accessibilityHelper.dispatchHoverEvent(event);
+        if (accessibilityHelper != null) accessibilityHelper.handleHoverEvent(event);
         if (touchHandler != null) touchHandler.handleHover(event);
         return true;
     }
@@ -316,7 +327,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
             syncAndGetCurrentWord();
-            triggerCandidateUpdate(100);
+            triggerCandidateUpdate(200);
             if (!layoutManager.isSymbols && !layoutManager.isEmoji && layoutManager.isCaps && !layoutManager.isCapsLocked) {
                 layoutManager.isCaps = false;
                 layoutManager.updateKeyboardLayout();
@@ -358,7 +369,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     }
 
                     syncAndGetCurrentWord();
-                    triggerCandidateUpdate(100);
+                    triggerCandidateUpdate(200);
                     break;
 
                 case -10:
@@ -383,7 +394,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     }
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    updateHelperState();
                     break;
 
                 case -2:
@@ -395,7 +405,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     if (effectiveSmartEcho) announceText("Symbols");
-                    updateHelperState();
                     break;
 
                 case -6:
@@ -407,7 +416,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
                     if (effectiveSmartEcho) announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
-                    updateHelperState();
                     break;
 
                 case KEYCODE_EMOJI:
@@ -418,35 +426,30 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     layoutManager.currentEmojiPage = 1;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    updateHelperState();
                     break;
 
                 case -102:
                     layoutManager.currentEmojiPage = 2;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    updateHelperState();
                     break;
 
                 case -103:
                     layoutManager.currentEmojiPage = 1;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    updateHelperState();
                     break;
 
                 case -104:
                     layoutManager.currentEmojiPage = 3;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    updateHelperState();
                     break;
 
                 case -105:
                     layoutManager.currentEmojiPage = 4;
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.updateKeyboardLayout();
-                    updateHelperState();
                     break;
 
                 case -101:
@@ -457,7 +460,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (touchHandler != null) touchHandler.reset();
                     if (phoneticManager != null) phoneticManager.setLanguageId(layoutManager.currentLanguageId);
                     if (effectiveSmartEcho) announceText(layoutManager.currentLanguageId == 1 ? "Myanmar" : (layoutManager.currentLanguageId == 2 ? "Shan" : "English"));
-                    updateHelperState();
                     break;
 
                 case -4:
@@ -478,7 +480,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         layoutManager.isEmoji = false;
                         layoutManager.isCaps = false;
                         layoutManager.updateKeyboardLayout();
-                        updateHelperState();
                     }
                     break;
 
@@ -497,7 +498,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         layoutManager.isEmoji = false;
                         layoutManager.isCaps = false;
                         layoutManager.updateKeyboardLayout();
-                        updateHelperState();
                     }
                     break;
 
@@ -516,9 +516,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (!layoutManager.isSymbols && !layoutManager.isEmoji && layoutManager.isCaps && !layoutManager.isCapsLocked) {
                         layoutManager.isCaps = false;
                         layoutManager.updateKeyboardLayout();
-                        updateHelperState();
                     }
-                    triggerCandidateUpdate(120);
+                    triggerCandidateUpdate(200);
                     break;
             }
         } catch (Exception e) { e.printStackTrace(); }
@@ -562,7 +561,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 if (layoutManager.isCaps != shouldBeCaps) {
                     layoutManager.isCaps = shouldBeCaps;
                     layoutManager.updateKeyboardLayout();
-                    updateHelperState();
                 }
             }
         }
@@ -668,12 +666,16 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
 
         if (accessibilityManager != null && accessibilityManager.isEnabled()) {
-            handler.postDelayed(() -> {
+            if (pendingAnnouncementTask != null) {
+                handler.removeCallbacks(pendingAnnouncementTask);
+            }
+            pendingAnnouncementTask = () -> {
                 if ((shanVoiceInput != null && shanVoiceInput.isCapturePending()) || isListening) return;
                 AccessibilityEvent event = AccessibilityEvent.obtain(AccessibilityEvent.TYPE_ANNOUNCEMENT);
                 event.getText().add(text);
                 accessibilityManager.sendAccessibilityEvent(event);
-            }, 50);
+            };
+            handler.postDelayed(pendingAnnouncementTask, 50);
         }
     }
 
@@ -733,11 +735,28 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 for (int i = 0; i < candidateViews.size(); i++) {
                     TextView tv = candidateViews.get(i);
                     if (i < suggestions.size()) {
-                        tv.setText(suggestions.get(i));
-                        tv.setTag(suggestions.get(i));
-                        if (tv.getVisibility() != View.VISIBLE) tv.setVisibility(View.VISIBLE);
+                        String word = suggestions.get(i);
+                        if (!word.equals(tv.getTag())) {
+                            tv.setText(word);
+                            tv.setTag(word);
+                        }
+                        if (tv.getVisibility() != View.VISIBLE) {
+                            tv.setVisibility(View.VISIBLE);
+                        }
+                        tv.setClickable(true);
+                        tv.setFocusable(true);
+                        tv.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
                     } else {
-                        if (tv.getVisibility() != View.GONE) tv.setVisibility(View.GONE);
+                        if (tv.getVisibility() != View.INVISIBLE) {
+                            tv.setVisibility(View.INVISIBLE);
+                        }
+                        if (tv.getTag() != null) {
+                            tv.setText("");
+                            tv.setTag(null);
+                        }
+                        tv.setClickable(false);
+                        tv.setFocusable(false);
+                        tv.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
                     }
                 }
             });
@@ -791,7 +810,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         speechRecognizer = null;
         if (old != null) {
             if (asyncCleanup) {
-                // Defer destroy outside RecognitionListener callback to prevent Binder deadlock
                 handler.postDelayed(() -> safeDestroyRecognizer(old), 120);
             } else {
                 safeDestroyRecognizer(old);
@@ -929,7 +947,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 if (wasListening && feedbackManager != null) {
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                 }
-                // Always async cleanup from inside listener callback
                 destroyGoogleSpeechRecognizer(true);
             }
             @Override
@@ -942,7 +959,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     chosen = lastPartialTranscript;
                 }
                 commitRecognizedSpeech(chosen);
-                // Always async cleanup from inside listener callback
                 destroyGoogleSpeechRecognizer(true);
             }
             @Override
@@ -997,7 +1013,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 isListening = true;
                 speechRecognizer.startListening(speechIntent);
 
-                // Cleanly reset if Speech Service fails to respond within 4.5s (no overlapping instance)
                 speechWatchdog = () -> {
                     if (currentToken == speechSessionToken && isListening && !isSpeechReady) {
                         destroyGoogleSpeechRecognizer(true);
@@ -1013,6 +1028,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private void initCandidateViews(boolean isDarkTheme) {
         candidateContainer.removeAllViews();
         candidateViews.clear();
+        candidateContainer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         int textColor = isDarkTheme ? Color.WHITE : Color.BLACK;
         for (int i = 0; i < 3; i++) {
             TextView tv = new TextView(this);
@@ -1021,8 +1037,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             tv.setPadding(30, 10, 30, 10);
             tv.setGravity(Gravity.CENTER);
             tv.setBackgroundResource(android.R.drawable.btn_default);
-            tv.setVisibility(View.GONE);
-            tv.setFocusable(true);
+            tv.setVisibility(View.INVISIBLE);
+            tv.setClickable(false);
+            tv.setFocusable(false);
+            tv.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             tv.setOnClickListener(candidateListener);
             LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
             p.setMargins(5, 0, 5, 0);
@@ -1043,12 +1061,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (ic == null || t == null) return;
         ic.commitText(t, 1);
         syncAndGetCurrentWord();
-        triggerCandidateUpdate(100);
+        triggerCandidateUpdate(200);
         if (feedbackManager != null) feedbackManager.playSound(0);
         if (layoutManager != null && !layoutManager.isSymbols && !layoutManager.isEmoji && layoutManager.isCaps && !layoutManager.isCapsLocked) {
             layoutManager.isCaps = false;
             layoutManager.updateKeyboardLayout();
-            updateHelperState();
         }
         manualShiftOverride = false;
         updateShiftState();
@@ -1193,6 +1210,10 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             touchHandler.cancelAllLongPress();
         }
         handler.removeCallbacks(pendingCandidateUpdate);
+        if (pendingAnnouncementTask != null) {
+            handler.removeCallbacks(pendingAnnouncementTask);
+            pendingAnnouncementTask = null;
+        }
         cancelSpeechWatchdog();
     }
 
