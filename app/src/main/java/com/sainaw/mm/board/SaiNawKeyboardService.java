@@ -8,7 +8,6 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.inputmethodservice.InputMethodService;
 import android.inputmethodservice.Keyboard;
@@ -22,7 +21,6 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.os.UserManager;
 import android.speech.RecognitionListener;
-import android.speech.RecognitionService;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
@@ -58,6 +56,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     private static final long CROSS_SOURCE_DEDUP_MS = 350L;
     private static final long SAME_SOURCE_BOUNCE_MS = 80L;
+
+    // Strictly pinned Google Speech Recognition component (no other fallback)
+    private static final String GOOGLE_VOICE_PACKAGE = "com.google.android.googlequicksearchbox";
+    private static final String GOOGLE_VOICE_SERVICE_CLASS = "com.google.android.voicesearch.serviceapi.GoogleRecognitionService";
+    private static final ComponentName GOOGLE_VOICE_COMPONENT =
+            new ComponentName(GOOGLE_VOICE_PACKAGE, GOOGLE_VOICE_SERVICE_CLASS);
 
     private SaiNawFeedbackManager feedbackManager;
     private SaiNawLayoutManager layoutManager;
@@ -99,7 +103,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
-    // Google-only SpeechRecognizer state (handles stale VPN sockets, MIUI binders & Google backend failover)
+    // Pinned GoogleRecognitionService state
     private static final int ERROR_SERVER_DISCONNECTED_COMPAT = 11;
     private static final int ERROR_LANGUAGE_NOT_SUPPORTED_COMPAT = 12;
     private static final int ERROR_LANGUAGE_UNAVAILABLE_COMPAT = 13;
@@ -114,8 +118,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isListening = false;
     private boolean isSpeechReady = false;
     private boolean hasRetriedCurrentTap = false;
-    // 0 = Google Speech Services (com.google.android.tts), 1 = Google App (com.google.android.googlequicksearchbox)
-    private int voiceBackendMode = 0;
     private long lastVoiceSuccessMs = 0L;
     private int activeRecognizerId = 0;
     private int speechSessionToken = 0;
@@ -1100,7 +1102,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         speechResultWatchdog = () -> {
             if (sessionToken != speechSessionToken || !isSessionActive) return;
             String partialToCommit = lastPartialTranscript;
-            voiceBackendMode = (voiceBackendMode + 1) % 2;
             destroyGoogleSpeechRecognizer(true);
 
             InputConnection ic = getCurrentInputConnection();
@@ -1124,38 +1125,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             try {
                 Toast.makeText(getApplicationContext(), message, Toast.LENGTH_SHORT).show();
             } catch (Exception ignored) { }
-        }
-    }
-
-    /**
-     * Strictly resolves Google recognition backends (Speech Services by Google & Google App).
-     * Returns null only on non-GMS devices where neither Google package is installed.
-     */
-    private ComponentName resolveRecognitionComponent(int mode) {
-        try {
-            Intent queryIntent = new Intent(RecognitionService.SERVICE_INTERFACE);
-            List<ResolveInfo> services = getPackageManager().queryIntentServices(queryIntent, 0);
-            if (services == null || services.isEmpty()) return null;
-
-            ComponentName googleTts = null;
-            ComponentName googleApp = null;
-            for (ResolveInfo info : services) {
-                if (info == null || info.serviceInfo == null) continue;
-                String pkg = info.serviceInfo.packageName;
-                String cls = info.serviceInfo.name;
-                if ("com.google.android.tts".equals(pkg)) {
-                    googleTts = new ComponentName(pkg, cls);
-                } else if ("com.google.android.googlequicksearchbox".equals(pkg)) {
-                    googleApp = new ComponentName(pkg, cls);
-                }
-            }
-
-            if (mode == 1) {
-                return (googleApp != null) ? googleApp : googleTts;
-            }
-            return (googleTts != null) ? googleTts : googleApp;
-        } catch (Exception ignored) {
-            return null;
         }
     }
 
@@ -1244,18 +1213,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             destroyGoogleSpeechRecognizer(false);
         }
 
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) return null;
-
         final int recognizerId = ++activeRecognizerId;
         Context appCtx = getApplicationContext();
-        ComponentName preferred = resolveRecognitionComponent(voiceBackendMode);
         SpeechRecognizer recognizer;
         try {
-            recognizer = (preferred != null)
-                    ? SpeechRecognizer.createSpeechRecognizer(appCtx, preferred)
-                    : SpeechRecognizer.createSpeechRecognizer(appCtx);
+            recognizer = SpeechRecognizer.createSpeechRecognizer(appCtx, GOOGLE_VOICE_COMPONENT);
         } catch (Exception e) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(appCtx);
+            return null;
         }
 
         recognizer.setRecognitionListener(new RecognitionListener() {
@@ -1307,10 +1271,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                         || error == ERROR_LANGUAGE_NOT_SUPPORTED_COMPAT
                         || error == ERROR_LANGUAGE_UNAVAILABLE_COMPAT);
 
-                // Auto-recover once on alternate Google backend if failure happened before mic became ready
+                // Auto-recover once with a fresh GoogleRecognitionService binding if failure occurred before mic became ready
                 if (isNetworkOrServiceError && !isSpeechReady && !hasRetriedCurrentTap) {
                     hasRetriedCurrentTap = true;
-                    voiceBackendMode = (voiceBackendMode + 1) % 2;
                     destroyGoogleSpeechRecognizer(true);
                     startGoogleSpeechSession(true);
                     return;
@@ -1324,10 +1287,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 isSpeechReady = false;
                 lastPartialTranscript = "";
 
-                // Always tear down on error so the next attempt opens a fresh Google network/gRPC stream
-                if (isNetworkOrServiceError || error == SpeechRecognizer.ERROR_NO_MATCH) {
-                    voiceBackendMode = (voiceBackendMode + 1) % 2;
-                }
+                // Always tear down on error so the next attempt opens a fresh stream on GoogleRecognitionService
                 destroyGoogleSpeechRecognizer(true);
 
                 boolean committedPartial = false;
@@ -1386,10 +1346,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     lastVoiceSuccessMs = SystemClock.uptimeMillis();
                     commitRecognizedSpeech(chosen);
                 } else {
-                    // Empty result from Google: reset recognizer so next tap gets a fresh connection
                     InputConnection ic = getCurrentInputConnection();
                     if (ic != null) ic.finishComposingText();
-                    voiceBackendMode = (voiceBackendMode + 1) % 2;
                     destroyGoogleSpeechRecognizer(true);
                     notifyVoiceFailure("No speech recognized");
                 }
@@ -1453,7 +1411,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
             SpeechRecognizer recognizer = ensureFreshOrWarmSpeechRecognizer();
             if (recognizer == null) {
-                notifyVoiceFailure("Voice service unavailable");
+                notifyVoiceFailure("Google Speech Recognition unavailable");
                 return;
             }
 
@@ -1468,11 +1426,9 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (currentToken == speechSessionToken && isSessionActive && !isSpeechReady) {
                         if (!hasRetriedCurrentTap) {
                             hasRetriedCurrentTap = true;
-                            voiceBackendMode = (voiceBackendMode + 1) % 2;
                             destroyGoogleSpeechRecognizer(true);
                             startGoogleSpeechSession(true);
                         } else {
-                            voiceBackendMode = (voiceBackendMode + 1) % 2;
                             destroyGoogleSpeechRecognizer(true);
                             notifyVoiceFailure("Voice service busy");
                         }
@@ -1483,7 +1439,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 destroyGoogleSpeechRecognizer(true);
                 if (!hasRetriedCurrentTap) {
                     hasRetriedCurrentTap = true;
-                    voiceBackendMode = (voiceBackendMode + 1) % 2;
                     startGoogleSpeechSession(true);
                 }
             }
