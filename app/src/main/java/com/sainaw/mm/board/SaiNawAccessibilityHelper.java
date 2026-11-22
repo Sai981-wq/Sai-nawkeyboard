@@ -54,6 +54,8 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
 
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
+        boolean onAccessibilityKeyLongClick(int primaryCode, Keyboard.Key key);
+        boolean shouldConsumeAccessibilityClick();
         String onCursorMoveAndGetText(boolean isForward, int granularity);
         void onCustomAnnounce(String text);
     }
@@ -254,19 +256,22 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     protected void onPopulateNodeForVirtualView(int virtualViewId, @NonNull AccessibilityNodeInfoCompat node) {
         if (currentKeyboard == null) {
             node.setContentDescription("");
-            node.setBoundsInParent(new Rect(0, 0, 1, 1));
+            tempRect.set(0, 0, 1, 1);
+            node.setBoundsInParent(tempRect);
             return;
         }
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
         if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) {
             node.setContentDescription("");
-            node.setBoundsInParent(new Rect(0, 0, 1, 1));
+            tempRect.set(0, 0, 1, 1);
+            node.setBoundsInParent(tempRect);
             return;
         }
         Keyboard.Key key = keys.get(virtualViewId);
         if (key == null || key.codes == null || key.codes.length == 0) {
             node.setContentDescription("");
-            node.setBoundsInParent(new Rect(0, 0, 1, 1));
+            tempRect.set(0, 0, 1, 1);
+            node.setBoundsInParent(tempRect);
             return;
         }
 
@@ -278,6 +283,8 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             node.setContentDescription(description);
         }
 
+        // Standard Android IME key semantics: lets TalkBack & CSR manage lift-to-type / double-tap cleanly via ACTION_CLICK
+        node.setTextEntryKey(true);
         node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
         node.setClickable(true);
         node.addAction(AccessibilityNodeInfoCompat.ACTION_LONG_CLICK);
@@ -366,6 +373,9 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (key == null || key.codes == null || key.codes.length == 0) return false;
 
         if (action == AccessibilityNodeInfoCompat.ACTION_CLICK) {
+            if (listener != null && listener.shouldConsumeAccessibilityClick()) {
+                return true;
+            }
             forceHapticFeedbackAsync(key.codes[0]);
             if (listener != null) {
                 listener.onAccessibilityKeyClick(key.codes[0], key);
@@ -381,7 +391,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
                     return true;
                 }
             }
-            if (key.codes[0] == -1 || key.codes[0] == -5) {
+            if (listener != null && listener.onAccessibilityKeyLongClick(key.codes[0], key)) {
                 performLongPressFeedbackAsync();
                 return true;
             }

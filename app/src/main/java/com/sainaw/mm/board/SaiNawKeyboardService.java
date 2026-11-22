@@ -23,6 +23,7 @@ import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -44,16 +45,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class SaiNawKeyboardService extends InputMethodService implements KeyboardView.OnKeyboardActionListener {
-
-    // Input source tags for cross-source duplicate prevention (prevents double-typing on TalkBack / Jieshuo)
-    public static final int INPUT_SOURCE_DIRECT = 0;
-    public static final int INPUT_SOURCE_KEYBOARD_VIEW = 1;
-    public static final int INPUT_SOURCE_A11Y_CLICK = 2;
-    public static final int INPUT_SOURCE_HOVER_LIFT = 3;
-    public static final int INPUT_SOURCE_REPEAT = 4;
-
-    private static final long CROSS_SOURCE_DEDUP_MS = 350L;
-    private static final long SAME_SOURCE_BOUNCE_MS = 80L;
 
     // System Default SpeechRecognizer wake-up & stale connection guards
     private static final int ERROR_SERVER_DISCONNECTED_COMPAT = 11;
@@ -77,12 +68,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private LinearLayout candidateContainer;
     private List<TextView> candidateViews = new ArrayList<>();
 
-    // Duplicate key event guard state
-    private int lastInputCode = Integer.MIN_VALUE;
-    private String lastInputText = null;
-    private int lastInputSource = -1;
-    private long lastInputTimeMs = 0L;
-
     // Shadow Text Buffer: avoids blocking InputConnection IPC on every keypress
     private static final int SHADOW_MAX_LEN = 128;
     private final StringBuilder shadowLine = new StringBuilder(SHADOW_MAX_LEN);
@@ -102,7 +87,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
-    // System Default SpeechRecognizer state (auto-rebuilds when idle or errored)
+    // System Default SpeechRecognizer state
     private SpeechRecognizer speechRecognizer;
     private boolean isListening = false;
     private boolean isSpeechReady = false;
@@ -122,6 +107,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     };
 
     private TextToSpeech shanTts;
+    private volatile boolean isShanTtsSpeaking = false;
     private ShanVoiceInput shanVoiceInput;
     private int voiceLanguageId = -1;
 
@@ -162,6 +148,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (feedbackManager != null) feedbackManager.release();
         if (shanVoiceInput != null) shanVoiceInput.destroy();
         if (shanTts != null) {
+            isShanTtsSpeaking = false;
             try { shanTts.stop(); shanTts.shutdown(); } catch (Exception ignored) { }
         }
 
@@ -176,12 +163,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         accessibilityManager = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
 
         shanTts = new TextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                AudioAttributes attrs = new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build();
-                shanTts.setAudioAttributes(attrs);
+            if (status == TextToSpeech.SUCCESS) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    AudioAttributes attrs = new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build();
+                    shanTts.setAudioAttributes(attrs);
+                }
+                shanTts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override public void onStart(String utteranceId) { isShanTtsSpeaking = true; }
+                    @Override public void onDone(String utteranceId) { isShanTtsSpeaking = false; }
+                    @Override public void onError(String utteranceId) { isShanTtsSpeaking = false; }
+                    @Override public void onError(String utteranceId, int errorCode) { isShanTtsSpeaking = false; }
+                });
             }
         }, "com.shan.tts");
 
@@ -214,7 +209,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         accessibilityHelper = new SaiNawAccessibilityHelper(keyboardView, new SaiNawAccessibilityHelper.OnAccessibilityKeyListener() {
             @Override
             public void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key) {
-                handleInputFromSource(primaryCode, key, INPUT_SOURCE_A11Y_CLICK);
+                handleInput(primaryCode, key);
+            }
+            @Override
+            public boolean onAccessibilityKeyLongClick(int primaryCode, Keyboard.Key key) {
+                return touchHandler != null && touchHandler.performLongPressAction(primaryCode);
+            }
+            @Override
+            public boolean shouldConsumeAccessibilityClick() {
+                return touchHandler != null && touchHandler.consumeHoverLongPressClick();
             }
             @Override
             public String onCursorMoveAndGetText(boolean isForward, int granularity) {
@@ -245,7 +248,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             currentWord.setLength(0);
             shadowNeedsResync = true;
             hasTextSelection = false;
-            resetDuplicateGuard();
+            if (inputLogic != null) inputLogic.resetPreVowelState();
+            if (touchHandler != null) touchHandler.reset();
         }
         super.onStartInput(attribute, restarting);
         if (layoutManager != null) {
@@ -272,9 +276,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
 
         InputConnection ic = getCurrentInputConnection();
-        if (ic != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            ic.requestCursorUpdates(InputConnection.CURSOR_UPDATE_IMMEDIATE | InputConnection.CURSOR_UPDATE_MONITOR);
-        }
 
         feedbackManager.loadSettings(prefs);
         touchHandler.loadSettings(prefs);
@@ -298,6 +299,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             layoutManager.isSymbols = false;
             layoutManager.isEmoji = false;
             manualShiftOverride = false;
+            if (inputLogic != null) inputLogic.resetPreVowelState();
             syncShadowFromIc(ic);
             hideCandidatesImmediately();
         }
@@ -305,47 +307,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         layoutManager.updateEditorInfo(info);
         layoutManager.determineKeyboardForInputType();
         updateShiftState(true);
-    }
-
-    private void resetDuplicateGuard() {
-        lastInputCode = Integer.MIN_VALUE;
-        lastInputText = null;
-        lastInputSource = -1;
-        lastInputTimeMs = 0L;
-    }
-
-    private boolean isSameKeySignature(int codeA, CharSequence textA, int codeB, String textB) {
-        if (codeA != codeB) return false;
-        if (codeA != 0) return true;
-        String strA = (textA != null) ? textA.toString() : "";
-        String strB = (textB != null) ? textB : "";
-        return strA.equals(strB);
-    }
-
-    /**
-     * Suppresses duplicate key events caused when a screen reader (e.g., TalkBack lift-to-type or Jieshuo)
-     * fires ACTION_CLICK or KeyboardView.onKey() immediately after ACTION_HOVER_EXIT for the same key.
-     */
-    private boolean isDuplicateInput(int primaryCode, CharSequence keyText, int source) {
-        if (source == INPUT_SOURCE_REPEAT) return false;
-
-        long now = SystemClock.uptimeMillis();
-        long elapsed = now - lastInputTimeMs;
-
-        if (lastInputSource != -1 && isSameKeySignature(primaryCode, keyText, lastInputCode, lastInputText)) {
-            if (source != lastInputSource && elapsed < CROSS_SOURCE_DEDUP_MS) {
-                return true;
-            }
-            if (source == lastInputSource && elapsed < SAME_SOURCE_BOUNCE_MS) {
-                return true;
-            }
-        }
-
-        lastInputCode = primaryCode;
-        lastInputText = (primaryCode == 0 && keyText != null) ? keyText.toString() : null;
-        lastInputSource = source;
-        lastInputTimeMs = now;
-        return false;
     }
 
     private void syncShadowFromIc(InputConnection ic) {
@@ -461,24 +422,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     public void stopSpeech() {
-        if (shanTts != null) {
+        if (isShanTtsSpeaking && shanTts != null) {
+            isShanTtsSpeaking = false;
             try { shanTts.stop(); } catch (Exception ignored) { }
         }
     }
 
     public void handleInput(int primaryCode, Keyboard.Key key) {
-        handleInputFromSource(primaryCode, key, INPUT_SOURCE_DIRECT);
-    }
-
-    public void handleInputFromSource(int primaryCode, Keyboard.Key key, int source) {
-        CharSequence keyText = (key != null) ? key.text : null;
-        if (isDuplicateInput(primaryCode, keyText, source)) {
-            return;
-        }
-
-        if (shanTts != null) {
-            try { shanTts.stop(); } catch (Exception ignored) { }
-        }
+        // Only issue Binder IPC to com.shan.tts when Shan TTS is actually speaking
+        stopSpeech();
 
         if (layoutManager == null || feedbackManager == null) return;
 
@@ -490,6 +442,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         if (key != null && key.text != null) {
             ic.commitText(key.text, 1);
+            if (inputLogic != null) inputLogic.resetPreVowelState();
             if (!shadowNeedsResync) {
                 appendToShadow(key.text);
             }
@@ -510,6 +463,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             switch (primaryCode) {
                 case -5:
                     manualShiftOverride = false;
+                    if (inputLogic != null) inputLogic.onCursorOrContextChanged();
                     boolean deletedSelection = false;
                     if (hasTextSelection) {
                         CharSequence selectedText = ic.getSelectedText(0);
@@ -639,6 +593,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 case -101:
                     manualShiftOverride = false;
                     stopSpeechListeningIfActive();
+                    if (inputLogic != null) inputLogic.resetPreVowelState();
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     layoutManager.changeLanguage();
                     if (touchHandler != null) touchHandler.reset();
@@ -648,6 +603,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 case -4:
                     manualShiftOverride = false;
+                    if (inputLogic != null) inputLogic.resetPreVowelState();
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                     if (shadowNeedsResync) {
                         syncShadowFromIc(ic);
@@ -674,6 +630,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
                 case 32:
                     manualShiftOverride = false;
+                    if (inputLogic != null) inputLogic.resetPreVowelState();
                     if (shadowNeedsResync) {
                         syncShadowFromIc(ic);
                     }
@@ -698,18 +655,30 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     manualShiftOverride = false;
                     boolean wasCaps = layoutManager.isCaps;
                     boolean customInserted = textProcessor.handleCustomInsert(ic, primaryCode);
+                    boolean reordered = false;
                     if (!customInserted) {
-                        inputLogic.processInput(ic, primaryCode, key);
+                        reordered = inputLogic.processInput(ic, primaryCode, key);
                     }
 
-                    if (!customInserted && !shadowNeedsResync && primaryCode >= 32 &&
-                        (layoutManager.currentLanguageId == 0 || layoutManager.isSymbols || layoutManager.isEmoji)) {
-                        int cp = primaryCode;
-                        if (layoutManager.currentLanguageId == 0 && !layoutManager.isSymbols && !layoutManager.isEmoji
-                                && wasCaps && Character.isLetter(cp)) {
-                            cp = Character.toUpperCase(cp);
+                    if (!customInserted && !reordered && !shadowNeedsResync) {
+                        String committedStr;
+                        if (key != null && key.label != null && key.label.length() > 1) {
+                            committedStr = key.label.toString();
+                        } else if (primaryCode >= 32) {
+                            int cp = primaryCode;
+                            if (layoutManager.currentLanguageId == 0 && !layoutManager.isSymbols && !layoutManager.isEmoji
+                                    && wasCaps && Character.isLetter(cp)) {
+                                cp = Character.toUpperCase(cp);
+                            }
+                            committedStr = new String(Character.toChars(cp));
+                        } else {
+                            committedStr = null;
                         }
-                        appendToShadow(new String(Character.toChars(cp)));
+                        if (committedStr != null) {
+                            appendToShadow(committedStr);
+                        } else {
+                            shadowNeedsResync = true;
+                        }
                     } else {
                         shadowNeedsResync = true;
                         if (effectiveSmartEcho) {
@@ -778,6 +747,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         ic.finishComposingText();
         boolean inserted = ic.commitText(text, 1);
         if (inserted) {
+            if (inputLogic != null) inputLogic.resetPreVowelState();
             appendToShadow(text);
             currentWord.setLength(0);
             hideCandidatesImmediately();
@@ -833,6 +803,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 if (shanTts != null) {
                     Bundle params = new Bundle();
                     params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ACCESSIBILITY);
+                    isShanTtsSpeaking = true;
                     shanTts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "shan_tts_utterance");
                 }
                 lastShanText = text;
@@ -957,6 +928,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
             }
             ic.commitText(suggestion + " ", 1);
+            if (inputLogic != null) inputLogic.resetPreVowelState();
             appendToShadow(suggestion + " ");
         }
         if (isUserUnlocked()) {
@@ -974,7 +946,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateShiftState(false);
     }
 
-    // --- System Default SpeechRecognizer with Auto Wake-Up & Stale Connection Recovery ---
+    // --- System Default SpeechRecognizer ---
 
     private void cancelVoiceTimers() {
         if (pendingVoiceStartTask != null) {
@@ -1049,7 +1021,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             if (lastVoiceUsedMs > 0L && idleMs <= VOICE_IDLE_REBUILD_MS) {
                 return speechRecognizer;
             }
-            // Discard idle recognizer so we never reuse a dead IPC/network binding
             destroySpeechRecognizer(false);
         }
 
@@ -1078,7 +1049,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             public void onEndOfSpeech() {
                 if (myRecognizerId != activeRecognizerId) return;
                 isListening = false;
-                // Guard against hanging forever after speaking if the network silently drops
                 final int token = voiceSessionToken;
                 if (voiceResultWatchdog != null) handler.removeCallbacks(voiceResultWatchdog);
                 voiceResultWatchdog = () -> {
@@ -1094,7 +1064,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             public void onError(int error) {
                 if (myRecognizerId != activeRecognizerId) return;
                 boolean wasReady = isSpeechReady;
-                // Always destroy on error so the next attempt binds a clean SpeechRecognizer
                 destroySpeechRecognizer(true);
 
                 boolean isWakeUpFailure = !wasReady && (
@@ -1130,12 +1099,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     lastVoiceUsedMs = SystemClock.uptimeMillis();
                     String committed = m.get(0).trim() + " ";
                     ic.commitText(committed, 1);
+                    if (inputLogic != null) inputLogic.resetPreVowelState();
                     appendToShadow(committed);
                     currentWord.setLength(0);
                     hideCandidatesImmediately();
                     updateShiftState(false);
                 } else {
-                    // Empty result: force a fresh connection next time
                     destroySpeechRecognizer(true);
                 }
             }
@@ -1171,7 +1140,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
                 isListening = false;
             } else {
-                // Still stuck trying to wake up: force-reset cleanly
                 destroySpeechRecognizer(true);
             }
             return;
@@ -1268,14 +1236,15 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (touchHandler != null && touchHandler.isLongPressHandled()) {
             return;
         }
-        handleInputFromSource(p, null, INPUT_SOURCE_KEYBOARD_VIEW);
+        handleInput(p, null);
     }
 
     @Override public void onText(CharSequence t) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null || t == null) return;
-        if (isDuplicateInput(0, t, INPUT_SOURCE_KEYBOARD_VIEW)) return;
+        stopSpeech();
         ic.commitText(t, 1);
+        if (inputLogic != null) inputLogic.resetPreVowelState();
         if (!shadowNeedsResync) {
             appendToShadow(t);
         }
@@ -1387,6 +1356,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         if (newPos != currentPos) {
             ic.setSelection(newPos, newPos);
             shadowNeedsResync = true;
+            if (inputLogic != null) inputLogic.onCursorOrContextChanged();
             return traversedText;
         }
         return null;
@@ -1424,6 +1394,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         destroySpeechRecognizer(false);
         super.onDestroy();
         if (shanTts != null) {
+            isShanTtsSpeaking = false;
             try { shanTts.stop(); shanTts.shutdown(); } catch (Exception ignored) { }
         }
         if (dbExecutor != null && !dbExecutor.isShutdown()) dbExecutor.shutdown();
@@ -1447,6 +1418,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         hasTextSelection = (newSelStart != newSelEnd);
         if (Math.abs(newSelEnd - oldSelEnd) > 2 || newSelEnd == 0) {
             shadowNeedsResync = true;
+            if (inputLogic != null) inputLogic.onCursorOrContextChanged();
             updateShiftState(true);
         }
     }

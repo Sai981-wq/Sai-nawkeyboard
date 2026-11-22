@@ -3,6 +3,7 @@ package com.sainaw.mm.board;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.inputmethodservice.Keyboard;
+import android.inputmethodservice.KeyboardView;
 import android.os.Build;
 import android.os.UserManager;
 import android.view.inputmethod.EditorInfo;
@@ -204,15 +205,18 @@ public class SaiNawLayoutManager {
     }
 
     private void applyKeyboard() {
-        if (currentKeyboard != null) {
-            currentKeyGrid = getOrBuildGrid(currentKeyboard);
-            if (service.getKeyboardView() != null) {
-                updateEnterKeyLabel();
-                service.getKeyboardView().setKeyboard(currentKeyboard);
-                service.getKeyboardView().invalidateAllKeys();
-                service.updateHelperState();
-            }
+        if (currentKeyboard == null) return;
+        currentKeyGrid = getOrBuildGrid(currentKeyboard);
+        KeyboardView kv = service.getKeyboardView();
+        if (kv == null) return;
+
+        int updatedEnterIndex = updateEnterKeyLabel();
+        if (kv.getKeyboard() != currentKeyboard) {
+            kv.setKeyboard(currentKeyboard);
+        } else if (updatedEnterIndex >= 0) {
+            kv.invalidateKey(updatedEnterIndex);
         }
+        service.updateHelperState();
     }
 
     private KeyGrid getOrBuildGrid(Keyboard keyboard) {
@@ -234,17 +238,14 @@ public class SaiNawLayoutManager {
         return grid.findKeyIndex(x, y);
     }
 
-    private void updateEnterKeyLabel() {
-        if (currentKeyboard == null || currentEditorInfo == null) return;
+    private int updateEnterKeyLabel() {
+        if (currentKeyboard == null || currentEditorInfo == null) return -1;
 
         boolean isMultiLine = (currentEditorInfo.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
-
         int action = currentEditorInfo.imeOptions & EditorInfo.IME_MASK_ACTION;
         String label = "Enter";
 
-        if (isMultiLine) {
-            label = "Enter";
-        } else {
+        if (!isMultiLine) {
             switch (action) {
                 case EditorInfo.IME_ACTION_GO: label = "Go"; break;
                 case EditorInfo.IME_ACTION_NEXT: label = "Next"; break;
@@ -256,15 +257,21 @@ public class SaiNawLayoutManager {
         }
 
         List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys == null) return;
-        for (Keyboard.Key key : keys) {
+        if (keys == null) return -1;
+        for (int i = 0; i < keys.size(); i++) {
+            Keyboard.Key key = keys.get(i);
             if (key != null && key.codes != null && key.codes.length > 0 && key.codes[0] == -4) {
-                key.label = label;
-                key.icon = null;
-                key.iconPreview = null;
-                break;
+                String oldLabel = (key.label != null) ? key.label.toString() : null;
+                if (!label.equals(oldLabel) || key.icon != null || key.iconPreview != null) {
+                    key.label = label;
+                    key.icon = null;
+                    key.iconPreview = null;
+                    return i;
+                }
+                return -1;
             }
         }
+        return -1;
     }
 
     public void changeLanguage() {
