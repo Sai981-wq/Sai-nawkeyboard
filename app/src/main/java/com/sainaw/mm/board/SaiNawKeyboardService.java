@@ -216,8 +216,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 return touchHandler != null && touchHandler.performLongPressAction(primaryCode);
             }
             @Override
-            public boolean shouldConsumeAccessibilityClick() {
-                return touchHandler != null && touchHandler.consumeHoverLongPressClick();
+            public boolean shouldConsumeAccessibilityClick(int virtualViewId) {
+                return touchHandler != null && touchHandler.consumeHoverOwnedClick(virtualViewId);
             }
             @Override
             public String onCursorMoveAndGetText(boolean isForward, int granularity) {
