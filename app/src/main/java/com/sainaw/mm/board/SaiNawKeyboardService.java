@@ -55,6 +55,13 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private static final long CROSS_SOURCE_DEDUP_MS = 350L;
     private static final long SAME_SOURCE_BOUNCE_MS = 80L;
 
+    // System Default SpeechRecognizer wake-up & stale connection guards
+    private static final int ERROR_SERVER_DISCONNECTED_COMPAT = 11;
+    private static final long VOICE_IDLE_REBUILD_MS = 30_000L;
+    private static final long VOICE_HIDDEN_RELEASE_MS = 10_000L;
+    private static final long VOICE_READY_TIMEOUT_MS = 3_500L;
+    private static final long VOICE_RESULT_TIMEOUT_MS = 6_000L;
+
     private SaiNawFeedbackManager feedbackManager;
     private SaiNawLayoutManager layoutManager;
     private SaiNawTouchHandler touchHandler;
@@ -95,11 +102,24 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
-    // Simple Android System Default SpeechRecognizer for Myanmar & English
+    // System Default SpeechRecognizer state (auto-rebuilds when idle or errored)
     private SpeechRecognizer speechRecognizer;
-    private Intent speechIntent;
     private boolean isListening = false;
+    private boolean isSpeechReady = false;
+    private boolean hasRetriedWakeUp = false;
+    private long lastVoiceUsedMs = 0L;
+    private int activeRecognizerId = 0;
+    private int voiceSessionToken = 0;
+    private Runnable pendingVoiceStartTask;
+    private Runnable voiceReadyWatchdog;
+    private Runnable voiceResultWatchdog;
     private Runnable pendingAnnouncementTask;
+
+    private final Runnable voiceIdleReleaseTask = () -> {
+        if (!isListening && speechRecognizer != null) {
+            destroySpeechRecognizer(false);
+        }
+    };
 
     private TextToSpeech shanTts;
     private ShanVoiceInput shanVoiceInput;
@@ -132,15 +152,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public View onCreateInputView() {
         handler.removeCallbacks(pendingCandidateUpdate);
+        handler.removeCallbacks(voiceIdleReleaseTask);
         if (pendingAnnouncementTask != null) {
             handler.removeCallbacks(pendingAnnouncementTask);
             pendingAnnouncementTask = null;
         }
-        if (speechRecognizer != null) {
-            try { speechRecognizer.destroy(); } catch (Exception ignored) { }
-            speechRecognizer = null;
-            isListening = false;
-        }
+        destroySpeechRecognizer(false);
         if (accessibilityHelper != null) accessibilityHelper.shutdown();
         if (feedbackManager != null) feedbackManager.release();
         if (shanVoiceInput != null) shanVoiceInput.destroy();
@@ -216,7 +233,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         keyboardView.setOnHoverListener((v, event) -> handleKeyboardHover(event));
 
-        setupSpeechRecognizer();
         return layout;
     }
 
@@ -242,6 +258,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
+        handler.removeCallbacks(voiceIdleReleaseTask);
         SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         boolean newDarkTheme = prefs.getBoolean("dark_theme", false);
         if (newDarkTheme != isCurrentDarkTheme) {
@@ -957,58 +974,178 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateShiftState(false);
     }
 
-    private void setupSpeechRecognizer() {
-        if (SpeechRecognizer.isRecognitionAvailable(this)) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
-            speechIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "my-MM");
-            speechRecognizer.setRecognitionListener(new RecognitionListener() {
-                @Override
-                public void onReadyForSpeech(Bundle p) {
-                    if (feedbackManager != null) feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                }
+    // --- System Default SpeechRecognizer with Auto Wake-Up & Stale Connection Recovery ---
 
-                @Override public void onBeginningOfSpeech() {}
-                @Override public void onRmsChanged(float r) {}
-                @Override public void onBufferReceived(byte[] b) {}
+    private void cancelVoiceTimers() {
+        if (pendingVoiceStartTask != null) {
+            handler.removeCallbacks(pendingVoiceStartTask);
+            pendingVoiceStartTask = null;
+        }
+        if (voiceReadyWatchdog != null) {
+            handler.removeCallbacks(voiceReadyWatchdog);
+            voiceReadyWatchdog = null;
+        }
+        if (voiceResultWatchdog != null) {
+            handler.removeCallbacks(voiceResultWatchdog);
+            voiceResultWatchdog = null;
+        }
+    }
 
-                @Override
-                public void onEndOfSpeech() {
-                    isListening = false;
-                }
+    private void safeDestroySpeechRecognizer(SpeechRecognizer old) {
+        if (old == null) return;
+        try { old.cancel(); } catch (Exception ignored) { }
+        try { old.destroy(); } catch (Exception ignored) { }
+    }
 
-                @Override
-                public void onError(int e) {
-                    isListening = false;
-                    if (feedbackManager != null) feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                }
+    private void destroySpeechRecognizer(boolean asyncCleanup) {
+        activeRecognizerId++;
+        voiceSessionToken++;
+        cancelVoiceTimers();
+        handler.removeCallbacks(voiceIdleReleaseTask);
+        isListening = false;
+        isSpeechReady = false;
+        lastVoiceUsedMs = 0L;
 
-                @Override
-                public void onResults(Bundle r) {
-                    ArrayList<String> m = (r != null) ? r.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) : null;
-                    InputConnection ic = getCurrentInputConnection();
-                    if (m != null && !m.isEmpty() && ic != null) {
-                        String committed = m.get(0) + " ";
-                        ic.commitText(committed, 1);
-                        appendToShadow(committed);
-                        currentWord.setLength(0);
-                        hideCandidatesImmediately();
-                        updateShiftState(false);
-                    }
-                    isListening = false;
-                }
+        final SpeechRecognizer old = speechRecognizer;
+        speechRecognizer = null;
+        if (old != null) {
+            if (asyncCleanup) {
+                handler.post(() -> safeDestroySpeechRecognizer(old));
+            } else {
+                safeDestroySpeechRecognizer(old);
+            }
+        }
+    }
 
-                @Override public void onPartialResults(Bundle p) {}
-                @Override public void onEvent(int t, Bundle p) {}
-            });
+    private void scheduleVoiceIdleRelease() {
+        handler.removeCallbacks(voiceIdleReleaseTask);
+        if (speechRecognizer != null) {
+            handler.postDelayed(voiceIdleReleaseTask, VOICE_HIDDEN_RELEASE_MS);
         }
     }
 
     private void stopSpeechListeningIfActive() {
+        voiceSessionToken++;
+        cancelVoiceTimers();
         if (speechRecognizer != null && isListening) {
             try { speechRecognizer.cancel(); } catch (Exception ignored) { }
-            isListening = false;
         }
+        isListening = false;
+        isSpeechReady = false;
+    }
+
+    private Intent createSpeechIntent() {
+        String voiceLang = (layoutManager != null && layoutManager.currentLanguageId == 1) ? "my-MM" : "en-US";
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, voiceLang);
+        intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
+        return intent;
+    }
+
+    private SpeechRecognizer getOrCreateFreshSpeechRecognizer() {
+        if (speechRecognizer != null) {
+            long idleMs = SystemClock.uptimeMillis() - lastVoiceUsedMs;
+            if (lastVoiceUsedMs > 0L && idleMs <= VOICE_IDLE_REBUILD_MS) {
+                return speechRecognizer;
+            }
+            // Discard idle recognizer so we never reuse a dead IPC/network binding
+            destroySpeechRecognizer(false);
+        }
+
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) return null;
+
+        final int myRecognizerId = ++activeRecognizerId;
+        SpeechRecognizer recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        recognizer.setRecognitionListener(new RecognitionListener() {
+            @Override
+            public void onReadyForSpeech(Bundle p) {
+                if (myRecognizerId != activeRecognizerId) return;
+                if (voiceReadyWatchdog != null) {
+                    handler.removeCallbacks(voiceReadyWatchdog);
+                    voiceReadyWatchdog = null;
+                }
+                isSpeechReady = true;
+                hasRetriedWakeUp = false;
+                if (feedbackManager != null) feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+            }
+
+            @Override public void onBeginningOfSpeech() {}
+            @Override public void onRmsChanged(float r) {}
+            @Override public void onBufferReceived(byte[] b) {}
+
+            @Override
+            public void onEndOfSpeech() {
+                if (myRecognizerId != activeRecognizerId) return;
+                isListening = false;
+                // Guard against hanging forever after speaking if the network silently drops
+                final int token = voiceSessionToken;
+                if (voiceResultWatchdog != null) handler.removeCallbacks(voiceResultWatchdog);
+                voiceResultWatchdog = () -> {
+                    if (token == voiceSessionToken && myRecognizerId == activeRecognizerId) {
+                        destroySpeechRecognizer(true);
+                        if (feedbackManager != null) feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                    }
+                };
+                handler.postDelayed(voiceResultWatchdog, VOICE_RESULT_TIMEOUT_MS);
+            }
+
+            @Override
+            public void onError(int error) {
+                if (myRecognizerId != activeRecognizerId) return;
+                boolean wasReady = isSpeechReady;
+                // Always destroy on error so the next attempt binds a clean SpeechRecognizer
+                destroySpeechRecognizer(true);
+
+                boolean isWakeUpFailure = !wasReady && (
+                        error == SpeechRecognizer.ERROR_NETWORK
+                        || error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT
+                        || error == SpeechRecognizer.ERROR_SERVER
+                        || error == SpeechRecognizer.ERROR_CLIENT
+                        || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+                        || error == SpeechRecognizer.ERROR_AUDIO
+                        || error == ERROR_SERVER_DISCONNECTED_COMPAT
+                );
+
+                if (isWakeUpFailure && !hasRetriedWakeUp) {
+                    hasRetriedWakeUp = true;
+                    launchVoiceSession(true);
+                    return;
+                }
+
+                if (feedbackManager != null) feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+            }
+
+            @Override
+            public void onResults(Bundle r) {
+                if (myRecognizerId != activeRecognizerId) return;
+                cancelVoiceTimers();
+                isListening = false;
+                isSpeechReady = false;
+                hasRetriedWakeUp = false;
+
+                ArrayList<String> m = (r != null) ? r.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) : null;
+                InputConnection ic = getCurrentInputConnection();
+                if (m != null && !m.isEmpty() && m.get(0) != null && !m.get(0).trim().isEmpty() && ic != null) {
+                    lastVoiceUsedMs = SystemClock.uptimeMillis();
+                    String committed = m.get(0).trim() + " ";
+                    ic.commitText(committed, 1);
+                    appendToShadow(committed);
+                    currentWord.setLength(0);
+                    hideCandidatesImmediately();
+                    updateShiftState(false);
+                } else {
+                    // Empty result: force a fresh connection next time
+                    destroySpeechRecognizer(true);
+                }
+            }
+
+            @Override public void onPartialResults(Bundle p) {}
+            @Override public void onEvent(int t, Bundle p) {}
+        });
+
+        speechRecognizer = recognizer;
+        return recognizer;
     }
 
     private void startVoiceInput() {
@@ -1022,31 +1159,85 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             startActivity(intent);
             return;
         }
-        if (speechRecognizer == null) {
-            setupSpeechRecognizer();
-        }
-        if (speechRecognizer == null) return;
+
+        handler.removeCallbacks(voiceIdleReleaseTask);
 
         if (isListening) {
-            try { speechRecognizer.stopListening(); } catch (Exception ignored) { }
-            isListening = false;
+            if (speechRecognizer != null && isSpeechReady) {
+                try {
+                    speechRecognizer.stopListening();
+                } catch (Exception ignored) {
+                    destroySpeechRecognizer(true);
+                }
+                isListening = false;
+            } else {
+                // Still stuck trying to wake up: force-reset cleanly
+                destroySpeechRecognizer(true);
+            }
             return;
         }
 
-        // Switch voice language dynamically between Myanmar (my-MM) and English (en-US)
-        String voiceLang = (layoutManager != null && layoutManager.currentLanguageId == 1) ? "my-MM" : "en-US";
-        speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, voiceLang);
+        hasRetriedWakeUp = false;
+        launchVoiceSession(false);
+    }
 
-        stopSpeech();
-        silenceTalkBack();
-        handler.post(() -> {
-            try {
-                speechRecognizer.startListening(speechIntent);
-                isListening = true;
-            } catch (Exception ignored) {
-                isListening = false;
+    private void launchVoiceSession(final boolean isRetry) {
+        cancelVoiceTimers();
+        final int sessionToken = ++voiceSessionToken;
+
+        int delayMs;
+        if (isRetry) {
+            delayMs = 300;
+        } else {
+            stopSpeech();
+            boolean a11yOn = (accessibilityManager != null && accessibilityManager.isEnabled());
+            if (a11yOn) {
+                silenceTalkBack();
+                delayMs = 120;
+            } else {
+                delayMs = 0;
             }
-        });
+        }
+
+        Runnable startTask = () -> {
+            pendingVoiceStartTask = null;
+            if (sessionToken != voiceSessionToken) return;
+
+            SpeechRecognizer recognizer = getOrCreateFreshSpeechRecognizer();
+            if (recognizer == null) return;
+
+            try {
+                isListening = true;
+                isSpeechReady = false;
+                recognizer.startListening(createSpeechIntent());
+
+                voiceReadyWatchdog = () -> {
+                    if (sessionToken == voiceSessionToken && isListening && !isSpeechReady) {
+                        destroySpeechRecognizer(true);
+                        if (!hasRetriedWakeUp) {
+                            hasRetriedWakeUp = true;
+                            launchVoiceSession(true);
+                        } else if (feedbackManager != null) {
+                            feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
+                        }
+                    }
+                };
+                handler.postDelayed(voiceReadyWatchdog, VOICE_READY_TIMEOUT_MS);
+            } catch (Exception e) {
+                destroySpeechRecognizer(true);
+                if (!hasRetriedWakeUp) {
+                    hasRetriedWakeUp = true;
+                    launchVoiceSession(true);
+                }
+            }
+        };
+
+        if (delayMs <= 0) {
+            startTask.run();
+        } else {
+            pendingVoiceStartTask = startTask;
+            handler.postDelayed(startTask, delayMs);
+        }
     }
 
     private void initCandidateViews(boolean isDarkTheme) {
@@ -1207,29 +1398,30 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onWindowHidden() {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
         stopSpeechListeningIfActive();
+        scheduleVoiceIdleRelease();
         super.onWindowHidden();
     }
 
     @Override public void onFinishInputView(boolean finishingInput) {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
         stopSpeechListeningIfActive();
+        scheduleVoiceIdleRelease();
         super.onFinishInputView(finishingInput);
     }
 
     @Override public void onFinishInput() {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
         stopSpeechListeningIfActive();
+        scheduleVoiceIdleRelease();
         super.onFinishInput();
     }
 
     @Override public void onDestroy() {
+        handler.removeCallbacks(voiceIdleReleaseTask);
         if (accessibilityHelper != null) accessibilityHelper.shutdown();
         if (feedbackManager != null) feedbackManager.release();
         if (shanVoiceInput != null) shanVoiceInput.destroy();
-        if (speechRecognizer != null) {
-            try { speechRecognizer.destroy(); } catch (Exception ignored) { }
-            speechRecognizer = null;
-        }
+        destroySpeechRecognizer(false);
         super.onDestroy();
         if (shanTts != null) {
             try { shanTts.stop(); shanTts.shutdown(); } catch (Exception ignored) { }
