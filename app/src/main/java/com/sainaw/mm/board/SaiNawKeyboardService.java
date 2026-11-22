@@ -190,6 +190,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         autoCapsEnabled = prefs.getBoolean("auto_caps", true);
         useMmPhonetic = prefs.getBoolean("use_phonetic_sounds", true);
         useShanPhonetic = prefs.getBoolean("use_shan_phonetic_sounds", true);
+        boolean liftToType = prefs.getBoolean("lift_to_type", true);
 
         isCurrentDarkTheme = prefs.getBoolean("dark_theme", false);
         View layout = getLayoutInflater().inflate(isCurrentDarkTheme ? R.layout.input_view_dark : R.layout.input_view, null);
@@ -216,10 +217,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 return touchHandler != null && touchHandler.performLongPressAction(primaryCode);
             }
             @Override
-            public boolean shouldConsumeAccessibilityClick(int virtualViewId) {
-                return touchHandler != null && touchHandler.consumeHoverOwnedClick(virtualViewId);
-            }
-            @Override
             public String onCursorMoveAndGetText(boolean isForward, int granularity) {
                 return moveCursorNativelyAndGetText(isForward, granularity);
             }
@@ -231,6 +228,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
         accessibilityHelper.setLayoutManager(layoutManager);
         accessibilityHelper.loadHapticSettings(prefs);
+        accessibilityHelper.setLiftToType(liftToType);
         accessibilityHelper.setPhoneticEnabled(useMmPhonetic, useShanPhonetic);
         ViewCompat.setAccessibilityDelegate(keyboardView, accessibilityHelper);
 
@@ -284,9 +282,11 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         autoCapsEnabled = prefs.getBoolean("auto_caps", true);
         useMmPhonetic = prefs.getBoolean("use_phonetic_sounds", true);
         useShanPhonetic = prefs.getBoolean("use_shan_phonetic_sounds", true);
+        boolean liftToType = prefs.getBoolean("lift_to_type", true);
 
         if (accessibilityHelper != null) {
             accessibilityHelper.loadHapticSettings(prefs);
+            accessibilityHelper.setLiftToType(liftToType);
             accessibilityHelper.setPhoneticEnabled(useMmPhonetic, useShanPhonetic);
         }
         if (phoneticManager != null) {

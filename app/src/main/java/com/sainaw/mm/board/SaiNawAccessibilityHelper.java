@@ -33,6 +33,7 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     private Keyboard currentKeyboard;
     private int currentLanguageId = 0;
     private boolean isCaps = false;
+    private boolean isLiftToType = true;
     private boolean isMmPhoneticEnabled = true;
     private boolean isShanPhoneticEnabled = true;
     private volatile boolean vibrateOn = true;
@@ -55,7 +56,6 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
     public interface OnAccessibilityKeyListener {
         void onAccessibilityKeyClick(int primaryCode, Keyboard.Key key);
         boolean onAccessibilityKeyLongClick(int primaryCode, Keyboard.Key key);
-        boolean shouldConsumeAccessibilityClick(int virtualViewId);
         String onCursorMoveAndGetText(boolean isForward, int granularity);
         void onCustomAnnounce(String text);
     }
@@ -80,6 +80,17 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
         if (prefs == null) return;
         this.vibrateOn = prefs.getBoolean("vibrate_on", true);
         this.vibrateStrength = prefs.getInt("vibrate_strength", 0);
+    }
+
+    public void setLiftToType(boolean enabled) {
+        if (this.isLiftToType != enabled) {
+            this.isLiftToType = enabled;
+            pendingInvalidate = true;
+            if (!isHoverActive) {
+                hostView.removeCallbacks(invalidateTreeTask);
+                hostView.post(invalidateTreeTask);
+            }
+        }
     }
 
     public void shutdown() {
@@ -283,8 +294,13 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             node.setContentDescription(description);
         }
 
-        node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
-        node.setClickable(true);
+        // Strict single-channel ownership: expose ACTION_CLICK only when Lift-to-Type is OFF
+        if (!isLiftToType) {
+            node.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
+            node.setClickable(true);
+        } else {
+            node.setClickable(false);
+        }
         node.addAction(AccessibilityNodeInfoCompat.ACTION_LONG_CLICK);
         node.setLongClickable(true);
 
@@ -364,23 +380,27 @@ public class SaiNawAccessibilityHelper extends ExploreByTouchHelper {
             return false;
         }
 
-        List<Keyboard.Key> keys = currentKeyboard.getKeys();
-        if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) return false;
-
-        Keyboard.Key key = keys.get(virtualViewId);
-        if (key == null || key.codes == null || key.codes.length == 0) return false;
-
         if (action == AccessibilityNodeInfoCompat.ACTION_CLICK) {
-            // If Lift-to-Type (ACTION_HOVER_EXIT) already handled this finger-lift, consume CSR/TalkBack's follow-up click cleanly here
-            if (listener != null && listener.shouldConsumeAccessibilityClick(virtualViewId)) {
-                return true;
+            // While Lift-to-Type is ON, SaiNawTouchHandler exclusively handles typing on ACTION_HOVER_EXIT.
+            if (isLiftToType) {
+                return false;
             }
+            List<Keyboard.Key> keys = currentKeyboard.getKeys();
+            if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) return false;
+            Keyboard.Key key = keys.get(virtualViewId);
+            if (key == null || key.codes == null || key.codes.length == 0) return false;
+
             forceHapticFeedbackAsync(key.codes[0]);
             if (listener != null) {
                 listener.onAccessibilityKeyClick(key.codes[0], key);
             }
             return true;
         } else if (action == AccessibilityNodeInfoCompat.ACTION_LONG_CLICK) {
+            List<Keyboard.Key> keys = currentKeyboard.getKeys();
+            if (keys == null || virtualViewId < 0 || virtualViewId >= keys.size()) return false;
+            Keyboard.Key key = keys.get(virtualViewId);
+            if (key == null || key.codes == null || key.codes.length == 0) return false;
+
             int emojiCode = resolveEmojiCode(key);
             if (emojiCode != 0 && emojiManager != null) {
                 String desc = emojiManager.getMmDescription(emojiCode);

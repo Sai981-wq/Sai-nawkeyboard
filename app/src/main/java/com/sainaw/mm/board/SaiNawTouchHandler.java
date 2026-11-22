@@ -23,10 +23,6 @@ public class SaiNawTouchHandler {
     private static final long MIN_DWELL_AFTER_FAST_SLIDE_MS = 110L;
     private static final float FLICK_SPEED_DP_PER_SEC = 300f;
 
-    // Hover-exit click ownership window to consume CSR/TalkBack's follow-up ACTION_CLICK
-    private static final long HOVER_OWNED_SAME_KEY_WINDOW_MS = 350L;
-    private static final long HOVER_OWNED_ADJACENT_KEY_WINDOW_MS = 180L;
-
     private final SaiNawKeyboardService service;
     private final SaiNawLayoutManager layoutManager;
     private final SaiNawFeedbackManager feedbackManager;
@@ -63,11 +59,6 @@ public class SaiNawTouchHandler {
     private boolean isDeleteActive = false;
     private int currentEmojiCode = 0;
     private long lastFocusHapticTime = 0L;
-
-    // One-shot ownership token for the hover-exit just handled by this touch handler
-    private boolean pendingHoverExitConsume = false;
-    private int lastHoverExitVirtualId = -1;
-    private long lastHoverExitHandledMs = 0L;
 
     private final Runnable spaceLongPressTask;
     private final Runnable shiftLongPressTask;
@@ -151,9 +142,6 @@ public class SaiNawTouchHandler {
 
     public void loadSettings(SharedPreferences prefs) {
         isLiftToType = prefs.getBoolean("lift_to_type", true);
-        if (!isLiftToType) {
-            clearHoverExitOwnership();
-        }
     }
 
     public void handleStandardPress(int primaryCode) {
@@ -196,36 +184,6 @@ public class SaiNawTouchHandler {
 
     public boolean isLongPressHandled() {
         return isLongPressHandled;
-    }
-
-    private void markHoverExitHandled(int virtualViewId) {
-        pendingHoverExitConsume = true;
-        lastHoverExitVirtualId = virtualViewId;
-        lastHoverExitHandledMs = SystemClock.uptimeMillis();
-    }
-
-    private void clearHoverExitOwnership() {
-        pendingHoverExitConsume = false;
-        lastHoverExitVirtualId = -1;
-        lastHoverExitHandledMs = 0L;
-    }
-
-    /**
-     * Consumes the single follow-up ACTION_CLICK dispatched by CSR (when Double tap to type is unchecked)
-     * or TalkBack right after ACTION_HOVER_EXIT was already handled directly by Lift-to-Type.
-     */
-    public boolean consumeHoverOwnedClick(int virtualViewId) {
-        if (!pendingHoverExitConsume) {
-            return false;
-        }
-        long elapsed = SystemClock.uptimeMillis() - lastHoverExitHandledMs;
-        int handledId = lastHoverExitVirtualId;
-        clearHoverExitOwnership();
-
-        if (virtualViewId == handledId && elapsed <= HOVER_OWNED_SAME_KEY_WINDOW_MS) {
-            return true;
-        }
-        return elapsed <= HOVER_OWNED_ADJACENT_KEY_WINDOW_MS;
     }
 
     private Keyboard.Key findKeyByCode(int primaryCode) {
@@ -337,7 +295,6 @@ public class SaiNawTouchHandler {
         if (!isLiftToType || keys == null || keys.isEmpty()) {
             lastHoverKeyIndex = -1;
             resetHoverTracking();
-            clearHoverExitOwnership();
             return;
         }
 
@@ -356,7 +313,6 @@ public class SaiNawTouchHandler {
 
         switch (action) {
             case MotionEvent.ACTION_HOVER_ENTER:
-                clearHoverExitOwnership();
                 cancelAllLongPress();
                 lastHoverKeyIndex = -1;
                 resetHoverTracking();
@@ -422,24 +378,13 @@ public class SaiNawTouchHandler {
                 resetHoverTracking();
 
                 if (suppressAsSwipe || keyY < -12) {
-                    if (exitKeyIndex >= 0) {
-                        markHoverExitHandled(exitKeyIndex);
-                    }
                     service.stopSpeech();
                     return;
                 }
 
-                if (wasLongPress) {
-                    if (exitKeyIndex >= 0) {
-                        markHoverExitHandled(exitKeyIndex);
-                    }
-                    return;
-                }
-
-                if (exitKeyIndex >= 0 && exitKeyIndex < keys.size()) {
+                if (!wasLongPress && exitKeyIndex >= 0 && exitKeyIndex < keys.size()) {
                     Keyboard.Key key = keys.get(exitKeyIndex);
                     if (key != null && key.codes != null && key.codes.length > 0 && key.codes[0] != -100) {
-                        markHoverExitHandled(exitKeyIndex);
                         feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                         service.stopSpeech();
                         service.handleInput(key.codes[0], key);
@@ -479,7 +424,6 @@ public class SaiNawTouchHandler {
     public void reset() {
         lastHoverKeyIndex = -1;
         resetHoverTracking();
-        clearHoverExitOwnership();
         cancelAllLongPress();
     }
 }
