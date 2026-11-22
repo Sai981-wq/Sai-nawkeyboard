@@ -36,8 +36,9 @@ public class SaiNawTouchHandler {
     private final float strongSlideDistPx;
     private final float fastSlideDistPx;
     private final float flickMinDistPx;
-    private final float topEdgeZonePx;
-    private final float topEdgeUpwardPx;
+    private final float topRowZonePx;
+    private final float topRowUpwardPx;
+    private final float topRowTotalUpwardPx;
 
     // Zero-allocation ring buffer tracking recent hover coordinates
     private final float[] sampleX = new float[HOVER_SAMPLE_CAPACITY];
@@ -82,8 +83,9 @@ public class SaiNawTouchHandler {
         this.strongSlideDistPx = 30f * density;
         this.fastSlideDistPx = 22f * density;
         this.flickMinDistPx = 16f * density;
-        this.topEdgeZonePx = 14f * density;
-        this.topEdgeUpwardPx = 8f * density;
+        this.topRowZonePx = 48f * density;
+        this.topRowUpwardPx = 6f * density;
+        this.topRowTotalUpwardPx = 18f * density;
 
         this.spaceLongPressTask = () -> {
             isLongPressHandled = true;
@@ -125,7 +127,7 @@ public class SaiNawTouchHandler {
             public void run() {
                 if (isDeleteActive) {
                     feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
-                    service.handleInput(-5, null);
+                    service.handleInputFromSource(-5, null, SaiNawKeyboardService.INPUT_SOURCE_REPEAT);
                     handler.postDelayed(this, 100);
                 }
             }
@@ -196,7 +198,6 @@ public class SaiNawTouchHandler {
     }
 
     private boolean isSwipeOrEdgeExit(float rawX, float rawY, long exitTime, View hostView) {
-        // 1. Finger left the keyboard view bounds completely
         if (rawY < 0f || rawX < 0f) return true;
         if (hostView != null) {
             int width = hostView.getWidth();
@@ -208,7 +209,6 @@ public class SaiNawTouchHandler {
 
         if (sampleCount == 0) return false;
 
-        // Find the oldest sample inside the recent motion window (130ms) right before exit
         int latestIdx = (sampleHead - 1 + HOVER_SAMPLE_CAPACITY) % HOVER_SAMPLE_CAPACITY;
         int refIdx = latestIdx;
         for (int i = 0; i < sampleCount; i++) {
@@ -221,7 +221,7 @@ public class SaiNawTouchHandler {
         }
 
         float recentDx = rawX - sampleX[refIdx];
-        float recentDy = rawY - sampleY[refIdx]; // negative = moving upward
+        float recentDy = rawY - sampleY[refIdx];
         long recentDt = Math.max(1L, exitTime - sampleTime[refIdx]);
         float recentDist = (float) Math.hypot(recentDx, recentDy);
 
@@ -230,12 +230,12 @@ public class SaiNawTouchHandler {
         long totalDuration = Math.max(1L, exitTime - hoverEnterTime);
         long dwellOnExitKey = Math.max(0L, exitTime - lastKeyEnterTime);
 
-        // 2. Sliding upward out of the top edge toward the candidate bar or app above
-        if (rawY < topEdgeZonePx && recentDy < -topEdgeUpwardPx && dwellOnExitKey < MIN_DWELL_AFTER_UPWARD_SWIPE_MS) {
+        if (rawY < topRowZonePx
+                && (recentDy < -topRowUpwardPx || (keysVisitedInSession >= 2 && totalDy < -topRowTotalUpwardPx))
+                && dwellOnExitKey < 180L) {
             return true;
         }
 
-        // 3. Upward single-finger swipe / flick (TalkBack swipe-up gesture)
         if (recentDy < -strongUpwardSwipePx) {
             return true;
         }
@@ -248,7 +248,6 @@ public class SaiNawTouchHandler {
             return true;
         }
 
-        // 4. Fast flick / swipe in any direction (TalkBack swipe left / right / down)
         if (recentDist > strongSlideDistPx) {
             return true;
         }
@@ -262,7 +261,6 @@ public class SaiNawTouchHandler {
             return true;
         }
 
-        // 5. Rapid fly-through across 3+ keys in a single quick swipe
         if (keysVisitedInSession >= 3
                 && totalDuration < FAST_SWIPE_MAX_DURATION_MS
                 && dwellOnExitKey < MIN_DWELL_AFTER_FAST_SLIDE_MS) {
@@ -303,7 +301,7 @@ public class SaiNawTouchHandler {
                 hoverEnterTime = eventTime;
                 lastKeyEnterTime = eventTime;
                 recordHoverSample(rawX, rawY, eventTime);
-                // fall through to focus the touched key
+                // fall through
             case MotionEvent.ACTION_HOVER_MOVE:
                 if (action == MotionEvent.ACTION_HOVER_MOVE) {
                     if (sampleCount == 0) {
@@ -369,7 +367,7 @@ public class SaiNawTouchHandler {
                     if (key != null && key.codes != null && key.codes.length > 0 && key.codes[0] != -100) {
                         feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
                         service.stopSpeech();
-                        service.handleInput(key.codes[0], key);
+                        service.handleInputFromSource(key.codes[0], key, SaiNawKeyboardService.INPUT_SOURCE_HOVER_LIFT);
                     }
                 }
                 break;
