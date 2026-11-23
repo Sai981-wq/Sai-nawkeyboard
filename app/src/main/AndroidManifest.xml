@@ -22,7 +22,7 @@
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
-        android:label="Sai Naw Keyboard"
+        android:label="SN Keyboard"
         android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
 
         <activity android:name=".ShanVoiceConsentActivity" android:exported="false" android:label="Voice Typing" />
@@ -31,7 +31,7 @@
             android:name=".SaiNawKeyboardService"
             android:directBootAware="true"
             android:exported="true"
-            android:label="Sai Naw Keyboard"
+            android:label="SN Keyboard"
             android:permission="android.permission.BIND_INPUT_METHOD">
             <intent-filter>
                 <action android:name="android.view.InputMethod" />
@@ -44,7 +44,7 @@
         <activity
             android:name=".SettingsActivity"
             android:exported="true"
-            android:label="Sai Naw Keyboard">
+            android:label="SN Keyboard">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
