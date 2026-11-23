@@ -2,11 +2,13 @@ package com.sainaw.mm.board;
 
 import android.Manifest;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.inputmethodservice.InputMethodService;
 import android.inputmethodservice.Keyboard;
@@ -17,9 +19,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.os.UserManager;
 import android.speech.RecognitionListener;
+import android.speech.RecognitionService;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
@@ -48,13 +50,11 @@ import java.util.concurrent.Executors;
 public class SaiNawKeyboardService extends InputMethodService implements KeyboardView.OnKeyboardActionListener {
 
     private static final int ERROR_SERVER_DISCONNECTED_COMPAT = 11;
-    private static final long VOICE_IDLE_REBUILD_MS = 30_000L;
-    private static final long VOICE_HIDDEN_RELEASE_MS = 10_000L;
-    private static final long VOICE_READY_TIMEOUT_MS = 3_500L;
-    private static final long VOICE_RESULT_TIMEOUT_MS = 6_000L;
+    private static final long VOICE_READY_TIMEOUT_MS = 6_500L;
+    private static final long VOICE_RESULT_TIMEOUT_MS = 8_000L;
+    private static final long VOICE_RETRY_DELAY_MS = 450L;
     private static final long VOICE_COMPLETE_SILENCE_MS = 1_800L;
     private static final long VOICE_POSSIBLY_COMPLETE_SILENCE_MS = 1_500L;
-    private static final String EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE = "android.speech.extra.ONLY_RETURN_LANGUAGE_PREFERENCE";
 
     private SaiNawFeedbackManager feedbackManager;
     private SaiNawLayoutManager layoutManager;
@@ -92,7 +92,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private boolean isListening = false;
     private boolean isSpeechReady = false;
     private boolean hasRetriedWakeUp = false;
-    private long lastVoiceUsedMs = 0L;
     private int activeRecognizerId = 0;
     private int voiceSessionToken = 0;
     private String activeVoiceLanguageTag = "my-MM";
@@ -100,12 +99,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private Runnable voiceReadyWatchdog;
     private Runnable voiceResultWatchdog;
     private Runnable pendingAnnouncementTask;
-
-    private final Runnable voiceIdleReleaseTask = () -> {
-        if (!isListening && speechRecognizer != null) {
-            destroySpeechRecognizer(false);
-        }
-    };
 
     private TextToSpeech shanTts;
     private volatile boolean isShanTtsSpeaking = false;
@@ -139,7 +132,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override
     public View onCreateInputView() {
         handler.removeCallbacks(pendingCandidateUpdate);
-        handler.removeCallbacks(voiceIdleReleaseTask);
         if (pendingAnnouncementTask != null) {
             handler.removeCallbacks(pendingAnnouncementTask);
             pendingAnnouncementTask = null;
@@ -263,7 +255,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
 
     @Override
     public void onStartInputView(EditorInfo info, boolean restarting) {
-        handler.removeCallbacks(voiceIdleReleaseTask);
         SharedPreferences prefs = getSafeContext().getSharedPreferences("KeyboardPrefs", Context.MODE_PRIVATE);
         boolean newDarkTheme = prefs.getBoolean("dark_theme", false);
         if (newDarkTheme != isCurrentDarkTheme) {
@@ -971,10 +962,8 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         activeRecognizerId++;
         voiceSessionToken++;
         cancelVoiceTimers();
-        handler.removeCallbacks(voiceIdleReleaseTask);
         isListening = false;
         isSpeechReady = false;
-        lastVoiceUsedMs = 0L;
 
         final SpeechRecognizer old = speechRecognizer;
         speechRecognizer = null;
@@ -987,13 +976,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
     }
 
-    private void scheduleVoiceIdleRelease() {
-        handler.removeCallbacks(voiceIdleReleaseTask);
-        if (speechRecognizer != null) {
-            handler.postDelayed(voiceIdleReleaseTask, VOICE_HIDDEN_RELEASE_MS);
-        }
-    }
-
     private void stopSpeechListeningIfActive() {
         voiceSessionToken++;
         cancelVoiceTimers();
@@ -1002,6 +984,32 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         }
         isListening = false;
         isSpeechReady = false;
+    }
+
+    private ComponentName resolvePreferredSpeechService() {
+        try {
+            PackageManager pm = getPackageManager();
+            Intent serviceIntent = new Intent(RecognitionService.SERVICE_INTERFACE);
+            List<ResolveInfo> services = pm.queryIntentServices(serviceIntent, 0);
+            if (services == null || services.isEmpty()) return null;
+
+            ComponentName googleAppFallback = null;
+            for (ResolveInfo info : services) {
+                if (info == null || info.serviceInfo == null) continue;
+                String pkg = info.serviceInfo.packageName;
+                String cls = info.serviceInfo.name;
+                if (pkg == null || cls == null) continue;
+                if ("com.google.android.tts".equals(pkg)) {
+                    return new ComponentName(pkg, cls);
+                }
+                if (googleAppFallback == null && "com.google.android.googlequicksearchbox".equals(pkg)) {
+                    googleAppFallback = new ComponentName(pkg, cls);
+                }
+            }
+            return googleAppFallback;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static boolean containsMyanmarScript(String text) {
@@ -1064,7 +1072,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, voiceLang);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, voiceLang);
-        intent.putExtra(EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true);
         intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
         intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
         intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, VOICE_COMPLETE_SILENCE_MS);
@@ -1073,19 +1080,29 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         return intent;
     }
 
-    private SpeechRecognizer getOrCreateFreshSpeechRecognizer() {
+    private SpeechRecognizer getOrCreateSpeechRecognizer() {
         if (speechRecognizer != null) {
-            long idleMs = SystemClock.uptimeMillis() - lastVoiceUsedMs;
-            if (lastVoiceUsedMs > 0L && idleMs <= VOICE_IDLE_REBUILD_MS) {
-                return speechRecognizer;
-            }
-            destroySpeechRecognizer(false);
+            return speechRecognizer;
         }
 
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) return null;
+        ComponentName preferredService = resolvePreferredSpeechService();
+        if (preferredService == null && !SpeechRecognizer.isRecognitionAvailable(this)) {
+            return null;
+        }
 
         final int myRecognizerId = ++activeRecognizerId;
-        SpeechRecognizer recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        SpeechRecognizer recognizer = null;
+        if (preferredService != null) {
+            try {
+                recognizer = SpeechRecognizer.createSpeechRecognizer(this, preferredService);
+            } catch (Exception ignored) {
+                recognizer = null;
+            }
+        }
+        if (recognizer == null) {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        }
+
         recognizer.setRecognitionListener(new RecognitionListener() {
             @Override
             public void onReadyForSpeech(Bundle p) {
@@ -1123,7 +1140,20 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             public void onError(int error) {
                 if (myRecognizerId != activeRecognizerId) return;
                 boolean wasReady = isSpeechReady;
-                destroySpeechRecognizer(true);
+                cancelVoiceTimers();
+                isListening = false;
+                isSpeechReady = false;
+
+                boolean needsRebuild = (
+                        error == ERROR_SERVER_DISCONNECTED_COMPAT
+                        || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+                        || error == SpeechRecognizer.ERROR_CLIENT
+                        || error == SpeechRecognizer.ERROR_AUDIO
+                        || error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
+                );
+                if (needsRebuild) {
+                    destroySpeechRecognizer(true);
+                }
 
                 boolean isWakeUpFailure = !wasReady && (
                         error == SpeechRecognizer.ERROR_NETWORK
@@ -1157,7 +1187,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 String bestResult = selectBestVoiceResult(matches, scores, activeVoiceLanguageTag);
                 InputConnection ic = getCurrentInputConnection();
                 if (!bestResult.isEmpty() && ic != null) {
-                    lastVoiceUsedMs = SystemClock.uptimeMillis();
                     String committed = bestResult + " ";
                     ic.commitText(committed, 1);
                     if (inputLogic != null) inputLogic.resetPreVowelState();
@@ -1168,8 +1197,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                     if (keyboardView != null && accessibilityManager != null && accessibilityManager.isEnabled()) {
                         keyboardView.announceForAccessibility(bestResult);
                     }
-                } else {
-                    destroySpeechRecognizer(true);
                 }
             }
 
@@ -1193,8 +1220,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             return;
         }
 
-        handler.removeCallbacks(voiceIdleReleaseTask);
-
         if (isListening) {
             if (speechRecognizer != null && isSpeechReady) {
                 try {
@@ -1204,7 +1229,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
                 isListening = false;
             } else {
-                destroySpeechRecognizer(true);
+                stopSpeechListeningIfActive();
             }
             return;
         }
@@ -1217,17 +1242,17 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         cancelVoiceTimers();
         final int sessionToken = ++voiceSessionToken;
 
-        int delayMs;
+        long delayMs;
         if (isRetry) {
-            delayMs = 300;
+            delayMs = VOICE_RETRY_DELAY_MS;
         } else {
             stopSpeech();
             boolean a11yOn = (accessibilityManager != null && accessibilityManager.isEnabled());
             if (a11yOn) {
                 silenceTalkBack();
-                delayMs = 120;
+                delayMs = 120L;
             } else {
-                delayMs = 0;
+                delayMs = 0L;
             }
         }
 
@@ -1235,7 +1260,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             pendingVoiceStartTask = null;
             if (sessionToken != voiceSessionToken) return;
 
-            SpeechRecognizer recognizer = getOrCreateFreshSpeechRecognizer();
+            SpeechRecognizer recognizer = getOrCreateSpeechRecognizer();
             if (recognizer == null) return;
 
             try {
@@ -1264,7 +1289,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
             }
         };
 
-        if (delayMs <= 0) {
+        if (delayMs <= 0L) {
             startTask.run();
         } else {
             pendingVoiceStartTask = startTask;
@@ -1442,26 +1467,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     @Override public void onWindowHidden() {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
         stopSpeechListeningIfActive();
-        scheduleVoiceIdleRelease();
         super.onWindowHidden();
     }
 
     @Override public void onFinishInputView(boolean finishingInput) {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
         stopSpeechListeningIfActive();
-        scheduleVoiceIdleRelease();
         super.onFinishInputView(finishingInput);
     }
 
     @Override public void onFinishInput() {
         if (shanVoiceInput != null) shanVoiceInput.cancel();
         stopSpeechListeningIfActive();
-        scheduleVoiceIdleRelease();
         super.onFinishInput();
     }
 
     @Override public void onDestroy() {
-        handler.removeCallbacks(voiceIdleReleaseTask);
         if (accessibilityHelper != null) accessibilityHelper.shutdown();
         if (feedbackManager != null) feedbackManager.release();
         if (shanVoiceInput != null) shanVoiceInput.destroy();
