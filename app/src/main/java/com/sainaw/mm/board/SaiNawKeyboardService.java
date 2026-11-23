@@ -39,6 +39,7 @@ import android.widget.TextView;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -46,12 +47,14 @@ import java.util.concurrent.Executors;
 
 public class SaiNawKeyboardService extends InputMethodService implements KeyboardView.OnKeyboardActionListener {
 
-    // System Default SpeechRecognizer wake-up & stale connection guards
     private static final int ERROR_SERVER_DISCONNECTED_COMPAT = 11;
     private static final long VOICE_IDLE_REBUILD_MS = 30_000L;
     private static final long VOICE_HIDDEN_RELEASE_MS = 10_000L;
     private static final long VOICE_READY_TIMEOUT_MS = 3_500L;
     private static final long VOICE_RESULT_TIMEOUT_MS = 6_000L;
+    private static final long VOICE_COMPLETE_SILENCE_MS = 1_800L;
+    private static final long VOICE_POSSIBLY_COMPLETE_SILENCE_MS = 1_500L;
+    private static final String EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE = "android.speech.extra.ONLY_RETURN_LANGUAGE_PREFERENCE";
 
     private SaiNawFeedbackManager feedbackManager;
     private SaiNawLayoutManager layoutManager;
@@ -68,14 +71,12 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private LinearLayout candidateContainer;
     private List<TextView> candidateViews = new ArrayList<>();
 
-    // Shadow Text Buffer: avoids blocking InputConnection IPC on every keypress
     private static final int SHADOW_MAX_LEN = 128;
     private final StringBuilder shadowLine = new StringBuilder(SHADOW_MAX_LEN);
     private final StringBuilder currentWord = new StringBuilder(64);
     private boolean shadowNeedsResync = true;
     private boolean hasTextSelection = false;
 
-    // RAM-cached settings
     private boolean isReceiverRegistered = false;
     private boolean useSmartEcho = false;
     private boolean autoCapsEnabled = true;
@@ -87,7 +88,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
 
-    // System Default SpeechRecognizer state
     private SpeechRecognizer speechRecognizer;
     private boolean isListening = false;
     private boolean isSpeechReady = false;
@@ -95,6 +95,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     private long lastVoiceUsedMs = 0L;
     private int activeRecognizerId = 0;
     private int voiceSessionToken = 0;
+    private String activeVoiceLanguageTag = "my-MM";
     private Runnable pendingVoiceStartTask;
     private Runnable voiceReadyWatchdog;
     private Runnable voiceResultWatchdog;
@@ -429,7 +430,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
     }
 
     public void handleInput(int primaryCode, Keyboard.Key key) {
-        // Only issue Binder IPC to com.shan.tts when Shan TTS is actually speaking
         stopSpeech();
 
         if (layoutManager == null || feedbackManager == null) return;
@@ -946,8 +946,6 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         updateShiftState(false);
     }
 
-    // --- System Default SpeechRecognizer ---
-
     private void cancelVoiceTimers() {
         if (pendingVoiceStartTask != null) {
             handler.removeCallbacks(pendingVoiceStartTask);
@@ -1006,11 +1004,71 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
         isSpeechReady = false;
     }
 
+    private static boolean containsMyanmarScript(String text) {
+        if (text == null) return false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if ((c >= '\u1000' && c <= '\u109F')
+                    || (c >= '\uAA60' && c <= '\uAA7F')
+                    || (c >= '\uA9E0' && c <= '\uA9FF')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String selectBestVoiceResult(ArrayList<String> results, float[] scores, String languageTag) {
+        if (results == null || results.isEmpty()) return "";
+        boolean expectMyanmar = "my-MM".equalsIgnoreCase(languageTag);
+        String best = null;
+        float bestScore = -1.0f;
+
+        for (int i = 0; i < results.size(); i++) {
+            String candidate = results.get(i);
+            if (candidate == null) continue;
+            String trimmed = candidate.trim();
+            if (trimmed.isEmpty()) continue;
+
+            boolean hasMyanmar = containsMyanmarScript(trimmed);
+            if (expectMyanmar && !hasMyanmar) continue;
+            if (!expectMyanmar && hasMyanmar) continue;
+
+            float score = (scores != null && i < scores.length) ? scores[i] : 0.0f;
+            if (best == null || score > bestScore) {
+                best = trimmed;
+                bestScore = score;
+            }
+        }
+
+        if (best == null) {
+            for (int i = 0; i < results.size(); i++) {
+                String candidate = results.get(i);
+                if (candidate != null && !candidate.trim().isEmpty()) {
+                    best = candidate.trim();
+                    break;
+                }
+            }
+        }
+
+        if (best == null) return "";
+        if (expectMyanmar) {
+            return Normalizer.normalize(best, Normalizer.Form.NFC);
+        }
+        return best;
+    }
+
     private Intent createSpeechIntent() {
         String voiceLang = (layoutManager != null && layoutManager.currentLanguageId == 1) ? "my-MM" : "en-US";
+        activeVoiceLanguageTag = voiceLang;
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, voiceLang);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, voiceLang);
+        intent.putExtra(EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true);
+        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5);
+        intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, VOICE_COMPLETE_SILENCE_MS);
+        intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, VOICE_POSSIBLY_COMPLETE_SILENCE_MS);
         intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
         return intent;
     }
@@ -1038,6 +1096,7 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 }
                 isSpeechReady = true;
                 hasRetriedWakeUp = false;
+                silenceTalkBack();
                 if (feedbackManager != null) feedbackManager.playHaptic(SaiNawFeedbackManager.HAPTIC_TYPE);
             }
 
@@ -1093,17 +1152,22 @@ public class SaiNawKeyboardService extends InputMethodService implements Keyboar
                 isSpeechReady = false;
                 hasRetriedWakeUp = false;
 
-                ArrayList<String> m = (r != null) ? r.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) : null;
+                ArrayList<String> matches = (r != null) ? r.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) : null;
+                float[] scores = (r != null) ? r.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES) : null;
+                String bestResult = selectBestVoiceResult(matches, scores, activeVoiceLanguageTag);
                 InputConnection ic = getCurrentInputConnection();
-                if (m != null && !m.isEmpty() && m.get(0) != null && !m.get(0).trim().isEmpty() && ic != null) {
+                if (!bestResult.isEmpty() && ic != null) {
                     lastVoiceUsedMs = SystemClock.uptimeMillis();
-                    String committed = m.get(0).trim() + " ";
+                    String committed = bestResult + " ";
                     ic.commitText(committed, 1);
                     if (inputLogic != null) inputLogic.resetPreVowelState();
                     appendToShadow(committed);
                     currentWord.setLength(0);
                     hideCandidatesImmediately();
                     updateShiftState(false);
+                    if (keyboardView != null && accessibilityManager != null && accessibilityManager.isEnabled()) {
+                        keyboardView.announceForAccessibility(bestResult);
+                    }
                 } else {
                     destroySpeechRecognizer(true);
                 }
