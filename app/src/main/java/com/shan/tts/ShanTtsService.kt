@@ -186,9 +186,9 @@ class ShanTtsService : TextToSpeechService() {
 
     private fun normalizeShanPaliText(text: String): String {
         var normalized = text.replace("\u1086\u1062", "\u1062\u1086")
-        val followingMarkOrCoda = "(?:[\u102B-\u103E\u1062-\u1064\u1082-\u108D\u109A-\u109D]|[\u1000-\u1021\u1075-\u1081]\u103A)"
-        normalized = normalized.replace(Regex("\u102D(?!$followingMarkOrCoda)"), "\u102E\u1089")
-        normalized = normalized.replace(Regex("\u102F(?!$followingMarkOrCoda)"), "\u1030\u1089")
+        val skipPattern = "(?:[\u102B-\u103E\u1062-\u1064\u1082-\u108D\u109A-\u109D]|[\u1000-\u1022\u1075-\u1081][\u1037\u1038\u1087-\u108D]?[\u1039\u103A])"
+        normalized = normalized.replace(Regex("\u102D(?!$skipPattern)"), "\u102E\u1089")
+        normalized = normalized.replace(Regex("\u102F(?!$skipPattern)"), "\u1030\u1089")
         return normalized
     }
 
