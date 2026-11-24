@@ -371,7 +371,12 @@ class ShanTtsService : TextToSpeechService() {
         while (i < text.length) {
             var best = ""
             for (j in minOf(text.length, i + 50) downTo i + 1) {
-                if (map.containsKey(text.substring(i, j))) { best = text.substring(i, j); break }
+                val candidate = text.substring(i, j)
+                val mapped = map[candidate]
+                if (mapped != null && indexMap.containsKey(mapped) && (j == i + 1 || isSyllableBoundary(text, j))) {
+                    best = candidate
+                    break
+                }
             }
             if (best.isNotEmpty()) {
                 res.add(best)
@@ -393,6 +398,35 @@ class ShanTtsService : TextToSpeechService() {
             }
         }
         return res
+    }
+
+    private fun isSyllableBoundary(text: String, pos: Int): Boolean {
+        if (pos >= text.length) return true
+        val code = text[pos].code
+        if (code in 0x102B..0x103E ||
+            code in 0x1056..0x1064 ||
+            code in 0x1071..0x1074 ||
+            code in 0x1082..0x108D ||
+            code in 0x109A..0x109D) {
+            return false
+        }
+        val isConsonant = (code in 0x1000..0x1022) ||
+                          (code in 0x1050..0x1059) ||
+                          (code in 0x1075..0x1081) ||
+                          (code == 0x108E)
+        if (isConsonant && pos + 1 < text.length) {
+            val afterNext = text[pos + 1].code
+            if (afterNext == 0x1039 || afterNext == 0x103A) {
+                return false
+            }
+            if ((afterNext in 0x1037..0x1038 || afterNext in 0x1087..0x108D) && pos + 2 < text.length) {
+                val afterTone = text[pos + 2].code
+                if (afterTone == 0x1039 || afterTone == 0x103A) {
+                    return false
+                }
+            }
+        }
+        return true
     }
 
     private fun processSonicOutput(streamId: Long, outputBuffer: ShortArray, callback: SynthesisCallback) {
